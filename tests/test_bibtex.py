@@ -2,6 +2,7 @@ from academic_tools_mcp.bibtex import (
     _extract_last_name,
     _format_authors_bibtex,
     _generate_key,
+    generate_arxiv_bibtex,
     generate_bibtex,
 )
 
@@ -199,3 +200,93 @@ class TestGenerateBibtex:
     def test_underscore_and_hash_escaped(self):
         bib = generate_bibtex(self._make_work(title="A_B #1 Study"))
         assert r"A\_B \#1 Study" in bib
+
+
+class TestGenerateArxivBibtex:
+    def _make_arxiv_paper(self, **overrides):
+        base = {
+            "id": "http://arxiv.org/abs/1706.03762v7",
+            "title": "Attention Is All You Need",
+            "summary": "The dominant sequence transduction models...",
+            "published": "2017-06-12T17:57:34Z",
+            "updated": "2023-08-02T00:52:10Z",
+            "authors": [
+                {"name": "Ashish Vaswani", "affiliations": ["Google Brain"]},
+                {"name": "Noam Shazeer", "affiliations": []},
+            ],
+            "categories": ["cs.CL", "cs.LG"],
+            "primary_category": "cs.CL",
+            "links": [
+                {"href": "http://arxiv.org/abs/1706.03762v7", "rel": "alternate", "title": None},
+                {"href": "http://arxiv.org/pdf/1706.03762v7", "rel": "related", "title": "pdf"},
+            ],
+            "comment": "15 pages, 5 figures",
+            "journal_ref": None,
+            "doi": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_preprint_is_misc(self):
+        bib = generate_arxiv_bibtex(self._make_arxiv_paper())
+        assert bib.startswith("@misc{")
+
+    def test_published_is_article(self):
+        bib = generate_arxiv_bibtex(
+            self._make_arxiv_paper(journal_ref="Advances in Neural Information Processing Systems 30 (2017)")
+        )
+        assert bib.startswith("@article{")
+        assert "journal={Advances in Neural Information Processing Systems 30 (2017)}" in bib
+
+    def test_has_eprint_field(self):
+        bib = generate_arxiv_bibtex(self._make_arxiv_paper())
+        assert "eprint={1706.03762}" in bib
+
+    def test_has_archiveprefix(self):
+        bib = generate_arxiv_bibtex(self._make_arxiv_paper())
+        assert "archiveprefix={arXiv}" in bib
+
+    def test_has_primaryclass(self):
+        bib = generate_arxiv_bibtex(self._make_arxiv_paper())
+        assert "primaryclass={cs.CL}" in bib
+
+    def test_key_generation(self):
+        bib = generate_arxiv_bibtex(self._make_arxiv_paper())
+        assert bib.startswith("@misc{vaswani2017attention,")
+
+    def test_doi_included_when_present(self):
+        bib = generate_arxiv_bibtex(
+            self._make_arxiv_paper(doi="10.48550/arXiv.1706.03762")
+        )
+        assert "doi={10.48550/arXiv.1706.03762}" in bib
+
+    def test_no_doi_when_absent(self):
+        bib = generate_arxiv_bibtex(self._make_arxiv_paper())
+        assert "doi=" not in bib
+
+    def test_special_chars_escaped(self):
+        bib = generate_arxiv_bibtex(
+            self._make_arxiv_paper(title="ML & Drug Discovery: 100% Effective")
+        )
+        assert r"ML \& Drug Discovery: 100\% Effective" in bib
+
+    def test_particle_author(self):
+        paper = self._make_arxiv_paper(
+            authors=[
+                {"name": "Ludwig van den Berg", "affiliations": []},
+            ]
+        )
+        bib = generate_arxiv_bibtex(paper)
+        assert "author={van den Berg, Ludwig}" in bib
+
+    def test_no_authors(self):
+        paper = self._make_arxiv_paper(authors=[])
+        bib = generate_arxiv_bibtex(paper)
+        assert "unknown2017" in bib
+        assert "author=" not in bib
+
+    def test_eprint_strips_version(self):
+        bib = generate_arxiv_bibtex(self._make_arxiv_paper())
+        # ID is 1706.03762v7, eprint should be 1706.03762
+        assert "eprint={1706.03762}" in bib
+        assert "v7" not in bib.split("eprint=")[1].split(",")[0]

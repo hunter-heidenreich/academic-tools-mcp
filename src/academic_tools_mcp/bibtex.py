@@ -193,3 +193,103 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     # Format the entry
     field_str = ",\n".join(f"  {name}={value}" for name, value in fields)
     return f"@{entry_type}{{{key},\n{field_str}\n}}"
+
+
+# ---------------------------------------------------------------------------
+# arXiv BibTeX generation
+# ---------------------------------------------------------------------------
+
+
+def _generate_arxiv_key(paper: dict[str, Any]) -> str:
+    """Generate a BibTeX citation key from an arXiv paper dict."""
+    authors = paper.get("authors", [])
+    if authors:
+        last_name = _extract_last_name(authors[0].get("name", "unknown"))
+    else:
+        last_name = "unknown"
+
+    published = paper.get("published", "") or ""
+    year = published[:4] if len(published) >= 4 else ""
+
+    title = paper.get("title", "") or ""
+    skip = {"a", "an", "the", "on", "in", "of", "for", "to", "with", "and", "or"}
+    title_words = re.findall(r"[a-zA-Z]+", title)
+    first_word = "untitled"
+    for w in title_words:
+        if w.lower() not in skip:
+            first_word = _strip_accents_for_key(w).lower()
+            break
+
+    return f"{last_name}{year}{first_word}"
+
+
+def _format_arxiv_authors_bibtex(authors: list[dict[str, Any]]) -> str:
+    """Format arXiv author names for BibTeX: 'Last, First and Last, First'.
+
+    arXiv authors are stored as {"name": "First Last", "affiliations": [...]}.
+    """
+    names = []
+    for author in authors:
+        display_name = author.get("name", "")
+        if not display_name:
+            continue
+        parts = display_name.strip().split()
+        if len(parts) == 1:
+            names.append(parts[0])
+        else:
+            last_start = len(parts) - 1
+            for i in range(len(parts) - 2, -1, -1):
+                if parts[i].lower() in _PARTICLES:
+                    last_start = i
+                else:
+                    break
+            first = " ".join(parts[:last_start])
+            last = " ".join(parts[last_start:])
+            if first:
+                names.append(f"{last}, {first}")
+            else:
+                names.append(last)
+    return " and ".join(names)
+
+
+def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
+    """Generate a BibTeX entry from a parsed arXiv paper dict."""
+    key = _generate_arxiv_key(paper)
+    authors = paper.get("authors", [])
+    title = paper.get("title", "") or ""
+    published = paper.get("published", "") or ""
+    year = published[:4] if len(published) >= 4 else ""
+
+    journal_ref = paper.get("journal_ref")
+    doi = paper.get("doi")
+
+    # Published in a journal -> @article, otherwise preprint -> @misc
+    entry_type = "article" if journal_ref else "misc"
+
+    # Extract bare arXiv ID (without version) from the id URL
+    raw_id = paper.get("id", "")
+    if "/abs/" in raw_id:
+        eprint_id = raw_id.split("/abs/")[-1]
+    else:
+        eprint_id = raw_id
+    eprint_id = re.sub(r"v\d+$", "", eprint_id)
+
+    fields: list[tuple[str, str]] = []
+    fields.append(("title", f"{{{_escape_bibtex(title)}}}"))
+    if authors:
+        fields.append(("author", f"{{{_format_arxiv_authors_bibtex(authors)}}}"))
+    if entry_type == "article" and journal_ref:
+        fields.append(("journal", f"{{{_escape_bibtex(journal_ref)}}}"))
+    if year:
+        fields.append(("year", f"{{{year}}}"))
+    if eprint_id:
+        fields.append(("eprint", f"{{{eprint_id}}}"))
+        fields.append(("archiveprefix", "{arXiv}"))
+    primary_cat = paper.get("primary_category", "")
+    if primary_cat:
+        fields.append(("primaryclass", f"{{{primary_cat}}}"))
+    if doi:
+        fields.append(("doi", f"{{{doi}}}"))
+
+    field_str = ",\n".join(f"  {name}={value}" for name, value in fields)
+    return f"@{entry_type}{{{key},\n{field_str}\n}}"

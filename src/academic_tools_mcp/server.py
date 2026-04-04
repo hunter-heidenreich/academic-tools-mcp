@@ -3,8 +3,8 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import openalex
-from .bibtex import generate_bibtex
+from . import arxiv, cache, openalex, papers
+from .bibtex import generate_arxiv_bibtex, generate_bibtex
 
 mcp = FastMCP("academic-tools")
 
@@ -23,6 +23,16 @@ AUTHOR_ID = Annotated[
     Field(
         description="OpenAlex author ID (e.g., A5023888391) or ORCID "
         "(e.g., https://orcid.org/0000-0001-6187-6610)."
+    ),
+]
+
+
+ARXIV_ID = Annotated[
+    str,
+    Field(
+        description="arXiv paper ID. Accepts bare ID (2301.00001), "
+        "versioned (2301.00001v2), or URL "
+        "(https://arxiv.org/abs/2301.00001)."
     ),
 ]
 
@@ -222,6 +232,227 @@ async def get_author_affiliations(author_id: AUTHOR_ID) -> dict[str, Any]:
         "name": author.get("display_name"),
         "affiliations": affiliations,
     }
+
+
+# ---------------------------------------------------------------------------
+# arXiv tools
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_arxiv_paper(arxiv_id: str) -> dict[str, Any]:
+    """Fetch an arXiv paper and return it, or propagate error dict."""
+    return await arxiv.get_paper(arxiv_id)
+
+
+def _arxiv_id_from_entry(paper: dict[str, Any]) -> str:
+    """Extract bare arXiv ID from the entry's id URL."""
+    raw_id = paper.get("id", "")
+    if "/abs/" in raw_id:
+        return raw_id.split("/abs/")[-1]
+    return raw_id
+
+
+def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
+    """Extract the PDF link from an arXiv entry's links list."""
+    for link in paper.get("links", []):
+        if link.get("title") == "pdf":
+            return link.get("href")
+    return None
+
+
+@mcp.tool
+async def get_arxiv_paper_metadata(arxiv_id: ARXIV_ID) -> dict[str, Any]:
+    """Get core metadata for an arXiv paper: title, dates, categories, links, and publication info."""
+    paper = await _fetch_arxiv_paper(arxiv_id)
+    if "error" in paper:
+        return paper
+
+    return {
+        "arxiv_id": _arxiv_id_from_entry(paper),
+        "title": paper.get("title"),
+        "published": paper.get("published"),
+        "updated": paper.get("updated"),
+        "primary_category": paper.get("primary_category"),
+        "categories": paper.get("categories"),
+        "pdf_url": _arxiv_pdf_url(paper),
+        "doi": paper.get("doi"),
+        "journal_ref": paper.get("journal_ref"),
+        "comment": paper.get("comment"),
+    }
+
+
+@mcp.tool
+async def get_arxiv_paper_authors(arxiv_id: ARXIV_ID) -> dict[str, Any]:
+    """Get the author list for an arXiv paper, with affiliations when available."""
+    paper = await _fetch_arxiv_paper(arxiv_id)
+    if "error" in paper:
+        return paper
+
+    return {
+        "authors": paper.get("authors", []),
+    }
+
+
+@mcp.tool
+async def get_arxiv_paper_abstract(arxiv_id: ARXIV_ID) -> dict[str, Any]:
+    """Get the abstract of an arXiv paper."""
+    paper = await _fetch_arxiv_paper(arxiv_id)
+    if "error" in paper:
+        return paper
+
+    return {
+        "title": paper.get("title"),
+        "abstract": paper.get("summary"),
+    }
+
+
+@mcp.tool
+async def get_arxiv_paper_bibtex(arxiv_id: ARXIV_ID) -> dict[str, Any]:
+    """Generate a BibTeX citation entry for an arXiv paper.
+
+    Uses @article if the paper has a journal reference, otherwise @misc with
+    eprint, archivePrefix, and primaryClass fields.
+    """
+    paper = await _fetch_arxiv_paper(arxiv_id)
+    if "error" in paper:
+        return paper
+
+    return {
+        "bibtex": generate_arxiv_bibtex(paper),
+    }
+
+
+@mcp.tool
+async def search_arxiv(
+    query: Annotated[
+        str,
+        Field(
+            description="arXiv search query. Supports field prefixes: "
+            "ti: (title), au: (author), abs: (abstract), cat: (category). "
+            "Boolean operators: AND, OR, ANDNOT. "
+            "Example: 'ti:attention AND au:vaswani'"
+        ),
+    ],
+    max_results: Annotated[
+        int,
+        Field(description="Maximum results to return (1-50).", ge=1, le=50),
+    ] = 10,
+) -> dict[str, Any]:
+    """Search arXiv papers. Returns titles, IDs, authors, and categories for matching papers."""
+    result = await arxiv.search_papers(query, max_results=max_results)
+    if "error" in result:
+        return result
+
+    return {
+        "total_results": result["total_results"],
+        "papers": [
+            {
+                "arxiv_id": _arxiv_id_from_entry(p),
+                "title": p.get("title"),
+                "authors": [a.get("name") for a in p.get("authors", [])],
+                "primary_category": p.get("primary_category"),
+                "published": p.get("published"),
+            }
+            for p in result.get("entries", [])
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Paper PDF pipeline tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+async def download_arxiv_pdf(arxiv_id: ARXIV_ID) -> dict[str, Any]:
+    """Download and cache the PDF for an arXiv paper.
+
+    Returns the local file path and size. Skips download if already cached.
+    This must be called before convert_paper.
+    """
+    return await arxiv.download_pdf(arxiv_id)
+
+
+@mcp.tool
+async def convert_paper(arxiv_id: ARXIV_ID) -> dict[str, Any]:
+    """Convert a downloaded arXiv PDF to markdown using MinerU, then parse into sections.
+
+    This is a slow operation (5-10 minutes). Returns the section index on completion.
+    The PDF must be downloaded first via download_arxiv_pdf.
+    Skips conversion if markdown is already cached.
+    """
+    canonical = arxiv._canonical_arxiv_id(arxiv_id)
+    pdf = arxiv.pdf_path(arxiv_id)
+
+    if not pdf.exists():
+        return {
+            "error": f"PDF not cached. Call download_arxiv_pdf first for: {arxiv_id}"
+        }
+
+    return await papers.convert_pdf(pdf, arxiv.NAMESPACE, canonical)
+
+
+@mcp.tool
+async def get_paper_sections(arxiv_id: ARXIV_ID) -> dict[str, Any]:
+    """Get the section index for a converted arXiv paper.
+
+    Returns H2 section titles with H3 sub-heading previews and approximate
+    token counts. The paper must be converted first via convert_paper.
+    """
+    canonical = arxiv._canonical_arxiv_id(arxiv_id)
+
+    # Try cached section index first
+    cached = cache.get(arxiv.NAMESPACE, "sections", papers._sections_key(canonical))
+    if cached is not None:
+        return cached
+
+    # Fall back to parsing from markdown if it exists
+    md_path = papers._markdown_path(arxiv.NAMESPACE, canonical)
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet. Call convert_paper first for: {arxiv_id}"
+        }
+
+    markdown = md_path.read_text()
+    sections = papers.parse_sections(markdown)
+    sections_data = {"sections": sections}
+    cache.put(arxiv.NAMESPACE, "sections", papers._sections_key(canonical), sections_data)
+    return sections_data
+
+
+@mcp.tool
+async def get_paper_section(
+    arxiv_id: ARXIV_ID,
+    section: Annotated[
+        str,
+        Field(
+            description="Section to retrieve: an integer index (e.g. '0') "
+            "or a title substring (e.g. 'Introduction', 'Methods'). "
+            "Use get_paper_sections to see available sections."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Get the full markdown content of a specific section from a converted arXiv paper.
+
+    Accepts a section index number or a title substring (case-insensitive).
+    """
+    canonical = arxiv._canonical_arxiv_id(arxiv_id)
+    md_path = papers._markdown_path(arxiv.NAMESPACE, canonical)
+
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet. Call convert_paper first for: {arxiv_id}"
+        }
+
+    markdown = md_path.read_text()
+
+    # Try to parse as integer index
+    try:
+        section_key: int | str = int(section)
+    except ValueError:
+        section_key = section
+
+    return papers.get_section_content(markdown, section_key)
 
 
 if __name__ == "__main__":

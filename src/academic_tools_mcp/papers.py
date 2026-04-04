@@ -1,0 +1,276 @@
+"""PDF-to-markdown conversion via MinerU and section-level access.
+
+This module handles:
+  - Running MinerU on a cached PDF to produce markdown
+  - Parsing markdown into sections with sub-heading previews
+  - Retrieving individual sections by title or index
+
+Section splitting is adaptive: it detects the heading level used for main
+sections (H1 or H2) based on what the document actually contains. MinerU
+typically outputs all headings as H1; standard markdown uses H2 for sections.
+"""
+
+import asyncio
+import re
+from pathlib import Path
+from typing import Any
+
+from . import cache
+
+# Approximate tokens per character (conservative estimate for English text)
+_CHARS_PER_TOKEN = 4
+
+# Regex for heading lines: captures (level, title)
+#   "# Foo"   -> (1, "Foo")
+#   "## Bar"  -> (2, "Bar")
+#   "### Baz" -> (3, "Baz")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+
+
+def _markdown_path(namespace: str, canonical: str) -> Path:
+    """Return the cache path for converted markdown."""
+    return cache._cache_dir(namespace, "markdown") / (
+        canonical.replace("/", "_") + ".md"
+    )
+
+
+def _sections_key(canonical: str) -> str:
+    """Cache key for section index JSON."""
+    return canonical.replace("/", "_")
+
+
+def _detect_heading_levels(lines: list[str]) -> tuple[int, int]:
+    """Detect which heading levels to use for sections and sub-headings.
+
+    Scans the document for headings and picks the two most-used levels.
+    Returns (section_level, sub_level).
+
+    Heuristic:
+      - Find the most common heading level -> that's the section level
+      - The next level down (section_level + 1) is the sub-heading level
+      - If only one level exists, sub_level = section_level + 1 (won't match anything)
+    """
+    level_counts: dict[int, int] = {}
+    for line in lines:
+        m = _HEADING_RE.match(line)
+        if m:
+            level = len(m.group(1))
+            level_counts[level] = level_counts.get(level, 0) + 1
+
+    if not level_counts:
+        # No headings at all; default to H2/H3
+        return 2, 3
+
+    # Most common level is the section level
+    section_level = max(level_counts, key=lambda k: level_counts[k])
+    sub_level = section_level + 1
+
+    return section_level, sub_level
+
+
+def parse_sections(markdown: str) -> list[dict[str, Any]]:
+    """Parse markdown into sections with sub-heading previews.
+
+    Adaptive: detects whether the document uses H1 or H2 for main sections.
+    Returns a list of section dicts:
+      {"index": 0, "title": "Introduction", "h3s": ["Background"], "approx_tokens": 800}
+
+    The "h3s" key contains sub-heading titles (one level below the section level).
+    Content before the first section heading is captured as a "Preamble" section.
+    """
+    lines = markdown.split("\n")
+    section_level, sub_level = _detect_heading_levels(lines)
+
+    sections: list[dict[str, Any]] = []
+    current_title = "Preamble"
+    current_h3s: list[str] = []
+    current_lines: list[str] = []
+
+    def _flush():
+        content = "\n".join(current_lines)
+        # Only add if there's meaningful content (not just whitespace)
+        if content.strip():
+            sections.append({
+                "index": len(sections),
+                "title": current_title,
+                "h3s": current_h3s[:],
+                "approx_tokens": max(1, len(content) // _CHARS_PER_TOKEN),
+            })
+
+    for line in lines:
+        m = _HEADING_RE.match(line)
+        if m:
+            level = len(m.group(1))
+            title = m.group(2).strip()
+            if level == section_level:
+                _flush()
+                current_title = title
+                current_h3s = []
+                current_lines = []
+                continue
+            elif level == sub_level:
+                current_h3s.append(title)
+
+        current_lines.append(line)
+
+    # Flush the last section
+    _flush()
+
+    return sections
+
+
+def get_section_content(markdown: str, section: int | str) -> dict[str, Any]:
+    """Retrieve the content of a specific section by index or title.
+
+    Args:
+        markdown: Full markdown text.
+        section: Integer index or string title (case-insensitive partial match).
+
+    Returns:
+        Dict with title, content, and approx_tokens, or an error.
+    """
+    lines = markdown.split("\n")
+    section_level, _ = _detect_heading_levels(lines)
+
+    # Build section boundaries: list of (title, start_line, end_line)
+    boundaries: list[tuple[str, int, int]] = []
+    current_title = "Preamble"
+    current_start = 0
+
+    for i, line in enumerate(lines):
+        m = _HEADING_RE.match(line)
+        if m and len(m.group(1)) == section_level:
+            boundaries.append((current_title, current_start, i))
+            current_title = m.group(2).strip()
+            current_start = i + 1
+
+    boundaries.append((current_title, current_start, len(lines)))
+
+    # Filter out empty preamble
+    boundaries = [
+        (t, s, e) for t, s, e in boundaries
+        if "\n".join(lines[s:e]).strip()
+    ]
+
+    # Look up by index or title
+    if isinstance(section, int):
+        if 0 <= section < len(boundaries):
+            title, start, end = boundaries[section]
+        else:
+            return {
+                "error": f"Section index {section} out of range (0-{len(boundaries) - 1})"
+            }
+    else:
+        query = section.lower()
+        matches = [
+            (t, s, e) for t, s, e in boundaries if query in t.lower()
+        ]
+        if len(matches) == 1:
+            title, start, end = matches[0]
+        elif len(matches) > 1:
+            titles = [t for t, _, _ in matches]
+            return {
+                "error": f"Ambiguous section title '{section}'. Matches: {titles}"
+            }
+        else:
+            titles = [t for t, _, _ in boundaries]
+            return {
+                "error": f"No section matching '{section}'. Available: {titles}"
+            }
+
+    content = "\n".join(lines[start:end]).strip()
+    return {
+        "title": title,
+        "content": content,
+        "approx_tokens": max(1, len(content) // _CHARS_PER_TOKEN),
+    }
+
+
+async def convert_pdf(
+    pdf_path: Path,
+    namespace: str,
+    canonical: str,
+) -> dict[str, Any]:
+    """Convert a PDF to markdown using MinerU, cache the result, and return section index.
+
+    Args:
+        pdf_path: Path to the cached PDF file.
+        namespace: Cache namespace (e.g., "arxiv").
+        canonical: Canonical ID for cache keying.
+
+    Returns:
+        Dict with markdown_path, sections list, or an error.
+    """
+    md_path = _markdown_path(namespace, canonical)
+
+    # Check if already converted
+    if md_path.exists():
+        markdown = md_path.read_text()
+        sections = parse_sections(markdown)
+        # Cache the section index
+        sections_data = {"sections": sections}
+        cache.put(namespace, "sections", _sections_key(canonical), sections_data)
+        return {
+            "markdown_path": str(md_path),
+            "sections": sections,
+            "cached": True,
+        }
+
+    if not pdf_path.exists():
+        return {"error": f"PDF not found at: {pdf_path}"}
+
+    # Run MinerU in a subprocess
+    extract_dir = Path(f"/tmp/mineru-extract-{canonical.replace('/', '_')}")
+
+    proc = await asyncio.create_subprocess_exec(
+        "bash", "-c",
+        f'rm -rf "{extract_dir}" 2>/dev/null; '
+        f'source ~/.venvs/mineru/bin/activate && '
+        f'mineru -p "{pdf_path}" -o "{extract_dir}" 2>&1',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    stdout, stderr = await asyncio.wait_for(
+        proc.communicate(), timeout=600  # 10 minutes
+    )
+
+    if proc.returncode != 0:
+        output = (stdout or b"").decode() + (stderr or b"").decode()
+        return {
+            "error": f"MinerU conversion failed (exit {proc.returncode}): {output[-500:]}"
+        }
+
+    # Find the generated markdown file
+    # MinerU outputs to: extract_dir/<stem>/hybrid_auto/<stem>.md
+    stem = pdf_path.stem
+    candidates = list(extract_dir.glob(f"**/{stem}.md"))
+
+    if not candidates:
+        # Try any .md file in the output
+        candidates = list(extract_dir.glob("**/*.md"))
+
+    if not candidates:
+        return {"error": f"MinerU produced no markdown output in {extract_dir}"}
+
+    source_md = candidates[0]
+    markdown = source_md.read_text()
+
+    # Store markdown in cache
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(markdown)
+
+    # Parse sections and cache the index
+    sections = parse_sections(markdown)
+    sections_data = {"sections": sections}
+    cache.put(namespace, "sections", _sections_key(canonical), sections_data)
+
+    # Clean up temp directory
+    import shutil
+    shutil.rmtree(extract_dir, ignore_errors=True)
+
+    return {
+        "markdown_path": str(md_path),
+        "sections": sections,
+        "cached": False,
+    }

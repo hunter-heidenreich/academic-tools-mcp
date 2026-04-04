@@ -1,6 +1,6 @@
 # academic-tools-mcp
 
-An MCP server for academic research tools built on [OpenAlex](https://openalex.org/). Designed to give LLM agents lean, focused responses for verifying paper metadata, authors, institutions, and generating BibTeX citations.
+An MCP server for academic research tools built on [OpenAlex](https://openalex.org/) and the [arXiv API](https://info.arxiv.org/help/api/). Designed to give LLM agents lean, focused responses for verifying paper metadata, authors, institutions, and generating BibTeX citations.
 
 ## Setup
 
@@ -11,6 +11,8 @@ uv sync
 ```
 
 ## Tools
+
+### OpenAlex
 
 Paper tools accept a `doi` parameter (bare, prefixed, or full URL). Author tools accept an `author_id` (OpenAlex ID or ORCID). API key and mailto are configured via environment variables (see [Configuration](#configuration)).
 
@@ -207,6 +209,165 @@ Affiliation history with years, useful for verifying which institution an author
 }
 ```
 
+### arXiv
+
+arXiv tools accept an `arxiv_id` parameter: bare ID (`2301.00001`), versioned (`2301.00001v2`), or URL (`https://arxiv.org/abs/2301.00001`). No API key required.
+
+Responses are cached locally under `.cache/arxiv/papers/`. arXiv's rate limit (1 request per 3 seconds) is enforced automatically.
+
+---
+
+### `get_arxiv_paper_metadata`
+
+Core metadata: title, dates, categories, links, and publication info.
+
+```json
+{
+  "arxiv_id": "1706.03762v7",
+  "title": "Attention Is All You Need",
+  "published": "2017-06-12T17:57:34Z",
+  "updated": "2023-08-02T00:52:10Z",
+  "primary_category": "cs.CL",
+  "categories": ["cs.CL", "cs.LG"],
+  "pdf_url": "http://arxiv.org/pdf/1706.03762v7",
+  "doi": "10.48550/arXiv.1706.03762",
+  "journal_ref": "Advances in Neural Information Processing Systems 30 (2017)",
+  "comment": "15 pages, 5 figures"
+}
+```
+
+### `get_arxiv_paper_authors`
+
+Author list with affiliations when available.
+
+```json
+{
+  "authors": [
+    {"name": "Ashish Vaswani", "affiliations": ["Google Brain"]},
+    {"name": "Noam Shazeer", "affiliations": []},
+    {"name": "Niki Parmar", "affiliations": ["Google Research"]}
+  ]
+}
+```
+
+### `get_arxiv_paper_abstract`
+
+Title and abstract text.
+
+```json
+{
+  "title": "Attention Is All You Need",
+  "abstract": "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks..."
+}
+```
+
+### `get_arxiv_paper_bibtex`
+
+BibTeX entry with `eprint`, `archiveprefix`, and `primaryclass` fields. Uses `@article` if the paper has a journal reference, otherwise `@misc`.
+
+```json
+{
+  "bibtex": "@article{vaswani2017attention,\n  title={Attention Is All You Need},\n  author={Vaswani, Ashish and Shazeer, Noam and Parmar, Niki},\n  journal={Advances in Neural Information Processing Systems 30 (2017)},\n  year={2017},\n  eprint={1706.03762},\n  archiveprefix={arXiv},\n  primaryclass={cs.CL},\n  doi={10.48550/arXiv.1706.03762}\n}"
+}
+```
+
+Which renders as:
+
+```bibtex
+@article{vaswani2017attention,
+  title={Attention Is All You Need},
+  author={Vaswani, Ashish and Shazeer, Noam and Parmar, Niki},
+  journal={Advances in Neural Information Processing Systems 30 (2017)},
+  year={2017},
+  eprint={1706.03762},
+  archiveprefix={arXiv},
+  primaryclass={cs.CL},
+  doi={10.48550/arXiv.1706.03762}
+}
+```
+
+### `search_arxiv`
+
+Search arXiv papers with field prefixes (`ti:`, `au:`, `abs:`, `cat:`) and boolean operators (`AND`, `OR`, `ANDNOT`). Returns up to 50 lean results.
+
+```json
+{
+  "total_results": 1234,
+  "papers": [
+    {
+      "arxiv_id": "1706.03762v7",
+      "title": "Attention Is All You Need",
+      "authors": ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar"],
+      "primary_category": "cs.CL",
+      "published": "2017-06-12T17:57:34Z"
+    }
+  ]
+}
+```
+
+### Paper PDF Pipeline
+
+Download arXiv PDFs, convert to markdown with [MinerU](https://github.com/opendatalab/MinerU), and access content section-by-section. Requires MinerU installed in `~/.venvs/mineru`.
+
+The pipeline is a four-step chain: `download_arxiv_pdf` → `convert_paper` → `get_paper_sections` → `get_paper_section`.
+
+---
+
+### `download_arxiv_pdf`
+
+Download and cache the PDF for an arXiv paper. Skips download if already cached.
+
+```json
+{
+  "path": "/path/to/.cache/arxiv/pdfs/1706.03762.pdf",
+  "size_bytes": 2087448,
+  "cached": false
+}
+```
+
+### `convert_paper`
+
+Convert a cached PDF to markdown using MinerU, then parse into H2-level sections. This is slow (5-10 minutes). Skips conversion if already cached.
+
+```json
+{
+  "markdown_path": "/path/to/.cache/arxiv/markdown/1706.03762.md",
+  "sections": [
+    {"index": 0, "title": "Preamble", "h3s": [], "approx_tokens": 150},
+    {"index": 1, "title": "Introduction", "h3s": [], "approx_tokens": 800},
+    {"index": 2, "title": "Background", "h3s": ["Encoder-Decoder", "Attention"], "approx_tokens": 600},
+    {"index": 3, "title": "Model Architecture", "h3s": ["Encoder and Decoder Stacks", "Attention", "Position-wise Feed-Forward Networks"], "approx_tokens": 2400}
+  ],
+  "cached": false
+}
+```
+
+### `get_paper_sections`
+
+Get the section index for a converted paper. Lightweight — returns only titles, H3 previews, and approximate token counts.
+
+```json
+{
+  "sections": [
+    {"index": 0, "title": "Introduction", "h3s": [], "approx_tokens": 800},
+    {"index": 1, "title": "Methods", "h3s": ["Architecture", "Training"], "approx_tokens": 2400},
+    {"index": 2, "title": "Results", "h3s": [], "approx_tokens": 1200}
+  ]
+}
+```
+
+### `get_paper_section`
+
+Get the full markdown content of a specific section. Accepts an index number or a title substring (case-insensitive).
+
+```json
+{
+  "title": "Methods",
+  "content": "### Architecture\n\nThe model architecture is based on...\n\n### Training\n\nWe trained using...",
+  "approx_tokens": 2400
+}
+```
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your values:
@@ -257,5 +418,9 @@ API responses are cached as JSON files under `.cache/<provider>/<entity>/`. Curr
 
 - `.cache/openalex/works/` — full OpenAlex work objects
 - `.cache/openalex/authors/` — full OpenAlex author objects
+- `.cache/arxiv/papers/` — parsed arXiv paper entries
+- `.cache/arxiv/pdfs/` — downloaded arXiv PDFs
+- `.cache/arxiv/markdown/` — MinerU-converted markdown
+- `.cache/arxiv/sections/` — section index JSON
 
 Cache has no expiration. All tools for a given entity share the same cached response, so only one API call is made regardless of how many tools you invoke.
