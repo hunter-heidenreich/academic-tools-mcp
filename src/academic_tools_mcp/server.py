@@ -18,6 +18,14 @@ DOI = Annotated[
     ),
 ]
 
+AUTHOR_ID = Annotated[
+    str,
+    Field(
+        description="OpenAlex author ID (e.g., A5023888391) or ORCID "
+        "(e.g., https://orcid.org/0000-0001-6187-6610)."
+    ),
+]
+
 
 async def _fetch_work(doi: str) -> dict[str, Any]:
     """Fetch a work and return it, or raise if not found."""
@@ -72,6 +80,7 @@ async def get_paper_authors(doi: DOI) -> dict[str, Any]:
 
         authors.append({
             "name": author_info.get("display_name"),
+            "openalex_id": author_info.get("id"),
             "position": a.get("author_position"),
             "is_corresponding": a.get("is_corresponding"),
             "institutions": inst_names,
@@ -158,6 +167,60 @@ async def get_paper_bibtex(doi: DOI) -> dict[str, Any]:
 
     return {
         "bibtex": generate_bibtex(work),
+    }
+
+
+@mcp.tool
+async def get_author_profile(author_id: AUTHOR_ID) -> dict[str, Any]:
+    """Get an author's profile: name, ORCID, current institutions, publication/citation counts, h-index, and top topics."""
+    author = await openalex.get_author(author_id)
+    if "error" in author:
+        return author
+
+    stats = author.get("summary_stats") or {}
+    last_institutions = [
+        inst.get("display_name")
+        for inst in (author.get("last_known_institutions") or [])
+        if inst.get("display_name")
+    ]
+    topics = [
+        {"name": t.get("display_name"), "count": t.get("count")}
+        for t in (author.get("topics") or [])[:5]
+    ]
+
+    return {
+        "name": author.get("display_name"),
+        "openalex_id": author.get("id"),
+        "orcid": author.get("orcid"),
+        "works_count": author.get("works_count"),
+        "cited_by_count": author.get("cited_by_count"),
+        "h_index": stats.get("h_index"),
+        "i10_index": stats.get("i10_index"),
+        "current_institutions": last_institutions,
+        "top_topics": topics,
+    }
+
+
+@mcp.tool
+async def get_author_affiliations(author_id: AUTHOR_ID) -> dict[str, Any]:
+    """Get an author's affiliation history: institutions with the years they were affiliated."""
+    author = await openalex.get_author(author_id)
+    if "error" in author:
+        return author
+
+    affiliations = []
+    for aff in author.get("affiliations") or []:
+        inst = aff.get("institution") or {}
+        years = sorted(aff.get("years") or [])
+        affiliations.append({
+            "institution": inst.get("display_name"),
+            "country_code": inst.get("country_code"),
+            "years": years,
+        })
+
+    return {
+        "name": author.get("display_name"),
+        "affiliations": affiliations,
     }
 
 

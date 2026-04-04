@@ -1,5 +1,7 @@
 from academic_tools_mcp.openalex import (
+    _canonical_author_id,
     _canonical_doi,
+    _normalize_author_id,
     _normalize_doi,
     reconstruct_abstract,
 )
@@ -25,6 +27,29 @@ class TestCanonicalDoi:
 
     def test_strips_url_and_lowercases(self):
         assert _canonical_doi("https://doi.org/10.1234/ABC") == "10.1234/abc"
+
+
+class TestNormalizeAuthorId:
+    def test_openalex_id(self):
+        assert _normalize_author_id("A5023888391") == "A5023888391"
+
+    def test_openalex_url(self):
+        assert _normalize_author_id("https://openalex.org/A5023888391") == "A5023888391"
+
+    def test_orcid_url_passthrough(self):
+        orcid = "https://orcid.org/0000-0001-6187-6610"
+        assert _normalize_author_id(orcid) == orcid
+
+
+class TestCanonicalAuthorId:
+    def test_lowercases(self):
+        assert _canonical_author_id("A5023888391") == "a5023888391"
+
+    def test_strips_url_and_lowercases(self):
+        assert _canonical_author_id("https://openalex.org/A5023888391") == "a5023888391"
+
+    def test_orcid_lowercased(self):
+        assert _canonical_author_id("https://orcid.org/0000-0001-6187-6610") == "https://orcid.org/0000-0001-6187-6610"
 
 
 class TestReconstructAbstract:

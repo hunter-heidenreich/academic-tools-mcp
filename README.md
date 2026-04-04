@@ -12,9 +12,9 @@ uv sync
 
 ## Tools
 
-All tools accept a single `doi` parameter (bare, prefixed, or full URL). API key and mailto are configured via environment variables (see [Configuration](#configuration)).
+Paper tools accept a `doi` parameter (bare, prefixed, or full URL). Author tools accept an `author_id` (OpenAlex ID or ORCID). API key and mailto are configured via environment variables (see [Configuration](#configuration)).
 
-Responses are cached locally in `.cache/openalex/works/` — no repeated API calls for the same paper.
+Responses are cached locally under `.cache/openalex/` — no repeated API calls for the same entity.
 
 ---
 
@@ -46,18 +46,21 @@ Author names, positions, corresponding status, and institution names. Also retur
   "authors": [
     {
       "name": "Derek van Tilborg",
+      "openalex_id": "https://openalex.org/A5087157931",
       "position": "first",
       "is_corresponding": false,
       "institutions": ["University Medical Center Utrecht", "Eindhoven University of Technology"]
     },
     {
       "name": "Alisa Alenicheva",
+      "openalex_id": "https://openalex.org/A5024632622",
       "position": "middle",
       "is_corresponding": false,
       "institutions": []
     },
     {
       "name": "Francesca Grisoni",
+      "openalex_id": "https://openalex.org/A5078946433",
       "position": "last",
       "is_corresponding": true,
       "institutions": ["Eindhoven University of Technology", "University Medical Center Utrecht"]
@@ -153,6 +156,57 @@ Which renders as:
 }
 ```
 
+### `get_author_profile`
+
+Author summary: name, ORCID, current institutions, publication/citation counts, h-index, and top research topics. Accepts an OpenAlex author ID (from `get_paper_authors`) or ORCID.
+
+```json
+{
+  "name": "Derek van Tilborg",
+  "openalex_id": "https://openalex.org/A5087157931",
+  "orcid": "https://orcid.org/0000-0003-4473-0657",
+  "works_count": 18,
+  "cited_by_count": 335,
+  "h_index": 7,
+  "i10_index": 5,
+  "current_institutions": [
+    "Institute for Complex Systems",
+    "Eindhoven University of Technology"
+  ],
+  "top_topics": [
+    {"name": "Computational Drug Discovery Methods", "count": 13},
+    {"name": "Machine Learning in Materials Science", "count": 11}
+  ]
+}
+```
+
+### `get_author_affiliations`
+
+Affiliation history with years, useful for verifying which institution an author was at when a paper was published.
+
+```json
+{
+  "name": "Derek van Tilborg",
+  "affiliations": [
+    {
+      "institution": "Eindhoven University of Technology",
+      "country_code": "NL",
+      "years": [2022, 2023, 2024, 2025, 2026]
+    },
+    {
+      "institution": "University Medical Center Utrecht",
+      "country_code": "NL",
+      "years": [2022, 2024]
+    },
+    {
+      "institution": "Wageningen University & Research",
+      "country_code": "NL",
+      "years": [2021]
+    }
+  ]
+}
+```
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in your values:
@@ -202,5 +256,6 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 API responses are cached as JSON files under `.cache/<provider>/<entity>/`. Currently supports:
 
 - `.cache/openalex/works/` — full OpenAlex work objects
+- `.cache/openalex/authors/` — full OpenAlex author objects
 
-Cache has no expiration. All tools for a given DOI share the same cached response, so only one API call is made regardless of how many tools you invoke.
+Cache has no expiration. All tools for a given entity share the same cached response, so only one API call is made regardless of how many tools you invoke.

@@ -41,6 +41,55 @@ def _build_params() -> dict[str, str]:
     return params
 
 
+def _normalize_author_id(author_id: str) -> str:
+    """Normalize an author identifier for the API path.
+
+    Accepts:
+      - OpenAlex ID: A5023888391
+      - Full OpenAlex URL: https://openalex.org/A5023888391
+      - ORCID URL: https://orcid.org/0000-0001-6187-6610
+    """
+    if author_id.startswith("https://openalex.org/"):
+        author_id = author_id[len("https://openalex.org/"):]
+    return author_id
+
+
+def _canonical_author_id(author_id: str) -> str:
+    """Return a canonical author ID for cache keying."""
+    return _normalize_author_id(author_id).lower()
+
+
+async def get_author(author_id: str) -> dict[str, Any]:
+    """Fetch an author by OpenAlex ID or ORCID, using cache when available.
+
+    Returns the full OpenAlex author object.
+    """
+    canonical = _canonical_author_id(author_id)
+
+    cached = cache.get(NAMESPACE, "authors", canonical)
+    if cached is not None:
+        return cached
+
+    api_id = _normalize_author_id(author_id)
+    params = _build_params()
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{OPENALEX_BASE_URL}/authors/{api_id}",
+            params=params,
+            timeout=30.0,
+        )
+
+    if response.status_code == 404:
+        return {"error": f"No author found for ID: {author_id}"}
+
+    response.raise_for_status()
+    data = response.json()
+
+    cache.put(NAMESPACE, "authors", canonical, data)
+    return data
+
+
 async def get_work(doi: str) -> dict[str, Any]:
     """Fetch a work by DOI, using cache when available.
 
