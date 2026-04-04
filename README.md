@@ -12,7 +12,7 @@ uv sync
 
 ## Tools
 
-All tools accept a `doi` (bare, prefixed, or full URL) and an optional `mailto` for OpenAlex's polite pool.
+All tools accept a single `doi` parameter (bare, prefixed, or full URL). API key and mailto are configured via environment variables (see [Configuration](#configuration)).
 
 Responses are cached locally in `.cache/openalex/works/` — no repeated API calls for the same paper.
 
@@ -152,6 +152,21 @@ Which renders as:
   doi={10.1021/acs.jcim.2c01073}
 }
 ```
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Description |
+|----------|-------------|
+| `OPENALEX_API_KEY` | API key from [openalex.org/settings/api](https://openalex.org/settings/api) (free) |
+| `OPENALEX_MAILTO` | Your email for the [polite pool](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication#the-polite-pool) (faster rate limits) |
+
+Both are optional but recommended. If set, they are sent automatically on every request — the LLM agent never needs to know about them.
 
 ## Usage
 

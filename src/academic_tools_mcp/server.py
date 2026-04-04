@@ -18,24 +18,16 @@ DOI = Annotated[
     ),
 ]
 
-MAILTO = Annotated[
-    str | None,
-    Field(
-        description="Optional email for the OpenAlex polite pool (faster rate limits)."
-    ),
-]
 
-
-async def _fetch_work(doi: str, mailto: str | None = None) -> dict[str, Any]:
+async def _fetch_work(doi: str) -> dict[str, Any]:
     """Fetch a work and return it, or raise if not found."""
-    work = await openalex.get_work(doi, mailto=mailto)
-    return work
+    return await openalex.get_work(doi)
 
 
 @mcp.tool
-async def get_paper_metadata(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
+async def get_paper_metadata(doi: DOI) -> dict[str, Any]:
     """Get core metadata for a paper: title, year, type, venue, DOI, and open access info."""
-    work = await _fetch_work(doi, mailto)
+    work = await _fetch_work(doi)
     if "error" in work:
         return work
 
@@ -58,9 +50,9 @@ async def get_paper_metadata(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
 
 
 @mcp.tool
-async def get_paper_authors(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
+async def get_paper_authors(doi: DOI) -> dict[str, Any]:
     """Get the author list for a paper: names, positions, corresponding status, and institution names."""
-    work = await _fetch_work(doi, mailto)
+    work = await _fetch_work(doi)
     if "error" in work:
         return work
 
@@ -92,9 +84,9 @@ async def get_paper_authors(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
 
 
 @mcp.tool
-async def get_paper_abstract(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
+async def get_paper_abstract(doi: DOI) -> dict[str, Any]:
     """Get the abstract of a paper as plain text."""
-    work = await _fetch_work(doi, mailto)
+    work = await _fetch_work(doi)
     if "error" in work:
         return work
 
@@ -109,9 +101,9 @@ async def get_paper_abstract(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
 
 
 @mcp.tool
-async def get_paper_citations_summary(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
+async def get_paper_citations_summary(doi: DOI) -> dict[str, Any]:
     """Get citation statistics for a paper: citation count, reference count, and retraction status."""
-    work = await _fetch_work(doi, mailto)
+    work = await _fetch_work(doi)
     if "error" in work:
         return work
 
@@ -124,9 +116,9 @@ async def get_paper_citations_summary(doi: DOI, mailto: MAILTO = None) -> dict[s
 
 
 @mcp.tool
-async def get_paper_topics(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
+async def get_paper_topics(doi: DOI) -> dict[str, Any]:
     """Get topic classifications and keywords for a paper."""
-    work = await _fetch_work(doi, mailto)
+    work = await _fetch_work(doi)
     if "error" in work:
         return work
 
@@ -153,14 +145,14 @@ async def get_paper_topics(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
 
 
 @mcp.tool
-async def get_paper_bibtex(doi: DOI, mailto: MAILTO = None) -> dict[str, Any]:
+async def get_paper_bibtex(doi: DOI) -> dict[str, Any]:
     """Generate a BibTeX citation entry for a paper.
 
     Automatically selects the correct entry type (@article, @inproceedings,
     @misc for preprints, @incollection for book chapters, @phdthesis, etc.)
     based on the work type.
     """
-    work = await _fetch_work(doi, mailto)
+    work = await _fetch_work(doi)
     if "error" in work:
         return work
 

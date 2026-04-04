@@ -11,3 +11,6 @@ wheels/
 
 # Cache
 .cache/
+
+# Secrets
+.env

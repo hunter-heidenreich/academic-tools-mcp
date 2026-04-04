@@ -2,7 +2,7 @@ from typing import Any
 
 import httpx
 
-from . import cache
+from . import cache, config
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
@@ -29,7 +29,19 @@ def _canonical_doi(doi: str) -> str:
     return _normalize_doi(doi).lower()
 
 
-async def get_work(doi: str, mailto: str | None = None) -> dict[str, Any]:
+def _build_params() -> dict[str, str]:
+    """Build query params from environment config."""
+    params: dict[str, str] = {}
+    api_key = config.get("OPENALEX_API_KEY")
+    if api_key:
+        params["api_key"] = api_key
+    mailto = config.get("OPENALEX_MAILTO")
+    if mailto:
+        params["mailto"] = mailto
+    return params
+
+
+async def get_work(doi: str) -> dict[str, Any]:
     """Fetch a work by DOI, using cache when available.
 
     Returns the full OpenAlex work object.
@@ -41,9 +53,7 @@ async def get_work(doi: str, mailto: str | None = None) -> dict[str, Any]:
         return cached
 
     api_doi = f"doi:{_normalize_doi(doi)}"
-    params = {}
-    if mailto:
-        params["mailto"] = mailto
+    params = _build_params()
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
