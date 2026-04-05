@@ -1,4 +1,8 @@
+from pathlib import Path
+from unittest.mock import patch
+
 from academic_tools_mcp.papers import (
+    _build_converter_command,
     _detect_heading_levels,
     get_section_content,
     parse_sections,
@@ -331,3 +335,46 @@ class TestGetSectionContent:
     def test_h2_only_get_by_index_zero(self):
         result = get_section_content(_H2_ONLY_MARKDOWN, 0)
         assert result["title"] == "First Section"
+
+
+# ---------------------------------------------------------------------------
+# _build_converter_command
+# ---------------------------------------------------------------------------
+
+class TestBuildConverterCommand:
+    """Tests for the configurable PDF converter command builder."""
+
+    def _env(self, **overrides):
+        """Return a config.get mock that returns overrides or None."""
+        def _get(key):
+            return overrides.get(key)
+        return patch("academic_tools_mcp.papers.config.get", side_effect=_get)
+
+    def test_default_is_mineru(self):
+        with self._env():
+            cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
+        assert cmd == 'mineru -p "/a/b.pdf" -o "/tmp/out"'
+
+    def test_named_marker_backend(self):
+        with self._env(PDF_CONVERTER="marker"):
+            cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
+        assert cmd == 'marker_single "/a/b.pdf" --output_dir "/tmp/out"'
+
+    def test_custom_command_template(self):
+        custom = 'my-tool convert --src "{input}" --dst "{output_dir}"'
+        with self._env(PDF_CONVERTER=custom):
+            cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
+        assert cmd == 'my-tool convert --src "/a/b.pdf" --dst "/tmp/out"'
+
+    def test_venv_activation(self):
+        with self._env(PDF_CONVERTER="mineru", PDF_CONVERTER_VENV="~/.venvs/mineru"):
+            cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
+        assert 'source' in cmd
+        assert '.venvs/mineru/bin/activate' in cmd
+        assert cmd.endswith('mineru -p "/a/b.pdf" -o "/tmp/out"')
+
+    def test_no_venv_by_default(self):
+        with self._env(PDF_CONVERTER="marker"):
+            cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
+        assert "source" not in cmd
+        assert "activate" not in cmd

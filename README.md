@@ -1,391 +1,50 @@
 # academic-tools-mcp
 
-An MCP server for academic research tools built on [OpenAlex](https://openalex.org/) and the [arXiv API](https://info.arxiv.org/help/api/). Designed to give LLM agents lean, focused responses for verifying paper metadata, authors, institutions, and generating BibTeX citations.
+An [MCP](https://modelcontextprotocol.io/) server that gives LLM agents lean, focused tools for working with academic papers. Built on [FastMCP](https://github.com/jlowin/fastmcp).
+
+Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Download and read full paper PDFs section-by-section. Explore reference and citation graphs. Cross-reference with Wikipedia.
+
+## Data Sources
+
+| Provider | What it provides | Auth required |
+|----------|-----------------|---------------|
+| [OpenAlex](https://openalex.org/) | Paper metadata, authors, abstracts, topics, citations, BibTeX | Optional API key (free) |
+| [arXiv](https://arxiv.org/) | Preprint metadata, authors, abstracts, BibTeX, PDF download | None |
+| [bioRxiv/medRxiv](https://www.biorxiv.org/) | Preprint metadata, authors, abstracts, BibTeX, PDF download | None |
+| [ACL Anthology](https://aclanthology.org/) | PDF download for ACL venue papers (ACL, EMNLP, NAACL, etc.) | None |
+| [Crossref](https://www.crossref.org/) | Reference lists, title search / DOI discovery | Optional email (for polite pool) |
+| [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
+| [Wikipedia](https://www.wikipedia.org/) | Article search, summaries, page existence checks | Optional email (for User-Agent) |
+
+All API responses are cached locally. Multiple tool calls for the same paper = one API hit.
 
 ## Setup
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
+git clone https://github.com/YOUR_USERNAME/academic-tools-mcp.git
+cd academic-tools-mcp
 uv sync
-```
-
-## Tools
-
-### OpenAlex
-
-Paper tools accept a `doi` parameter (bare, prefixed, or full URL). Author tools accept an `author_id` (OpenAlex ID or ORCID). API key and mailto are configured via environment variables (see [Configuration](#configuration)).
-
-Responses are cached locally under `.cache/openalex/` — no repeated API calls for the same entity.
-
----
-
-### `get_paper_metadata`
-
-Core metadata: title, year, type, venue, DOI, and open access info.
-
-```json
-{
-  "title": "Exposing the Limitations of Molecular Machine Learning with Activity Cliffs",
-  "doi": "https://doi.org/10.1021/acs.jcim.2c01073",
-  "publication_year": 2022,
-  "publication_date": "2022-12-01",
-  "type": "article",
-  "language": "en",
-  "venue": "Journal of Chemical Information and Modeling",
-  "is_oa": true,
-  "oa_status": "hybrid",
-  "oa_url": "https://doi.org/10.1021/acs.jcim.2c01073"
-}
-```
-
-### `get_paper_authors`
-
-Author names, positions, corresponding status, and institution names. Also returns a deduplicated list of all institutions.
-
-```json
-{
-  "authors": [
-    {
-      "name": "Derek van Tilborg",
-      "openalex_id": "https://openalex.org/A5087157931",
-      "position": "first",
-      "is_corresponding": false,
-      "institutions": ["University Medical Center Utrecht", "Eindhoven University of Technology"]
-    },
-    {
-      "name": "Alisa Alenicheva",
-      "openalex_id": "https://openalex.org/A5024632622",
-      "position": "middle",
-      "is_corresponding": false,
-      "institutions": []
-    },
-    {
-      "name": "Francesca Grisoni",
-      "openalex_id": "https://openalex.org/A5078946433",
-      "position": "last",
-      "is_corresponding": true,
-      "institutions": ["Eindhoven University of Technology", "University Medical Center Utrecht"]
-    }
-  ],
-  "all_institutions": [
-    "University Medical Center Utrecht",
-    "Eindhoven University of Technology"
-  ]
-}
-```
-
-### `get_paper_abstract`
-
-Plain text abstract reconstructed from OpenAlex's inverted index.
-
-```json
-{
-  "title": "Exposing the Limitations of Molecular Machine Learning with Activity Cliffs",
-  "abstract": "Machine learning has become a crucial tool in drug discovery and chemistry at large..."
-}
-```
-
-### `get_paper_citations_summary`
-
-Citation count, reference count, and retraction status.
-
-```json
-{
-  "title": "Exposing the Limitations of Molecular Machine Learning with Activity Cliffs",
-  "cited_by_count": 218,
-  "referenced_works_count": 101,
-  "is_retracted": false
-}
-```
-
-### `get_paper_topics`
-
-Topic classifications with field hierarchy, plus keywords with relevance scores.
-
-```json
-{
-  "title": "Exposing the Limitations of Molecular Machine Learning with Activity Cliffs",
-  "topics": [
-    {
-      "name": "Computational Drug Discovery Methods",
-      "score": 1.0,
-      "subfield": "Computational Theory and Mathematics",
-      "field": "Computer Science",
-      "domain": "Physical Sciences"
-    }
-  ],
-  "keywords": [
-    {"keyword": "Machine learning", "score": 0.7528},
-    {"keyword": "Drug discovery", "score": 0.5626}
-  ]
-}
-```
-
-### `get_paper_bibtex`
-
-Ready-to-paste BibTeX entry. Automatically selects the correct entry type based on the work type:
-
-| Work type | BibTeX type |
-|-----------|-------------|
-| article, review, letter, editorial | `@article` |
-| preprint, posted-content | `@misc` |
-| proceedings-article | `@inproceedings` |
-| book-chapter | `@incollection` |
-| book, monograph | `@book` |
-| dissertation | `@phdthesis` |
-| report | `@techreport` |
-
-```json
-{
-  "bibtex": "@article{vantilborg2022exposing,\n  title={Exposing the Limitations of Molecular Machine Learning with Activity Cliffs},\n  author={van Tilborg, Derek and Alenicheva, Alisa and Grisoni, Francesca},\n  journal={Journal of Chemical Information and Modeling},\n  volume={62},\n  number={23},\n  pages={5938--5951},\n  year={2022},\n  publisher={American Chemical Society},\n  doi={10.1021/acs.jcim.2c01073}\n}"
-}
-```
-
-Which renders as:
-
-```bibtex
-@article{vantilborg2022exposing,
-  title={Exposing the Limitations of Molecular Machine Learning with Activity Cliffs},
-  author={van Tilborg, Derek and Alenicheva, Alisa and Grisoni, Francesca},
-  journal={Journal of Chemical Information and Modeling},
-  volume={62},
-  number={23},
-  pages={5938--5951},
-  year={2022},
-  publisher={American Chemical Society},
-  doi={10.1021/acs.jcim.2c01073}
-}
-```
-
-### `get_author_profile`
-
-Author summary: name, ORCID, current institutions, publication/citation counts, h-index, and top research topics. Accepts an OpenAlex author ID (from `get_paper_authors`) or ORCID.
-
-```json
-{
-  "name": "Derek van Tilborg",
-  "openalex_id": "https://openalex.org/A5087157931",
-  "orcid": "https://orcid.org/0000-0003-4473-0657",
-  "works_count": 18,
-  "cited_by_count": 335,
-  "h_index": 7,
-  "i10_index": 5,
-  "current_institutions": [
-    "Institute for Complex Systems",
-    "Eindhoven University of Technology"
-  ],
-  "top_topics": [
-    {"name": "Computational Drug Discovery Methods", "count": 13},
-    {"name": "Machine Learning in Materials Science", "count": 11}
-  ]
-}
-```
-
-### `get_author_affiliations`
-
-Affiliation history with years, useful for verifying which institution an author was at when a paper was published.
-
-```json
-{
-  "name": "Derek van Tilborg",
-  "affiliations": [
-    {
-      "institution": "Eindhoven University of Technology",
-      "country_code": "NL",
-      "years": [2022, 2023, 2024, 2025, 2026]
-    },
-    {
-      "institution": "University Medical Center Utrecht",
-      "country_code": "NL",
-      "years": [2022, 2024]
-    },
-    {
-      "institution": "Wageningen University & Research",
-      "country_code": "NL",
-      "years": [2021]
-    }
-  ]
-}
-```
-
-### arXiv
-
-arXiv tools accept an `arxiv_id` parameter: bare ID (`2301.00001`), versioned (`2301.00001v2`), or URL (`https://arxiv.org/abs/2301.00001`). No API key required.
-
-Responses are cached locally under `.cache/arxiv/papers/`. arXiv's rate limit (1 request per 3 seconds) is enforced automatically.
-
----
-
-### `get_arxiv_paper_metadata`
-
-Core metadata: title, dates, categories, links, and publication info.
-
-```json
-{
-  "arxiv_id": "1706.03762v7",
-  "title": "Attention Is All You Need",
-  "published": "2017-06-12T17:57:34Z",
-  "updated": "2023-08-02T00:52:10Z",
-  "primary_category": "cs.CL",
-  "categories": ["cs.CL", "cs.LG"],
-  "pdf_url": "http://arxiv.org/pdf/1706.03762v7",
-  "doi": "10.48550/arXiv.1706.03762",
-  "journal_ref": "Advances in Neural Information Processing Systems 30 (2017)",
-  "comment": "15 pages, 5 figures"
-}
-```
-
-### `get_arxiv_paper_authors`
-
-Author list with affiliations when available.
-
-```json
-{
-  "authors": [
-    {"name": "Ashish Vaswani", "affiliations": ["Google Brain"]},
-    {"name": "Noam Shazeer", "affiliations": []},
-    {"name": "Niki Parmar", "affiliations": ["Google Research"]}
-  ]
-}
-```
-
-### `get_arxiv_paper_abstract`
-
-Title and abstract text.
-
-```json
-{
-  "title": "Attention Is All You Need",
-  "abstract": "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks..."
-}
-```
-
-### `get_arxiv_paper_bibtex`
-
-BibTeX entry with `eprint`, `archiveprefix`, and `primaryclass` fields. Uses `@article` if the paper has a journal reference, otherwise `@misc`.
-
-```json
-{
-  "bibtex": "@article{vaswani2017attention,\n  title={Attention Is All You Need},\n  author={Vaswani, Ashish and Shazeer, Noam and Parmar, Niki},\n  journal={Advances in Neural Information Processing Systems 30 (2017)},\n  year={2017},\n  eprint={1706.03762},\n  archiveprefix={arXiv},\n  primaryclass={cs.CL},\n  doi={10.48550/arXiv.1706.03762}\n}"
-}
-```
-
-Which renders as:
-
-```bibtex
-@article{vaswani2017attention,
-  title={Attention Is All You Need},
-  author={Vaswani, Ashish and Shazeer, Noam and Parmar, Niki},
-  journal={Advances in Neural Information Processing Systems 30 (2017)},
-  year={2017},
-  eprint={1706.03762},
-  archiveprefix={arXiv},
-  primaryclass={cs.CL},
-  doi={10.48550/arXiv.1706.03762}
-}
-```
-
-### `search_arxiv`
-
-Search arXiv papers with field prefixes (`ti:`, `au:`, `abs:`, `cat:`) and boolean operators (`AND`, `OR`, `ANDNOT`). Returns up to 50 lean results.
-
-```json
-{
-  "total_results": 1234,
-  "papers": [
-    {
-      "arxiv_id": "1706.03762v7",
-      "title": "Attention Is All You Need",
-      "authors": ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar"],
-      "primary_category": "cs.CL",
-      "published": "2017-06-12T17:57:34Z"
-    }
-  ]
-}
-```
-
-### Paper PDF Pipeline
-
-Download arXiv PDFs, convert to markdown with [MinerU](https://github.com/opendatalab/MinerU), and access content section-by-section. Requires MinerU installed in `~/.venvs/mineru`.
-
-The pipeline is a four-step chain: `download_arxiv_pdf` → `convert_paper` → `get_paper_sections` → `get_paper_section`.
-
----
-
-### `download_arxiv_pdf`
-
-Download and cache the PDF for an arXiv paper. Skips download if already cached.
-
-```json
-{
-  "path": "/path/to/.cache/arxiv/pdfs/1706.03762.pdf",
-  "size_bytes": 2087448,
-  "cached": false
-}
-```
-
-### `convert_paper`
-
-Convert a cached PDF to markdown using MinerU, then parse into H2-level sections. This is slow (5-10 minutes). Skips conversion if already cached.
-
-```json
-{
-  "markdown_path": "/path/to/.cache/arxiv/markdown/1706.03762.md",
-  "sections": [
-    {"index": 0, "title": "Preamble", "h3s": [], "approx_tokens": 150},
-    {"index": 1, "title": "Introduction", "h3s": [], "approx_tokens": 800},
-    {"index": 2, "title": "Background", "h3s": ["Encoder-Decoder", "Attention"], "approx_tokens": 600},
-    {"index": 3, "title": "Model Architecture", "h3s": ["Encoder and Decoder Stacks", "Attention", "Position-wise Feed-Forward Networks"], "approx_tokens": 2400}
-  ],
-  "cached": false
-}
-```
-
-### `get_paper_sections`
-
-Get the section index for a converted paper. Lightweight — returns only titles, H3 previews, and approximate token counts.
-
-```json
-{
-  "sections": [
-    {"index": 0, "title": "Introduction", "h3s": [], "approx_tokens": 800},
-    {"index": 1, "title": "Methods", "h3s": ["Architecture", "Training"], "approx_tokens": 2400},
-    {"index": 2, "title": "Results", "h3s": [], "approx_tokens": 1200}
-  ]
-}
-```
-
-### `get_paper_section`
-
-Get the full markdown content of a specific section. Accepts an index number or a title substring (case-insensitive).
-
-```json
-{
-  "title": "Methods",
-  "content": "### Architecture\n\nThe model architecture is based on...\n\n### Training\n\nWe trained using...",
-  "approx_tokens": 2400
-}
+cp .env.example .env   # then edit .env with your values
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in your values:
+All configuration is via environment variables in `.env`. Nothing is required to get started, but some variables unlock higher rate limits.
 
-```bash
-cp .env.example .env
-```
-
-| Variable | Description |
-|----------|-------------|
-| `OPENALEX_API_KEY` | API key from [openalex.org/settings/api](https://openalex.org/settings/api) (free) |
-| `OPENALEX_MAILTO` | Your email for the [polite pool](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication#the-polite-pool) (faster rate limits) |
-
-Both are optional but recommended. If set, they are sent automatically on every request — the LLM agent never needs to know about them.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENALEX_API_KEY` | No | Free API key from [openalex.org](https://openalex.org/settings/api) |
+| `OPENALEX_MAILTO` | No | Your email — gets you into the [polite pool](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication#the-polite-pool) (faster) |
+| `CROSSREF_MAILTO` | No | Your email — gets you into the Crossref polite pool (10 req/sec vs 5) |
+| `WIKIPEDIA_MAILTO` | No | Your email — required by [Wikimedia policy](https://meta.wikimedia.org/wiki/User-Agent_policy) for the User-Agent header |
+| `PDF_CONVERTER` | No | PDF-to-markdown backend: `mineru` (default), `marker`, or a custom command (see [PDF Pipeline](#pdf-pipeline)) |
+| `PDF_CONVERTER_VENV` | No | Path to a virtualenv to activate before running the converter (e.g. `~/.venvs/mineru`) |
 
 ## Usage
 
-### Claude Code
+### With Claude Code
 
 Add to your MCP config (`~/.claude/claude_code_config.json`):
 
@@ -412,15 +71,223 @@ uv run python -m academic_tools_mcp.server
 uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 ```
 
+## Tools
+
+### OpenAlex (papers via DOI)
+
+| Tool | Description |
+|------|-------------|
+| `get_paper_metadata` | Title, year, type, venue, DOI, open access info |
+| `get_paper_authors` | Author names, positions, institutions, OpenAlex IDs |
+| `get_paper_abstract` | Plain text abstract |
+| `get_paper_citations_summary` | Citation count, reference count, retraction status |
+| `get_paper_topics` | Topic classifications and keywords with scores |
+| `get_paper_bibtex` | Ready-to-paste BibTeX entry |
+
+### OpenAlex (authors)
+
+| Tool | Description |
+|------|-------------|
+| `get_author_profile` | Name, ORCID, institutions, h-index, top topics |
+| `get_author_affiliations` | Institution history with years |
+
+Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
+
+### arXiv
+
+| Tool | Description |
+|------|-------------|
+| `get_arxiv_paper_metadata` | Title, dates, categories, links, publication info |
+| `get_arxiv_paper_authors` | Author names with affiliations |
+| `get_arxiv_paper_abstract` | Title and abstract text |
+| `get_arxiv_paper_bibtex` | BibTeX with `eprint`/`archiveprefix` fields |
+| `search_arxiv` | Search with field prefixes (`ti:`, `au:`, `abs:`, `cat:`) and boolean operators |
+
+Accepts bare IDs (`2301.00001`), versioned IDs (`2301.00001v2`), or URLs.
+
+### arXiv PDF pipeline
+
+| Tool | Description |
+|------|-------------|
+| `download_arxiv_pdf` | Download and cache the PDF |
+| `convert_paper` | Convert PDF to markdown, parse into sections |
+| `get_paper_sections` | Section index with titles, H3 previews, token counts |
+| `get_paper_section` | Full markdown of a section (by index or title substring) |
+
+### bioRxiv / medRxiv
+
+| Tool | Description |
+|------|-------------|
+| `get_biorxiv_paper_metadata` | Title, date, category, version, server, published DOI |
+| `get_biorxiv_paper_authors` | Author names, corresponding author, institution |
+| `get_biorxiv_paper_abstract` | Abstract text |
+| `get_biorxiv_paper_bibtex` | BibTeX entry |
+
+Accepts DOIs with the `10.1101/` prefix (bare, URL, or site content URL). If a paper has been formally published, `get_biorxiv_paper_metadata` returns a `published_doi` you can chain into OpenAlex/Crossref tools.
+
+### bioRxiv PDF pipeline
+
+| Tool | Description |
+|------|-------------|
+| `download_biorxiv_pdf` | Download and cache the PDF |
+| `convert_biorxiv_paper` | Convert PDF to markdown, parse into sections |
+| `get_biorxiv_paper_sections` | Section index |
+| `get_biorxiv_paper_section` | Full markdown of a section |
+
+### ACL Anthology PDF pipeline
+
+| Tool | Description |
+|------|-------------|
+| `download_acl_pdf` | Download camera-ready PDF by DOI (`10.18653/v1/...`) |
+| `convert_acl_paper` | Convert PDF to markdown, parse into sections |
+| `get_acl_paper_sections` | Section index |
+| `get_acl_paper_section` | Full markdown of a section |
+
+### Crossref
+
+| Tool | Description |
+|------|-------------|
+| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers) |
+| `get_crossref_references_count` | Number of references in a paper's bibliography |
+| `get_crossref_references` | Paginated reference list with author, title, year, journal, DOI |
+
+Reference tools follow a **count-then-page** pattern: call `_count` first, then page through results. This prevents token blowouts on papers with long bibliographies.
+
+### OpenCitations
+
+| Tool | Description |
+|------|-------------|
+| `get_opencitations_references_count` | Number of outgoing references |
+| `get_opencitations_references` | Paginated outgoing references with cross-referenced IDs |
+| `get_opencitations_citations_count` | Number of incoming citations |
+| `get_opencitations_citations` | Paginated incoming citations with cross-referenced IDs |
+
+Returns DOI-to-DOI links with OMID, OpenAlex, and PMID cross-references. May have references Crossref lacks (aggregates from PubMed, DataCite, OpenAIRE, JaLC).
+
+### Manual import
+
+| Tool | Description |
+|------|-------------|
+| `import_pdf` | Import a local PDF (e.g. from Zotero) with a user-supplied identifier |
+| `download_pdf_url` | Download a PDF from any URL |
+| `import_markdown` | Import pre-converted markdown directly |
+| `convert_manual_paper` | Convert an imported PDF to markdown |
+| `get_manual_paper_sections` | Section index |
+| `get_manual_paper_section` | Full markdown of a section |
+
+**Provider-aware routing**: if the identifier is an arXiv ID, bioRxiv DOI, or ACL DOI, the file is stored in that provider's cache namespace automatically. A subsequent `download_arxiv_pdf("2301.00001")` will find an already-imported PDF — no duplicates.
+
+### Wikipedia
+
+| Tool | Description |
+|------|-------------|
+| `search_wikipedia` | Search for articles matching a query |
+| `get_wikipedia_summary` | Title, description, extract, and URL for an article |
+| `check_wikipedia_page` | Check if a page exists (detects disambiguation pages) |
+
+## PDF Pipeline
+
+The PDF-to-markdown pipeline converts downloaded PDFs into section-level markdown that agents can read piece by piece, avoiding token blowouts from dumping entire papers into context.
+
+The pipeline is **converter-agnostic**. Set `PDF_CONVERTER` in `.env` to choose your backend:
+
+```bash
+# Named backends
+PDF_CONVERTER=mineru          # default — https://github.com/opendatalab/MinerU
+PDF_CONVERTER=marker          # https://github.com/datalab-to/marker
+
+# Custom command template — use {input} and {output_dir} placeholders
+PDF_CONVERTER=my-tool --in "{input}" --out "{output_dir}"
+```
+
+If your converter lives in a virtualenv, set `PDF_CONVERTER_VENV`:
+
+```bash
+PDF_CONVERTER_VENV=~/.venvs/mineru
+```
+
+The converter must accept a PDF input path and an output directory, and produce one or more `.md` files in that directory. The pipeline finds the markdown file automatically.
+
+**Note:** PDF converters are external tools with their own licenses. [MinerU](https://github.com/opendatalab/MinerU) is AGPL-3.0; [Marker](https://github.com/datalab-to/marker) is GPL. This project invokes them as CLI subprocesses and does not link or import their code. The PDF pipeline is entirely optional — all metadata, BibTeX, and citation tools work without it.
+
+### Installing MinerU (example setup)
+
+```bash
+python -m venv ~/.venvs/mineru
+source ~/.venvs/mineru/bin/activate
+pip install mineru
+```
+
+Then in `.env`:
+
+```bash
+PDF_CONVERTER=mineru
+PDF_CONVERTER_VENV=~/.venvs/mineru
+```
+
 ## Caching
 
-API responses are cached as JSON files under `.cache/<provider>/<entity>/`. Currently supports:
+API responses and downloaded files are cached under `.cache/`:
 
-- `.cache/openalex/works/` — full OpenAlex work objects
-- `.cache/openalex/authors/` — full OpenAlex author objects
-- `.cache/arxiv/papers/` — parsed arXiv paper entries
-- `.cache/arxiv/pdfs/` — downloaded arXiv PDFs
-- `.cache/arxiv/markdown/` — MinerU-converted markdown
-- `.cache/arxiv/sections/` — section index JSON
+```
+.cache/
+  openalex/works/          # OpenAlex work objects (JSON)
+  openalex/authors/        # OpenAlex author objects (JSON)
+  arxiv/papers/            # arXiv paper entries (JSON)
+  arxiv/pdfs/              # Downloaded PDFs
+  arxiv/markdown/          # Converted markdown
+  arxiv/sections/          # Section indices (JSON)
+  biorxiv/papers/          # bioRxiv paper entries (JSON)
+  biorxiv/pdfs/            # Downloaded PDFs
+  biorxiv/markdown/        # Converted markdown
+  biorxiv/sections/        # Section indices (JSON)
+  acl_anthology/pdfs/      # Downloaded PDFs
+  acl_anthology/markdown/  # Converted markdown
+  acl_anthology/sections/  # Section indices (JSON)
+  crossref/works/          # Crossref work objects (JSON)
+  opencitations/references/# OpenCitations reference lists (JSON)
+  opencitations/citations/ # OpenCitations citation lists (JSON)
+  wikipedia/summaries/     # Wikipedia page summaries (JSON)
+  manual/pdfs/             # Manually imported PDFs
+  manual/markdown/         # Converted markdown
+  manual/sections/         # Section indices (JSON)
+```
 
-Cache has no expiration. All tools for a given entity share the same cached response, so only one API call is made regardless of how many tools you invoke.
+Cache keys are SHA-256 hashes of canonical identifiers. No expiration — delete `.cache/` to start fresh.
+
+## Development
+
+```bash
+uv sync                          # Install dependencies
+uv run pytest -v                 # Run all tests (268 tests)
+uv run pytest tests/test_bibtex.py -v   # Run one test file
+uv run pytest -k "test_particle" -v     # Run tests matching a pattern
+```
+
+## Architecture
+
+```
+server.py (45 MCP tools)
+  ├── openalex.py       → OpenAlex API     → cache.py
+  ├── arxiv.py          → arXiv Atom API   → cache.py
+  ├── biorxiv.py        → bioRxiv API      → cache.py
+  ├── crossref.py       → Crossref API     → cache.py
+  ├── opencitations.py  → OpenCitations API→ cache.py
+  ├── acl_anthology.py  → ACL PDF URLs     → cache.py
+  ├── manual.py         → local/URL import → cache.py
+  ├── wikipedia.py      → Wikipedia API    → cache.py
+  ├── papers.py         → PDF → markdown → sections
+  └── bibtex.py         → BibTeX generation
+```
+
+**Key design decisions:**
+
+- **Lean responses.** Tools return only what's needed — not the full API response. An agent calling `get_paper_authors` doesn't get flooded with unrelated metadata.
+- **One API hit per entity.** All tools for a given DOI share one cached response.
+- **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching.
+- **Provider-aware routing.** Manual imports auto-detect identifier types and store in the correct provider's cache, preventing duplicates.
+- **Subprocess isolation for PDF converters.** The PDF pipeline shells out to external tools rather than importing them, keeping the dependency tree light and avoiding license entanglement.
+
+## License
+
+TBD

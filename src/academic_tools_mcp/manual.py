@@ -4,7 +4,7 @@ Supports three intake paths:
   1. Local PDF: copy an existing PDF into the cache
   2. URL download: fetch a PDF from any URL into the cache
   3. Markdown import: copy a pre-converted markdown file directly into the cache,
-     skipping the PDF download and MinerU conversion steps entirely
+     skipping the PDF download and conversion steps entirely
 
 All paths use a user-supplied identifier (typically a DOI or arXiv ID) as the
 cache key.  When the identifier matches a known provider (arXiv, bioRxiv/medRxiv,
@@ -238,7 +238,7 @@ async def download_pdf_from_url(url: str, identifier: str) -> dict[str, Any]:
 def import_markdown(file_path: str, identifier: str) -> dict[str, Any]:
     """Copy a local markdown file into the cache and parse sections.
 
-    This skips the PDF download and MinerU conversion steps entirely.
+    This skips the PDF download and conversion steps entirely.
     The markdown is stored in the target provider's cache location so
     the native section tools find it immediately.
 

@@ -1,13 +1,15 @@
-"""PDF-to-markdown conversion via MinerU and section-level access.
+"""PDF-to-markdown conversion and section-level access.
 
 This module handles:
-  - Running MinerU on a cached PDF to produce markdown
+  - Running a configurable PDF converter (MinerU, Marker, or custom) to produce markdown
   - Parsing markdown into sections with sub-heading previews
   - Retrieving individual sections by title or index
 
+The converter backend is configured via PDF_CONVERTER and PDF_CONVERTER_VENV
+environment variables. See _CONVERTERS for named backends.
+
 Section splitting is adaptive: it detects the heading level used for main
-sections (H1 or H2) based on what the document actually contains. MinerU
-typically outputs all headings as H1; standard markdown uses H2 for sections.
+sections (H1 or H2) based on what the document actually contains.
 """
 
 import asyncio
@@ -15,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import cache
+from . import cache, config
 
 # Approximate tokens per character (conservative estimate for English text)
 _CHARS_PER_TOKEN = 4
@@ -25,6 +27,36 @@ _CHARS_PER_TOKEN = 4
 #   "## Bar"  -> (2, "Bar")
 #   "### Baz" -> (3, "Baz")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+
+# Built-in converter command templates.
+# {input} = PDF path, {output_dir} = temp extraction directory.
+_CONVERTERS: dict[str, str] = {
+    "mineru": 'mineru -p "{input}" -o "{output_dir}"',
+    "marker": 'marker_single "{input}" --output_dir "{output_dir}"',
+}
+
+
+def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
+    """Build the shell command for PDF-to-markdown conversion.
+
+    Reads PDF_CONVERTER and PDF_CONVERTER_VENV from environment.
+    PDF_CONVERTER can be a named backend ("mineru", "marker") or a custom
+    command template containing {input} and {output_dir} placeholders.
+    PDF_CONVERTER_VENV is an optional path to a virtualenv to activate first.
+    """
+    converter = config.get("PDF_CONVERTER") or "mineru"
+
+    # Named backend or custom command template
+    template = _CONVERTERS.get(converter, converter)
+    cmd = template.format(input=pdf_path, output_dir=output_dir)
+
+    # Optionally activate a venv before running
+    venv = config.get("PDF_CONVERTER_VENV")
+    if venv:
+        activate = Path(venv).expanduser() / "bin" / "activate"
+        cmd = f'source "{activate}" && {cmd}'
+
+    return cmd
 
 
 def _markdown_path(namespace: str, canonical: str) -> Path:
@@ -191,7 +223,7 @@ async def convert_pdf(
     namespace: str,
     canonical: str,
 ) -> dict[str, Any]:
-    """Convert a PDF to markdown using MinerU, cache the result, and return section index.
+    """Convert a PDF to markdown, cache the result, and return section index.
 
     Args:
         pdf_path: Path to the cached PDF file.
@@ -219,14 +251,13 @@ async def convert_pdf(
     if not pdf_path.exists():
         return {"error": f"PDF not found at: {pdf_path}"}
 
-    # Run MinerU in a subprocess
-    extract_dir = Path(f"/tmp/mineru-extract-{canonical.replace('/', '_')}")
+    # Run PDF converter in a subprocess
+    extract_dir = Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
+    converter_cmd = _build_converter_command(pdf_path, extract_dir)
 
     proc = await asyncio.create_subprocess_exec(
         "bash", "-c",
-        f'rm -rf "{extract_dir}" 2>/dev/null; '
-        f'source ~/.venvs/mineru/bin/activate && '
-        f'mineru -p "{pdf_path}" -o "{extract_dir}" 2>&1',
+        f'rm -rf "{extract_dir}" 2>/dev/null; {converter_cmd} 2>&1',
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -238,11 +269,11 @@ async def convert_pdf(
     if proc.returncode != 0:
         output = (stdout or b"").decode() + (stderr or b"").decode()
         return {
-            "error": f"MinerU conversion failed (exit {proc.returncode}): {output[-500:]}"
+            "error": f"PDF conversion failed (exit {proc.returncode}): {output[-500:]}"
         }
 
     # Find the generated markdown file
-    # MinerU outputs to: extract_dir/<stem>/hybrid_auto/<stem>.md
+    # Find the generated markdown file in the output directory
     stem = pdf_path.stem
     candidates = list(extract_dir.glob(f"**/{stem}.md"))
 
@@ -251,7 +282,7 @@ async def convert_pdf(
         candidates = list(extract_dir.glob("**/*.md"))
 
     if not candidates:
-        return {"error": f"MinerU produced no markdown output in {extract_dir}"}
+        return {"error": f"PDF converter produced no markdown output in {extract_dir}"}
 
     source_md = candidates[0]
     markdown = source_md.read_text()
