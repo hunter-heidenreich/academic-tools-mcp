@@ -4,7 +4,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from . import acl_anthology, arxiv, biorxiv, cache, crossref, manual, opencitations, openalex, papers, wikipedia
-from .bibtex import generate_arxiv_bibtex, generate_bibtex
+from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 
 mcp = FastMCP("academic-tools")
 
@@ -635,6 +635,22 @@ async def get_biorxiv_paper_abstract(doi: BIORXIV_DOI) -> dict[str, Any]:
     return {
         "title": paper.get("title"),
         "abstract": paper.get("abstract"),
+    }
+
+
+@mcp.tool
+async def get_biorxiv_paper_bibtex(doi: BIORXIV_DOI) -> dict[str, Any]:
+    """Generate a BibTeX citation entry for a bioRxiv/medRxiv preprint.
+
+    Uses @article if the paper has been published in a journal (published_doi
+    available), otherwise @misc with the preprint DOI and server name.
+    """
+    paper = await _fetch_biorxiv_paper(doi)
+    if "error" in paper:
+        return paper
+
+    return {
+        "bibtex": generate_biorxiv_bibtex(paper),
     }
 
 

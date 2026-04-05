@@ -293,3 +293,67 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
 
     field_str = ",\n".join(f"  {name}={value}" for name, value in fields)
     return f"@{entry_type}{{{key},\n{field_str}\n}}"
+
+
+# ---------------------------------------------------------------------------
+# bioRxiv BibTeX generation
+# ---------------------------------------------------------------------------
+
+
+def _generate_biorxiv_key(paper: dict[str, Any]) -> str:
+    """Generate a BibTeX citation key from a parsed bioRxiv paper dict."""
+    authors = paper.get("authors", [])
+    if authors:
+        last_name = _extract_last_name(authors[0].get("name", "unknown"))
+    else:
+        last_name = "unknown"
+
+    date = paper.get("date", "") or ""
+    year = date[:4] if len(date) >= 4 else ""
+
+    title = paper.get("title", "") or ""
+    skip = {"a", "an", "the", "on", "in", "of", "for", "to", "with", "and", "or"}
+    title_words = re.findall(r"[a-zA-Z]+", title)
+    first_word = "untitled"
+    for w in title_words:
+        if w.lower() not in skip:
+            first_word = _strip_accents_for_key(w).lower()
+            break
+
+    return f"{last_name}{year}{first_word}"
+
+
+def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
+    """Generate a BibTeX entry from a parsed bioRxiv/medRxiv paper dict.
+
+    Uses @article if the paper has a published_doi (journal publication),
+    otherwise @misc with DOI and howpublished pointing to the preprint server.
+    """
+    key = _generate_biorxiv_key(paper)
+    authors = paper.get("authors", [])
+    title = paper.get("title", "") or ""
+    date = paper.get("date", "") or ""
+    year = date[:4] if len(date) >= 4 else ""
+    doi = paper.get("doi", "")
+    published_doi = paper.get("published_doi")
+    server = paper.get("server", "biorxiv")
+
+    entry_type = "article" if published_doi else "misc"
+
+    fields: list[tuple[str, str]] = []
+    fields.append(("title", f"{{{_escape_bibtex(title)}}}"))
+    if authors:
+        fields.append(("author", f"{{{_format_arxiv_authors_bibtex(authors)}}}"))
+    if entry_type == "article" and published_doi:
+        fields.append(("doi", f"{{{published_doi}}}"))
+    if year:
+        fields.append(("year", f"{{{year}}}"))
+    if entry_type == "misc":
+        server_name = "medRxiv" if server == "medrxiv" else "bioRxiv"
+        fields.append(("publisher", f"{{{server_name}}}"))
+        if doi:
+            fields.append(("doi", f"{{{doi}}}"))
+            fields.append(("howpublished", f"{{\\url{{https://doi.org/{doi}}}}}"))
+
+    field_str = ",\n".join(f"  {name}={value}" for name, value in fields)
+    return f"@{entry_type}{{{key},\n{field_str}\n}}"

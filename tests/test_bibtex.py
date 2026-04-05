@@ -4,6 +4,7 @@ from academic_tools_mcp.bibtex import (
     _generate_key,
     generate_arxiv_bibtex,
     generate_bibtex,
+    generate_biorxiv_bibtex,
 )
 
 
@@ -290,3 +291,79 @@ class TestGenerateArxivBibtex:
         # ID is 1706.03762v7, eprint should be 1706.03762
         assert "eprint={1706.03762}" in bib
         assert "v7" not in bib.split("eprint=")[1].split(",")[0]
+
+
+# ---------------------------------------------------------------------------
+# bioRxiv BibTeX
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateBiorxivBibtex:
+    @staticmethod
+    def _make_biorxiv_paper(**overrides):
+        base = {
+            "doi": "10.1101/2024.01.01.573838",
+            "title": "A Great Discovery in Cell Biology",
+            "authors": [
+                {"name": "S. Fujii"},
+                {"name": "Y. Wang"},
+            ],
+            "date": "2024-01-02",
+            "version": "2",
+            "server": "biorxiv",
+            "published_doi": None,
+            "category": "cell biology",
+        }
+        base.update(overrides)
+        return base
+
+    def test_preprint_is_misc(self):
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper())
+        assert bib.startswith("@misc{")
+
+    def test_published_is_article(self):
+        bib = generate_biorxiv_bibtex(
+            self._make_biorxiv_paper(published_doi="10.1038/s41586-024-00001-1")
+        )
+        assert bib.startswith("@article{")
+
+    def test_published_uses_journal_doi(self):
+        bib = generate_biorxiv_bibtex(
+            self._make_biorxiv_paper(published_doi="10.1038/s41586-024-00001-1")
+        )
+        assert "doi={10.1038/s41586-024-00001-1}" in bib
+
+    def test_preprint_has_publisher(self):
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper())
+        assert "publisher={bioRxiv}" in bib
+
+    def test_medrxiv_publisher(self):
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper(server="medrxiv"))
+        assert "publisher={medRxiv}" in bib
+
+    def test_preprint_has_doi(self):
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper())
+        assert "doi={10.1101/2024.01.01.573838}" in bib
+
+    def test_preprint_has_howpublished(self):
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper())
+        assert r"\url{https://doi.org/10.1101/2024.01.01.573838}" in bib
+
+    def test_key_generation(self):
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper())
+        assert bib.startswith("@misc{fujii2024great,")
+
+    def test_year_from_date(self):
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper())
+        assert "year={2024}" in bib
+
+    def test_special_chars_escaped(self):
+        bib = generate_biorxiv_bibtex(
+            self._make_biorxiv_paper(title="Drug & Target: 100% Binding")
+        )
+        assert r"Drug \& Target: 100\% Binding" in bib
+
+    def test_no_authors(self):
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper(authors=[]))
+        assert "unknown2024" in bib
+        assert "author=" not in bib

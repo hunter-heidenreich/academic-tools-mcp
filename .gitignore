@@ -12,5 +12,8 @@ wheels/
 # Cache
 .cache/
 
+# Claude Code
+.claude/
+
 # Secrets
 .env
