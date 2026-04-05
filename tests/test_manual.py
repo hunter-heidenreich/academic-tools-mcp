@@ -59,6 +59,58 @@ class TestPdfFilename:
 
 
 # ---------------------------------------------------------------------------
+# Provider routing
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTarget:
+    def test_arxiv_new_style(self):
+        target = manual._resolve_target("2301.00001")
+        assert target["namespace"] == "arxiv"
+        assert target["canonical"] == "2301.00001"
+
+    def test_arxiv_with_version(self):
+        target = manual._resolve_target("2301.00001v2")
+        assert target["namespace"] == "arxiv"
+        assert target["canonical"] == "2301.00001"
+
+    def test_arxiv_old_style(self):
+        target = manual._resolve_target("hep-th/9901001")
+        assert target["namespace"] == "arxiv"
+        assert target["canonical"] == "hep-th/9901001"
+
+    def test_arxiv_url(self):
+        target = manual._resolve_target("https://arxiv.org/abs/2301.00001v2")
+        assert target["namespace"] == "arxiv"
+        assert target["canonical"] == "2301.00001"
+
+    def test_biorxiv_doi(self):
+        target = manual._resolve_target("10.1101/2024.01.01.573838")
+        assert target["namespace"] == "biorxiv"
+        assert target["canonical"] == "10.1101/2024.01.01.573838"
+
+    def test_biorxiv_url(self):
+        target = manual._resolve_target("https://doi.org/10.1101/2024.01.01.573838")
+        assert target["namespace"] == "biorxiv"
+
+    def test_acl_doi(self):
+        target = manual._resolve_target("10.18653/v1/2023.acl-long.1")
+        assert target["namespace"] == "acl_anthology"
+
+    def test_acl_doi_url(self):
+        target = manual._resolve_target("https://doi.org/10.18653/v1/2023.acl-long.1")
+        assert target["namespace"] == "acl_anthology"
+
+    def test_generic_doi_falls_back_to_manual(self):
+        target = manual._resolve_target("10.1038/s41586-024-00001-1")
+        assert target["namespace"] == "manual"
+
+    def test_freeform_falls_back_to_manual(self):
+        target = manual._resolve_target("my-paper-2024")
+        assert target["namespace"] == "manual"
+
+
+# ---------------------------------------------------------------------------
 # Local import
 # ---------------------------------------------------------------------------
 
@@ -85,6 +137,7 @@ class TestImportLocalPdf:
         result = manual.import_local_pdf(str(pdf), ident)
         assert "error" not in result
         assert result["identifier"] == ident
+        assert result["namespace"] == "manual"
         assert result["size_bytes"] > 0
         assert result["cached"] is False
 
@@ -102,6 +155,28 @@ class TestImportLocalPdf:
         # Ensure expanduser works (just test that it doesn't crash on ~)
         result = manual.import_local_pdf("~/nonexistent-paper-12345.pdf", "test")
         assert "error" in result
+
+    def test_arxiv_routes_to_arxiv_namespace(self, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake content")
+
+        import uuid
+        ident = f"2301.{uuid.uuid4().int % 100000:05d}"
+        result = manual.import_local_pdf(str(pdf), ident)
+        assert "error" not in result
+        assert result["namespace"] == "arxiv"
+        assert "arxiv" in result["path"]
+
+    def test_biorxiv_routes_to_biorxiv_namespace(self, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake content")
+
+        import uuid
+        ident = f"10.1101/2024.01.01.{uuid.uuid4().hex[:6]}"
+        result = manual.import_local_pdf(str(pdf), ident)
+        assert "error" not in result
+        assert result["namespace"] == "biorxiv"
+        assert "biorxiv" in result["path"]
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +241,7 @@ class TestImportMarkdown:
         result = manual.import_markdown(str(md), ident)
         assert "error" not in result
         assert result["identifier"] == ident
+        assert result["namespace"] == "manual"
         assert result["cached"] is False
         assert len(result["sections"]) == 2
         assert result["sections"][0]["title"] == "Introduction"
@@ -182,16 +258,29 @@ class TestImportMarkdown:
         assert result["cached"] is True
 
     def test_sections_available_immediately(self, tmp_path):
-        """After import, get_manual_paper_sections should find cached sections."""
+        """After import, section cache should be populated in the right namespace."""
         md = tmp_path / "paper.md"
         md.write_text("## Intro\n\nHello.\n\n## Discussion\n\nBye.")
 
         import uuid
         from academic_tools_mcp import cache, papers
         ident = f"10.1038/test-md-sections-{uuid.uuid4().hex[:8]}"
-        manual.import_markdown(str(md), ident)
+        result = manual.import_markdown(str(md), ident)
 
-        canonical = manual._canonical_key(ident)
-        cached = cache.get(manual.NAMESPACE, "sections", papers._sections_key(canonical))
+        namespace = result["namespace"]
+        target = manual._resolve_target(ident)
+        canonical = target["canonical"]
+        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
         assert cached is not None
         assert len(cached["sections"]) == 2
+
+    def test_arxiv_markdown_routes_to_arxiv_namespace(self, tmp_path):
+        md = tmp_path / "paper.md"
+        md.write_text("## Abstract\n\nText.\n\n## Introduction\n\nMore text.")
+
+        import uuid
+        ident = f"2301.{uuid.uuid4().int % 100000:05d}"
+        result = manual.import_markdown(str(md), ident)
+        assert "error" not in result
+        assert result["namespace"] == "arxiv"
+        assert "arxiv" in result["markdown_path"]

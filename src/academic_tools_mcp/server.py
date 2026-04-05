@@ -833,16 +833,20 @@ async def convert_manual_paper(identifier: PAPER_ID) -> dict[str, Any]:
     This is a slow operation (5-10 minutes). Returns the section index on completion.
     The PDF must be imported first via import_pdf or download_pdf_url.
     Skips conversion if markdown is already cached.
+
+    Routes to the correct provider namespace based on the identifier, so the
+    converted markdown is found by native pipeline tools (e.g. get_paper_sections
+    for arXiv, get_biorxiv_paper_sections for bioRxiv).
     """
-    canonical = manual._canonical_key(identifier)
-    pdf = manual.pdf_path(identifier)
+    target = manual._resolve_target(identifier)
+    pdf = target["pdf_path"]
 
     if not pdf.exists():
         return {
             "error": f"PDF not cached. Call import_pdf or download_pdf_url first for: {identifier}"
         }
 
-    return await papers.convert_pdf(pdf, manual.NAMESPACE, canonical)
+    return await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
 
 
 @mcp.tool
@@ -852,15 +856,17 @@ async def get_manual_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
     Returns section titles with sub-heading previews and approximate
     token counts. The paper must be converted first via convert_manual_paper.
     """
-    canonical = manual._canonical_key(identifier)
+    target = manual._resolve_target(identifier)
+    namespace = target["namespace"]
+    canonical = target["canonical"]
 
     cached = cache.get(
-        manual.NAMESPACE, "sections", papers._sections_key(canonical)
+        namespace, "sections", papers._sections_key(canonical)
     )
     if cached is not None:
         return cached
 
-    md_path = papers._markdown_path(manual.NAMESPACE, canonical)
+    md_path = papers._markdown_path(namespace, canonical)
     if not md_path.exists():
         return {
             "error": f"Paper not converted yet. Call convert_manual_paper first for: {identifier}"
@@ -870,7 +876,7 @@ async def get_manual_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
     sections = papers.parse_sections(markdown)
     sections_data = {"sections": sections}
     cache.put(
-        manual.NAMESPACE,
+        namespace,
         "sections",
         papers._sections_key(canonical),
         sections_data,
@@ -894,8 +900,8 @@ async def get_manual_paper_section(
 
     Accepts a section index number or a title substring (case-insensitive).
     """
-    canonical = manual._canonical_key(identifier)
-    md_path = papers._markdown_path(manual.NAMESPACE, canonical)
+    target = manual._resolve_target(identifier)
+    md_path = papers._markdown_path(target["namespace"], target["canonical"])
 
     if not md_path.exists():
         return {
