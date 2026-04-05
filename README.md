@@ -290,4 +290,4 @@ server.py (45 MCP tools)
 
 ## License
 
-TBD
+MIT — see [LICENSE](LICENSE).
