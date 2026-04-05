@@ -3,7 +3,7 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import arxiv, cache, openalex, papers
+from . import arxiv, cache, crossref, opencitations, openalex, papers
 from .bibtex import generate_arxiv_bibtex, generate_bibtex
 
 mcp = FastMCP("academic-tools")
@@ -453,6 +453,185 @@ async def get_paper_section(
         section_key = section
 
     return papers.get_section_content(markdown, section_key)
+
+
+# ---------------------------------------------------------------------------
+# Crossref tools
+# ---------------------------------------------------------------------------
+
+PAGE_SIZE = Annotated[
+    int,
+    Field(description="Number of results per page (1-50).", ge=1, le=50),
+]
+
+PAGE = Annotated[
+    int,
+    Field(description="Page number, starting at 1.", ge=1),
+]
+
+
+async def _fetch_crossref_work(doi: str) -> dict[str, Any]:
+    """Fetch a work from Crossref and return it, or raise if not found."""
+    return await crossref.get_work(doi)
+
+
+def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
+    """Extract lean fields from a raw Crossref reference object."""
+    entry: dict[str, Any] = {}
+    if ref.get("DOI"):
+        entry["doi"] = ref["DOI"]
+    if ref.get("author"):
+        entry["author"] = ref["author"]
+    if ref.get("article-title"):
+        entry["title"] = ref["article-title"]
+    if ref.get("year"):
+        entry["year"] = ref["year"]
+    if ref.get("journal-title"):
+        entry["journal"] = ref["journal-title"]
+    if ref.get("volume"):
+        entry["volume"] = ref["volume"]
+    if ref.get("first-page"):
+        entry["first_page"] = ref["first-page"]
+    if ref.get("unstructured"):
+        entry["unstructured"] = ref["unstructured"]
+    return entry
+
+
+@mcp.tool
+async def get_crossref_references_count(doi: DOI) -> dict[str, Any]:
+    """Get the number of references (bibliography entries) for a paper from Crossref."""
+    work = await _fetch_crossref_work(doi)
+    if "error" in work:
+        return work
+
+    raw_refs = work.get("reference") or []
+    return {"doi": doi, "count": len(raw_refs)}
+
+
+@mcp.tool
+async def get_crossref_references(
+    doi: DOI,
+    page: PAGE = 1,
+    page_size: PAGE_SIZE = 20,
+) -> dict[str, Any]:
+    """Get a page of references for a paper from Crossref.
+
+    Returns structured reference metadata: DOIs, authors, titles, years,
+    journals, volumes, and pages when available. Quality varies by publisher —
+    some references include full structured fields, others only an unstructured
+    citation string.
+
+    Use get_crossref_references_count first to know the total, then page
+    through with page and page_size.
+    """
+    work = await _fetch_crossref_work(doi)
+    if "error" in work:
+        return work
+
+    raw_refs = work.get("reference") or []
+    total = len(raw_refs)
+
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_refs = [_format_crossref_reference(r) for r in raw_refs[start:end]]
+
+    return {
+        "doi": doi,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "references": page_refs,
+    }
+
+
+# ---------------------------------------------------------------------------
+# OpenCitations tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+async def get_opencitations_references_count(doi: DOI) -> dict[str, Any]:
+    """Get the number of outgoing references for a paper from OpenCitations."""
+    data = await opencitations.get_references(doi)
+    if "error" in data:
+        return data
+    return {"doi": doi, "count": data["count"]}
+
+
+@mcp.tool
+async def get_opencitations_references(
+    doi: DOI,
+    page: PAGE = 1,
+    page_size: PAGE_SIZE = 20,
+) -> dict[str, Any]:
+    """Get a page of outgoing references (bibliography) for a paper from OpenCitations.
+
+    Returns cited DOIs with publication dates and self-citation flags.
+    OpenCitations aggregates from Crossref, PubMed, DataCite, OpenAIRE, and
+    JaLC, so it may have references that Crossref alone does not.
+    Note: returns DOI identifiers only, not full metadata.
+
+    Use get_opencitations_references_count first to know the total, then page
+    through with page and page_size.
+    """
+    data = await opencitations.get_references(doi)
+    if "error" in data:
+        return data
+
+    refs = data.get("references", [])
+    total = len(refs)
+
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    return {
+        "doi": doi,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "references": refs[start:end],
+    }
+
+
+@mcp.tool
+async def get_opencitations_citations_count(doi: DOI) -> dict[str, Any]:
+    """Get the number of incoming citations for a paper from OpenCitations."""
+    data = await opencitations.get_citations(doi)
+    if "error" in data:
+        return data
+    return {"doi": doi, "count": data["count"]}
+
+
+@mcp.tool
+async def get_opencitations_citations(
+    doi: DOI,
+    page: PAGE = 1,
+    page_size: PAGE_SIZE = 20,
+) -> dict[str, Any]:
+    """Get a page of incoming citations (papers that cite this work) from OpenCitations.
+
+    Returns citing DOIs with publication dates and self-citation flags.
+
+    Use get_opencitations_citations_count first to know the total, then page
+    through with page and page_size.
+    """
+    data = await opencitations.get_citations(doi)
+    if "error" in data:
+        return data
+
+    cites = data.get("citations", [])
+    total = len(cites)
+
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    return {
+        "doi": doi,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "citations": cites[start:end],
+    }
 
 
 if __name__ == "__main__":
