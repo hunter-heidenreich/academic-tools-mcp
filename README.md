@@ -23,7 +23,7 @@ All API responses are cached locally. Multiple tool calls for the same paper = o
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/academic-tools-mcp.git
+git clone https://github.com/hunter-heidenreich/academic-tools-mcp.git
 cd academic-tools-mcp
 uv sync
 cp .env.example .env   # then edit .env with your values
