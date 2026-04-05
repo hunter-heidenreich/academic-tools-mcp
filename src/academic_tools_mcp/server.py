@@ -3,7 +3,7 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import acl_anthology, arxiv, cache, crossref, opencitations, openalex, papers
+from . import acl_anthology, arxiv, biorxiv, cache, crossref, manual, opencitations, openalex, papers, wikipedia
 from .bibtex import generate_arxiv_bibtex, generate_bibtex
 
 mcp = FastMCP("academic-tools")
@@ -33,6 +33,17 @@ ARXIV_ID = Annotated[
         description="arXiv paper ID. Accepts bare ID (2301.00001), "
         "versioned (2301.00001v2), or URL "
         "(https://arxiv.org/abs/2301.00001)."
+    ),
+]
+
+
+BIORXIV_DOI = Annotated[
+    str,
+    Field(
+        description="bioRxiv or medRxiv paper DOI (prefix 10.1101/). "
+        "Accepts bare DOI (10.1101/2024.01.01.573838), "
+        "URL (https://doi.org/10.1101/...), or "
+        "site URL (https://www.biorxiv.org/content/10.1101/...v1)."
     ),
 ]
 
@@ -570,6 +581,322 @@ async def get_acl_paper_section(
 
 
 # ---------------------------------------------------------------------------
+# bioRxiv / medRxiv tools
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_biorxiv_paper(doi: str) -> dict[str, Any]:
+    """Fetch a bioRxiv/medRxiv paper and return it, or propagate error dict."""
+    return await biorxiv.get_paper(doi)
+
+
+@mcp.tool
+async def get_biorxiv_paper_metadata(doi: BIORXIV_DOI) -> dict[str, Any]:
+    """Get core metadata for a bioRxiv/medRxiv preprint: title, date, category, version, server, and publication status."""
+    paper = await _fetch_biorxiv_paper(doi)
+    if "error" in paper:
+        return paper
+
+    return {
+        "doi": paper.get("doi"),
+        "title": paper.get("title"),
+        "date": paper.get("date"),
+        "version": paper.get("version"),
+        "type": paper.get("type"),
+        "category": paper.get("category"),
+        "license": paper.get("license"),
+        "server": paper.get("server"),
+        "published_doi": paper.get("published_doi"),
+        "pdf_url": paper.get("pdf_url"),
+    }
+
+
+@mcp.tool
+async def get_biorxiv_paper_authors(doi: BIORXIV_DOI) -> dict[str, Any]:
+    """Get the author list for a bioRxiv/medRxiv preprint, including the corresponding author and their institution."""
+    paper = await _fetch_biorxiv_paper(doi)
+    if "error" in paper:
+        return paper
+
+    return {
+        "authors": paper.get("authors", []),
+        "author_corresponding": paper.get("author_corresponding"),
+        "author_corresponding_institution": paper.get("author_corresponding_institution"),
+    }
+
+
+@mcp.tool
+async def get_biorxiv_paper_abstract(doi: BIORXIV_DOI) -> dict[str, Any]:
+    """Get the abstract of a bioRxiv/medRxiv preprint."""
+    paper = await _fetch_biorxiv_paper(doi)
+    if "error" in paper:
+        return paper
+
+    return {
+        "title": paper.get("title"),
+        "abstract": paper.get("abstract"),
+    }
+
+
+@mcp.tool
+async def download_biorxiv_pdf(doi: BIORXIV_DOI) -> dict[str, Any]:
+    """Download and cache the PDF for a bioRxiv/medRxiv preprint.
+
+    Returns the local file path and size. Skips download if already cached.
+    This must be called before convert_biorxiv_paper.
+    """
+    return await biorxiv.download_pdf(doi)
+
+
+@mcp.tool
+async def convert_biorxiv_paper(doi: BIORXIV_DOI) -> dict[str, Any]:
+    """Convert a downloaded bioRxiv/medRxiv PDF to markdown using MinerU, then parse into sections.
+
+    This is a slow operation (5-10 minutes). Returns the section index on completion.
+    The PDF must be downloaded first via download_biorxiv_pdf.
+    Skips conversion if markdown is already cached.
+    """
+    canonical = biorxiv._canonical_key(doi)
+    pdf = biorxiv.pdf_path(doi)
+
+    if not pdf.exists():
+        return {
+            "error": f"PDF not cached. Call download_biorxiv_pdf first for: {doi}"
+        }
+
+    return await papers.convert_pdf(pdf, biorxiv.NAMESPACE, canonical)
+
+
+@mcp.tool
+async def get_biorxiv_paper_sections(doi: BIORXIV_DOI) -> dict[str, Any]:
+    """Get the section index for a converted bioRxiv/medRxiv paper.
+
+    Returns section titles with sub-heading previews and approximate
+    token counts. The paper must be converted first via convert_biorxiv_paper.
+    """
+    canonical = biorxiv._canonical_key(doi)
+
+    cached = cache.get(
+        biorxiv.NAMESPACE, "sections", papers._sections_key(canonical)
+    )
+    if cached is not None:
+        return cached
+
+    md_path = papers._markdown_path(biorxiv.NAMESPACE, canonical)
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet. Call convert_biorxiv_paper first for: {doi}"
+        }
+
+    markdown = md_path.read_text()
+    sections = papers.parse_sections(markdown)
+    sections_data = {"sections": sections}
+    cache.put(
+        biorxiv.NAMESPACE,
+        "sections",
+        papers._sections_key(canonical),
+        sections_data,
+    )
+    return sections_data
+
+
+@mcp.tool
+async def get_biorxiv_paper_section(
+    doi: BIORXIV_DOI,
+    section: Annotated[
+        str,
+        Field(
+            description="Section to retrieve: an integer index (e.g. '0') "
+            "or a title substring (e.g. 'Introduction', 'Methods'). "
+            "Use get_biorxiv_paper_sections to see available sections."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Get the full markdown content of a specific section from a converted bioRxiv/medRxiv paper.
+
+    Accepts a section index number or a title substring (case-insensitive).
+    """
+    canonical = biorxiv._canonical_key(doi)
+    md_path = papers._markdown_path(biorxiv.NAMESPACE, canonical)
+
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet. Call convert_biorxiv_paper first for: {doi}"
+        }
+
+    markdown = md_path.read_text()
+
+    try:
+        section_key: int | str = int(section)
+    except ValueError:
+        section_key = section
+
+    return papers.get_section_content(markdown, section_key)
+
+
+# ---------------------------------------------------------------------------
+# Manual PDF tools
+# ---------------------------------------------------------------------------
+
+PAPER_ID = Annotated[
+    str,
+    Field(
+        description="Identifier for the paper — typically a DOI "
+        "(e.g. 10.1038/s41586-024-00001-1) but can be any unique label. "
+        "Accepts bare DOI, doi: prefix, or https://doi.org/ URL."
+    ),
+]
+
+
+@mcp.tool
+async def import_pdf(
+    file_path: Annotated[
+        str,
+        Field(
+            description="Absolute path to a local PDF file "
+            "(e.g. from Zotero storage)."
+        ),
+    ],
+    identifier: PAPER_ID,
+) -> dict[str, Any]:
+    """Import a local PDF file into the cache for conversion and section access.
+
+    Use this for papers you already have on disk (e.g. from Zotero, email,
+    or publisher downloads). The identifier is used as the cache key — use
+    the DOI when available so you can chain into Crossref/OpenAlex tools.
+    """
+    return manual.import_local_pdf(file_path, identifier)
+
+
+@mcp.tool
+async def download_pdf_url(
+    url: Annotated[
+        str,
+        Field(
+            description="Direct URL to a PDF file. Must point to the actual "
+            "PDF, not a landing page."
+        ),
+    ],
+    identifier: PAPER_ID,
+) -> dict[str, Any]:
+    """Download a PDF from any URL and cache it for conversion and section access.
+
+    Use this for PDFs from publisher sites, institutional repositories, or
+    personal pages that aren't covered by the arXiv/bioRxiv/ACL pipelines.
+    The identifier is used as the cache key — use the DOI when available.
+    """
+    return await manual.download_pdf_from_url(url, identifier)
+
+
+@mcp.tool
+async def import_markdown(
+    file_path: Annotated[
+        str,
+        Field(
+            description="Absolute path to a local markdown file."
+        ),
+    ],
+    identifier: PAPER_ID,
+) -> dict[str, Any]:
+    """Import a pre-converted markdown file directly into the cache.
+
+    Skips the PDF download and MinerU conversion steps entirely — the
+    section pipeline (get_manual_paper_sections / get_manual_paper_section)
+    works immediately after this call.
+
+    Use this when you already have markdown from MinerU, Nougat, Grobid,
+    or any other PDF-to-markdown tool.
+    """
+    return manual.import_markdown(file_path, identifier)
+
+
+@mcp.tool
+async def convert_manual_paper(identifier: PAPER_ID) -> dict[str, Any]:
+    """Convert an imported/downloaded PDF to markdown using MinerU, then parse into sections.
+
+    This is a slow operation (5-10 minutes). Returns the section index on completion.
+    The PDF must be imported first via import_pdf or download_pdf_url.
+    Skips conversion if markdown is already cached.
+    """
+    canonical = manual._canonical_key(identifier)
+    pdf = manual.pdf_path(identifier)
+
+    if not pdf.exists():
+        return {
+            "error": f"PDF not cached. Call import_pdf or download_pdf_url first for: {identifier}"
+        }
+
+    return await papers.convert_pdf(pdf, manual.NAMESPACE, canonical)
+
+
+@mcp.tool
+async def get_manual_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
+    """Get the section index for a converted manually-imported paper.
+
+    Returns section titles with sub-heading previews and approximate
+    token counts. The paper must be converted first via convert_manual_paper.
+    """
+    canonical = manual._canonical_key(identifier)
+
+    cached = cache.get(
+        manual.NAMESPACE, "sections", papers._sections_key(canonical)
+    )
+    if cached is not None:
+        return cached
+
+    md_path = papers._markdown_path(manual.NAMESPACE, canonical)
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet. Call convert_manual_paper first for: {identifier}"
+        }
+
+    markdown = md_path.read_text()
+    sections = papers.parse_sections(markdown)
+    sections_data = {"sections": sections}
+    cache.put(
+        manual.NAMESPACE,
+        "sections",
+        papers._sections_key(canonical),
+        sections_data,
+    )
+    return sections_data
+
+
+@mcp.tool
+async def get_manual_paper_section(
+    identifier: PAPER_ID,
+    section: Annotated[
+        str,
+        Field(
+            description="Section to retrieve: an integer index (e.g. '0') "
+            "or a title substring (e.g. 'Introduction', 'Methods'). "
+            "Use get_manual_paper_sections to see available sections."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Get the full markdown content of a specific section from a converted manually-imported paper.
+
+    Accepts a section index number or a title substring (case-insensitive).
+    """
+    canonical = manual._canonical_key(identifier)
+    md_path = papers._markdown_path(manual.NAMESPACE, canonical)
+
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet. Call convert_manual_paper first for: {identifier}"
+        }
+
+    markdown = md_path.read_text()
+
+    try:
+        section_key: int | str = int(section)
+    except ValueError:
+        section_key = section
+
+    return papers.get_section_content(markdown, section_key)
+
+
+# ---------------------------------------------------------------------------
 # Crossref tools
 # ---------------------------------------------------------------------------
 
@@ -791,6 +1118,68 @@ async def get_opencitations_citations(
         "page_size": page_size,
         "citations": cites[start:end],
     }
+
+
+# ---------------------------------------------------------------------------
+# Wikipedia tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+async def search_wikipedia(
+    query: Annotated[
+        str,
+        Field(description="Search term or phrase to find Wikipedia articles for."),
+    ],
+    limit: Annotated[
+        int,
+        Field(description="Maximum results to return (1-10).", ge=1, le=10),
+    ] = 5,
+) -> dict[str, Any]:
+    """Search Wikipedia for articles matching a query.
+
+    Returns matching article titles and URLs. Useful for finding the correct
+    Wikipedia article title before verifying with get_wikipedia_summary.
+    """
+    results = await wikipedia.search(query, limit=limit)
+    return {"query": query, "results": results}
+
+
+@mcp.tool
+async def get_wikipedia_summary(
+    title: Annotated[
+        str,
+        Field(
+            description="Wikipedia article title (e.g. 'Cytochrome P450'). "
+            "Spaces and underscores both work."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Get a summary of a Wikipedia article: title, description, extract, and URL.
+
+    Also reports the page type — 'standard' for normal articles,
+    'disambiguation' for disambiguation pages. Returns an error if the
+    page does not exist.
+    """
+    return await wikipedia.get_summary(title)
+
+
+@mcp.tool
+async def check_wikipedia_page(
+    title: Annotated[
+        str,
+        Field(
+            description="Wikipedia article title to verify "
+            "(e.g. 'Cytochrome P450')."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Check if a Wikipedia page exists and is a standard article (not a disambiguation page).
+
+    Returns exists, is_disambiguation, canonical title, and URL.
+    Use this to verify Wikipedia URLs before suggesting them as cross-reference links.
+    """
+    return await wikipedia.page_exists(title)
 
 
 if __name__ == "__main__":

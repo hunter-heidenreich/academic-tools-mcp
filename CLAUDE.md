@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A FastMCP-based MCP server that wraps the OpenAlex, arXiv, Crossref, and OpenCitations APIs to provide lean, focused tools for LLM agents working with academic papers. Designed for verifying paper metadata, authors, institutions, generating BibTeX citations, and exploring reference/citation graphs — primarily in support of a Hugo-based academic notes/blog workflow.
+A FastMCP-based MCP server that wraps the OpenAlex, arXiv, bioRxiv/medRxiv, Crossref, OpenCitations, and Wikipedia APIs to provide lean, focused tools for LLM agents working with academic papers. Designed for verifying paper metadata, authors, institutions, generating BibTeX citations, and exploring reference/citation graphs — primarily in support of a Hugo-based academic notes/blog workflow.
 
 ## Commands
 
@@ -24,9 +24,12 @@ uv run python -m academic_tools_mcp.server               # Run the MCP server
 ```
 server.py (MCP tools) → openalex.py       (API client) → cache.py (file cache)
                        → arxiv.py          (API client) ↗
+                       → biorxiv.py        (API client) ↗
                        → crossref.py       (API client) ↗
                        → opencitations.py  (API client) ↗
                        → acl_anthology.py  (PDF source) ↗
+                       → manual.py         (local/URL import) ↗
+                       → wikipedia.py      (API client) ↗
                        → papers.py  (PDF → markdown → sections)
                        ↘ bibtex.py (BibTeX generation)
 ```
@@ -35,12 +38,15 @@ server.py (MCP tools) → openalex.py       (API client) → cache.py (file cach
 - **`config.py`** — Loads `.env` from project root. All API credentials come from environment variables, never from tool parameters.
 - **`openalex.py`** — Thin async client for OpenAlex singleton endpoints (`/works/{id}`, `/authors/{id}`). Handles ID normalization (DOI formats, OpenAlex URLs, ORCIDs) and cache read/write. Each entity type has a `_normalize_*` and `_canonical_*` pair for API path formatting and cache keying respectively.
 - **`arxiv.py`** — Thin async client for arXiv's Atom API (`export.arxiv.org/api/query`). Handles ID normalization (bare IDs, URLs, version suffixes) and XML→dict parsing. Enforces arXiv's rate limit (1 request per 3 seconds, single connection) via an `asyncio.Lock` + monotonic timer. Cache namespace: `arxiv/papers`. No API key or env vars required.
+- **`biorxiv.py`** — Thin async client for the bioRxiv/medRxiv API (`api.biorxiv.org`). Handles DOI normalization (bare DOIs, URLs, site content URLs with version suffixes). Tries bioRxiv first, falls back to medRxiv. Selects the latest version from multi-version responses. Parses semicolon-separated author strings into structured dicts. Builds PDF URLs from DOI + version + server (biorxiv.org vs medrxiv.org). Rate-limited to ~2 req/sec (500ms gap) as a courtesy (no documented limit). Cache namespace: `biorxiv/papers`. The `published_doi` field links to the journal DOI when available, enabling chaining into Crossref/OpenAlex. No auth required.
+- **`manual.py`** — Manual PDF import for local files and arbitrary URLs. Copies/downloads PDFs into a `manual/pdfs/` cache slot keyed by user-supplied identifier (typically a DOI). Supports `~/` expansion for local paths, content-type validation for URL downloads (rejects HTML login pages). No API, no auth, no rate limits. Cache namespace: `manual/pdfs`. When using a DOI as the identifier, enables chaining into Crossref/OpenAlex for metadata.
+- **`wikipedia.py`** — Thin async client for the Wikipedia API. Uses MediaWiki OpenSearch (`/w/api.php?action=opensearch`) for title search and the Wikimedia REST API (`/api/rest_v1/page/summary/{title}`) for page summaries and existence verification. Detects disambiguation pages via the `type` field. Rate-limited to ~1 req/sec (1,000ms gap) per Wikimedia's reader tier guidance. Requires a `User-Agent` header (hardcoded). Cache namespace: `wikipedia/summaries`. No auth required.
 - **`papers.py`** — PDF-to-markdown conversion via MinerU and section-level access. `convert_pdf()` shells out to MinerU (expects `~/.venvs/mineru`), stores markdown under `.cache/<namespace>/markdown/`. `parse_sections()` splits by H2 headings with H3 previews. `get_section_content()` retrieves individual sections by index or title substring. Section indices cached under `.cache/<namespace>/sections/`.
 - **`crossref.py`** — Thin async client for the Crossref REST API (`api.crossref.org/works/{doi}`). Handles DOI normalization and cache read/write. Enforces polite pool etiquette via `User-Agent` header with `mailto` (from `CROSSREF_MAILTO` env var). Rate-limited to ~10 req/sec (100ms gap) via `asyncio.Lock` + monotonic timer. Cache namespace: `crossref/works`. The full work object is cached; the tool layer slices out just the `reference` list with pagination.
 - **`opencitations.py`** — Thin async client for the OpenCitations Index API v2 (`api.opencitations.net/index/v2`). Fetches outgoing references (`/references/doi:...`) and incoming citations (`/citations/doi:...`). Rate-limited to ~3 req/sec (334ms gap, 180 req/min) per OpenCitations policy. Parses space-delimited multi-ID strings (`omid:... doi:... openalex:... pmid:...`) into structured dicts via `_parse_ids()`. Cache namespaces: `opencitations/references`, `opencitations/citations`. No auth required.
 - **`acl_anthology.py`** — PDF source for ACL Anthology papers. Resolves DOIs with the ACL prefix (`10.18653/v1/`) to Anthology IDs by stripping the prefix. Downloads camera-ready PDFs from `https://aclanthology.org/{id}.pdf`. No API, no auth, no rate limits — just direct PDF URLs. Cache namespace: `acl_anthology/pdfs`. Tools feed into the same `papers.py` pipeline as arXiv PDFs.
 - **`bibtex.py`** — Generates BibTeX entries from raw OpenAlex work objects or arXiv paper dicts. Maps OpenAlex `type` to BibTeX entry types (`_TYPE_MAP`). Handles surname particles (`van`, `de la`, `von`, etc.) for both citation keys and author formatting. `generate_arxiv_bibtex()` produces `@misc` (preprint) or `@article` (published) with `eprint`/`archiveprefix`/`primaryclass` fields.
-- **`server.py`** — FastMCP tool definitions. Each tool fetches the full cached object then returns only the relevant slice. Tools use `Annotated` types (`DOI`, `AUTHOR_ID`, `ARXIV_ID`) for parameter descriptions. Paper pipeline tools (`download_arxiv_pdf` → `convert_paper` → `get_paper_sections` → `get_paper_section`) provide section-level access to full paper content. ACL Anthology pipeline (`download_acl_pdf` → `convert_acl_paper` → `get_acl_paper_sections` → `get_acl_paper_section`) provides the same for ACL venue papers via DOI. Crossref and OpenCitations tools use a count + paginated pattern so agents can check the size before fetching pages.
+- **`server.py`** — FastMCP tool definitions. Each tool fetches the full cached object then returns only the relevant slice. Tools use `Annotated` types (`DOI`, `AUTHOR_ID`, `ARXIV_ID`) for parameter descriptions. Paper pipeline tools (`download_arxiv_pdf` → `convert_paper` → `get_paper_sections` → `get_paper_section`) provide section-level access to full paper content. ACL Anthology pipeline (`download_acl_pdf` → `convert_acl_paper` → `get_acl_paper_sections` → `get_acl_paper_section`) provides the same for ACL venue papers via DOI. bioRxiv/medRxiv tools (`get_biorxiv_paper_metadata`, `get_biorxiv_paper_authors`, `get_biorxiv_paper_abstract`) provide metadata access, plus a PDF pipeline (`download_biorxiv_pdf` → `convert_biorxiv_paper` → `get_biorxiv_paper_sections` → `get_biorxiv_paper_section`). Manual PDF tools (`import_pdf`, `download_pdf_url`) accept local files (e.g. from Zotero) or arbitrary URLs with a user-supplied identifier (DOI or freeform), feeding into the same convert → sections pipeline (`convert_manual_paper` → `get_manual_paper_sections` → `get_manual_paper_section`). Wikipedia tools (`search_wikipedia`, `get_wikipedia_summary`, `check_wikipedia_page`) support cross-referencing workflows by searching for articles, fetching summaries, and verifying page existence (detecting disambiguation pages). Crossref and OpenCitations tools use a count + paginated pattern so agents can check the size before fetching pages.
 
 **Key design decisions:**
 - Tool responses are intentionally small — an LLM agent should not receive the full OpenAlex response. Each tool returns only what's needed for its purpose.
@@ -79,6 +85,14 @@ server.py (MCP tools) → openalex.py       (API client) → cache.py (file cach
 - **No authentication required** — no API key, no email, nothing in `.env`.
 - **Search cap**: `max_results` capped at 50 per call in the MCP tool layer to keep responses lean.
 
+## bioRxiv/medRxiv API Limits
+
+- **Rate limit**: No documented limits. Enforced conservatively at ~2 req/sec (500ms gap) in `biorxiv.py`.
+- **No authentication required** — no API key, no email, nothing in `.env`.
+- **DOI prefix** `10.1101/` identifies all bioRxiv and medRxiv papers.
+- **Multi-version responses**: The `/details` endpoint returns all versions; code selects the latest automatically.
+- **medRxiv fallback**: If a DOI isn't found on bioRxiv, the code automatically tries medRxiv.
+
 ## Crossref API Limits
 
 - **Polite pool** (with `CROSSREF_MAILTO`): 10 req/sec single records, 3 req/sec search/query, 3 concurrent. Enforced conservatively at ~10 req/sec (100ms gap) in `crossref.py`.
@@ -90,6 +104,12 @@ server.py (MCP tools) → openalex.py       (API client) → cache.py (file cach
 
 - **Rate limit**: 180 req/min per IP. Enforced at ~3 req/sec (334ms gap) in `opencitations.py`.
 - **No authentication required** — no API key, no email, nothing in `.env`.
+
+## Wikipedia API Limits
+
+- **Rate limit**: 1,000 req/hour for identified clients (with `User-Agent`). Enforced conservatively at ~1 req/sec (1,000ms gap) in `wikipedia.py`.
+- **No authentication required** — just a `User-Agent` header (mandatory; requests without one may be blocked).
+- **Page summaries are cached** under `wikipedia/summaries` to avoid redundant lookups.
 
 ## ACL Anthology
 
