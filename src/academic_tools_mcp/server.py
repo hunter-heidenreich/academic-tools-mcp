@@ -3,7 +3,7 @@ from typing import Annotated, Any
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import arxiv, cache, crossref, opencitations, openalex, papers
+from . import acl_anthology, arxiv, cache, crossref, opencitations, openalex, papers
 from .bibtex import generate_arxiv_bibtex, generate_bibtex
 
 mcp = FastMCP("academic-tools")
@@ -456,6 +456,120 @@ async def get_paper_section(
 
 
 # ---------------------------------------------------------------------------
+# ACL Anthology tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+async def download_acl_pdf(doi: DOI) -> dict[str, Any]:
+    """Download and cache the camera-ready PDF for an ACL Anthology paper.
+
+    Only works for papers with ACL DOIs (prefix 10.18653/v1/).
+    Returns the local file path, Anthology ID, and PDF URL.
+    Skips download if already cached.
+    """
+    return await acl_anthology.download_pdf(doi)
+
+
+@mcp.tool
+async def convert_acl_paper(doi: DOI) -> dict[str, Any]:
+    """Convert a downloaded ACL Anthology PDF to markdown using MinerU, then parse into sections.
+
+    This is a slow operation (5-10 minutes). Returns the section index on completion.
+    The PDF must be downloaded first via download_acl_pdf.
+    Skips conversion if markdown is already cached.
+    """
+    aid = acl_anthology.doi_to_anthology_id(doi)
+    if aid is None:
+        return {"error": f"Not an ACL Anthology DOI: {doi}"}
+
+    canonical = acl_anthology._canonical_key(doi)
+    pdf = acl_anthology.pdf_path(doi)
+
+    if not pdf.exists():
+        return {
+            "error": f"PDF not cached. Call download_acl_pdf first for: {doi}"
+        }
+
+    return await papers.convert_pdf(pdf, acl_anthology.NAMESPACE, canonical)
+
+
+@mcp.tool
+async def get_acl_paper_sections(doi: DOI) -> dict[str, Any]:
+    """Get the section index for a converted ACL Anthology paper.
+
+    Returns section titles with sub-heading previews and approximate
+    token counts. The paper must be converted first via convert_acl_paper.
+    """
+    aid = acl_anthology.doi_to_anthology_id(doi)
+    if aid is None:
+        return {"error": f"Not an ACL Anthology DOI: {doi}"}
+
+    canonical = acl_anthology._canonical_key(doi)
+
+    cached = cache.get(
+        acl_anthology.NAMESPACE, "sections", papers._sections_key(canonical)
+    )
+    if cached is not None:
+        return cached
+
+    md_path = papers._markdown_path(acl_anthology.NAMESPACE, canonical)
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet. Call convert_acl_paper first for: {doi}"
+        }
+
+    markdown = md_path.read_text()
+    sections = papers.parse_sections(markdown)
+    sections_data = {"sections": sections}
+    cache.put(
+        acl_anthology.NAMESPACE,
+        "sections",
+        papers._sections_key(canonical),
+        sections_data,
+    )
+    return sections_data
+
+
+@mcp.tool
+async def get_acl_paper_section(
+    doi: DOI,
+    section: Annotated[
+        str,
+        Field(
+            description="Section to retrieve: an integer index (e.g. '0') "
+            "or a title substring (e.g. 'Introduction', 'Methods'). "
+            "Use get_acl_paper_sections to see available sections."
+        ),
+    ],
+) -> dict[str, Any]:
+    """Get the full markdown content of a specific section from a converted ACL Anthology paper.
+
+    Accepts a section index number or a title substring (case-insensitive).
+    """
+    aid = acl_anthology.doi_to_anthology_id(doi)
+    if aid is None:
+        return {"error": f"Not an ACL Anthology DOI: {doi}"}
+
+    canonical = acl_anthology._canonical_key(doi)
+    md_path = papers._markdown_path(acl_anthology.NAMESPACE, canonical)
+
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet. Call convert_acl_paper first for: {doi}"
+        }
+
+    markdown = md_path.read_text()
+
+    try:
+        section_key: int | str = int(section)
+    except ValueError:
+        section_key = section
+
+    return papers.get_section_content(markdown, section_key)
+
+
+# ---------------------------------------------------------------------------
 # Crossref tools
 # ---------------------------------------------------------------------------
 
@@ -468,6 +582,51 @@ PAGE = Annotated[
     int,
     Field(description="Page number, starting at 1.", ge=1),
 ]
+
+
+@mcp.tool
+async def search_crossref_by_title(
+    title: Annotated[
+        str,
+        Field(description="Paper title or bibliographic query string."),
+    ],
+    year: Annotated[
+        int | None,
+        Field(description="Publication year to filter results. Optional but recommended."),
+    ] = None,
+) -> dict[str, Any]:
+    """Search Crossref for papers by title (bibliographic query).
+
+    Returns matching DOIs with titles, authors, and publication info.
+    Useful for finding the published DOI when you only have a title or arXiv ID.
+    """
+    items = await crossref.search_works(title, year=year, rows=5)
+
+    results = []
+    for item in items:
+        authors = []
+        for a in item.get("author", []):
+            name_parts = []
+            if a.get("given"):
+                name_parts.append(a["given"])
+            if a.get("family"):
+                name_parts.append(a["family"])
+            if name_parts:
+                authors.append(" ".join(name_parts))
+
+        pub_date = item.get("published-print") or item.get("published-online") or {}
+        date_parts = pub_date.get("date-parts", [[]])[0]
+
+        results.append({
+            "doi": item.get("DOI"),
+            "title": (item.get("title") or [None])[0],
+            "authors": authors,
+            "year": date_parts[0] if date_parts else None,
+            "venue": (item.get("container-title") or [None])[0],
+            "type": item.get("type"),
+        })
+
+    return {"total_results": len(results), "results": results}
 
 
 async def _fetch_crossref_work(doi: str) -> dict[str, Any]:

@@ -80,6 +80,37 @@ def _canonical_doi(doi: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+async def search_works(
+    bibliographic: str,
+    year: int | None = None,
+    rows: int = 5,
+) -> list[dict[str, Any]]:
+    """Search Crossref works by bibliographic query (title, author, etc.).
+
+    Returns a list of matching work objects (the 'items' from the API response).
+    Results are not cached since queries are ad-hoc.
+    """
+    headers = _build_headers()
+    params: dict[str, str] = {
+        "query.bibliographic": bibliographic,
+        "rows": str(min(max(rows, 1), 20)),
+    }
+    if year is not None:
+        params["filter"] = f"from-pub-date:{year},until-pub-date:{year}"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await _throttled_get(
+            client,
+            f"{CROSSREF_BASE_URL}/works",
+            headers=headers,
+            params=params,
+        )
+
+    response.raise_for_status()
+    data = response.json()
+    return data.get("message", {}).get("items", [])
+
+
 async def get_work(doi: str) -> dict[str, Any]:
     """Fetch a work by DOI from Crossref, using cache when available.
 
