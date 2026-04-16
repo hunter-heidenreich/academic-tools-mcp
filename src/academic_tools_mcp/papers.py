@@ -151,12 +151,19 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
     return sections
 
 
-def get_section_content(markdown: str, section: int | str) -> dict[str, Any]:
+def get_section_content(
+    markdown: str,
+    section: int | str,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
     """Retrieve the content of a specific section by index or title.
 
     Args:
         markdown: Full markdown text.
         section: Integer index or string title (case-insensitive partial match).
+        max_chars: Maximum characters to return. None means no limit.
+            When content exceeds this limit, it is truncated and a
+            ``truncated`` flag plus ``remaining_chars`` hint are included.
 
     Returns:
         Dict with title, content, and approx_tokens, or an error.
@@ -211,10 +218,26 @@ def get_section_content(markdown: str, section: int | str) -> dict[str, Any]:
             }
 
     content = "\n".join(lines[start:end]).strip()
+    total_chars = len(content)
+    approx_tokens = max(1, total_chars // _CHARS_PER_TOKEN)
+
+    if max_chars is not None and total_chars > max_chars:
+        content = content[:max_chars]
+        remaining = total_chars - max_chars
+        return {
+            "title": title,
+            "content": content,
+            "approx_tokens": approx_tokens,
+            "truncated": True,
+            "remaining_chars": remaining,
+            "hint": f"Truncated to {max_chars} chars ({max_chars // _CHARS_PER_TOKEN} tokens). "
+                    f"{remaining} chars remaining. Call again with max_chars=0 for full content.",
+        }
+
     return {
         "title": title,
         "content": content,
-        "approx_tokens": max(1, len(content) // _CHARS_PER_TOKEN),
+        "approx_tokens": approx_tokens,
     }
 
 
