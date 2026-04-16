@@ -386,7 +386,7 @@ async def download_arxiv_pdf(arxiv_id: ARXIV_ID) -> dict[str, Any]:
 
 @mcp.tool
 async def convert_paper(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Convert a downloaded arXiv PDF to markdown to markdown, then parse into sections.
+    """Convert a downloaded arXiv PDF to markdown, then parse into sections.
 
     This is a slow operation (5-10 minutes). Returns the section index on completion.
     The PDF must be downloaded first via download_arxiv_pdf.
@@ -484,7 +484,7 @@ async def download_acl_pdf(doi: DOI) -> dict[str, Any]:
 
 @mcp.tool
 async def convert_acl_paper(doi: DOI) -> dict[str, Any]:
-    """Convert a downloaded ACL Anthology PDF to markdown to markdown, then parse into sections.
+    """Convert a downloaded ACL Anthology PDF to markdown, then parse into sections.
 
     This is a slow operation (5-10 minutes). Returns the section index on completion.
     The PDF must be downloaded first via download_acl_pdf.
@@ -666,7 +666,7 @@ async def download_biorxiv_pdf(doi: BIORXIV_DOI) -> dict[str, Any]:
 
 @mcp.tool
 async def convert_biorxiv_paper(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Convert a downloaded bioRxiv/medRxiv PDF to markdown to markdown, then parse into sections.
+    """Convert a downloaded bioRxiv/medRxiv PDF to markdown, then parse into sections.
 
     This is a slow operation (5-10 minutes). Returns the section index on completion.
     The PDF must be downloaded first via download_biorxiv_pdf.
@@ -827,7 +827,7 @@ async def import_markdown(
 
 @mcp.tool
 async def convert_manual_paper(identifier: PAPER_ID) -> dict[str, Any]:
-    """Convert an imported/downloaded PDF to markdown to markdown, then parse into sections.
+    """Convert an imported/downloaded PDF to markdown, then parse into sections.
 
     This is a slow operation (5-10 minutes). Returns the section index on completion.
     The PDF must be imported first via import_pdf or download_pdf_url.
