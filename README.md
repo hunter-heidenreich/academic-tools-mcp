@@ -105,15 +105,6 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 
 Accepts bare IDs (`2301.00001`), versioned IDs (`2301.00001v2`), or URLs.
 
-### arXiv PDF pipeline
-
-| Tool | Description |
-|------|-------------|
-| `download_arxiv_pdf` | Download and cache the PDF |
-| `convert_paper` | Convert PDF to markdown, parse into sections |
-| `get_paper_sections` | Section index with titles, H3 previews, token counts |
-| `get_paper_section` | Full markdown of a section (by index or title substring) |
-
 ### bioRxiv / medRxiv
 
 | Tool | Description |
@@ -125,23 +116,16 @@ Accepts bare IDs (`2301.00001`), versioned IDs (`2301.00001v2`), or URLs.
 
 Accepts DOIs with the `10.1101/` prefix (bare, URL, or site content URL). If a paper has been formally published, `get_biorxiv_paper_metadata` returns a `published_doi` you can chain into OpenAlex/Crossref tools.
 
-### bioRxiv PDF pipeline
+### PDF pipeline (unified)
 
 | Tool | Description |
 |------|-------------|
-| `download_biorxiv_pdf` | Download and cache the PDF |
-| `convert_biorxiv_paper` | Convert PDF to markdown, parse into sections |
-| `get_biorxiv_paper_sections` | Section index |
-| `get_biorxiv_paper_section` | Full markdown of a section |
+| `download_pdf` | Download and cache the PDF — auto-detects arXiv, ACL Anthology, bioRxiv/medRxiv |
+| `convert_paper` | Convert PDF to markdown, parse into sections (slow: 5-10 min) |
+| `get_paper_sections` | Section index with titles, sub-heading previews, token counts |
+| `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
 
-### ACL Anthology PDF pipeline
-
-| Tool | Description |
-|------|-------------|
-| `download_acl_pdf` | Download camera-ready PDF by DOI (`10.18653/v1/...`) |
-| `convert_acl_paper` | Convert PDF to markdown, parse into sections |
-| `get_acl_paper_sections` | Section index |
-| `get_acl_paper_section` | Full markdown of a section |
+All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, use `import_pdf` or `download_pdf_url` first (see [Manual import](#manual-import) below).
 
 ### Crossref
 
@@ -171,11 +155,10 @@ Returns DOI-to-DOI links with OMID, OpenAlex, and PMID cross-references. May hav
 | `import_pdf` | Import a local PDF (e.g. from Zotero) with a user-supplied identifier |
 | `download_pdf_url` | Download a PDF from any URL |
 | `import_markdown` | Import pre-converted markdown directly |
-| `convert_manual_paper` | Convert an imported PDF to markdown |
-| `get_manual_paper_sections` | Section index |
-| `get_manual_paper_section` | Full markdown of a section |
 
-**Provider-aware routing**: if the identifier is an arXiv ID, bioRxiv DOI, or ACL DOI, the file is stored in that provider's cache namespace automatically. A subsequent `download_arxiv_pdf("2301.00001")` will find an already-imported PDF — no duplicates.
+After importing, use the unified pipeline tools (`convert_paper` → `get_paper_sections` → `get_paper_section`) with the same identifier.
+
+**Provider-aware routing**: if the identifier is an arXiv ID, bioRxiv DOI, or ACL DOI, the file is stored in that provider's cache namespace automatically. A subsequent `download_pdf("2301.00001")` will find an already-imported PDF — no duplicates.
 
 ### Wikipedia
 
@@ -259,7 +242,7 @@ Cache keys are SHA-256 hashes of canonical identifiers. No expiration — delete
 
 ```bash
 uv sync                          # Install dependencies
-uv run pytest -v                 # Run all tests (268 tests)
+uv run pytest -v                 # Run all tests (278 tests)
 uv run pytest tests/test_bibtex.py -v   # Run one test file
 uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ```
@@ -267,7 +250,7 @@ uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ## Architecture
 
 ```
-server.py (45 MCP tools)
+server.py (34 MCP tools)
   ├── openalex.py       → OpenAlex API     → cache.py
   ├── arxiv.py          → arXiv Atom API   → cache.py
   ├── biorxiv.py        → bioRxiv API      → cache.py
