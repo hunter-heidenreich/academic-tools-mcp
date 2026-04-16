@@ -274,28 +274,41 @@ async def convert_pdf(
     if not pdf_path.exists():
         return {"error": f"PDF not found at: {pdf_path}"}
 
+    # Report PDF size so callers can gauge feasibility
+    pdf_size_bytes = pdf_path.stat().st_size
+    pdf_size_mb = pdf_size_bytes / (1024 * 1024)
+
     # Run PDF converter in a subprocess
     extract_dir = Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
     converter_cmd = _build_converter_command(pdf_path, extract_dir)
 
-    proc = await asyncio.create_subprocess_exec(
-        "bash", "-c",
-        f'rm -rf "{extract_dir}" 2>/dev/null; {converter_cmd} 2>&1',
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", "-c",
+            f'rm -rf "{extract_dir}" 2>/dev/null; {converter_cmd} 2>&1',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
-    stdout, stderr = await asyncio.wait_for(
-        proc.communicate(), timeout=600  # 10 minutes
-    )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=600  # 10 minutes
+        )
+    except asyncio.TimeoutError:
+        return {
+            "error": f"PDF conversion timed out after 10 minutes (PDF: {pdf_size_mb:.1f} MB). "
+            "The document may be too large for the converter.",
+            "retryable": False,
+            "pdf_size_mb": round(pdf_size_mb, 1),
+        }
 
     if proc.returncode != 0:
         output = (stdout or b"").decode() + (stderr or b"").decode()
         return {
-            "error": f"PDF conversion failed (exit {proc.returncode}): {output[-500:]}"
+            "error": f"PDF conversion failed (exit {proc.returncode}): {output[-500:]}",
+            "retryable": False,
+            "pdf_size_mb": round(pdf_size_mb, 1),
         }
 
-    # Find the generated markdown file
     # Find the generated markdown file in the output directory
     stem = pdf_path.stem
     candidates = list(extract_dir.glob(f"**/{stem}.md"))
@@ -305,7 +318,11 @@ async def convert_pdf(
         candidates = list(extract_dir.glob("**/*.md"))
 
     if not candidates:
-        return {"error": f"PDF converter produced no markdown output in {extract_dir}"}
+        return {
+            "error": f"PDF converter produced no markdown output (PDF: {pdf_size_mb:.1f} MB).",
+            "retryable": False,
+            "pdf_size_mb": round(pdf_size_mb, 1),
+        }
 
     source_md = candidates[0]
     markdown = source_md.read_text()

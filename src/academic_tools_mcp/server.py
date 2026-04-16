@@ -509,7 +509,15 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
             "For local files use import_pdf; for URLs use download_pdf_url."
         }
 
-    return await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
+    result = await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
+    if "error" in result:
+        return _enrich_error(
+            result,
+            "Conversion failed permanently — do not retry. "
+            "The PDF may be too large, corrupted, or in an unsupported format. "
+            "Try importing a different version or pre-converted markdown via import_markdown.",
+        )
+    return result
 
 
 @mcp.tool
