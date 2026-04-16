@@ -14,7 +14,9 @@ mcp = FastMCP(
         "Use these tools to look up paper metadata, authors, abstracts, BibTeX citations, "
         "citation/reference graphs, and to download and read full paper content section-by-section. "
         "Supports DOIs, arXiv IDs, and bioRxiv DOIs as identifiers. "
-        "PDF pipeline: download_*_pdf → convert_*_paper → get_*_paper_sections → get_*_paper_section. "
+        "PDF pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section. "
+        "These pipeline tools auto-detect the provider from the identifier. "
+        "For local files or arbitrary URLs, use import_pdf / download_pdf_url / import_markdown first. "
         "Reference/citation tools use a count-then-page pattern to avoid token blowouts."
     ),
 )
@@ -55,6 +57,18 @@ BIORXIV_DOI = Annotated[
         "Accepts bare DOI (10.1101/2024.01.01.573838), "
         "URL (https://doi.org/10.1101/...), or "
         "site URL (https://www.biorxiv.org/content/10.1101/...v1)."
+    ),
+]
+
+PAPER_ID = Annotated[
+    str,
+    Field(
+        description="Paper identifier. Auto-detects the source: "
+        "arXiv ID (2301.00001 or hep-th/9901001), "
+        "bioRxiv/medRxiv DOI (10.1101/...), "
+        "ACL Anthology DOI (10.18653/v1/...), "
+        "any other DOI, or a freeform label. "
+        "Accepts bare values, doi: prefix, or full URLs."
     ),
 ]
 
@@ -403,70 +417,104 @@ async def search_arxiv(
 
 
 # ---------------------------------------------------------------------------
-# Paper PDF pipeline tools
+# Unified PDF pipeline tools
 # ---------------------------------------------------------------------------
 
 
+async def _download_pdf_by_provider(identifier: str) -> dict[str, Any]:
+    """Dispatch PDF download to the correct provider based on identifier type."""
+    target = manual._resolve_target(identifier)
+    ns = target["namespace"]
+
+    if ns == "arxiv":
+        return await arxiv.download_pdf(identifier)
+    elif ns == "acl_anthology":
+        return await acl_anthology.download_pdf(identifier)
+    elif ns == "biorxiv":
+        return await biorxiv.download_pdf(identifier)
+    else:
+        return {
+            "error": f"Cannot auto-download for identifier: {identifier}. "
+            "Use import_pdf (local file) or download_pdf_url (URL) instead, "
+            "then convert_paper → get_paper_sections → get_paper_section."
+        }
+
+
 @mcp.tool
-async def download_arxiv_pdf(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Download and cache the PDF for an arXiv paper.
+async def download_pdf(identifier: PAPER_ID) -> dict[str, Any]:
+    """Download and cache the PDF for a paper, auto-detecting the source.
 
-    Returns the local file path and size. Skips download if already cached.
-    This must be called before convert_paper.
+    Supports arXiv IDs, ACL Anthology DOIs (10.18653/v1/...), and
+    bioRxiv/medRxiv DOIs (10.1101/...). Skips download if already cached.
+    For other sources, use import_pdf or download_pdf_url instead.
+
+    Next step: convert_paper → get_paper_sections → get_paper_section.
     """
-    return await arxiv.download_pdf(arxiv_id)
+    return await _download_pdf_by_provider(identifier)
 
 
 @mcp.tool
-async def convert_paper(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Convert a downloaded arXiv PDF to markdown, then parse into sections.
+async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
+    """Convert a downloaded PDF to markdown, then parse into sections.
 
-    This is a slow operation (5-10 minutes). Returns the section index on completion.
-    The PDF must be downloaded first via download_arxiv_pdf.
-    Skips conversion if markdown is already cached.
+    Auto-detects the provider from the identifier and routes to the correct
+    cache namespace. This is a slow operation (5-10 minutes). Returns the
+    section index on completion. Skips conversion if markdown is already cached.
+
+    The PDF must be downloaded first via download_pdf (or import_pdf /
+    download_pdf_url for other sources).
+
+    Next step: get_paper_sections → get_paper_section.
     """
-    canonical = arxiv._canonical_arxiv_id(arxiv_id)
-    pdf = arxiv.pdf_path(arxiv_id)
+    target = manual._resolve_target(identifier)
+    pdf = target["pdf_path"]
 
     if not pdf.exists():
         return {
-            "error": f"PDF not cached. Call download_arxiv_pdf first for: {arxiv_id}"
+            "error": f"PDF not cached for: {identifier}. "
+            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section. "
+            "For local files use import_pdf; for URLs use download_pdf_url."
         }
 
-    return await papers.convert_pdf(pdf, arxiv.NAMESPACE, canonical)
+    return await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
 
 
 @mcp.tool
-async def get_paper_sections(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Get the section index for a converted arXiv paper.
+async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
+    """Get the section index for a converted paper.
 
-    Returns H2 section titles with H3 sub-heading previews and approximate
-    token counts. The paper must be converted first via convert_paper.
+    Auto-detects the provider from the identifier. Returns section titles
+    with sub-heading previews and approximate token counts.
+
+    The paper must be converted first via convert_paper.
+
+    Next step: get_paper_section(identifier, section_index_or_title).
     """
-    canonical = arxiv._canonical_arxiv_id(arxiv_id)
+    target = manual._resolve_target(identifier)
+    namespace = target["namespace"]
+    canonical = target["canonical"]
 
-    # Try cached section index first
-    cached = cache.get(arxiv.NAMESPACE, "sections", papers._sections_key(canonical))
+    cached = cache.get(namespace, "sections", papers._sections_key(canonical))
     if cached is not None:
         return cached
 
-    # Fall back to parsing from markdown if it exists
-    md_path = papers._markdown_path(arxiv.NAMESPACE, canonical)
+    md_path = papers._markdown_path(namespace, canonical)
     if not md_path.exists():
         return {
-            "error": f"Paper not converted yet. Call convert_paper first for: {arxiv_id}"
+            "error": f"Paper not converted yet for: {identifier}. "
+            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
         }
 
     markdown = md_path.read_text()
     sections = papers.parse_sections(markdown)
     sections_data = {"sections": sections}
-    cache.put(arxiv.NAMESPACE, "sections", papers._sections_key(canonical), sections_data)
+    cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
     return sections_data
 
 
 @mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
 async def get_paper_section(
-    arxiv_id: ARXIV_ID,
+    identifier: PAPER_ID,
     section: Annotated[
         str,
         Field(
@@ -477,134 +525,19 @@ async def get_paper_section(
     ],
     max_chars: MAX_CHARS = None,
 ) -> dict[str, Any]:
-    """Get the markdown content of a specific section from a converted arXiv paper.
+    """Get the markdown content of a specific section from a converted paper.
 
-    Accepts a section index number or a title substring (case-insensitive).
+    Auto-detects the provider from the identifier. Accepts a section index
+    number or a title substring (case-insensitive).
     Content is truncated by default (16000 chars). Set max_chars=0 for full content.
     """
-    canonical = arxiv._canonical_arxiv_id(arxiv_id)
-    md_path = papers._markdown_path(arxiv.NAMESPACE, canonical)
+    target = manual._resolve_target(identifier)
+    md_path = papers._markdown_path(target["namespace"], target["canonical"])
 
     if not md_path.exists():
         return {
-            "error": f"Paper not converted yet. Call convert_paper first for: {arxiv_id}"
-        }
-
-    markdown = md_path.read_text()
-
-    # Try to parse as integer index
-    try:
-        section_key: int | str = int(section)
-    except ValueError:
-        section_key = section
-
-    return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
-
-
-# ---------------------------------------------------------------------------
-# ACL Anthology tools
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool
-async def download_acl_pdf(doi: DOI) -> dict[str, Any]:
-    """Download and cache the camera-ready PDF for an ACL Anthology paper.
-
-    Only works for papers with ACL DOIs (prefix 10.18653/v1/).
-    Returns the local file path, Anthology ID, and PDF URL.
-    Skips download if already cached.
-    """
-    return await acl_anthology.download_pdf(doi)
-
-
-@mcp.tool
-async def convert_acl_paper(doi: DOI) -> dict[str, Any]:
-    """Convert a downloaded ACL Anthology PDF to markdown, then parse into sections.
-
-    This is a slow operation (5-10 minutes). Returns the section index on completion.
-    The PDF must be downloaded first via download_acl_pdf.
-    Skips conversion if markdown is already cached.
-    """
-    aid = acl_anthology.doi_to_anthology_id(doi)
-    if aid is None:
-        return {"error": f"Not an ACL Anthology DOI: {doi}"}
-
-    canonical = acl_anthology._canonical_key(doi)
-    pdf = acl_anthology.pdf_path(doi)
-
-    if not pdf.exists():
-        return {
-            "error": f"PDF not cached. Call download_acl_pdf first for: {doi}"
-        }
-
-    return await papers.convert_pdf(pdf, acl_anthology.NAMESPACE, canonical)
-
-
-@mcp.tool
-async def get_acl_paper_sections(doi: DOI) -> dict[str, Any]:
-    """Get the section index for a converted ACL Anthology paper.
-
-    Returns section titles with sub-heading previews and approximate
-    token counts. The paper must be converted first via convert_acl_paper.
-    """
-    aid = acl_anthology.doi_to_anthology_id(doi)
-    if aid is None:
-        return {"error": f"Not an ACL Anthology DOI: {doi}"}
-
-    canonical = acl_anthology._canonical_key(doi)
-
-    cached = cache.get(
-        acl_anthology.NAMESPACE, "sections", papers._sections_key(canonical)
-    )
-    if cached is not None:
-        return cached
-
-    md_path = papers._markdown_path(acl_anthology.NAMESPACE, canonical)
-    if not md_path.exists():
-        return {
-            "error": f"Paper not converted yet. Call convert_acl_paper first for: {doi}"
-        }
-
-    markdown = md_path.read_text()
-    sections = papers.parse_sections(markdown)
-    sections_data = {"sections": sections}
-    cache.put(
-        acl_anthology.NAMESPACE,
-        "sections",
-        papers._sections_key(canonical),
-        sections_data,
-    )
-    return sections_data
-
-
-@mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
-async def get_acl_paper_section(
-    doi: DOI,
-    section: Annotated[
-        str,
-        Field(
-            description="Section to retrieve: an integer index (e.g. '0') "
-            "or a title substring (e.g. 'Introduction', 'Methods'). "
-            "Use get_acl_paper_sections to see available sections."
-        ),
-    ],
-    max_chars: MAX_CHARS = None,
-) -> dict[str, Any]:
-    """Get the markdown content of a specific section from a converted ACL Anthology paper.
-
-    Accepts a section index number or a title substring (case-insensitive).
-    Content is truncated by default (16000 chars). Set max_chars=0 for full content.
-    """
-    aid = acl_anthology.doi_to_anthology_id(doi)
-    if aid is None:
-        return {"error": f"Not an ACL Anthology DOI: {doi}"}
-
-    canonical = acl_anthology._canonical_key(doi)
-    md_path = papers._markdown_path(acl_anthology.NAMESPACE, canonical)
-
-    if not md_path.exists():
-        return {
-            "error": f"Paper not converted yet. Call convert_acl_paper first for: {doi}"
+            "error": f"Paper not converted yet for: {identifier}. "
+            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
         }
 
     markdown = md_path.read_text()
@@ -691,116 +624,9 @@ async def get_biorxiv_paper_bibtex(doi: BIORXIV_DOI) -> dict[str, Any]:
     }
 
 
-@mcp.tool
-async def download_biorxiv_pdf(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Download and cache the PDF for a bioRxiv/medRxiv preprint.
-
-    Returns the local file path and size. Skips download if already cached.
-    This must be called before convert_biorxiv_paper.
-    """
-    return await biorxiv.download_pdf(doi)
-
-
-@mcp.tool
-async def convert_biorxiv_paper(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Convert a downloaded bioRxiv/medRxiv PDF to markdown, then parse into sections.
-
-    This is a slow operation (5-10 minutes). Returns the section index on completion.
-    The PDF must be downloaded first via download_biorxiv_pdf.
-    Skips conversion if markdown is already cached.
-    """
-    canonical = biorxiv._canonical_key(doi)
-    pdf = biorxiv.pdf_path(doi)
-
-    if not pdf.exists():
-        return {
-            "error": f"PDF not cached. Call download_biorxiv_pdf first for: {doi}"
-        }
-
-    return await papers.convert_pdf(pdf, biorxiv.NAMESPACE, canonical)
-
-
-@mcp.tool
-async def get_biorxiv_paper_sections(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Get the section index for a converted bioRxiv/medRxiv paper.
-
-    Returns section titles with sub-heading previews and approximate
-    token counts. The paper must be converted first via convert_biorxiv_paper.
-    """
-    canonical = biorxiv._canonical_key(doi)
-
-    cached = cache.get(
-        biorxiv.NAMESPACE, "sections", papers._sections_key(canonical)
-    )
-    if cached is not None:
-        return cached
-
-    md_path = papers._markdown_path(biorxiv.NAMESPACE, canonical)
-    if not md_path.exists():
-        return {
-            "error": f"Paper not converted yet. Call convert_biorxiv_paper first for: {doi}"
-        }
-
-    markdown = md_path.read_text()
-    sections = papers.parse_sections(markdown)
-    sections_data = {"sections": sections}
-    cache.put(
-        biorxiv.NAMESPACE,
-        "sections",
-        papers._sections_key(canonical),
-        sections_data,
-    )
-    return sections_data
-
-
-@mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
-async def get_biorxiv_paper_section(
-    doi: BIORXIV_DOI,
-    section: Annotated[
-        str,
-        Field(
-            description="Section to retrieve: an integer index (e.g. '0') "
-            "or a title substring (e.g. 'Introduction', 'Methods'). "
-            "Use get_biorxiv_paper_sections to see available sections."
-        ),
-    ],
-    max_chars: MAX_CHARS = None,
-) -> dict[str, Any]:
-    """Get the markdown content of a specific section from a converted bioRxiv/medRxiv paper.
-
-    Accepts a section index number or a title substring (case-insensitive).
-    Content is truncated by default (16000 chars). Set max_chars=0 for full content.
-    """
-    canonical = biorxiv._canonical_key(doi)
-    md_path = papers._markdown_path(biorxiv.NAMESPACE, canonical)
-
-    if not md_path.exists():
-        return {
-            "error": f"Paper not converted yet. Call convert_biorxiv_paper first for: {doi}"
-        }
-
-    markdown = md_path.read_text()
-
-    try:
-        section_key: int | str = int(section)
-    except ValueError:
-        section_key = section
-
-    return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
-
-
 # ---------------------------------------------------------------------------
-# Manual PDF tools
+# Manual PDF import tools
 # ---------------------------------------------------------------------------
-
-PAPER_ID = Annotated[
-    str,
-    Field(
-        description="Identifier for the paper — typically a DOI "
-        "(e.g. 10.1038/s41586-024-00001-1) but can be any unique label. "
-        "Accepts bare DOI, doi: prefix, or https://doi.org/ URL."
-    ),
-]
 
 
 @mcp.tool
@@ -856,106 +682,12 @@ async def import_markdown(
     """Import a pre-converted markdown file directly into the cache.
 
     Skips the PDF download and conversion steps entirely — the section
-    pipeline (get_manual_paper_sections / get_manual_paper_section) works
-    immediately after this call.
+    pipeline (get_paper_sections / get_paper_section) works immediately
+    after this call.
 
     Use this when you already have markdown from any PDF-to-markdown tool.
     """
     return manual.import_markdown(file_path, identifier)
-
-
-@mcp.tool
-async def convert_manual_paper(identifier: PAPER_ID) -> dict[str, Any]:
-    """Convert an imported/downloaded PDF to markdown, then parse into sections.
-
-    This is a slow operation (5-10 minutes). Returns the section index on completion.
-    The PDF must be imported first via import_pdf or download_pdf_url.
-    Skips conversion if markdown is already cached.
-
-    Routes to the correct provider namespace based on the identifier, so the
-    converted markdown is found by native pipeline tools (e.g. get_paper_sections
-    for arXiv, get_biorxiv_paper_sections for bioRxiv).
-    """
-    target = manual._resolve_target(identifier)
-    pdf = target["pdf_path"]
-
-    if not pdf.exists():
-        return {
-            "error": f"PDF not cached. Call import_pdf or download_pdf_url first for: {identifier}"
-        }
-
-    return await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
-
-
-@mcp.tool
-async def get_manual_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
-    """Get the section index for a converted manually-imported paper.
-
-    Returns section titles with sub-heading previews and approximate
-    token counts. The paper must be converted first via convert_manual_paper.
-    """
-    target = manual._resolve_target(identifier)
-    namespace = target["namespace"]
-    canonical = target["canonical"]
-
-    cached = cache.get(
-        namespace, "sections", papers._sections_key(canonical)
-    )
-    if cached is not None:
-        return cached
-
-    md_path = papers._markdown_path(namespace, canonical)
-    if not md_path.exists():
-        return {
-            "error": f"Paper not converted yet. Call convert_manual_paper first for: {identifier}"
-        }
-
-    markdown = md_path.read_text()
-    sections = papers.parse_sections(markdown)
-    sections_data = {"sections": sections}
-    cache.put(
-        namespace,
-        "sections",
-        papers._sections_key(canonical),
-        sections_data,
-    )
-    return sections_data
-
-
-@mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
-async def get_manual_paper_section(
-    identifier: PAPER_ID,
-    section: Annotated[
-        str,
-        Field(
-            description="Section to retrieve: an integer index (e.g. '0') "
-            "or a title substring (e.g. 'Introduction', 'Methods'). "
-            "Use get_manual_paper_sections to see available sections."
-        ),
-    ],
-    max_chars: MAX_CHARS = None,
-) -> dict[str, Any]:
-    """Get the markdown content of a specific section from a converted manually-imported paper.
-
-    Accepts a section index number or a title substring (case-insensitive).
-    Content is truncated by default (16000 chars). Set max_chars=0 for full content.
-    """
-    target = manual._resolve_target(identifier)
-    md_path = papers._markdown_path(target["namespace"], target["canonical"])
-
-    if not md_path.exists():
-        return {
-            "error": f"Paper not converted yet. Call convert_manual_paper first for: {identifier}"
-        }
-
-    markdown = md_path.read_text()
-
-    try:
-        section_key: int | str = int(section)
-    except ValueError:
-        section_key = section
-
-    return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
 
 
 # ---------------------------------------------------------------------------
