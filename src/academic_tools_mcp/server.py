@@ -6,7 +6,18 @@ from pydantic import Field
 from . import acl_anthology, arxiv, biorxiv, cache, crossref, manual, opencitations, openalex, papers, wikipedia
 from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 
-mcp = FastMCP("academic-tools")
+mcp = FastMCP(
+    "academic-tools",
+    instructions=(
+        "Academic paper research tools. Wraps OpenAlex, arXiv, bioRxiv/medRxiv, "
+        "Crossref, OpenCitations, ACL Anthology, and Wikipedia APIs. "
+        "Use these tools to look up paper metadata, authors, abstracts, BibTeX citations, "
+        "citation/reference graphs, and to download and read full paper content section-by-section. "
+        "Supports DOIs, arXiv IDs, and bioRxiv DOIs as identifiers. "
+        "PDF pipeline: download_*_pdf → convert_*_paper → get_*_paper_sections → get_*_paper_section. "
+        "Reference/citation tools use a count-then-page pattern to avoid token blowouts."
+    ),
+)
 
 # Common parameter type for DOI
 DOI = Annotated[
@@ -46,6 +57,28 @@ BIORXIV_DOI = Annotated[
         "site URL (https://www.biorxiv.org/content/10.1101/...v1)."
     ),
 ]
+
+# Default truncation limit for section content (~4000 tokens)
+_DEFAULT_MAX_CHARS = 16000
+
+MAX_CHARS = Annotated[
+    int | None,
+    Field(
+        description="Maximum characters of section content to return. "
+        "Defaults to 16000 chars (~4000 tokens). "
+        "Set to 0 for full content (no truncation). "
+        "When truncated, the response includes remaining_chars and a hint.",
+    ),
+]
+
+
+def _resolve_max_chars(max_chars: int | None) -> int | None:
+    """Normalize the max_chars parameter: None uses default, 0 means no limit."""
+    if max_chars is None:
+        return _DEFAULT_MAX_CHARS
+    if max_chars == 0:
+        return None
+    return max_chars
 
 
 async def _fetch_work(doi: str) -> dict[str, Any]:
@@ -431,7 +464,7 @@ async def get_paper_sections(arxiv_id: ARXIV_ID) -> dict[str, Any]:
     return sections_data
 
 
-@mcp.tool
+@mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
 async def get_paper_section(
     arxiv_id: ARXIV_ID,
     section: Annotated[
@@ -442,10 +475,12 @@ async def get_paper_section(
             "Use get_paper_sections to see available sections."
         ),
     ],
+    max_chars: MAX_CHARS = None,
 ) -> dict[str, Any]:
-    """Get the full markdown content of a specific section from a converted arXiv paper.
+    """Get the markdown content of a specific section from a converted arXiv paper.
 
     Accepts a section index number or a title substring (case-insensitive).
+    Content is truncated by default (16000 chars). Set max_chars=0 for full content.
     """
     canonical = arxiv._canonical_arxiv_id(arxiv_id)
     md_path = papers._markdown_path(arxiv.NAMESPACE, canonical)
@@ -463,7 +498,7 @@ async def get_paper_section(
     except ValueError:
         section_key = section
 
-    return papers.get_section_content(markdown, section_key)
+    return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +577,7 @@ async def get_acl_paper_sections(doi: DOI) -> dict[str, Any]:
     return sections_data
 
 
-@mcp.tool
+@mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
 async def get_acl_paper_section(
     doi: DOI,
     section: Annotated[
@@ -553,10 +588,12 @@ async def get_acl_paper_section(
             "Use get_acl_paper_sections to see available sections."
         ),
     ],
+    max_chars: MAX_CHARS = None,
 ) -> dict[str, Any]:
-    """Get the full markdown content of a specific section from a converted ACL Anthology paper.
+    """Get the markdown content of a specific section from a converted ACL Anthology paper.
 
     Accepts a section index number or a title substring (case-insensitive).
+    Content is truncated by default (16000 chars). Set max_chars=0 for full content.
     """
     aid = acl_anthology.doi_to_anthology_id(doi)
     if aid is None:
@@ -577,7 +614,7 @@ async def get_acl_paper_section(
     except ValueError:
         section_key = section
 
-    return papers.get_section_content(markdown, section_key)
+    return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +753,7 @@ async def get_biorxiv_paper_sections(doi: BIORXIV_DOI) -> dict[str, Any]:
     return sections_data
 
 
-@mcp.tool
+@mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
 async def get_biorxiv_paper_section(
     doi: BIORXIV_DOI,
     section: Annotated[
@@ -727,10 +764,12 @@ async def get_biorxiv_paper_section(
             "Use get_biorxiv_paper_sections to see available sections."
         ),
     ],
+    max_chars: MAX_CHARS = None,
 ) -> dict[str, Any]:
-    """Get the full markdown content of a specific section from a converted bioRxiv/medRxiv paper.
+    """Get the markdown content of a specific section from a converted bioRxiv/medRxiv paper.
 
     Accepts a section index number or a title substring (case-insensitive).
+    Content is truncated by default (16000 chars). Set max_chars=0 for full content.
     """
     canonical = biorxiv._canonical_key(doi)
     md_path = papers._markdown_path(biorxiv.NAMESPACE, canonical)
@@ -747,7 +786,7 @@ async def get_biorxiv_paper_section(
     except ValueError:
         section_key = section
 
-    return papers.get_section_content(markdown, section_key)
+    return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
 
 
 # ---------------------------------------------------------------------------
@@ -883,7 +922,7 @@ async def get_manual_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
     return sections_data
 
 
-@mcp.tool
+@mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
 async def get_manual_paper_section(
     identifier: PAPER_ID,
     section: Annotated[
@@ -894,10 +933,12 @@ async def get_manual_paper_section(
             "Use get_manual_paper_sections to see available sections."
         ),
     ],
+    max_chars: MAX_CHARS = None,
 ) -> dict[str, Any]:
-    """Get the full markdown content of a specific section from a converted manually-imported paper.
+    """Get the markdown content of a specific section from a converted manually-imported paper.
 
     Accepts a section index number or a title substring (case-insensitive).
+    Content is truncated by default (16000 chars). Set max_chars=0 for full content.
     """
     target = manual._resolve_target(identifier)
     md_path = papers._markdown_path(target["namespace"], target["canonical"])
@@ -914,7 +955,7 @@ async def get_manual_paper_section(
     except ValueError:
         section_key = section
 
-    return papers.get_section_content(markdown, section_key)
+    return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
 
 
 # ---------------------------------------------------------------------------

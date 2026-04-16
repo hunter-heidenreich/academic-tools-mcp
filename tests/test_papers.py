@@ -336,6 +336,38 @@ class TestGetSectionContent:
         result = get_section_content(_H2_ONLY_MARKDOWN, 0)
         assert result["title"] == "First Section"
 
+    # -- Truncation tests --
+
+    def test_truncation_returns_partial_content(self):
+        result = get_section_content(_H2_MARKDOWN, "Methods", max_chars=20)
+        assert result["truncated"] is True
+        assert len(result["content"]) == 20
+        assert result["remaining_chars"] > 0
+        assert "hint" in result
+
+    def test_truncation_no_limit_returns_full(self):
+        full = get_section_content(_H2_MARKDOWN, "Methods")
+        unlimited = get_section_content(_H2_MARKDOWN, "Methods", max_chars=None)
+        assert "truncated" not in full
+        assert "truncated" not in unlimited
+        assert full["content"] == unlimited["content"]
+
+    def test_truncation_zero_means_no_limit(self):
+        """max_chars=0 is handled by the server layer (_resolve_max_chars),
+        but at the papers layer passing None means no truncation."""
+        result = get_section_content(_H2_MARKDOWN, "Methods", max_chars=None)
+        assert "truncated" not in result
+
+    def test_truncation_large_limit_returns_full(self):
+        result = get_section_content(_H2_MARKDOWN, "Methods", max_chars=999999)
+        assert "truncated" not in result
+
+    def test_truncation_preserves_approx_tokens(self):
+        """approx_tokens should reflect the full section, not the truncated content."""
+        full = get_section_content(_H2_MARKDOWN, "Methods")
+        truncated = get_section_content(_H2_MARKDOWN, "Methods", max_chars=20)
+        assert truncated["approx_tokens"] == full["approx_tokens"]
+
 
 # ---------------------------------------------------------------------------
 # _build_converter_command
