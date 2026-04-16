@@ -95,6 +95,13 @@ def _resolve_max_chars(max_chars: int | None) -> int | None:
     return max_chars
 
 
+def _enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
+    """Add a suggestion to an error dict if one isn't already present."""
+    if "error" in result and "suggestion" not in result:
+        result["suggestion"] = suggestion
+    return result
+
+
 async def _fetch_work(doi: str) -> dict[str, Any]:
     """Fetch a work and return it, or raise if not found."""
     return await openalex.get_work(doi)
@@ -102,10 +109,15 @@ async def _fetch_work(doi: str) -> dict[str, Any]:
 
 @mcp.tool
 async def get_paper_metadata(doi: DOI) -> dict[str, Any]:
-    """Get core metadata for a paper: title, year, type, venue, DOI, and open access info."""
+    """Get core metadata for a paper: title, year, type, venue, DOI, and open access info.
+
+    Related: get_paper_authors for authors, get_paper_bibtex for citations,
+    get_crossref_references_count for reference list, get_paper_citations_summary
+    for citation counts.
+    """
     work = await _fetch_work(doi)
     if "error" in work:
-        return work
+        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
 
     primary_location = work.get("primary_location") or {}
     source = primary_location.get("source") or {}
@@ -127,10 +139,14 @@ async def get_paper_metadata(doi: DOI) -> dict[str, Any]:
 
 @mcp.tool
 async def get_paper_authors(doi: DOI) -> dict[str, Any]:
-    """Get the author list for a paper: names, positions, corresponding status, and institution names."""
+    """Get the author list for a paper: names, positions, corresponding status, and institution names.
+
+    Each author includes an openalex_id for chaining into get_author_profile
+    or get_author_affiliations.
+    """
     work = await _fetch_work(doi)
     if "error" in work:
-        return work
+        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
 
     authors = []
     all_institutions: list[str] = []
@@ -155,7 +171,9 @@ async def get_paper_authors(doi: DOI) -> dict[str, Any]:
         })
 
     return {
+        "author_count": len(authors),
         "authors": authors,
+        "institution_count": len(all_institutions),
         "all_institutions": all_institutions,
     }
 
@@ -165,7 +183,7 @@ async def get_paper_abstract(doi: DOI) -> dict[str, Any]:
     """Get the abstract of a paper as plain text."""
     work = await _fetch_work(doi)
     if "error" in work:
-        return work
+        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
 
     abstract = openalex.reconstruct_abstract(
         work.get("abstract_inverted_index")
@@ -182,7 +200,7 @@ async def get_paper_citations_summary(doi: DOI) -> dict[str, Any]:
     """Get citation statistics for a paper: citation count, reference count, and retraction status."""
     work = await _fetch_work(doi)
     if "error" in work:
-        return work
+        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
 
     return {
         "title": work.get("title"),
@@ -197,27 +215,32 @@ async def get_paper_topics(doi: DOI) -> dict[str, Any]:
     """Get topic classifications and keywords for a paper."""
     work = await _fetch_work(doi)
     if "error" in work:
-        return work
+        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+
+    topics = [
+        {
+            "name": t.get("display_name"),
+            "score": round(t.get("score", 0), 4),
+            "subfield": (t.get("subfield") or {}).get("display_name"),
+            "field": (t.get("field") or {}).get("display_name"),
+            "domain": (t.get("domain") or {}).get("display_name"),
+        }
+        for t in work.get("topics", [])
+    ]
+    keywords = [
+        {
+            "keyword": k.get("display_name"),
+            "score": round(k.get("score", 0), 4),
+        }
+        for k in work.get("keywords", [])
+    ]
 
     return {
         "title": work.get("title"),
-        "topics": [
-            {
-                "name": t.get("display_name"),
-                "score": round(t.get("score", 0), 4),
-                "subfield": (t.get("subfield") or {}).get("display_name"),
-                "field": (t.get("field") or {}).get("display_name"),
-                "domain": (t.get("domain") or {}).get("display_name"),
-            }
-            for t in work.get("topics", [])
-        ],
-        "keywords": [
-            {
-                "keyword": k.get("display_name"),
-                "score": round(k.get("score", 0), 4),
-            }
-            for k in work.get("keywords", [])
-        ],
+        "topic_count": len(topics),
+        "topics": topics,
+        "keyword_count": len(keywords),
+        "keywords": keywords,
     }
 
 
@@ -231,7 +254,7 @@ async def get_paper_bibtex(doi: DOI) -> dict[str, Any]:
     """
     work = await _fetch_work(doi)
     if "error" in work:
-        return work
+        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
 
     return {
         "bibtex": generate_bibtex(work),
@@ -243,7 +266,7 @@ async def get_author_profile(author_id: AUTHOR_ID) -> dict[str, Any]:
     """Get an author's profile: name, ORCID, current institutions, publication/citation counts, h-index, and top topics."""
     author = await openalex.get_author(author_id)
     if "error" in author:
-        return author
+        return _enrich_error(author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL.")
 
     stats = author.get("summary_stats") or {}
     last_institutions = [
@@ -274,7 +297,7 @@ async def get_author_affiliations(author_id: AUTHOR_ID) -> dict[str, Any]:
     """Get an author's affiliation history: institutions with the years they were affiliated."""
     author = await openalex.get_author(author_id)
     if "error" in author:
-        return author
+        return _enrich_error(author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL.")
 
     affiliations = []
     for aff in author.get("affiliations") or []:
@@ -320,10 +343,14 @@ def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
 
 @mcp.tool
 async def get_arxiv_paper_metadata(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Get core metadata for an arXiv paper: title, dates, categories, links, and publication info."""
+    """Get core metadata for an arXiv paper: title, dates, categories, links, and publication info.
+
+    If doi is present, chain into get_paper_metadata (OpenAlex) for citation
+    counts and venue info. Use download_pdf to get the full paper content.
+    """
     paper = await _fetch_arxiv_paper(arxiv_id)
     if "error" in paper:
-        return paper
+        return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv to find papers.")
 
     return {
         "arxiv_id": _arxiv_id_from_entry(paper),
@@ -344,10 +371,12 @@ async def get_arxiv_paper_authors(arxiv_id: ARXIV_ID) -> dict[str, Any]:
     """Get the author list for an arXiv paper, with affiliations when available."""
     paper = await _fetch_arxiv_paper(arxiv_id)
     if "error" in paper:
-        return paper
+        return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv to find papers.")
 
+    authors = paper.get("authors", [])
     return {
-        "authors": paper.get("authors", []),
+        "author_count": len(authors),
+        "authors": authors,
     }
 
 
@@ -356,7 +385,7 @@ async def get_arxiv_paper_abstract(arxiv_id: ARXIV_ID) -> dict[str, Any]:
     """Get the abstract of an arXiv paper."""
     paper = await _fetch_arxiv_paper(arxiv_id)
     if "error" in paper:
-        return paper
+        return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv to find papers.")
 
     return {
         "title": paper.get("title"),
@@ -373,7 +402,7 @@ async def get_arxiv_paper_bibtex(arxiv_id: ARXIV_ID) -> dict[str, Any]:
     """
     paper = await _fetch_arxiv_paper(arxiv_id)
     if "error" in paper:
-        return paper
+        return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv to find papers.")
 
     return {
         "bibtex": generate_arxiv_bibtex(paper),
@@ -396,7 +425,11 @@ async def search_arxiv(
         Field(description="Maximum results to return (1-50).", ge=1, le=50),
     ] = 10,
 ) -> dict[str, Any]:
-    """Search arXiv papers. Returns titles, IDs, authors, and categories for matching papers."""
+    """Search arXiv papers. Returns titles, IDs, authors, and categories for matching papers.
+
+    Use the returned arxiv_id with get_arxiv_paper_abstract, get_arxiv_paper_bibtex,
+    or download_pdf to access full paper content.
+    """
     result = await arxiv.search_papers(query, max_results=max_results)
     if "error" in result:
         return result
@@ -507,7 +540,11 @@ async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
 
     markdown = md_path.read_text()
     sections = papers.parse_sections(markdown)
-    sections_data = {"sections": sections}
+    sections_data = {
+        "total_sections": len(sections),
+        "total_approx_tokens": sum(s.get("approx_tokens", 0) for s in sections),
+        "sections": sections,
+    }
     cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
     return sections_data
 
@@ -562,10 +599,14 @@ async def _fetch_biorxiv_paper(doi: str) -> dict[str, Any]:
 
 @mcp.tool
 async def get_biorxiv_paper_metadata(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Get core metadata for a bioRxiv/medRxiv preprint: title, date, category, version, server, and publication status."""
+    """Get core metadata for a bioRxiv/medRxiv preprint: title, date, category, version, server, and publication status.
+
+    If published_doi is present, the paper has been formally published — chain
+    into get_paper_metadata or get_paper_bibtex with that DOI for journal metadata.
+    """
     paper = await _fetch_biorxiv_paper(doi)
     if "error" in paper:
-        return paper
+        return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title to find bioRxiv papers.")
 
     return {
         "doi": paper.get("doi"),
@@ -586,10 +627,12 @@ async def get_biorxiv_paper_authors(doi: BIORXIV_DOI) -> dict[str, Any]:
     """Get the author list for a bioRxiv/medRxiv preprint, including the corresponding author and their institution."""
     paper = await _fetch_biorxiv_paper(doi)
     if "error" in paper:
-        return paper
+        return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title to find bioRxiv papers.")
 
+    authors = paper.get("authors", [])
     return {
-        "authors": paper.get("authors", []),
+        "author_count": len(authors),
+        "authors": authors,
         "author_corresponding": paper.get("author_corresponding"),
         "author_corresponding_institution": paper.get("author_corresponding_institution"),
     }
@@ -600,7 +643,7 @@ async def get_biorxiv_paper_abstract(doi: BIORXIV_DOI) -> dict[str, Any]:
     """Get the abstract of a bioRxiv/medRxiv preprint."""
     paper = await _fetch_biorxiv_paper(doi)
     if "error" in paper:
-        return paper
+        return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title to find bioRxiv papers.")
 
     return {
         "title": paper.get("title"),
@@ -617,7 +660,7 @@ async def get_biorxiv_paper_bibtex(doi: BIORXIV_DOI) -> dict[str, Any]:
     """
     paper = await _fetch_biorxiv_paper(doi)
     if "error" in paper:
-        return paper
+        return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title to find bioRxiv papers.")
 
     return {
         "bibtex": generate_biorxiv_bibtex(paper),
@@ -645,6 +688,8 @@ async def import_pdf(
     Use this for papers you already have on disk (e.g. from Zotero, email,
     or publisher downloads). The identifier is used as the cache key — use
     the DOI when available so you can chain into Crossref/OpenAlex tools.
+
+    Next step: convert_paper → get_paper_sections → get_paper_section.
     """
     return manual.import_local_pdf(file_path, identifier)
 
@@ -665,6 +710,8 @@ async def download_pdf_url(
     Use this for PDFs from publisher sites, institutional repositories, or
     personal pages that aren't covered by the arXiv/bioRxiv/ACL pipelines.
     The identifier is used as the cache key — use the DOI when available.
+
+    Next step: convert_paper → get_paper_sections → get_paper_section.
     """
     return await manual.download_pdf_from_url(url, identifier)
 
@@ -720,6 +767,10 @@ async def search_crossref_by_title(
 
     Returns matching DOIs with titles, authors, and publication info.
     Useful for finding the published DOI when you only have a title or arXiv ID.
+    Also serves as de facto search for bioRxiv papers (Crossref indexes all bioRxiv DOIs).
+
+    Use the returned DOI with get_paper_metadata, get_paper_bibtex, or
+    get_crossref_references.
     """
     items = await crossref.search_works(title, year=year, rows=5)
 
@@ -782,7 +833,7 @@ async def get_crossref_references_count(doi: DOI) -> dict[str, Any]:
     """Get the number of references (bibliography entries) for a paper from Crossref."""
     work = await _fetch_crossref_work(doi)
     if "error" in work:
-        return work
+        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
 
     raw_refs = work.get("reference") or []
     return {"doi": doi, "count": len(raw_refs)}
@@ -806,7 +857,7 @@ async def get_crossref_references(
     """
     work = await _fetch_crossref_work(doi)
     if "error" in work:
-        return work
+        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
 
     raw_refs = work.get("reference") or []
     total = len(raw_refs)
@@ -820,6 +871,7 @@ async def get_crossref_references(
         "total": total,
         "page": page,
         "page_size": page_size,
+        "has_more": end < total,
         "references": page_refs,
     }
 
@@ -834,7 +886,7 @@ async def get_opencitations_references_count(doi: DOI) -> dict[str, Any]:
     """Get the number of outgoing references for a paper from OpenCitations."""
     data = await opencitations.get_references(doi)
     if "error" in data:
-        return data
+        return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
     return {"doi": doi, "count": data["count"]}
 
 
@@ -856,7 +908,7 @@ async def get_opencitations_references(
     """
     data = await opencitations.get_references(doi)
     if "error" in data:
-        return data
+        return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
 
     refs = data.get("references", [])
     total = len(refs)
@@ -869,6 +921,7 @@ async def get_opencitations_references(
         "total": total,
         "page": page,
         "page_size": page_size,
+        "has_more": end < total,
         "references": refs[start:end],
     }
 
@@ -878,7 +931,7 @@ async def get_opencitations_citations_count(doi: DOI) -> dict[str, Any]:
     """Get the number of incoming citations for a paper from OpenCitations."""
     data = await opencitations.get_citations(doi)
     if "error" in data:
-        return data
+        return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
     return {"doi": doi, "count": data["count"]}
 
 
@@ -897,7 +950,7 @@ async def get_opencitations_citations(
     """
     data = await opencitations.get_citations(doi)
     if "error" in data:
-        return data
+        return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
 
     cites = data.get("citations", [])
     total = len(cites)
@@ -910,6 +963,7 @@ async def get_opencitations_citations(
         "total": total,
         "page": page,
         "page_size": page_size,
+        "has_more": end < total,
         "citations": cites[start:end],
     }
 
@@ -936,7 +990,7 @@ async def search_wikipedia(
     Wikipedia article title before verifying with get_wikipedia_summary.
     """
     results = await wikipedia.search(query, limit=limit)
-    return {"query": query, "results": results}
+    return {"query": query, "result_count": len(results), "results": results}
 
 
 @mcp.tool

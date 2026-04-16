@@ -78,10 +78,10 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | Tool | Description |
 |------|-------------|
 | `get_paper_metadata` | Title, year, type, venue, DOI, open access info |
-| `get_paper_authors` | Author names, positions, institutions, OpenAlex IDs |
+| `get_paper_authors` | Author names, positions, institutions, OpenAlex IDs (with counts) |
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_citations_summary` | Citation count, reference count, retraction status |
-| `get_paper_topics` | Topic classifications and keywords with scores |
+| `get_paper_topics` | Topic classifications and keywords with scores (with counts) |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
 
 ### OpenAlex (authors)
@@ -133,18 +133,18 @@ All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto
 |------|-------------|
 | `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers) |
 | `get_crossref_references_count` | Number of references in a paper's bibliography |
-| `get_crossref_references` | Paginated reference list with author, title, year, journal, DOI |
+| `get_crossref_references` | Paginated reference list with author, title, year, journal, DOI; includes `has_more` |
 
-Reference tools follow a **count-then-page** pattern: call `_count` first, then page through results. This prevents token blowouts on papers with long bibliographies.
+Reference tools follow a **count-then-page** pattern: call `_count` first, then page through results. Paginated responses include `has_more` so agents know when to stop. This prevents token blowouts on papers with long bibliographies.
 
 ### OpenCitations
 
 | Tool | Description |
 |------|-------------|
 | `get_opencitations_references_count` | Number of outgoing references |
-| `get_opencitations_references` | Paginated outgoing references with cross-referenced IDs |
+| `get_opencitations_references` | Paginated outgoing references with cross-referenced IDs; includes `has_more` |
 | `get_opencitations_citations_count` | Number of incoming citations |
-| `get_opencitations_citations` | Paginated incoming citations with cross-referenced IDs |
+| `get_opencitations_citations` | Paginated incoming citations with cross-referenced IDs; includes `has_more` |
 
 Returns DOI-to-DOI links with OMID, OpenAlex, and PMID cross-references. May have references Crossref lacks (aggregates from PubMed, DataCite, OpenAIRE, JaLC).
 
@@ -270,6 +270,8 @@ server.py (34 MCP tools)
 - **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching.
 - **Provider-aware routing.** Manual imports auto-detect identifier types and store in the correct provider's cache, preventing duplicates.
 - **Subprocess isolation for PDF converters.** The PDF pipeline shells out to external tools rather than importing them, keeping the dependency tree light and avoiding license entanglement.
+- **Pre-computed aggregates.** List responses include counts (`author_count`, `topic_count`, `total_sections`, etc.) so agents don't need follow-up calls to check sizes.
+- **Structured error hints.** Error responses include a `suggestion` field with recovery guidance (e.g. which search tool to try).
 
 ## License
 
