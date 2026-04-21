@@ -87,6 +87,20 @@ def _enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
     return result
 
 
+_INTERNAL_PATH_KEYS = ("path", "markdown_path")
+
+
+def _strip_internal_paths(result: dict[str, Any]) -> dict[str, Any]:
+    """Drop cache filesystem paths before returning to the agent.
+
+    The agent should drive the pipeline by identifier; exposing on-disk
+    paths tempts it to read files directly instead of using the tools.
+    """
+    if not isinstance(result, dict):
+        return result
+    return {k: v for k, v in result.items() if k not in _INTERNAL_PATH_KEYS}
+
+
 async def _fetch_work(doi: str) -> dict[str, Any]:
     """Fetch an OpenAlex work and return it, or propagate an error dict."""
     return await openalex.get_work(doi)
@@ -588,7 +602,7 @@ async def download_pdf(identifier: PAPER_ID) -> dict[str, Any]:
     Skips download if already cached. Next step: convert_paper →
     get_paper_sections → get_paper_section.
     """
-    return await _download_pdf_by_provider(identifier)
+    return _strip_internal_paths(await _download_pdf_by_provider(identifier))
 
 
 @mcp.tool
@@ -623,7 +637,7 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
             "The PDF may be too large, corrupted, or in an unsupported format. "
             "Try importing a different version or pre-converted markdown via import_paper.",
         )
-    return result
+    return _strip_internal_paths(result)
 
 
 @mcp.tool
@@ -758,9 +772,9 @@ async def import_paper(
     """
     ext = Path(file_path).suffix.lower()
     if ext == ".pdf":
-        return manual.import_local_pdf(file_path, identifier)
+        return _strip_internal_paths(manual.import_local_pdf(file_path, identifier))
     if ext in _MARKDOWN_EXTS:
-        return manual.import_markdown(file_path, identifier)
+        return _strip_internal_paths(manual.import_markdown(file_path, identifier))
     return {
         "error": (
             f"Unsupported file extension {ext!r}. "
