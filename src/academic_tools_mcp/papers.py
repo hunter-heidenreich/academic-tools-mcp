@@ -171,24 +171,34 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
 def get_section_content(
     markdown: str,
     section: int | str,
-    max_chars: int | None = None,
+    offset: int = 0,
+    max_chars: int = 16000,
 ) -> dict[str, Any]:
-    """Retrieve the content of a specific section by index or title.
+    """Retrieve a slice of a section's content by index or title.
 
     Args:
         markdown: Full markdown text.
         section: Integer index or string title (case-insensitive partial match).
-        max_chars: Maximum characters to return. None means no limit.
-            When content exceeds this limit, it is truncated and a
-            ``truncated`` flag plus ``remaining_chars`` hint are included.
+        offset: Starting character offset within the section. Defaults to 0.
+            Use ``next_offset`` from a previous call to page through.
+        max_chars: Slice size in characters. Defaults to 16000 (~4000 tokens).
+            Must be positive.
 
     Returns:
-        Dict with title, content, and approx_tokens, or an error.
+        On success: ``{index, title, content, offset, chars_returned,
+        total_chars, approx_tokens, has_more, next_offset}``. ``approx_tokens``
+        and ``total_chars`` describe the full section, not the slice.
+        On error: ``{"error": ...}`` (lists available titles for unknown
+        section names).
     """
+    if max_chars <= 0:
+        return {"error": f"max_chars must be positive, got {max_chars}"}
+    if offset < 0:
+        return {"error": f"offset must be non-negative, got {offset}"}
+
     lines = markdown.split("\n")
     section_level, _ = _detect_heading_levels(lines)
 
-    # Build section boundaries: list of (title, start_line, end_line)
     boundaries: list[tuple[str, int, int]] = []
     current_title = "Preamble"
     current_start = 0
@@ -202,15 +212,14 @@ def get_section_content(
 
     boundaries.append((current_title, current_start, len(lines)))
 
-    # Filter out empty preamble
     boundaries = [
         (t, s, e) for t, s, e in boundaries
         if "\n".join(lines[s:e]).strip()
     ]
 
-    # Look up by index or title
     if isinstance(section, int):
         if 0 <= section < len(boundaries):
+            resolved_index = section
             title, start, end = boundaries[section]
         else:
             return {
@@ -219,12 +228,13 @@ def get_section_content(
     else:
         query = section.lower()
         matches = [
-            (t, s, e) for t, s, e in boundaries if query in t.lower()
+            (i, t, s, e) for i, (t, s, e) in enumerate(boundaries)
+            if query in t.lower()
         ]
         if len(matches) == 1:
-            title, start, end = matches[0]
+            resolved_index, title, start, end = matches[0]
         elif len(matches) > 1:
-            titles = [t for t, _, _ in matches]
+            titles = [t for _, t, _, _ in matches]
             return {
                 "error": f"Ambiguous section title '{section}'. Matches: {titles}"
             }
@@ -234,27 +244,29 @@ def get_section_content(
                 "error": f"No section matching '{section}'. Available: {titles}"
             }
 
-    content = "\n".join(lines[start:end]).strip()
-    total_chars = len(content)
+    full_content = "\n".join(lines[start:end]).strip()
+    total_chars = len(full_content)
     approx_tokens = max(1, total_chars // _CHARS_PER_TOKEN)
 
-    if max_chars is not None and total_chars > max_chars:
-        content = content[:max_chars]
-        remaining = total_chars - max_chars
+    if offset > total_chars:
         return {
-            "title": title,
-            "content": content,
-            "approx_tokens": approx_tokens,
-            "truncated": True,
-            "remaining_chars": remaining,
-            "hint": f"Truncated to {max_chars} chars ({max_chars // _CHARS_PER_TOKEN} tokens). "
-                    f"{remaining} chars remaining. Call again with max_chars=0 for full content.",
+            "error": f"offset {offset} is beyond section length {total_chars}"
         }
 
+    end_offset = min(offset + max_chars, total_chars)
+    slice_content = full_content[offset:end_offset]
+    has_more = end_offset < total_chars
+
     return {
+        "index": resolved_index,
         "title": title,
-        "content": content,
+        "content": slice_content,
+        "offset": offset,
+        "chars_returned": len(slice_content),
+        "total_chars": total_chars,
         "approx_tokens": approx_tokens,
+        "has_more": has_more,
+        "next_offset": end_offset if has_more else None,
     }
 
 

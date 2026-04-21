@@ -336,37 +336,76 @@ class TestGetSectionContent:
         result = get_section_content(_H2_ONLY_MARKDOWN, 0)
         assert result["title"] == "First Section"
 
-    # -- Truncation tests --
+    # -- Pagination tests --
 
-    def test_truncation_returns_partial_content(self):
+    def test_default_returns_full_section_in_one_slice(self):
+        result = get_section_content(_H2_MARKDOWN, "Methods")
+        assert result["offset"] == 0
+        assert result["has_more"] is False
+        assert result["next_offset"] is None
+        assert result["chars_returned"] == result["total_chars"]
+        assert "index" in result
+
+    def test_small_max_chars_returns_first_slice(self):
         result = get_section_content(_H2_MARKDOWN, "Methods", max_chars=20)
-        assert result["truncated"] is True
+        assert result["offset"] == 0
+        assert result["chars_returned"] == 20
         assert len(result["content"]) == 20
-        assert result["remaining_chars"] > 0
-        assert "hint" in result
+        assert result["has_more"] is True
+        assert result["next_offset"] == 20
+        assert result["total_chars"] > 20
 
-    def test_truncation_no_limit_returns_full(self):
+    def test_pagination_continuation_is_contiguous(self):
+        first = get_section_content(_H2_MARKDOWN, "Methods", max_chars=20)
+        second = get_section_content(
+            _H2_MARKDOWN, "Methods",
+            offset=first["next_offset"],
+            max_chars=20,
+        )
+        assert second["offset"] == 20
         full = get_section_content(_H2_MARKDOWN, "Methods")
-        unlimited = get_section_content(_H2_MARKDOWN, "Methods", max_chars=None)
-        assert "truncated" not in full
-        assert "truncated" not in unlimited
-        assert full["content"] == unlimited["content"]
+        assert full["content"].startswith(first["content"] + second["content"])
 
-    def test_truncation_zero_means_no_limit(self):
-        """max_chars=0 is handled by the server layer (_resolve_max_chars),
-        but at the papers layer passing None means no truncation."""
-        result = get_section_content(_H2_MARKDOWN, "Methods", max_chars=None)
-        assert "truncated" not in result
-
-    def test_truncation_large_limit_returns_full(self):
-        result = get_section_content(_H2_MARKDOWN, "Methods", max_chars=999999)
-        assert "truncated" not in result
-
-    def test_truncation_preserves_approx_tokens(self):
-        """approx_tokens should reflect the full section, not the truncated content."""
+    def test_offset_at_total_chars_returns_empty_no_more(self):
         full = get_section_content(_H2_MARKDOWN, "Methods")
-        truncated = get_section_content(_H2_MARKDOWN, "Methods", max_chars=20)
-        assert truncated["approx_tokens"] == full["approx_tokens"]
+        end = get_section_content(
+            _H2_MARKDOWN, "Methods",
+            offset=full["total_chars"],
+        )
+        assert end["chars_returned"] == 0
+        assert end["content"] == ""
+        assert end["has_more"] is False
+        assert end["next_offset"] is None
+
+    def test_offset_beyond_section_errors(self):
+        full = get_section_content(_H2_MARKDOWN, "Methods")
+        result = get_section_content(
+            _H2_MARKDOWN, "Methods",
+            offset=full["total_chars"] + 100,
+        )
+        assert "error" in result
+
+    def test_negative_offset_errors(self):
+        result = get_section_content(_H2_MARKDOWN, "Methods", offset=-1)
+        assert "error" in result
+
+    def test_zero_or_negative_max_chars_errors(self):
+        for bad in (0, -1):
+            result = get_section_content(_H2_MARKDOWN, "Methods", max_chars=bad)
+            assert "error" in result
+
+    def test_approx_tokens_reflects_full_section_not_slice(self):
+        full = get_section_content(_H2_MARKDOWN, "Methods")
+        sliced = get_section_content(_H2_MARKDOWN, "Methods", max_chars=20)
+        assert sliced["approx_tokens"] == full["approx_tokens"]
+        assert sliced["total_chars"] == full["total_chars"]
+
+    def test_resolved_index_returned_for_title_lookup(self):
+        # _H2_MARKDOWN: Preamble, Introduction, Methods, ...
+        result = get_section_content(_H2_MARKDOWN, "Methods")
+        same_by_index = get_section_content(_H2_MARKDOWN, result["index"])
+        assert result["title"] == same_by_index["title"]
+        assert result["content"] == same_by_index["content"]
 
 
 # ---------------------------------------------------------------------------

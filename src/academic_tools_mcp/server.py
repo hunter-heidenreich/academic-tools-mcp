@@ -57,27 +57,27 @@ PAPER_ID = Annotated[
     ),
 ]
 
-# Default truncation limit for section content (~4000 tokens)
-_DEFAULT_MAX_CHARS = 16000
+_SECTION_HARNESS_CAP = 200000
 
-MAX_CHARS = Annotated[
-    int | None,
+SECTION_OFFSET = Annotated[
+    int,
     Field(
-        description="Maximum characters of section content to return. "
-        "Defaults to 16000 chars (~4000 tokens). "
-        "Set to 0 for full content (no truncation). "
-        "When truncated, the response includes remaining_chars and a hint.",
+        description="Character offset within the section to start reading. "
+        "Use the next_offset returned by a previous call to page through.",
+        ge=0,
     ),
 ]
 
-
-def _resolve_max_chars(max_chars: int | None) -> int | None:
-    """Normalize the max_chars parameter: None uses default, 0 means no limit."""
-    if max_chars is None:
-        return _DEFAULT_MAX_CHARS
-    if max_chars == 0:
-        return None
-    return max_chars
+SECTION_MAX_CHARS = Annotated[
+    int,
+    Field(
+        description="Slice size in characters (~4 chars per token). "
+        f"Default 16000 (~4000 tokens). Hard cap {_SECTION_HARNESS_CAP} chars "
+        "(enforced by the harness regardless of this setting).",
+        ge=1,
+        le=_SECTION_HARNESS_CAP,
+    ),
+]
 
 
 def _enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
@@ -140,20 +140,19 @@ def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
 
 @mcp.tool
 async def get_paper_metadata(identifier: PAPER_ID) -> dict[str, Any]:
-    """Get core metadata for a paper, auto-detecting the source from the identifier.
+    """Get core metadata for a paper, dispatched by identifier shape.
 
-    Every response carries `_source` = "arxiv" | "biorxiv" | "openalex"
-    alongside source-native fields:
+    Returns ``{_source, ...source-native fields}``:
       - arxiv: arxiv_id, title, published, updated, primary_category,
         categories, pdf_url, doi, journal_ref, comment.
       - biorxiv: doi, title, date, version, type, category, license, server,
-        published_doi, pdf_url. Chain `published_doi` into OpenAlex for
-        the journal version.
+        published_doi (chain to OpenAlex for the journal version), pdf_url.
       - openalex: title, doi, publication_year, publication_date, type,
         language, venue, is_oa, oa_status, oa_url.
 
-    Related: get_paper_authors / get_paper_abstract / get_paper_bibtex use
-    the same dispatch.
+    Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
+    Sibling tools (get_paper_authors / get_paper_abstract / get_paper_bibtex)
+    share the same dispatch and cached upstream object.
     """
     source = manual._resolve_metadata_source(identifier)
 
@@ -234,24 +233,22 @@ async def get_paper_authors(
     page: AUTHORS_PAGE = 1,
     page_size: AUTHORS_PAGE_SIZE = 25,
 ) -> dict[str, Any]:
-    """Get a page of the author list for a paper, auto-detecting the source.
+    """Get a page of the author list, dispatched by identifier shape.
 
-    Default page_size of 25 covers the vast majority of papers in one call.
-    Large-collaboration papers (HEP, biology consortia) can have thousands
-    of authors; page through them with `page` / `page_size`.
+    Default page_size 25 covers typical papers in one call; large-collaboration
+    papers can have thousands of authors — page through with page / page_size
+    (cap 25). Slicing is in-memory against the cached paper, no extra API hits.
 
-    Every response includes author_count (total across all pages), page,
-    page_size, has_more.
+    Returns ``{_source, author_count, page, page_size, has_more, authors, ...}``:
+      - arxiv: authors = [{name, affiliations?}].
+      - biorxiv: authors = [{name}] plus author_corresponding /
+        author_corresponding_institution on every page.
+      - openalex: authors = [{name, openalex_id, position, is_corresponding,
+        institutions}] plus page_institutions / page_institution_count
+        derived from the current page only (dedupe across pages for a
+        global view). openalex_id chains into get_author.
 
-    Per-source author fields:
-      - arxiv: name + optional affiliations.
-      - biorxiv: name. Top-level author_corresponding /
-        author_corresponding_institution are returned on every page.
-      - openalex: name, openalex_id, position, is_corresponding,
-        institutions. The page_institutions roll-up is derived from the
-        current page only (so it stays bounded for huge papers); dedupe
-        across pages yourself if you need a global institution list.
-        openalex_id chains into get_author.
+    Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
     source = manual._resolve_metadata_source(identifier)
     start = (page - 1) * page_size
@@ -331,7 +328,14 @@ async def get_paper_authors(
 
 @mcp.tool
 async def get_paper_abstract(identifier: PAPER_ID) -> dict[str, Any]:
-    """Get the abstract of a paper as plain text, auto-detecting the source."""
+    """Get a paper's abstract as plain text, dispatched by identifier shape.
+
+    Returns ``{_source, title, abstract}``. OpenAlex abstracts are
+    reconstructed from an inverted index — good enough for an LLM but not
+    byte-identical to the publisher's original.
+
+    Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
+    """
     source = manual._resolve_metadata_source(identifier)
 
     if source == "arxiv":
@@ -369,14 +373,17 @@ async def get_paper_abstract(identifier: PAPER_ID) -> dict[str, Any]:
 
 @mcp.tool
 async def get_paper_bibtex(identifier: PAPER_ID) -> dict[str, Any]:
-    """Generate a BibTeX entry for a paper, auto-detecting the source.
+    """Generate a BibTeX entry, dispatched by identifier shape.
 
-    - arxiv: @article if the paper has journal_ref, else @misc with
-      eprint / archivePrefix / primaryClass.
-    - biorxiv: @article when a published_doi is present, else @misc with
-      the preprint DOI and server.
-    - openalex: entry type inferred from the work type (@article,
-      @inproceedings, @misc for preprints, @phdthesis, etc.).
+    Returns ``{_source, bibtex}``. Entry type per source:
+      - arxiv: @article if the paper has journal_ref, else @misc with
+        eprint / archivePrefix / primaryClass.
+      - biorxiv: @article when published_doi is present, else @misc with
+        the preprint DOI and server.
+      - openalex: inferred from the work type (@article, @inproceedings,
+        @misc for preprints, @phdthesis, etc.).
+
+    Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
     source = manual._resolve_metadata_source(identifier)
 
@@ -607,16 +614,19 @@ async def download_pdf(identifier: PAPER_ID) -> dict[str, Any]:
 
 @mcp.tool
 async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
-    """Convert a downloaded PDF to markdown, then parse into sections.
+    """Convert a downloaded PDF to markdown and parse into sections.
 
-    Auto-detects the provider from the identifier and routes to the correct
-    cache namespace. This is a slow operation (5-10 minutes). Returns the
-    section index on completion. Skips conversion if markdown is already cached.
+    Step 2 of the PDF pipeline (download_pdf → convert_paper →
+    get_paper_sections → get_paper_section). Slow: 5-10 minutes per paper.
+    Skips conversion if markdown is already cached.
 
-    The PDF must be downloaded first via download_pdf (or import_paper with
-    a .pdf file for other sources).
+    Returns ``{namespace, canonical, sections}`` — the section index, same
+    shape as get_paper_sections.
 
-    Next step: get_paper_sections → get_paper_section.
+    Errors:
+      - PDF not cached → guidance to run download_pdf or import_paper.
+      - Conversion failure → non-retryable; suggests trying a different
+        version or pre-converted markdown via import_paper.
     """
     target = manual._resolve_target(identifier)
     pdf = target["pdf_path"]
@@ -644,15 +654,14 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
 async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
     """Get the section index for a converted paper.
 
-    Auto-detects the provider from the identifier. Returns section titles
-    with sub-heading previews and approximate token counts.
+    Step 3 of the PDF pipeline. Cheap to call (no network, no conversion).
+    Auto re-parses if the cached markdown's checksum changed.
 
-    The paper must be converted first via convert_paper.
+    Returns ``{total_sections, total_approx_tokens, sections}`` where each
+    section entry has ``{index, title, preview, approx_tokens}``.
 
-    Automatically re-parses if the markdown file has changed since the last
-    call (detected via SHA-256 checksum).
-
-    Next step: get_paper_section(identifier, section_index_or_title).
+    Errors: not yet converted → guidance to run convert_paper.
+    Next step: get_paper_section(identifier, index_or_title).
     """
     target = manual._resolve_target(identifier)
     namespace = target["namespace"]
@@ -700,24 +709,29 @@ async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
     }
 
 
-@mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
+@mcp.tool(meta={"anthropic/maxResultSizeChars": _SECTION_HARNESS_CAP})
 async def get_paper_section(
     identifier: PAPER_ID,
     section: Annotated[
         str,
         Field(
-            description="Section to retrieve: an integer index (e.g. '0') "
-            "or a title substring (e.g. 'Introduction', 'Methods'). "
-            "Use get_paper_sections to see available sections."
+            description="Integer index (e.g. '0') or case-insensitive title "
+            "substring (e.g. 'Introduction'). "
+            "Call get_paper_sections to see the available sections."
         ),
     ],
-    max_chars: MAX_CHARS = None,
+    offset: SECTION_OFFSET = 0,
+    max_chars: SECTION_MAX_CHARS = 16000,
 ) -> dict[str, Any]:
-    """Get the markdown content of a specific section from a converted paper.
+    """Read a slice of a section's body. Final step of the PDF pipeline.
 
-    Auto-detects the provider from the identifier. Accepts a section index
-    number or a title substring (case-insensitive).
-    Content is truncated by default (16000 chars). Set max_chars=0 for full content.
+    Returns: ``{index, title, content, offset, chars_returned, total_chars,
+    approx_tokens, has_more, next_offset}``. ``total_chars`` and
+    ``approx_tokens`` describe the full section, not the slice. When
+    ``has_more`` is true, call again with ``offset=next_offset`` to continue.
+
+    Errors: not yet converted → guidance to run convert_paper. Unknown or
+    ambiguous section title → error listing the available titles.
     """
     target = manual._resolve_target(identifier)
     md_path = papers._markdown_path(target["namespace"], target["canonical"])
@@ -735,7 +749,7 @@ async def get_paper_section(
     except ValueError:
         section_key = section
 
-    return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
+    return papers.get_section_content(markdown, section_key, offset=offset, max_chars=max_chars)
 
 
 # ---------------------------------------------------------------------------
@@ -758,17 +772,22 @@ async def import_paper(
     ],
     identifier: PAPER_ID,
 ) -> dict[str, Any]:
-    """Import a local PDF or pre-converted markdown file into the cache.
+    """Import a local PDF or pre-converted markdown into the cache.
+
+    For papers outside arXiv/bioRxiv/ACL: fetch the file yourself, then
+    call this with the paper's DOI / arXiv ID as the identifier. The same
+    identifier deduplicates with the rest of the pipeline so a later
+    download_pdf or convert_paper finds it without re-fetching.
 
     File type is detected by extension:
-      - .pdf → stored and ready for convert_paper → get_paper_sections → get_paper_section.
-      - .md / .markdown → stored and parsed into sections immediately; skip
-        the convert_paper step and go straight to get_paper_sections /
-        get_paper_section.
+      - .pdf → cached for convert_paper → get_paper_sections → get_paper_section.
+      - .md / .markdown → cached and parsed into sections immediately;
+        skip convert_paper.
 
-    Use the DOI (or arXiv ID) as the identifier when available so the file
-    lands in that provider's cache namespace — a subsequent download_pdf on
-    the same identifier will find it and skip redownload.
+    Returns ``{identifier, namespace, size_bytes, cached}`` for PDFs, or
+    ``{identifier, namespace, sections, cached}`` for markdown.
+
+    Errors: file not found / unsupported extension → ``{error}``.
     """
     ext = Path(file_path).suffix.lower()
     if ext == ".pdf":
