@@ -553,10 +553,20 @@ async def _download_pdf_by_provider(identifier: str) -> dict[str, Any]:
         return await biorxiv.download_pdf(identifier)
     else:
         return {
-            "error": f"Cannot auto-download for identifier: {identifier}. "
-            "Fetch the file yourself and hand it to import_paper (accepts .pdf "
-            "or .md/.markdown), then convert_paper → get_paper_sections → "
-            "get_paper_section (PDFs only — markdown imports skip conversion)."
+            "error": (
+                f"Cannot auto-download PDF for identifier: {identifier!r}. "
+                "Direct download is only supported for arXiv IDs, "
+                "bioRxiv/medRxiv DOIs (10.1101/...), and ACL Anthology DOIs "
+                "(10.18653/v1/...)."
+            ),
+            "suggestion": (
+                "Obtain the PDF yourself (publisher site, institutional access, "
+                "browser, curl, etc.), then call import_paper(file_path, identifier) "
+                "with the SAME identifier — it will be cached in the correct "
+                "namespace so convert_paper → get_paper_sections → get_paper_section "
+                "find it. import_paper also accepts pre-converted .md/.markdown "
+                "files, which skip the convert_paper step entirely."
+            ),
         }
 
 
@@ -564,12 +574,19 @@ async def _download_pdf_by_provider(identifier: str) -> dict[str, Any]:
 async def download_pdf(identifier: PAPER_ID) -> dict[str, Any]:
     """Download and cache the PDF for a paper, auto-detecting the source.
 
-    Supports arXiv IDs, ACL Anthology DOIs (10.18653/v1/...), and
-    bioRxiv/medRxiv DOIs (10.1101/...). Skips download if already cached.
-    For other sources, fetch the file yourself and hand it to import_paper
-    (accepts .pdf or .md/.markdown).
+    Direct download is only supported for three providers:
+      - arXiv IDs (e.g. 2301.00001)
+      - bioRxiv/medRxiv DOIs (10.1101/...)
+      - ACL Anthology DOIs (10.18653/v1/...)
 
-    Next step: convert_paper → get_paper_sections → get_paper_section.
+    Any other identifier (generic publisher DOI, freeform label, etc.)
+    returns an error — this tool will NOT attempt to fetch arbitrary PDFs.
+    For those papers, obtain the file yourself (publisher site, institutional
+    access, browser, curl) and pass it to import_paper(file_path, identifier);
+    using the same identifier deduplicates with the rest of the pipeline.
+
+    Skips download if already cached. Next step: convert_paper →
+    get_paper_sections → get_paper_section.
     """
     return await _download_pdf_by_provider(identifier)
 
