@@ -203,37 +203,74 @@ async def get_paper_metadata(identifier: PAPER_ID) -> dict[str, Any]:
     return _unknown_identifier_error(identifier)
 
 
-@mcp.tool
-async def get_paper_authors(identifier: PAPER_ID) -> dict[str, Any]:
-    """Get the author list for a paper, auto-detecting the source.
+AUTHORS_PAGE = Annotated[
+    int,
+    Field(description="Page number for the author list, starting at 1.", ge=1),
+]
 
-    Response shape per `_source`:
-      - arxiv: author_count, authors (name + optional affiliations).
-      - biorxiv: author_count, authors, author_corresponding,
-        author_corresponding_institution.
-      - openalex: author_count, authors (each with openalex_id, position,
-        is_corresponding, institutions), institution_count, all_institutions.
-        OpenAlex author entries carry openalex_id for chaining into
-        get_author.
+AUTHORS_PAGE_SIZE = Annotated[
+    int,
+    Field(description="Authors per page (1-25, default 25).", ge=1, le=25),
+]
+
+
+@mcp.tool
+async def get_paper_authors(
+    identifier: PAPER_ID,
+    page: AUTHORS_PAGE = 1,
+    page_size: AUTHORS_PAGE_SIZE = 25,
+) -> dict[str, Any]:
+    """Get a page of the author list for a paper, auto-detecting the source.
+
+    Default page_size of 25 covers the vast majority of papers in one call.
+    Large-collaboration papers (HEP, biology consortia) can have thousands
+    of authors; page through them with `page` / `page_size`.
+
+    Every response includes author_count (total across all pages), page,
+    page_size, has_more.
+
+    Per-source author fields:
+      - arxiv: name + optional affiliations.
+      - biorxiv: name. Top-level author_corresponding /
+        author_corresponding_institution are returned on every page.
+      - openalex: name, openalex_id, position, is_corresponding,
+        institutions. The page_institutions roll-up is derived from the
+        current page only (so it stays bounded for huge papers); dedupe
+        across pages yourself if you need a global institution list.
+        openalex_id chains into get_author.
     """
     source = manual._resolve_metadata_source(identifier)
+    start = (page - 1) * page_size
+    end = start + page_size
 
     if source == "arxiv":
         paper = await arxiv.get_paper(identifier)
         if "error" in paper:
             return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
         authors = paper.get("authors", [])
-        return {"_source": "arxiv", "author_count": len(authors), "authors": authors}
+        total = len(authors)
+        return {
+            "_source": "arxiv",
+            "author_count": total,
+            "page": page,
+            "page_size": page_size,
+            "has_more": end < total,
+            "authors": authors[start:end],
+        }
 
     if source == "biorxiv":
         paper = await biorxiv.get_paper(identifier)
         if "error" in paper:
             return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
         authors = paper.get("authors", [])
+        total = len(authors)
         return {
             "_source": "biorxiv",
-            "author_count": len(authors),
-            "authors": authors,
+            "author_count": total,
+            "page": page,
+            "page_size": page_size,
+            "has_more": end < total,
+            "authors": authors[start:end],
             "author_corresponding": paper.get("author_corresponding"),
             "author_corresponding_institution": paper.get("author_corresponding_institution"),
         }
@@ -242,9 +279,12 @@ async def get_paper_authors(identifier: PAPER_ID) -> dict[str, Any]:
         work = await _fetch_work(identifier)
         if "error" in work:
             return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+        all_authorships = work.get("authorships", [])
+        total = len(all_authorships)
+        page_authorships = all_authorships[start:end]
         authors: list[dict[str, Any]] = []
-        all_institutions: list[str] = []
-        for a in work.get("authorships", []):
+        page_institutions: list[str] = []
+        for a in page_authorships:
             author_info = a.get("author", {})
             inst_names = [
                 inst.get("display_name")
@@ -252,8 +292,8 @@ async def get_paper_authors(identifier: PAPER_ID) -> dict[str, Any]:
                 if inst.get("display_name")
             ]
             for name in inst_names:
-                if name not in all_institutions:
-                    all_institutions.append(name)
+                if name not in page_institutions:
+                    page_institutions.append(name)
             authors.append({
                 "name": author_info.get("display_name"),
                 "openalex_id": author_info.get("id"),
@@ -263,10 +303,13 @@ async def get_paper_authors(identifier: PAPER_ID) -> dict[str, Any]:
             })
         return {
             "_source": "openalex",
-            "author_count": len(authors),
+            "author_count": total,
+            "page": page,
+            "page_size": page_size,
+            "has_more": end < total,
             "authors": authors,
-            "institution_count": len(all_institutions),
-            "all_institutions": all_institutions,
+            "page_institution_count": len(page_institutions),
+            "page_institutions": page_institutions,
         }
 
     return _unknown_identifier_error(identifier)
