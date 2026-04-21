@@ -188,6 +188,21 @@ def import_local_pdf(file_path: str, identifier: str) -> dict[str, Any]:
     if not source.is_file():
         return {"error": f"Not a file: {file_path}"}
 
+    try:
+        with source.open("rb") as f:
+            header = f.read(5)
+    except OSError as e:
+        return {"error": f"Could not read file {file_path}: {e}"}
+
+    if header != b"%PDF-":
+        return {
+            "error": (
+                f"Not a PDF: {file_path} (missing %PDF- header). "
+                "If this is pre-converted text, save it as .md/.markdown and "
+                "re-import."
+            )
+        }
+
     target = _resolve_target(identifier)
     dest = target["pdf_path"]
 
@@ -255,7 +270,17 @@ def import_markdown(file_path: str, identifier: str) -> dict[str, Any]:
             "cached": True,
         }
 
-    markdown = source.read_text()
+    try:
+        markdown = source.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        return {
+            "error": (
+                f"Could not decode {file_path} as UTF-8 ({e.reason} at byte {e.start}). "
+                "Re-save the file as UTF-8 and retry."
+            )
+        }
+    except OSError as e:
+        return {"error": f"Could not read file {file_path}: {e}"}
 
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(markdown)

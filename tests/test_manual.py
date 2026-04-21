@@ -215,6 +215,27 @@ class TestImportLocalPdf:
         assert result["namespace"] == "biorxiv"
         assert "biorxiv" in result["path"]
 
+    def test_rejects_non_pdf_with_pdf_extension(self, tmp_path):
+        # JPEG magic bytes, not %PDF-
+        bogus = tmp_path / "fake.pdf"
+        bogus.write_bytes(b"\xff\xd8\xff\xe0 some jpeg bytes")
+
+        import uuid
+        ident = f"10.1038/test-bogus-{uuid.uuid4().hex[:8]}"
+        result = manual.import_local_pdf(str(bogus), ident)
+        assert "error" in result
+        assert "%PDF-" in result["error"]
+
+    def test_rejects_empty_pdf_file(self, tmp_path):
+        empty = tmp_path / "empty.pdf"
+        empty.write_bytes(b"")
+
+        import uuid
+        ident = f"10.1038/test-empty-{uuid.uuid4().hex[:8]}"
+        result = manual.import_local_pdf(str(empty), ident)
+        assert "error" in result
+        assert "%PDF-" in result["error"]
+
 
 # ---------------------------------------------------------------------------
 # Markdown import
@@ -284,3 +305,14 @@ class TestImportMarkdown:
         assert "error" not in result
         assert result["namespace"] == "arxiv"
         assert "arxiv" in result["markdown_path"]
+
+    def test_rejects_non_utf8_markdown(self, tmp_path):
+        bad = tmp_path / "paper.md"
+        # latin-1 byte that's not valid UTF-8 mid-stream
+        bad.write_bytes(b"## Title\n\nCaf\xe9 \xff bytes\n")
+
+        import uuid
+        ident = f"10.1038/test-utf8-{uuid.uuid4().hex[:8]}"
+        result = manual.import_markdown(str(bad), ident)
+        assert "error" in result
+        assert "UTF-8" in result["error"]

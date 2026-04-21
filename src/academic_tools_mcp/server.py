@@ -765,7 +765,8 @@ async def import_paper(
     file_path: Annotated[
         str,
         Field(
-            description="Absolute path to a local .pdf or .md/.markdown file. "
+            description="Path to a local .pdf or .md/.markdown file. "
+            "Absolute or ~/-prefixed paths recommended. "
             "PDF is routed through the conversion pipeline; markdown is "
             "imported directly and skips conversion."
         ),
@@ -777,23 +778,32 @@ async def import_paper(
     For papers outside arXiv/bioRxiv/ACL: fetch the file yourself, then
     call this with the paper's DOI / arXiv ID as the identifier. The same
     identifier deduplicates with the rest of the pipeline so a later
-    download_pdf or convert_paper finds it without re-fetching.
+    download_pdf or convert_paper finds it without re-fetching. Unrecognised
+    identifiers still work — the file lands in a ``manual`` namespace and
+    the rest of the pipeline keys off the same identifier.
 
     File type is detected by extension:
-      - .pdf → cached for convert_paper → get_paper_sections → get_paper_section.
-      - .md / .markdown → cached and parsed into sections immediately;
-        skip convert_paper.
+      - .pdf → validated via %PDF- header, then cached for convert_paper →
+        get_paper_sections → get_paper_section.
+      - .md / .markdown → read as UTF-8, cached, and parsed into sections
+        immediately; skip convert_paper.
 
     Returns ``{identifier, namespace, size_bytes, cached}`` for PDFs, or
-    ``{identifier, namespace, sections, cached}`` for markdown.
+    ``{identifier, namespace, section_count, cached}`` for markdown — call
+    get_paper_sections for the full section index with previews.
 
-    Errors: file not found / unsupported extension → ``{error}``.
+    Errors: file not found, not a valid PDF, non-UTF-8 markdown, or
+    unsupported extension → ``{error}``.
     """
     ext = Path(file_path).suffix.lower()
     if ext == ".pdf":
         return _strip_internal_paths(manual.import_local_pdf(file_path, identifier))
     if ext in _MARKDOWN_EXTS:
-        return _strip_internal_paths(manual.import_markdown(file_path, identifier))
+        result = _strip_internal_paths(manual.import_markdown(file_path, identifier))
+        if "sections" in result:
+            sections = result.pop("sections")
+            result["section_count"] = len(sections)
+        return result
     return {
         "error": (
             f"Unsupported file extension {ext!r}. "
