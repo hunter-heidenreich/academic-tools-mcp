@@ -92,8 +92,7 @@ Pass an arXiv ID (`2301.00001`, `hep-th/9901001`) or any DOI — including bioRx
 
 | Tool | Description |
 |------|-------------|
-| `get_author_profile` | Name, ORCID, institutions, h-index, top topics |
-| `get_author_affiliations` | Institution history with years |
+| `get_author` | Name, ORCID, institutions (current + historical with years), h-index, i10-index, works/citation counts, top topics |
 
 Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 
@@ -126,12 +125,11 @@ The count tools follow a **count-then-page** pattern: call `_count` first to see
 
 | Tool | Description |
 |------|-------------|
-| `import_pdf` | Import a local PDF (e.g. from Zotero, or a file you downloaded) with a user-supplied identifier |
-| `import_markdown` | Import pre-converted markdown directly |
+| `import_paper` | Import a local `.pdf` (e.g. from Zotero or a file you downloaded) or pre-converted `.md`/`.markdown` with a user-supplied identifier. File type is detected by extension. |
 
-For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself (browser, `curl`, publisher portal, institutional proxy) and then call `import_pdf` — the server deliberately does not download arbitrary URLs.
+For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself (browser, `curl`, publisher portal, institutional proxy) and then call `import_paper` — the server deliberately does not download arbitrary URLs.
 
-After importing, use the unified pipeline tools (`convert_paper` → `get_paper_sections` → `get_paper_section`) with the same identifier.
+After importing a PDF, use the unified pipeline tools (`convert_paper` → `get_paper_sections` → `get_paper_section`) with the same identifier. Markdown imports skip the conversion step and go straight to `get_paper_sections` / `get_paper_section`.
 
 **Provider-aware routing**: if the identifier is an arXiv ID, bioRxiv DOI, or ACL DOI, the file is stored in that provider's cache namespace automatically. A subsequent `download_pdf("2301.00001")` will find an already-imported PDF — no duplicates.
 
@@ -140,8 +138,7 @@ After importing, use the unified pipeline tools (`convert_paper` → `get_paper_
 | Tool | Description |
 |------|-------------|
 | `search_wikipedia` | Search for articles matching a query |
-| `get_wikipedia_summary` | Title, description, extract, and URL for an article |
-| `check_wikipedia_page` | Check if a page exists (detects disambiguation pages) |
+| `get_wikipedia_summary` | Title, description, extract, URL, and page type (`standard` / `disambiguation`); errors if the page doesn't exist |
 
 ## PDF Pipeline
 
@@ -225,7 +222,7 @@ uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ## Architecture
 
 ```
-server.py (21 MCP tools)
+server.py (18 MCP tools)
   ├── openalex.py       → OpenAlex API     → cache.py
   ├── arxiv.py          → arXiv Atom API   → cache.py
   ├── biorxiv.py        → bioRxiv API      → cache.py

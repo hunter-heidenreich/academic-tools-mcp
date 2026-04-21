@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
@@ -20,7 +21,7 @@ mcp = FastMCP(
         "fields. "
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section, "
         "auto-detects the provider. For PDFs not on arXiv/bioRxiv/ACL, fetch the file "
-        "yourself and hand it to import_pdf (or import_markdown for pre-converted text). "
+        "yourself and hand it to import_paper (accepts .pdf or .md/.markdown). "
         "Reference/citation tools use a count-then-page pattern to avoid token blowouts."
     ),
 )
@@ -213,7 +214,7 @@ async def get_paper_authors(identifier: PAPER_ID) -> dict[str, Any]:
       - openalex: author_count, authors (each with openalex_id, position,
         is_corresponding, institutions), institution_count, all_institutions.
         OpenAlex author entries carry openalex_id for chaining into
-        get_author_profile / get_author_affiliations.
+        get_author.
     """
     source = manual._resolve_metadata_source(identifier)
 
@@ -402,22 +403,35 @@ async def get_paper_topics(doi: DOI) -> dict[str, Any]:
 
 
 @mcp.tool
-async def get_author_profile(author_id: AUTHOR_ID) -> dict[str, Any]:
-    """Get an author's profile: name, ORCID, current institutions, publication/citation counts, h-index, and top topics."""
+async def get_author(author_id: AUTHOR_ID) -> dict[str, Any]:
+    """Get an author's full OpenAlex record: profile stats plus affiliation history.
+
+    Returns name, ORCID, OpenAlex ID, works_count, cited_by_count, h_index,
+    i10_index, current institutions, top 5 topics, and the full affiliation
+    history (institution + country_code + years for each stint).
+    """
     author = await openalex.get_author(author_id)
     if "error" in author:
         return _enrich_error(author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL.")
 
     stats = author.get("summary_stats") or {}
-    last_institutions = [
+    current_institutions = [
         inst.get("display_name")
         for inst in (author.get("last_known_institutions") or [])
         if inst.get("display_name")
     ]
-    topics = [
+    top_topics = [
         {"name": t.get("display_name"), "count": t.get("count")}
         for t in (author.get("topics") or [])[:5]
     ]
+    affiliations = []
+    for aff in author.get("affiliations") or []:
+        inst = aff.get("institution") or {}
+        affiliations.append({
+            "institution": inst.get("display_name"),
+            "country_code": inst.get("country_code"),
+            "years": sorted(aff.get("years") or []),
+        })
 
     return {
         "name": author.get("display_name"),
@@ -427,30 +441,8 @@ async def get_author_profile(author_id: AUTHOR_ID) -> dict[str, Any]:
         "cited_by_count": author.get("cited_by_count"),
         "h_index": stats.get("h_index"),
         "i10_index": stats.get("i10_index"),
-        "current_institutions": last_institutions,
-        "top_topics": topics,
-    }
-
-
-@mcp.tool
-async def get_author_affiliations(author_id: AUTHOR_ID) -> dict[str, Any]:
-    """Get an author's affiliation history: institutions with the years they were affiliated."""
-    author = await openalex.get_author(author_id)
-    if "error" in author:
-        return _enrich_error(author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL.")
-
-    affiliations = []
-    for aff in author.get("affiliations") or []:
-        inst = aff.get("institution") or {}
-        years = sorted(aff.get("years") or [])
-        affiliations.append({
-            "institution": inst.get("display_name"),
-            "country_code": inst.get("country_code"),
-            "years": years,
-        })
-
-    return {
-        "name": author.get("display_name"),
+        "current_institutions": current_institutions,
+        "top_topics": top_topics,
         "affiliations": affiliations,
     }
 
@@ -519,9 +511,9 @@ async def _download_pdf_by_provider(identifier: str) -> dict[str, Any]:
     else:
         return {
             "error": f"Cannot auto-download for identifier: {identifier}. "
-            "Fetch the PDF yourself and hand it to import_pdf (local file) or "
-            "import_markdown (pre-converted), then convert_paper → "
-            "get_paper_sections → get_paper_section."
+            "Fetch the file yourself and hand it to import_paper (accepts .pdf "
+            "or .md/.markdown), then convert_paper → get_paper_sections → "
+            "get_paper_section (PDFs only — markdown imports skip conversion)."
         }
 
 
@@ -531,8 +523,8 @@ async def download_pdf(identifier: PAPER_ID) -> dict[str, Any]:
 
     Supports arXiv IDs, ACL Anthology DOIs (10.18653/v1/...), and
     bioRxiv/medRxiv DOIs (10.1101/...). Skips download if already cached.
-    For other sources, fetch the PDF yourself and hand it to import_pdf
-    (or import_markdown for pre-converted text).
+    For other sources, fetch the file yourself and hand it to import_paper
+    (accepts .pdf or .md/.markdown).
 
     Next step: convert_paper → get_paper_sections → get_paper_section.
     """
@@ -547,8 +539,8 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
     cache namespace. This is a slow operation (5-10 minutes). Returns the
     section index on completion. Skips conversion if markdown is already cached.
 
-    The PDF must be downloaded first via download_pdf (or import_pdf for
-    other sources).
+    The PDF must be downloaded first via download_pdf (or import_paper with
+    a .pdf file for other sources).
 
     Next step: get_paper_sections → get_paper_section.
     """
@@ -560,7 +552,7 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
             "error": f"PDF not cached for: {identifier}. "
             "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section. "
             "For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself and "
-            "hand it to import_pdf (or import_markdown for pre-converted text)."
+            "hand it to import_paper (accepts .pdf or .md/.markdown)."
         }
 
     result = await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
@@ -569,7 +561,7 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
             result,
             "Conversion failed permanently — do not retry. "
             "The PDF may be too large, corrupted, or in an unsupported format. "
-            "Try importing a different version or pre-converted markdown via import_markdown.",
+            "Try importing a different version or pre-converted markdown via import_paper.",
         )
     return result
 
@@ -677,47 +669,45 @@ async def get_paper_section(
 # ---------------------------------------------------------------------------
 
 
+_MARKDOWN_EXTS = {".md", ".markdown"}
+
+
 @mcp.tool
-async def import_pdf(
+async def import_paper(
     file_path: Annotated[
         str,
         Field(
-            description="Absolute path to a local PDF file "
-            "(e.g. from Zotero storage)."
+            description="Absolute path to a local .pdf or .md/.markdown file. "
+            "PDF is routed through the conversion pipeline; markdown is "
+            "imported directly and skips conversion."
         ),
     ],
     identifier: PAPER_ID,
 ) -> dict[str, Any]:
-    """Import a local PDF file into the cache for conversion and section access.
+    """Import a local PDF or pre-converted markdown file into the cache.
 
-    Use this for papers you already have on disk (e.g. from Zotero, email,
-    or publisher downloads). The identifier is used as the cache key — use
-    the DOI when available so you can chain into Crossref/OpenAlex tools.
+    File type is detected by extension:
+      - .pdf → stored and ready for convert_paper → get_paper_sections → get_paper_section.
+      - .md / .markdown → stored and parsed into sections immediately; skip
+        the convert_paper step and go straight to get_paper_sections /
+        get_paper_section.
 
-    Next step: convert_paper → get_paper_sections → get_paper_section.
+    Use the DOI (or arXiv ID) as the identifier when available so the file
+    lands in that provider's cache namespace — a subsequent download_pdf on
+    the same identifier will find it and skip redownload.
     """
-    return manual.import_local_pdf(file_path, identifier)
-
-
-@mcp.tool
-async def import_markdown(
-    file_path: Annotated[
-        str,
-        Field(
-            description="Absolute path to a local markdown file."
+    ext = Path(file_path).suffix.lower()
+    if ext == ".pdf":
+        return manual.import_local_pdf(file_path, identifier)
+    if ext in _MARKDOWN_EXTS:
+        return manual.import_markdown(file_path, identifier)
+    return {
+        "error": (
+            f"Unsupported file extension {ext!r}. "
+            "Expected .pdf (for the PDF pipeline) or .md/.markdown (for "
+            "pre-converted text)."
         ),
-    ],
-    identifier: PAPER_ID,
-) -> dict[str, Any]:
-    """Import a pre-converted markdown file directly into the cache.
-
-    Skips the PDF download and conversion steps entirely — the section
-    pipeline (get_paper_sections / get_paper_section) works immediately
-    after this call.
-
-    Use this when you already have markdown from any PDF-to-markdown tool.
-    """
-    return manual.import_markdown(file_path, identifier)
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1000,22 +990,6 @@ async def get_wikipedia_summary(
     return await wikipedia.get_summary(title)
 
 
-@mcp.tool
-async def check_wikipedia_page(
-    title: Annotated[
-        str,
-        Field(
-            description="Wikipedia article title to verify "
-            "(e.g. 'Cytochrome P450')."
-        ),
-    ],
-) -> dict[str, Any]:
-    """Check if a Wikipedia page exists and is a standard article (not a disambiguation page).
-
-    Returns exists, is_disambiguation, canonical title, and URL.
-    Use this to verify Wikipedia URLs before suggesting them as cross-reference links.
-    """
-    return await wikipedia.page_exists(title)
 
 
 if __name__ == "__main__":
