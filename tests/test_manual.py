@@ -1,5 +1,3 @@
-import pytest
-
 from academic_tools_mcp import manual
 
 
@@ -216,43 +214,6 @@ class TestImportLocalPdf:
         assert "error" not in result
         assert result["namespace"] == "biorxiv"
         assert "biorxiv" in result["path"]
-
-
-# ---------------------------------------------------------------------------
-# URL download
-# ---------------------------------------------------------------------------
-
-
-class TestDownloadPdfFromUrl:
-    @pytest.mark.asyncio
-    async def test_html_response_rejected(self, monkeypatch):
-        """Should reject responses that look like HTML (login pages, etc.)."""
-        import httpx
-
-        mock_response = httpx.Response(
-            200,
-            content=b"<html>Login required</html>",
-            headers={"content-type": "text/html; charset=utf-8"},
-            request=httpx.Request("GET", "http://example.com/paper.pdf"),
-        )
-
-        class MockClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                pass
-
-            async def get(self, url, **kwargs):
-                return mock_response
-
-        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: MockClient())
-
-        result = await manual.download_pdf_from_url(
-            "http://example.com/paper.pdf", "test-html-reject"
-        )
-        assert "error" in result
-        assert "HTML" in result["error"]
 
 
 # ---------------------------------------------------------------------------

@@ -16,11 +16,10 @@ mcp = FastMCP(
         "Unified paper tools (get_paper_metadata / get_paper_authors / get_paper_abstract / "
         "get_paper_bibtex) accept arXiv IDs or any DOI and auto-route to arXiv, bioRxiv, or "
         "OpenAlex — each response carries `_source` so you can interpret provider-specific "
-        "fields. get_paper_topics and get_paper_citations_summary are OpenAlex-only and "
-        "require a DOI. "
+        "fields. "
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section, "
-        "auto-detects the provider. For local files or arbitrary URLs, use "
-        "import_pdf / download_pdf_url / import_markdown first. "
+        "auto-detects the provider. For PDFs not on arXiv/bioRxiv/ACL, fetch the file "
+        "yourself and hand it to import_pdf (or import_markdown for pre-converted text). "
         "Reference/citation tools use a count-then-page pattern to avoid token blowouts."
     ),
 )
@@ -138,8 +137,7 @@ async def get_paper_metadata(identifier: PAPER_ID) -> dict[str, Any]:
         language, venue, is_oa, oa_status, oa_url.
 
     Related: get_paper_authors / get_paper_abstract / get_paper_bibtex use
-    the same dispatch. get_paper_topics / get_paper_citations_summary are
-    OpenAlex-only and require a DOI.
+    the same dispatch.
     """
     source = manual._resolve_metadata_source(identifier)
 
@@ -344,7 +342,8 @@ async def get_paper_bibtex(identifier: PAPER_ID) -> dict[str, Any]:
     return _unknown_identifier_error(identifier)
 
 
-@mcp.tool
+# Temporarily disabled — re-enable by restoring the @mcp.tool decorator.
+# @mcp.tool
 async def get_paper_citations_summary(doi: DOI) -> dict[str, Any]:
     """Get citation statistics for a paper (OpenAlex only, requires a DOI).
 
@@ -363,7 +362,8 @@ async def get_paper_citations_summary(doi: DOI) -> dict[str, Any]:
     }
 
 
-@mcp.tool
+# Temporarily disabled — re-enable by restoring the @mcp.tool decorator.
+# @mcp.tool
 async def get_paper_topics(doi: DOI) -> dict[str, Any]:
     """Get topic classifications and keywords for a paper (OpenAlex only, requires a DOI).
 
@@ -518,8 +518,9 @@ async def _download_pdf_by_provider(identifier: str) -> dict[str, Any]:
     else:
         return {
             "error": f"Cannot auto-download for identifier: {identifier}. "
-            "Use import_pdf (local file) or download_pdf_url (URL) instead, "
-            "then convert_paper → get_paper_sections → get_paper_section."
+            "Fetch the PDF yourself and hand it to import_pdf (local file) or "
+            "import_markdown (pre-converted), then convert_paper → "
+            "get_paper_sections → get_paper_section."
         }
 
 
@@ -529,7 +530,8 @@ async def download_pdf(identifier: PAPER_ID) -> dict[str, Any]:
 
     Supports arXiv IDs, ACL Anthology DOIs (10.18653/v1/...), and
     bioRxiv/medRxiv DOIs (10.1101/...). Skips download if already cached.
-    For other sources, use import_pdf or download_pdf_url instead.
+    For other sources, fetch the PDF yourself and hand it to import_pdf
+    (or import_markdown for pre-converted text).
 
     Next step: convert_paper → get_paper_sections → get_paper_section.
     """
@@ -544,8 +546,8 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
     cache namespace. This is a slow operation (5-10 minutes). Returns the
     section index on completion. Skips conversion if markdown is already cached.
 
-    The PDF must be downloaded first via download_pdf (or import_pdf /
-    download_pdf_url for other sources).
+    The PDF must be downloaded first via download_pdf (or import_pdf for
+    other sources).
 
     Next step: get_paper_sections → get_paper_section.
     """
@@ -556,7 +558,8 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
         return {
             "error": f"PDF not cached for: {identifier}. "
             "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section. "
-            "For local files use import_pdf; for URLs use download_pdf_url."
+            "For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself and "
+            "hand it to import_pdf (or import_markdown for pre-converted text)."
         }
 
     result = await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
@@ -693,28 +696,6 @@ async def import_pdf(
     Next step: convert_paper → get_paper_sections → get_paper_section.
     """
     return manual.import_local_pdf(file_path, identifier)
-
-
-@mcp.tool
-async def download_pdf_url(
-    url: Annotated[
-        str,
-        Field(
-            description="Direct URL to a PDF file. Must point to the actual "
-            "PDF, not a landing page."
-        ),
-    ],
-    identifier: PAPER_ID,
-) -> dict[str, Any]:
-    """Download a PDF from any URL and cache it for conversion and section access.
-
-    Use this for PDFs from publisher sites, institutional repositories, or
-    personal pages that aren't covered by the arXiv/bioRxiv/ACL pipelines.
-    The identifier is used as the cache key — use the DOI when available.
-
-    Next step: convert_paper → get_paper_sections → get_paper_section.
-    """
-    return await manual.download_pdf_from_url(url, identifier)
 
 
 @mcp.tool

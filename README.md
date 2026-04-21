@@ -86,8 +86,6 @@ Pass an arXiv ID (`2301.00001`, `hep-th/9901001`) or any DOI — including bioRx
 
 | Tool | Description |
 |------|-------------|
-| `get_paper_topics` | Topic classifications and keywords with scores (OpenAlex only — requires DOI) |
-| `get_paper_citations_summary` | Citation count, reference count, retraction status (OpenAlex only — requires DOI) |
 | `search_arxiv` | Search arXiv with field prefixes (`ti:`, `au:`, `abs:`, `cat:`) and boolean operators |
 
 ### Authors
@@ -108,7 +106,7 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 | `get_paper_sections` | Section index with titles, sub-heading previews, token counts |
 | `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
 
-All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, use `import_pdf` or `download_pdf_url` first (see [Manual import](#manual-import) below).
+All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, fetch the PDF yourself and hand it to `import_pdf` (or `import_markdown` for pre-converted text) — see [Manual import](#manual-import) below.
 
 ### Crossref
 
@@ -135,9 +133,10 @@ Returns DOI-to-DOI links with OMID, OpenAlex, and PMID cross-references. May hav
 
 | Tool | Description |
 |------|-------------|
-| `import_pdf` | Import a local PDF (e.g. from Zotero) with a user-supplied identifier |
-| `download_pdf_url` | Download a PDF from any URL |
+| `import_pdf` | Import a local PDF (e.g. from Zotero, or a file you downloaded) with a user-supplied identifier |
 | `import_markdown` | Import pre-converted markdown directly |
+
+For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself (browser, `curl`, publisher portal, institutional proxy) and then call `import_pdf` — the server deliberately does not download arbitrary URLs.
 
 After importing, use the unified pipeline tools (`convert_paper` → `get_paper_sections` → `get_paper_section`) with the same identifier.
 
@@ -233,7 +232,7 @@ uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ## Architecture
 
 ```
-server.py (26 MCP tools)
+server.py (23 MCP tools)
   ├── openalex.py       → OpenAlex API     → cache.py
   ├── arxiv.py          → arXiv Atom API   → cache.py
   ├── biorxiv.py        → bioRxiv API      → cache.py

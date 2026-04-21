@@ -1,12 +1,11 @@
-"""Manual paper import — for local files, arbitrary URLs, and pre-converted markdown.
+"""Manual paper import — for local files and pre-converted markdown.
 
-Supports three intake paths:
+Supports two intake paths:
   1. Local PDF: copy an existing PDF into the cache
-  2. URL download: fetch a PDF from any URL into the cache
-  3. Markdown import: copy a pre-converted markdown file directly into the cache,
+  2. Markdown import: copy a pre-converted markdown file directly into the cache,
      skipping the PDF download and conversion steps entirely
 
-All paths use a user-supplied identifier (typically a DOI or arXiv ID) as the
+Both paths use a user-supplied identifier (typically a DOI or arXiv ID) as the
 cache key.  When the identifier matches a known provider (arXiv, bioRxiv/medRxiv,
 ACL Anthology), the PDF/markdown is stored in **that provider's** cache namespace
 so the native pipeline tools find it — no duplicates.  Unrecognised identifiers
@@ -17,8 +16,6 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any
-
-import httpx
 
 from . import cache, papers
 
@@ -211,59 +208,6 @@ def import_local_pdf(file_path: str, identifier: str) -> dict[str, Any]:
         "namespace": target["namespace"],
         "path": str(dest),
         "size_bytes": dest.stat().st_size,
-        "cached": False,
-    }
-
-
-async def download_pdf_from_url(url: str, identifier: str) -> dict[str, Any]:
-    """Download a PDF from an arbitrary URL and cache it.
-
-    Routes to the correct provider namespace based on the identifier.
-
-    Args:
-        url: Direct URL to a PDF file.
-        identifier: DOI, arXiv ID, or freeform label to key this paper.
-
-    Returns:
-        Dict with the cache path and size, or an error.
-    """
-    target = _resolve_target(identifier)
-    dest = target["pdf_path"]
-
-    if dest.exists():
-        return {
-            "identifier": _normalize_identifier(identifier),
-            "namespace": target["namespace"],
-            "url": url,
-            "path": str(dest),
-            "size_bytes": dest.stat().st_size,
-            "cached": True,
-        }
-
-    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        response = await client.get(url)
-
-    if response.status_code == 404:
-        return {"error": f"PDF not found at URL: {url}"}
-
-    response.raise_for_status()
-
-    # Basic content-type sanity check (some servers don't set it correctly)
-    content_type = response.headers.get("content-type", "")
-    if content_type and "html" in content_type and "pdf" not in content_type:
-        return {
-            "error": f"URL returned HTML, not a PDF. You may need to authenticate or use a direct download link. Content-Type: {content_type}"
-        }
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(response.content)
-
-    return {
-        "identifier": _normalize_identifier(identifier),
-        "namespace": target["namespace"],
-        "url": url,
-        "path": str(dest),
-        "size_bytes": len(response.content),
         "cached": False,
     }
 
