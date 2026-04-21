@@ -4,15 +4,21 @@ This module handles:
   - Running a configurable PDF converter (MinerU, Marker, or custom) to produce markdown
   - Parsing markdown into sections with sub-heading previews
   - Retrieving individual sections by title or index
+  - Automatic cache invalidation when markdown changes (via checksum)
 
 The converter backend is configured via PDF_CONVERTER and PDF_CONVERTER_VENV
 environment variables. See _CONVERTERS for named backends.
 
 Section splitting is adaptive: it detects the heading level used for main
 sections (H1 or H2) based on what the document actually contains.
+
+Cache invalidation: section indices are checksummed against the source markdown.
+If the markdown file changes (e.g., manual edits), the sections are re-parsed
+on the next call.
 """
 
 import asyncio
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -57,6 +63,17 @@ def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
         cmd = f'source "{activate}" && {cmd}'
 
     return cmd
+
+
+def _markdown_checksum(md_path: Path) -> str:
+    """Compute SHA-256 hex digest of a markdown file.
+    
+    Used for cache invalidation — if the markdown changes, sections must be re-parsed.
+    Returns empty string if the file doesn't exist.
+    """
+    if not md_path.exists():
+        return ""
+    return hashlib.sha256(md_path.read_bytes()).hexdigest()
 
 
 def _markdown_path(namespace: str, canonical: str) -> Path:
@@ -258,18 +275,22 @@ async def convert_pdf(
     """
     md_path = _markdown_path(namespace, canonical)
 
-    # Check if already converted
+    # Check if already converted and cache is valid
     if md_path.exists():
-        markdown = md_path.read_text()
-        sections = parse_sections(markdown)
-        # Cache the section index
-        sections_data = {"sections": sections}
-        cache.put(namespace, "sections", _sections_key(canonical), sections_data)
-        return {
-            "markdown_path": str(md_path),
-            "sections": sections,
-            "cached": True,
-        }
+        cached = cache.get(namespace, "sections", _sections_key(canonical))
+        if cached is not None:
+            # Verify checksum if present; missing checksum means re-parse (legacy behavior)
+            stored_checksum = cached.get("markdown_checksum", None)
+            current_checksum = _markdown_checksum(md_path)
+            if stored_checksum is None or stored_checksum == current_checksum:
+                # Cache is valid
+                sections = cached.get("sections", parse_sections(md_path.read_text()))
+                return {
+                    "markdown_path": str(md_path),
+                    "sections": sections,
+                    "cached": True,
+                }
+            # else: checksum mismatch -> re-parse below
 
     if not pdf_path.exists():
         return {"error": f"PDF not found at: {pdf_path}"}
@@ -331,9 +352,12 @@ async def convert_pdf(
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(markdown)
 
-    # Parse sections and cache the index
+    # Parse sections and cache with checksum
     sections = parse_sections(markdown)
-    sections_data = {"sections": sections}
+    sections_data = {
+        "sections": sections,
+        "markdown_checksum": _markdown_checksum(md_path),
+    }
     cache.put(namespace, "sections", _sections_key(canonical), sections_data)
 
     # Clean up temp directory

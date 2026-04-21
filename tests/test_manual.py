@@ -110,6 +110,45 @@ class TestResolveTarget:
         assert target["namespace"] == "manual"
 
 
+class TestResolveMetadataSource:
+    def test_arxiv_new_style(self):
+        assert manual._resolve_metadata_source("2301.00001") == "arxiv"
+
+    def test_arxiv_with_version(self):
+        assert manual._resolve_metadata_source("2301.00001v2") == "arxiv"
+
+    def test_arxiv_old_style(self):
+        assert manual._resolve_metadata_source("hep-th/9901001") == "arxiv"
+
+    def test_arxiv_url(self):
+        assert manual._resolve_metadata_source("https://arxiv.org/abs/2301.00001") == "arxiv"
+
+    def test_biorxiv_doi(self):
+        assert manual._resolve_metadata_source("10.1101/2024.01.01.573838") == "biorxiv"
+
+    def test_biorxiv_url(self):
+        assert manual._resolve_metadata_source("https://doi.org/10.1101/2024.01.01.573838") == "biorxiv"
+
+    def test_acl_doi_routes_to_openalex(self):
+        # ACL Anthology has no metadata API — its DOIs route to OpenAlex
+        assert manual._resolve_metadata_source("10.18653/v1/2023.acl-long.1") == "openalex"
+
+    def test_generic_publisher_doi_routes_to_openalex(self):
+        assert manual._resolve_metadata_source("10.1038/s41586-024-00001-1") == "openalex"
+
+    def test_doi_url_routes_to_openalex(self):
+        assert manual._resolve_metadata_source("https://doi.org/10.1038/s41586-024-00001-1") == "openalex"
+
+    def test_doi_prefix_routes_to_openalex(self):
+        assert manual._resolve_metadata_source("doi:10.1038/s41586-024-00001-1") == "openalex"
+
+    def test_freeform_label_returns_none(self):
+        assert manual._resolve_metadata_source("my-paper-2024") is None
+
+    def test_empty_string_returns_none(self):
+        assert manual._resolve_metadata_source("") is None
+
+
 # ---------------------------------------------------------------------------
 # Local import
 # ---------------------------------------------------------------------------

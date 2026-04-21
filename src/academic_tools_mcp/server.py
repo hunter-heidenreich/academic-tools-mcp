@@ -13,10 +13,14 @@ mcp = FastMCP(
         "Crossref, OpenCitations, ACL Anthology, and Wikipedia APIs. "
         "Use these tools to look up paper metadata, authors, abstracts, BibTeX citations, "
         "citation/reference graphs, and to download and read full paper content section-by-section. "
-        "Supports DOIs, arXiv IDs, and bioRxiv DOIs as identifiers. "
-        "PDF pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section. "
-        "These pipeline tools auto-detect the provider from the identifier. "
-        "For local files or arbitrary URLs, use import_pdf / download_pdf_url / import_markdown first. "
+        "Unified paper tools (get_paper_metadata / get_paper_authors / get_paper_abstract / "
+        "get_paper_bibtex) accept arXiv IDs or any DOI and auto-route to arXiv, bioRxiv, or "
+        "OpenAlex — each response carries `_source` so you can interpret provider-specific "
+        "fields. get_paper_topics and get_paper_citations_summary are OpenAlex-only and "
+        "require a DOI. "
+        "PDF pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section, "
+        "auto-detects the provider. For local files or arbitrary URLs, use "
+        "import_pdf / download_pdf_url / import_markdown first. "
         "Reference/citation tools use a count-then-page pattern to avoid token blowouts."
     ),
 )
@@ -39,26 +43,6 @@ AUTHOR_ID = Annotated[
     ),
 ]
 
-
-ARXIV_ID = Annotated[
-    str,
-    Field(
-        description="arXiv paper ID. Accepts bare ID (2301.00001), "
-        "versioned (2301.00001v2), or URL "
-        "(https://arxiv.org/abs/2301.00001)."
-    ),
-]
-
-
-BIORXIV_DOI = Annotated[
-    str,
-    Field(
-        description="bioRxiv or medRxiv paper DOI (prefix 10.1101/). "
-        "Accepts bare DOI (10.1101/2024.01.01.573838), "
-        "URL (https://doi.org/10.1101/...), or "
-        "site URL (https://www.biorxiv.org/content/10.1101/...v1)."
-    ),
-]
 
 PAPER_ID = Annotated[
     str,
@@ -103,101 +87,270 @@ def _enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
 
 
 async def _fetch_work(doi: str) -> dict[str, Any]:
-    """Fetch a work and return it, or raise if not found."""
+    """Fetch an OpenAlex work and return it, or propagate an error dict."""
     return await openalex.get_work(doi)
 
 
-@mcp.tool
-async def get_paper_metadata(doi: DOI) -> dict[str, Any]:
-    """Get core metadata for a paper: title, year, type, venue, DOI, and open access info.
+def _unknown_identifier_error(identifier: str) -> dict[str, Any]:
+    """Return an error dict for identifiers that don't resolve to any provider."""
+    return {
+        "error": (
+            f"Cannot resolve paper provider for identifier: {identifier!r}. "
+            "Use an arXiv ID (e.g. 2301.00001), a DOI (e.g. 10.1038/...), "
+            "or call search_arxiv / search_crossref_by_title to find one."
+        ),
+    }
 
-    Related: get_paper_authors for authors, get_paper_bibtex for citations,
-    get_crossref_references_count for reference list, get_paper_citations_summary
-    for citation counts.
+
+def _arxiv_id_from_entry(paper: dict[str, Any]) -> str:
+    """Extract the bare arXiv ID from an arXiv entry's id URL."""
+    raw_id = paper.get("id", "")
+    if "/abs/" in raw_id:
+        return raw_id.split("/abs/")[-1]
+    return raw_id
+
+
+def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
+    """Extract the PDF link from an arXiv entry's links list."""
+    for link in paper.get("links", []):
+        if link.get("title") == "pdf":
+            return link.get("href")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Unified paper tools — auto-detect the provider from the identifier
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool
+async def get_paper_metadata(identifier: PAPER_ID) -> dict[str, Any]:
+    """Get core metadata for a paper, auto-detecting the source from the identifier.
+
+    Every response carries `_source` = "arxiv" | "biorxiv" | "openalex"
+    alongside source-native fields:
+      - arxiv: arxiv_id, title, published, updated, primary_category,
+        categories, pdf_url, doi, journal_ref, comment.
+      - biorxiv: doi, title, date, version, type, category, license, server,
+        published_doi, pdf_url. Chain `published_doi` into OpenAlex for
+        the journal version.
+      - openalex: title, doi, publication_year, publication_date, type,
+        language, venue, is_oa, oa_status, oa_url.
+
+    Related: get_paper_authors / get_paper_abstract / get_paper_bibtex use
+    the same dispatch. get_paper_topics / get_paper_citations_summary are
+    OpenAlex-only and require a DOI.
     """
-    work = await _fetch_work(doi)
-    if "error" in work:
-        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+    source = manual._resolve_metadata_source(identifier)
 
-    primary_location = work.get("primary_location") or {}
-    source = primary_location.get("source") or {}
-    oa = work.get("open_access") or {}
+    if source == "arxiv":
+        paper = await arxiv.get_paper(identifier)
+        if "error" in paper:
+            return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
+        return {
+            "_source": "arxiv",
+            "arxiv_id": _arxiv_id_from_entry(paper),
+            "title": paper.get("title"),
+            "published": paper.get("published"),
+            "updated": paper.get("updated"),
+            "primary_category": paper.get("primary_category"),
+            "categories": paper.get("categories"),
+            "pdf_url": _arxiv_pdf_url(paper),
+            "doi": paper.get("doi"),
+            "journal_ref": paper.get("journal_ref"),
+            "comment": paper.get("comment"),
+        }
 
-    return {
-        "title": work.get("title"),
-        "doi": work.get("doi"),
-        "publication_year": work.get("publication_year"),
-        "publication_date": work.get("publication_date"),
-        "type": work.get("type"),
-        "language": work.get("language"),
-        "venue": source.get("display_name"),
-        "is_oa": oa.get("is_oa"),
-        "oa_status": oa.get("oa_status"),
-        "oa_url": oa.get("oa_url"),
-    }
+    if source == "biorxiv":
+        paper = await biorxiv.get_paper(identifier)
+        if "error" in paper:
+            return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+        return {
+            "_source": "biorxiv",
+            "doi": paper.get("doi"),
+            "title": paper.get("title"),
+            "date": paper.get("date"),
+            "version": paper.get("version"),
+            "type": paper.get("type"),
+            "category": paper.get("category"),
+            "license": paper.get("license"),
+            "server": paper.get("server"),
+            "published_doi": paper.get("published_doi"),
+            "pdf_url": paper.get("pdf_url"),
+        }
+
+    if source == "openalex":
+        work = await _fetch_work(identifier)
+        if "error" in work:
+            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+        primary_location = work.get("primary_location") or {}
+        source_obj = primary_location.get("source") or {}
+        oa = work.get("open_access") or {}
+        return {
+            "_source": "openalex",
+            "title": work.get("title"),
+            "doi": work.get("doi"),
+            "publication_year": work.get("publication_year"),
+            "publication_date": work.get("publication_date"),
+            "type": work.get("type"),
+            "language": work.get("language"),
+            "venue": source_obj.get("display_name"),
+            "is_oa": oa.get("is_oa"),
+            "oa_status": oa.get("oa_status"),
+            "oa_url": oa.get("oa_url"),
+        }
+
+    return _unknown_identifier_error(identifier)
 
 
 @mcp.tool
-async def get_paper_authors(doi: DOI) -> dict[str, Any]:
-    """Get the author list for a paper: names, positions, corresponding status, and institution names.
+async def get_paper_authors(identifier: PAPER_ID) -> dict[str, Any]:
+    """Get the author list for a paper, auto-detecting the source.
 
-    Each author includes an openalex_id for chaining into get_author_profile
-    or get_author_affiliations.
+    Response shape per `_source`:
+      - arxiv: author_count, authors (name + optional affiliations).
+      - biorxiv: author_count, authors, author_corresponding,
+        author_corresponding_institution.
+      - openalex: author_count, authors (each with openalex_id, position,
+        is_corresponding, institutions), institution_count, all_institutions.
+        OpenAlex author entries carry openalex_id for chaining into
+        get_author_profile / get_author_affiliations.
     """
-    work = await _fetch_work(doi)
-    if "error" in work:
-        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+    source = manual._resolve_metadata_source(identifier)
 
-    authors = []
-    all_institutions: list[str] = []
+    if source == "arxiv":
+        paper = await arxiv.get_paper(identifier)
+        if "error" in paper:
+            return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
+        authors = paper.get("authors", [])
+        return {"_source": "arxiv", "author_count": len(authors), "authors": authors}
 
-    for a in work.get("authorships", []):
-        author_info = a.get("author", {})
-        inst_names = [
-            inst.get("display_name")
-            for inst in a.get("institutions", [])
-            if inst.get("display_name")
-        ]
-        for name in inst_names:
-            if name not in all_institutions:
-                all_institutions.append(name)
+    if source == "biorxiv":
+        paper = await biorxiv.get_paper(identifier)
+        if "error" in paper:
+            return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+        authors = paper.get("authors", [])
+        return {
+            "_source": "biorxiv",
+            "author_count": len(authors),
+            "authors": authors,
+            "author_corresponding": paper.get("author_corresponding"),
+            "author_corresponding_institution": paper.get("author_corresponding_institution"),
+        }
 
-        authors.append({
-            "name": author_info.get("display_name"),
-            "openalex_id": author_info.get("id"),
-            "position": a.get("author_position"),
-            "is_corresponding": a.get("is_corresponding"),
-            "institutions": inst_names,
-        })
+    if source == "openalex":
+        work = await _fetch_work(identifier)
+        if "error" in work:
+            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+        authors: list[dict[str, Any]] = []
+        all_institutions: list[str] = []
+        for a in work.get("authorships", []):
+            author_info = a.get("author", {})
+            inst_names = [
+                inst.get("display_name")
+                for inst in a.get("institutions", [])
+                if inst.get("display_name")
+            ]
+            for name in inst_names:
+                if name not in all_institutions:
+                    all_institutions.append(name)
+            authors.append({
+                "name": author_info.get("display_name"),
+                "openalex_id": author_info.get("id"),
+                "position": a.get("author_position"),
+                "is_corresponding": a.get("is_corresponding"),
+                "institutions": inst_names,
+            })
+        return {
+            "_source": "openalex",
+            "author_count": len(authors),
+            "authors": authors,
+            "institution_count": len(all_institutions),
+            "all_institutions": all_institutions,
+        }
 
-    return {
-        "author_count": len(authors),
-        "authors": authors,
-        "institution_count": len(all_institutions),
-        "all_institutions": all_institutions,
-    }
+    return _unknown_identifier_error(identifier)
 
 
 @mcp.tool
-async def get_paper_abstract(doi: DOI) -> dict[str, Any]:
-    """Get the abstract of a paper as plain text."""
-    work = await _fetch_work(doi)
-    if "error" in work:
-        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+async def get_paper_abstract(identifier: PAPER_ID) -> dict[str, Any]:
+    """Get the abstract of a paper as plain text, auto-detecting the source."""
+    source = manual._resolve_metadata_source(identifier)
 
-    abstract = openalex.reconstruct_abstract(
-        work.get("abstract_inverted_index")
-    )
+    if source == "arxiv":
+        paper = await arxiv.get_paper(identifier)
+        if "error" in paper:
+            return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
+        return {
+            "_source": "arxiv",
+            "title": paper.get("title"),
+            "abstract": paper.get("summary"),
+        }
 
-    return {
-        "title": work.get("title"),
-        "abstract": abstract or None,
-    }
+    if source == "biorxiv":
+        paper = await biorxiv.get_paper(identifier)
+        if "error" in paper:
+            return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+        return {
+            "_source": "biorxiv",
+            "title": paper.get("title"),
+            "abstract": paper.get("abstract"),
+        }
+
+    if source == "openalex":
+        work = await _fetch_work(identifier)
+        if "error" in work:
+            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+        return {
+            "_source": "openalex",
+            "title": work.get("title"),
+            "abstract": openalex.reconstruct_abstract(work.get("abstract_inverted_index")) or None,
+        }
+
+    return _unknown_identifier_error(identifier)
+
+
+@mcp.tool
+async def get_paper_bibtex(identifier: PAPER_ID) -> dict[str, Any]:
+    """Generate a BibTeX entry for a paper, auto-detecting the source.
+
+    - arxiv: @article if the paper has journal_ref, else @misc with
+      eprint / archivePrefix / primaryClass.
+    - biorxiv: @article when a published_doi is present, else @misc with
+      the preprint DOI and server.
+    - openalex: entry type inferred from the work type (@article,
+      @inproceedings, @misc for preprints, @phdthesis, etc.).
+    """
+    source = manual._resolve_metadata_source(identifier)
+
+    if source == "arxiv":
+        paper = await arxiv.get_paper(identifier)
+        if "error" in paper:
+            return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
+        return {"_source": "arxiv", "bibtex": generate_arxiv_bibtex(paper)}
+
+    if source == "biorxiv":
+        paper = await biorxiv.get_paper(identifier)
+        if "error" in paper:
+            return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+        return {"_source": "biorxiv", "bibtex": generate_biorxiv_bibtex(paper)}
+
+    if source == "openalex":
+        work = await _fetch_work(identifier)
+        if "error" in work:
+            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+        return {"_source": "openalex", "bibtex": generate_bibtex(work)}
+
+    return _unknown_identifier_error(identifier)
 
 
 @mcp.tool
 async def get_paper_citations_summary(doi: DOI) -> dict[str, Any]:
-    """Get citation statistics for a paper: citation count, reference count, and retraction status."""
+    """Get citation statistics for a paper (OpenAlex only, requires a DOI).
+
+    Returns cited_by_count, referenced_works_count, and is_retracted. For
+    arXiv-only preprints without a DOI this data is not available.
+    """
     work = await _fetch_work(doi)
     if "error" in work:
         return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
@@ -212,7 +365,10 @@ async def get_paper_citations_summary(doi: DOI) -> dict[str, Any]:
 
 @mcp.tool
 async def get_paper_topics(doi: DOI) -> dict[str, Any]:
-    """Get topic classifications and keywords for a paper."""
+    """Get topic classifications and keywords for a paper (OpenAlex only, requires a DOI).
+
+    For arXiv-only preprints without a DOI this data is not available.
+    """
     work = await _fetch_work(doi)
     if "error" in work:
         return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
@@ -241,23 +397,6 @@ async def get_paper_topics(doi: DOI) -> dict[str, Any]:
         "topics": topics,
         "keyword_count": len(keywords),
         "keywords": keywords,
-    }
-
-
-@mcp.tool
-async def get_paper_bibtex(doi: DOI) -> dict[str, Any]:
-    """Generate a BibTeX citation entry for a paper.
-
-    Automatically selects the correct entry type (@article, @inproceedings,
-    @misc for preprints, @incollection for book chapters, @phdthesis, etc.)
-    based on the work type.
-    """
-    work = await _fetch_work(doi)
-    if "error" in work:
-        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
-
-    return {
-        "bibtex": generate_bibtex(work),
     }
 
 
@@ -316,97 +455,8 @@ async def get_author_affiliations(author_id: AUTHOR_ID) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# arXiv tools
+# arXiv search
 # ---------------------------------------------------------------------------
-
-
-async def _fetch_arxiv_paper(arxiv_id: str) -> dict[str, Any]:
-    """Fetch an arXiv paper and return it, or propagate error dict."""
-    return await arxiv.get_paper(arxiv_id)
-
-
-def _arxiv_id_from_entry(paper: dict[str, Any]) -> str:
-    """Extract bare arXiv ID from the entry's id URL."""
-    raw_id = paper.get("id", "")
-    if "/abs/" in raw_id:
-        return raw_id.split("/abs/")[-1]
-    return raw_id
-
-
-def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
-    """Extract the PDF link from an arXiv entry's links list."""
-    for link in paper.get("links", []):
-        if link.get("title") == "pdf":
-            return link.get("href")
-    return None
-
-
-@mcp.tool
-async def get_arxiv_paper_metadata(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Get core metadata for an arXiv paper: title, dates, categories, links, and publication info.
-
-    If doi is present, chain into get_paper_metadata (OpenAlex) for citation
-    counts and venue info. Use download_pdf to get the full paper content.
-    """
-    paper = await _fetch_arxiv_paper(arxiv_id)
-    if "error" in paper:
-        return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv to find papers.")
-
-    return {
-        "arxiv_id": _arxiv_id_from_entry(paper),
-        "title": paper.get("title"),
-        "published": paper.get("published"),
-        "updated": paper.get("updated"),
-        "primary_category": paper.get("primary_category"),
-        "categories": paper.get("categories"),
-        "pdf_url": _arxiv_pdf_url(paper),
-        "doi": paper.get("doi"),
-        "journal_ref": paper.get("journal_ref"),
-        "comment": paper.get("comment"),
-    }
-
-
-@mcp.tool
-async def get_arxiv_paper_authors(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Get the author list for an arXiv paper, with affiliations when available."""
-    paper = await _fetch_arxiv_paper(arxiv_id)
-    if "error" in paper:
-        return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv to find papers.")
-
-    authors = paper.get("authors", [])
-    return {
-        "author_count": len(authors),
-        "authors": authors,
-    }
-
-
-@mcp.tool
-async def get_arxiv_paper_abstract(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Get the abstract of an arXiv paper."""
-    paper = await _fetch_arxiv_paper(arxiv_id)
-    if "error" in paper:
-        return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv to find papers.")
-
-    return {
-        "title": paper.get("title"),
-        "abstract": paper.get("summary"),
-    }
-
-
-@mcp.tool
-async def get_arxiv_paper_bibtex(arxiv_id: ARXIV_ID) -> dict[str, Any]:
-    """Generate a BibTeX citation entry for an arXiv paper.
-
-    Uses @article if the paper has a journal reference, otherwise @misc with
-    eprint, archivePrefix, and primaryClass fields.
-    """
-    paper = await _fetch_arxiv_paper(arxiv_id)
-    if "error" in paper:
-        return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv to find papers.")
-
-    return {
-        "bibtex": generate_arxiv_bibtex(paper),
-    }
 
 
 @mcp.tool
@@ -427,8 +477,8 @@ async def search_arxiv(
 ) -> dict[str, Any]:
     """Search arXiv papers. Returns titles, IDs, authors, and categories for matching papers.
 
-    Use the returned arxiv_id with get_arxiv_paper_abstract, get_arxiv_paper_bibtex,
-    or download_pdf to access full paper content.
+    Use the returned arxiv_id with get_paper_metadata, get_paper_abstract,
+    get_paper_bibtex, or download_pdf to access full paper content.
     """
     result = await arxiv.search_papers(query, max_results=max_results)
     if "error" in result:
@@ -529,15 +579,14 @@ async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
 
     The paper must be converted first via convert_paper.
 
+    Automatically re-parses if the markdown file has changed since the last
+    call (detected via SHA-256 checksum).
+
     Next step: get_paper_section(identifier, section_index_or_title).
     """
     target = manual._resolve_target(identifier)
     namespace = target["namespace"]
     canonical = target["canonical"]
-
-    cached = cache.get(namespace, "sections", papers._sections_key(canonical))
-    if cached is not None:
-        return cached
 
     md_path = papers._markdown_path(namespace, canonical)
     if not md_path.exists():
@@ -546,15 +595,39 @@ async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
             "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
         }
 
-    markdown = md_path.read_text()
-    sections = papers.parse_sections(markdown)
-    sections_data = {
-        "total_sections": len(sections),
-        "total_approx_tokens": sum(s.get("approx_tokens", 0) for s in sections),
-        "sections": sections,
+    # Check cache with checksum validation
+    cached = cache.get(namespace, "sections", papers._sections_key(canonical))
+    if cached is not None:
+        stored_checksum = cached.get("markdown_checksum", None)
+        current_checksum = papers._markdown_checksum(md_path)
+        if stored_checksum is None or stored_checksum == current_checksum:
+            # Cache valid — return stored sections
+            sections_data = cached
+        else:
+            # Checksum mismatch — re-parse and update cache
+            markdown = md_path.read_text()
+            sections = papers.parse_sections(markdown)
+            sections_data = {
+                "sections": sections,
+                "markdown_checksum": current_checksum,
+            }
+            cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
+    else:
+        # No cache — parse and create
+        markdown = md_path.read_text()
+        sections = papers.parse_sections(markdown)
+        sections_data = {
+            "sections": sections,
+            "markdown_checksum": papers._markdown_checksum(md_path),
+        }
+        cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
+
+    sections_list = sections_data.get("sections", [])
+    return {
+        "total_sections": len(sections_list),
+        "total_approx_tokens": sum(s.get("approx_tokens", 0) for s in sections_list),
+        "sections": sections_list,
     }
-    cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
-    return sections_data
 
 
 @mcp.tool(meta={"anthropic/maxResultSizeChars": 200000})
@@ -593,86 +666,6 @@ async def get_paper_section(
         section_key = section
 
     return papers.get_section_content(markdown, section_key, max_chars=_resolve_max_chars(max_chars))
-
-
-# ---------------------------------------------------------------------------
-# bioRxiv / medRxiv tools
-# ---------------------------------------------------------------------------
-
-
-async def _fetch_biorxiv_paper(doi: str) -> dict[str, Any]:
-    """Fetch a bioRxiv/medRxiv paper and return it, or propagate error dict."""
-    return await biorxiv.get_paper(doi)
-
-
-@mcp.tool
-async def get_biorxiv_paper_metadata(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Get core metadata for a bioRxiv/medRxiv preprint: title, date, category, version, server, and publication status.
-
-    If published_doi is present, the paper has been formally published — chain
-    into get_paper_metadata or get_paper_bibtex with that DOI for journal metadata.
-    """
-    paper = await _fetch_biorxiv_paper(doi)
-    if "error" in paper:
-        return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title to find bioRxiv papers.")
-
-    return {
-        "doi": paper.get("doi"),
-        "title": paper.get("title"),
-        "date": paper.get("date"),
-        "version": paper.get("version"),
-        "type": paper.get("type"),
-        "category": paper.get("category"),
-        "license": paper.get("license"),
-        "server": paper.get("server"),
-        "published_doi": paper.get("published_doi"),
-        "pdf_url": paper.get("pdf_url"),
-    }
-
-
-@mcp.tool
-async def get_biorxiv_paper_authors(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Get the author list for a bioRxiv/medRxiv preprint, including the corresponding author and their institution."""
-    paper = await _fetch_biorxiv_paper(doi)
-    if "error" in paper:
-        return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title to find bioRxiv papers.")
-
-    authors = paper.get("authors", [])
-    return {
-        "author_count": len(authors),
-        "authors": authors,
-        "author_corresponding": paper.get("author_corresponding"),
-        "author_corresponding_institution": paper.get("author_corresponding_institution"),
-    }
-
-
-@mcp.tool
-async def get_biorxiv_paper_abstract(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Get the abstract of a bioRxiv/medRxiv preprint."""
-    paper = await _fetch_biorxiv_paper(doi)
-    if "error" in paper:
-        return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title to find bioRxiv papers.")
-
-    return {
-        "title": paper.get("title"),
-        "abstract": paper.get("abstract"),
-    }
-
-
-@mcp.tool
-async def get_biorxiv_paper_bibtex(doi: BIORXIV_DOI) -> dict[str, Any]:
-    """Generate a BibTeX citation entry for a bioRxiv/medRxiv preprint.
-
-    Uses @article if the paper has been published in a journal (published_doi
-    available), otherwise @misc with the preprint DOI and server name.
-    """
-    paper = await _fetch_biorxiv_paper(doi)
-    if "error" in paper:
-        return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title to find bioRxiv papers.")
-
-    return {
-        "bibtex": generate_biorxiv_bibtex(paper),
-    }
 
 
 # ---------------------------------------------------------------------------

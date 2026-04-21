@@ -62,6 +62,44 @@ def _canonical_key(identifier: str) -> str:
 _ARXIV_NEW_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 _ARXIV_OLD_RE = re.compile(r"^[a-z-]+/\d{7}(v\d+)?$")
 
+# DOI shape: "10.<registrant>/<suffix>"
+_DOI_RE = re.compile(r"^10\.\d{4,}/\S+$")
+
+
+def _is_arxiv_identifier(normalized: str) -> bool:
+    """Return True if *normalized* matches an arXiv ID shape."""
+    from . import arxiv
+
+    candidate = arxiv._normalize_arxiv_id(normalized)
+    return bool(_ARXIV_NEW_RE.match(candidate) or _ARXIV_OLD_RE.match(candidate))
+
+
+def _resolve_metadata_source(identifier: str) -> str | None:
+    """Detect which provider should serve *metadata* for *identifier*.
+
+    Returns one of ``"arxiv"``, ``"biorxiv"``, ``"openalex"``, or ``None``
+    when the identifier does not resolve to a known metadata provider
+    (e.g. a freeform label).
+
+    Unlike :func:`_resolve_target` (which routes PDF storage), ACL DOIs and
+    any other DOI shape route to OpenAlex — ACL Anthology has no metadata
+    API of its own, and OpenAlex handles arbitrary publisher DOIs.
+    """
+    from . import biorxiv
+
+    normalized = _normalize_identifier(identifier)
+
+    if _is_arxiv_identifier(normalized):
+        return "arxiv"
+
+    if biorxiv.is_biorxiv_doi(normalized):
+        return "biorxiv"
+
+    if _DOI_RE.match(normalized):
+        return "openalex"
+
+    return None
+
 
 def _resolve_target(identifier: str) -> dict[str, Any]:
     """Detect the target provider from *identifier* and return routing info.

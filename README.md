@@ -73,18 +73,24 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 
 ## Tools
 
-### OpenAlex (papers via DOI)
+### Papers (unified, auto-routed)
 
 | Tool | Description |
 |------|-------------|
-| `get_paper_metadata` | Title, year, type, venue, DOI, open access info |
-| `get_paper_authors` | Author names, positions, institutions, OpenAlex IDs (with counts) |
+| `get_paper_metadata` | Title, dates, venue / categories, identifiers — shape varies by `_source` |
+| `get_paper_authors` | Author list with source-appropriate detail (affiliations, corresponding author, OpenAlex IDs) |
 | `get_paper_abstract` | Plain text abstract |
-| `get_paper_citations_summary` | Citation count, reference count, retraction status |
-| `get_paper_topics` | Topic classifications and keywords with scores (with counts) |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
 
-### OpenAlex (authors)
+Pass an arXiv ID (`2301.00001`, `hep-th/9901001`) or any DOI — including bioRxiv/medRxiv (`10.1101/...`), ACL Anthology (`10.18653/v1/...`), or generic publisher DOIs. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"openalex"`) so you know which provider answered and which fields to expect. arXiv IDs always route to arXiv; bioRxiv DOIs route to bioRxiv; everything else (including ACL) routes to OpenAlex.
+
+| Tool | Description |
+|------|-------------|
+| `get_paper_topics` | Topic classifications and keywords with scores (OpenAlex only — requires DOI) |
+| `get_paper_citations_summary` | Citation count, reference count, retraction status (OpenAlex only — requires DOI) |
+| `search_arxiv` | Search arXiv with field prefixes (`ti:`, `au:`, `abs:`, `cat:`) and boolean operators |
+
+### Authors
 
 | Tool | Description |
 |------|-------------|
@@ -92,29 +98,6 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | `get_author_affiliations` | Institution history with years |
 
 Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
-
-### arXiv
-
-| Tool | Description |
-|------|-------------|
-| `get_arxiv_paper_metadata` | Title, dates, categories, links, publication info |
-| `get_arxiv_paper_authors` | Author names with affiliations |
-| `get_arxiv_paper_abstract` | Title and abstract text |
-| `get_arxiv_paper_bibtex` | BibTeX with `eprint`/`archiveprefix` fields |
-| `search_arxiv` | Search with field prefixes (`ti:`, `au:`, `abs:`, `cat:`) and boolean operators |
-
-Accepts bare IDs (`2301.00001`), versioned IDs (`2301.00001v2`), or URLs.
-
-### bioRxiv / medRxiv
-
-| Tool | Description |
-|------|-------------|
-| `get_biorxiv_paper_metadata` | Title, date, category, version, server, published DOI |
-| `get_biorxiv_paper_authors` | Author names, corresponding author, institution |
-| `get_biorxiv_paper_abstract` | Abstract text |
-| `get_biorxiv_paper_bibtex` | BibTeX entry |
-
-Accepts DOIs with the `10.1101/` prefix (bare, URL, or site content URL). If a paper has been formally published, `get_biorxiv_paper_metadata` returns a `published_doi` you can chain into OpenAlex/Crossref tools.
 
 ### PDF pipeline (unified)
 
@@ -250,7 +233,7 @@ uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ## Architecture
 
 ```
-server.py (34 MCP tools)
+server.py (26 MCP tools)
   ├── openalex.py       → OpenAlex API     → cache.py
   ├── arxiv.py          → arXiv Atom API   → cache.py
   ├── biorxiv.py        → bioRxiv API      → cache.py
@@ -266,6 +249,7 @@ server.py (34 MCP tools)
 **Key design decisions:**
 
 - **Lean responses.** Tools return only what's needed — not the full API response. An agent calling `get_paper_authors` doesn't get flooded with unrelated metadata.
+- **One tool per job, auto-routed.** The four core paper tools (`get_paper_metadata`, `get_paper_authors`, `get_paper_abstract`, `get_paper_bibtex`) dispatch on identifier shape rather than forcing the agent to pick between arXiv/bioRxiv/OpenAlex families. Provider-native fields are preserved and tagged with `_source`.
 - **One API hit per entity.** All tools for a given DOI share one cached response.
 - **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching.
 - **Provider-aware routing.** Manual imports auto-detect identifier types and store in the correct provider's cache, preventing duplicates.
