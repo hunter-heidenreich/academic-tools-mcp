@@ -108,26 +108,19 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 
 All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, fetch the PDF yourself and hand it to `import_pdf` (or `import_markdown` for pre-converted text) — see [Manual import](#manual-import) below.
 
-### Crossref
+### References and citations (DOI required)
 
 | Tool | Description |
 |------|-------------|
+| `get_paper_references_count` | Survey outgoing-reference coverage across both Crossref and OpenCitations in one call — returns per-source counts so you can pick which to page through |
+| `get_paper_references` | Paginated outgoing references from the chosen `source` (`crossref` for structured metadata, `opencitations` for broader DOI coverage) |
+| `get_paper_citations_count` | Number of incoming citations (OpenCitations) |
+| `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
 | `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers) |
-| `get_crossref_references_count` | Number of references in a paper's bibliography |
-| `get_crossref_references` | Paginated reference list with author, title, year, journal, DOI; includes `has_more` |
 
-Reference tools follow a **count-then-page** pattern: call `_count` first, then page through results. Paginated responses include `has_more` so agents know when to stop. This prevents token blowouts on papers with long bibliographies.
+The count tools follow a **count-then-page** pattern: call `_count` first to see totals (and for references, to compare source coverage), then page through with `page` and `page_size`. Paginated responses include `_source` (on references) and `has_more` so agents know which shape to expect and when to stop. This prevents token blowouts on papers with long bibliographies or many citations.
 
-### OpenCitations
-
-| Tool | Description |
-|------|-------------|
-| `get_opencitations_references_count` | Number of outgoing references |
-| `get_opencitations_references` | Paginated outgoing references with cross-referenced IDs; includes `has_more` |
-| `get_opencitations_citations_count` | Number of incoming citations |
-| `get_opencitations_citations` | Paginated incoming citations with cross-referenced IDs; includes `has_more` |
-
-Returns DOI-to-DOI links with OMID, OpenAlex, and PMID cross-references. May have references Crossref lacks (aggregates from PubMed, DataCite, OpenAIRE, JaLC).
+**Source trade-off for references**: Crossref returns structured reference metadata (author, title, year, journal, DOI) when publishers deposit it; quality varies. OpenCitations aggregates from Crossref, PubMed, DataCite, OpenAIRE, and JaLC — it may have entries Crossref lacks, but returns DOI-to-DOI links only (no bibliographic metadata).
 
 ### Manual import
 
@@ -232,7 +225,7 @@ uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ## Architecture
 
 ```
-server.py (23 MCP tools)
+server.py (21 MCP tools)
   ├── openalex.py       → OpenAlex API     → cache.py
   ├── arxiv.py          → arXiv Atom API   → cache.py
   ├── biorxiv.py        → bioRxiv API      → cache.py
