@@ -857,28 +857,31 @@ async def search_crossref_by_title(
         Field(description="Publication year to filter results. Optional but recommended."),
     ] = None,
 ) -> dict[str, Any]:
-    """Search Crossref for papers by title (bibliographic query).
+    """Search Crossref by title (bibliographic query). Returns a slim triage list.
 
-    Returns matching DOIs with titles, authors, and publication info.
-    Useful for finding the published DOI when you only have a title or arXiv ID.
-    Also serves as de facto search for bioRxiv papers (Crossref indexes all bioRxiv DOIs).
+    Each hit carries just ``{doi, title, first_author, year}`` — enough to
+    recognize the paper but not the full author list, which can balloon
+    on HEP/biology consortium papers. Call get_paper_metadata(doi) for
+    the full record.
 
-    Use the returned DOI with get_paper_metadata, get_paper_bibtex, or
-    get_paper_references.
+    Useful for finding the published DOI when you only have a title or
+    arXiv ID. Also serves as the de facto search for bioRxiv papers,
+    since Crossref indexes all bioRxiv DOIs.
+
+    Returns ``{total_results, results: [...]}``. Capped at 5 hits per
+    call. Year filtering is optional but recommended; note that Crossref
+    publication dates may differ from arXiv preprint dates.
     """
     items = await crossref.search_works(title, year=year, rows=5)
 
     results = []
     for item in items:
-        authors = []
+        first_author = None
         for a in item.get("author", []):
-            name_parts = []
-            if a.get("given"):
-                name_parts.append(a["given"])
-            if a.get("family"):
-                name_parts.append(a["family"])
+            name_parts = [p for p in (a.get("given"), a.get("family")) if p]
             if name_parts:
-                authors.append(" ".join(name_parts))
+                first_author = " ".join(name_parts)
+                break
 
         pub_date = item.get("published-print") or item.get("published-online") or {}
         date_parts = pub_date.get("date-parts", [[]])[0]
@@ -886,10 +889,8 @@ async def search_crossref_by_title(
         results.append({
             "doi": item.get("DOI"),
             "title": (item.get("title") or [None])[0],
-            "authors": authors,
+            "first_author": first_author,
             "year": date_parts[0] if date_parts else None,
-            "venue": (item.get("container-title") or [None])[0],
-            "type": item.get("type"),
         })
 
     return {"total_results": len(results), "results": results}
