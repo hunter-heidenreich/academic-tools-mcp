@@ -947,15 +947,15 @@ REF_SOURCE = Annotated[
 
 @mcp.tool
 async def get_paper_references_count(doi: DOI) -> dict[str, Any]:
-    """Survey outgoing-reference coverage across Crossref and OpenCitations in one call.
+    """Survey outgoing-reference coverage across Crossref and OpenCitations.
 
-    Queries both providers in parallel and returns a per-source count so you
-    can pick the better-covered source before paginating with
-    get_paper_references. On partial failure the failing source returns an
-    error dict while the other source's count is still reported.
+    Fires both providers in parallel via asyncio.gather. Counts often
+    differ — call this first to pick the better-covered source before
+    paginating with get_paper_references.
 
-    Shape: {doi, sources: {crossref: {count: N} | {error: ...},
-                           opencitations: {count: M} | {error: ...}}}
+    Returns ``{doi, sources: {crossref: {count: N} | {error, suggestion?},
+    opencitations: {count: M} | {error, suggestion?}}}``. Partial-failure
+    tolerant: if one source errors the other's count is still reported.
     """
     cr_task = crossref.get_work(doi)
     oc_task = opencitations.get_references(doi)
@@ -982,18 +982,24 @@ async def get_paper_references(
     page: PAGE = 1,
     page_size: PAGE_SIZE = 20,
 ) -> dict[str, Any]:
-    """Get a page of outgoing references (bibliography) from the chosen source.
+    """Page through outgoing references (bibliography) from the chosen source.
 
-    Response shape per `_source`:
-      - crossref: structured metadata per entry (doi, author, title, year,
-        journal, volume, first_page, unstructured). Fields present depend on
-        publisher deposit quality.
-      - opencitations: DOI-to-DOI links with publication dates, self-citation
-        flags, and cross-referenced IDs (OMID, OpenAlex, PMID). No full
-        bibliographic metadata.
+    Returns ``{_source, doi, total, page, page_size, has_more, references: [...]}``.
+    The per-entry shape differs by source:
+      - crossref: structured metadata, fields conditionally present based
+        on publisher deposit quality. Possible keys: doi, author, title,
+        year, journal, volume, first_page, unstructured (raw citation
+        text fallback when structured fields are absent).
+      - opencitations: DOI-to-DOI links with cross-referenced IDs flattened
+        at the top level. Possible keys: doi (cited paper), omid, openalex,
+        pmid, creation (date string), journal_self_citation,
+        author_self_citation. No bibliographic metadata.
 
-    Call get_paper_references_count first to compare coverage across sources
-    and see the total.
+    Defaults: page=1, page_size=20 (1-50). Call get_paper_references_count
+    first to compare coverage and see totals.
+
+    Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
+    hints for transient failures.
     """
     if source == "crossref":
         work = await _fetch_crossref_work(doi)
@@ -1033,7 +1039,13 @@ async def get_paper_references(
 
 @mcp.tool
 async def get_paper_citations_count(doi: DOI) -> dict[str, Any]:
-    """Get the number of incoming citations (papers that cite this work) from OpenCitations."""
+    """Count incoming citations (papers that cite this work) via OpenCitations.
+
+    Returns ``{doi, count}`` on success or ``{error, suggestion}`` on failure.
+    OpenCitations is the only source for incoming citations (no Crossref
+    equivalent), so unlike get_paper_references_count there is no source
+    survey — call this then page with get_paper_citations.
+    """
     data = await opencitations.get_citations(doi)
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
@@ -1046,10 +1058,19 @@ async def get_paper_citations(
     page: PAGE = 1,
     page_size: PAGE_SIZE = 20,
 ) -> dict[str, Any]:
-    """Get a page of incoming citations (papers that cite this work) from OpenCitations.
+    """Page through incoming citations (papers that cite this work) from OpenCitations.
 
-    Returns citing DOIs with publication dates, self-citation flags, and
-    cross-referenced IDs. Call get_paper_citations_count first to see the total.
+    Returns ``{doi, total, page, page_size, has_more, citations: [...]}``.
+    Each citation entry has cross-referenced IDs flattened at the top
+    level: doi (citing paper), omid, openalex, pmid, creation (date
+    string), journal_self_citation, author_self_citation. No bibliographic
+    metadata — chain a citing DOI into get_paper_metadata for that.
+
+    Defaults: page=1, page_size=20 (1-50). Call get_paper_citations_count
+    first to see the total.
+
+    Errors: bad DOI / upstream failure → ``{error, suggestion}`` with
+    retry hints for transient failures.
     """
     data = await opencitations.get_citations(doi)
     if "error" in data:
