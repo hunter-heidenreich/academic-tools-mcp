@@ -516,6 +516,20 @@ async def get_author(author_id: AUTHOR_ID) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _first_author_name(paper: dict[str, Any]) -> str | None:
+    authors = paper.get("authors") or []
+    if not authors:
+        return None
+    return authors[0].get("name")
+
+
+def _published_year(paper: dict[str, Any]) -> int | None:
+    published = paper.get("published") or ""
+    if len(published) >= 4 and published[:4].isdigit():
+        return int(published[:4])
+    return None
+
+
 @mcp.tool
 async def search_arxiv(
     query: Annotated[
@@ -532,10 +546,15 @@ async def search_arxiv(
         Field(description="Maximum results to return (1-50).", ge=1, le=50),
     ] = 10,
 ) -> dict[str, Any]:
-    """Search arXiv papers. Returns titles, IDs, authors, and categories for matching papers.
+    """Search arXiv papers. Returns a slim triage list.
 
-    Use the returned arxiv_id with get_paper_metadata, get_paper_abstract,
-    get_paper_bibtex, or download_pdf to access full paper content.
+    Each hit carries just ``{arxiv_id, title, first_author, published_year}``
+    — enough to recognize the paper but not the full author list, which
+    can balloon the response. Call get_paper_metadata(arxiv_id) for the
+    full record (free cache hit — each search entry is opportunistically
+    cached).
+
+    Returns ``{total_results, papers: [...]}``.
     """
     result = await arxiv.search_papers(query, max_results=max_results)
     if "error" in result:
@@ -547,9 +566,8 @@ async def search_arxiv(
             {
                 "arxiv_id": _arxiv_id_from_entry(p),
                 "title": p.get("title"),
-                "authors": [a.get("name") for a in p.get("authors", [])],
-                "primary_category": p.get("primary_category"),
-                "published": p.get("published"),
+                "first_author": _first_author_name(p),
+                "published_year": _published_year(p),
             }
             for p in result.get("entries", [])
         ],
