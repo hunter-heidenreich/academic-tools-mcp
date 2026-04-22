@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from . import cache, config
+from . import _http, cache, config
 
 NAMESPACE = "wikipedia"
 
@@ -59,40 +59,46 @@ def _headers() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-async def search(query: str, limit: int = 5) -> list[dict[str, str]]:
+async def search(query: str, limit: int = 5) -> dict[str, Any]:
     """Search Wikipedia for articles matching a query.
 
-    Returns a list of dicts with 'title' and 'url' keys.
+    Returns ``{"results": [{"title", "url"}, ...]}`` on success or
+    ``{"error": ...}`` on transport / HTTP failure.
     """
     capped = min(max(limit, 1), 10)
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await _throttled_get(
-            client,
-            _OPENSEARCH_URL,
-            params={
-                "action": "opensearch",
-                "search": query,
-                "limit": str(capped),
-                "format": "json",
-            },
-            headers=_headers(),
-        )
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await _throttled_get(
+                client,
+                _OPENSEARCH_URL,
+                params={
+                    "action": "opensearch",
+                    "search": query,
+                    "limit": str(capped),
+                    "format": "json",
+                },
+                headers=_headers(),
+            )
 
-    response.raise_for_status()
-    data = response.json()
+        response.raise_for_status()
+        data = response.json()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("Wikipedia", e)
 
     # OpenSearch returns [query, [titles], [descriptions], [urls]]
     if not isinstance(data, list) or len(data) < 4:
-        return []
+        return {"results": []}
 
     titles = data[1] or []
     urls = data[3] or []
 
-    return [
-        {"title": t, "url": u}
-        for t, u in zip(titles, urls)
-    ]
+    return {
+        "results": [
+            {"title": t, "url": u}
+            for t, u in zip(titles, urls)
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -115,18 +121,21 @@ async def get_summary(title: str) -> dict[str, Any]:
     if cached is not None:
         return cached
 
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        response = await _throttled_get(
-            client,
-            f"{_SUMMARY_URL}/{url_title}",
-            headers=_headers(),
-        )
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await _throttled_get(
+                client,
+                f"{_SUMMARY_URL}/{url_title}",
+                headers=_headers(),
+            )
 
-    if response.status_code == 404:
-        return {"error": f"Wikipedia page not found: {title}"}
+        if response.status_code == 404:
+            return {"error": f"Wikipedia page not found: {title}"}
 
-    response.raise_for_status()
-    data = response.json()
+        response.raise_for_status()
+        data = response.json()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("Wikipedia", e)
 
     result = {
         "title": data.get("title", ""),

@@ -143,7 +143,7 @@ class TestSearchWorksParams:
 
         result = await crossref.search_works("some title", year=2022, rows=3)
 
-        assert result == []
+        assert result == {"items": []}
         params = captured_kwargs.get("params", {})
         assert params["query.bibliographic"] == "some title"
         assert params["rows"] == "3"

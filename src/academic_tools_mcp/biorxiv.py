@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from . import cache
+from . import _http, cache
 
 NAMESPACE = "biorxiv"
 _BASE_URL = "https://api.biorxiv.org"
@@ -172,23 +172,28 @@ async def get_paper(doi: str) -> dict[str, Any]:
     if cached is not None:
         return cached
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Try bioRxiv first
-        url = f"{_BASE_URL}/details/biorxiv/{bare}/na/json"
-        response = await _throttled_get(client, url)
-
-        data = response.json()
-        collection = data.get("collection", [])
-
-        if not collection:
-            # Try medRxiv
-            url = f"{_BASE_URL}/details/medrxiv/{bare}/na/json"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Try bioRxiv first
+            url = f"{_BASE_URL}/details/biorxiv/{bare}/na/json"
             response = await _throttled_get(client, url)
+            response.raise_for_status()
+
             data = response.json()
             collection = data.get("collection", [])
 
-        if not collection:
-            return {"error": f"No paper found for DOI: {doi}"}
+            if not collection:
+                # Try medRxiv
+                url = f"{_BASE_URL}/details/medrxiv/{bare}/na/json"
+                response = await _throttled_get(client, url)
+                response.raise_for_status()
+                data = response.json()
+                collection = data.get("collection", [])
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("bioRxiv", e)
+
+    if not collection:
+        return {"error": f"No paper found for DOI: {doi}"}
 
     raw = _pick_latest_version(collection)
     paper = _parse_paper(raw)
@@ -232,13 +237,16 @@ async def download_pdf(doi: str) -> dict[str, Any]:
     if not pdf_url:
         return {"error": f"No PDF URL found for DOI: {doi}"}
 
-    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        response = await _throttled_get(client, pdf_url)
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await _throttled_get(client, pdf_url)
 
-    if response.status_code == 404:
-        return {"error": f"PDF not found for DOI: {doi}"}
+        if response.status_code == 404:
+            return {"error": f"PDF not found for DOI: {doi}"}
 
-    response.raise_for_status()
+        response.raise_for_status()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("bioRxiv", e)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(response.content)

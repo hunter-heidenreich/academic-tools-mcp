@@ -121,7 +121,8 @@ class TestSearch:
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: MockClient())
 
-        results = await wikipedia.search("test query", limit=5)
+        response = await wikipedia.search("test query", limit=5)
+        results = response["results"]
         assert len(results) == 2
         assert results[0]["title"] == "Article One"
         assert results[0]["url"] == "https://en.wikipedia.org/wiki/Article_One"
@@ -154,8 +155,8 @@ class TestSearch:
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: MockClient())
 
-        results = await wikipedia.search("xyzzy nonexistent")
-        assert results == []
+        response = await wikipedia.search("xyzzy nonexistent")
+        assert response == {"results": []}
 
     def test_limit_clamped(self):
         """Limit should be clamped between 1 and 10."""

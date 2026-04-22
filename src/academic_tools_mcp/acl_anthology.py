@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from . import cache
+from . import _http, cache
 
 NAMESPACE = "acl_anthology"
 
@@ -96,13 +96,16 @@ async def download_pdf(doi: str) -> dict[str, Any]:
 
     url = pdf_url(aid)
 
-    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        response = await client.get(url)
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(url)
 
-    if response.status_code == 404:
-        return {"error": f"PDF not found on ACL Anthology for: {aid}"}
+        if response.status_code == 404:
+            return {"error": f"PDF not found on ACL Anthology for: {aid}"}
 
-    response.raise_for_status()
+        response.raise_for_status()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("ACL Anthology", e)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(response.content)

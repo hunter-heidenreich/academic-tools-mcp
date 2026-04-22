@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from . import cache, config
+from . import _http, cache, config
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
@@ -84,11 +84,11 @@ async def search_works(
     bibliographic: str,
     year: int | None = None,
     rows: int = 5,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Search Crossref works by bibliographic query (title, author, etc.).
 
-    Returns a list of matching work objects (the 'items' from the API response).
-    Results are not cached since queries are ad-hoc.
+    Returns ``{"items": [...]}`` on success or ``{"error": ...}`` on
+    transport / HTTP failure. Results are not cached (ad-hoc queries).
     """
     headers = _build_headers()
     params: dict[str, str] = {
@@ -98,17 +98,21 @@ async def search_works(
     if year is not None:
         params["filter"] = f"from-pub-date:{year},until-pub-date:{year}"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await _throttled_get(
-            client,
-            f"{CROSSREF_BASE_URL}/works",
-            headers=headers,
-            params=params,
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await _throttled_get(
+                client,
+                f"{CROSSREF_BASE_URL}/works",
+                headers=headers,
+                params=params,
+            )
 
-    response.raise_for_status()
-    data = response.json()
-    return data.get("message", {}).get("items", [])
+        response.raise_for_status()
+        data = response.json()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("Crossref", e)
+
+    return {"items": data.get("message", {}).get("items", [])}
 
 
 async def get_work(doi: str) -> dict[str, Any]:
@@ -125,18 +129,21 @@ async def get_work(doi: str) -> dict[str, Any]:
     bare_doi = _normalize_doi(doi)
     headers = _build_headers()
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await _throttled_get(
-            client,
-            f"{CROSSREF_BASE_URL}/works/{bare_doi}",
-            headers=headers,
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await _throttled_get(
+                client,
+                f"{CROSSREF_BASE_URL}/works/{bare_doi}",
+                headers=headers,
+            )
 
-    if response.status_code == 404:
-        return {"error": f"No work found on Crossref for DOI: {doi}"}
+        if response.status_code == 404:
+            return {"error": f"No work found on Crossref for DOI: {doi}"}
 
-    response.raise_for_status()
-    data = response.json()
+        response.raise_for_status()
+        data = response.json()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("Crossref", e)
 
     work = data.get("message", {})
     cache.put(NAMESPACE, "works", canonical, work)

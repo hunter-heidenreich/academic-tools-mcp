@@ -872,7 +872,10 @@ async def search_crossref_by_title(
     call. Year filtering is optional but recommended; note that Crossref
     publication dates may differ from arXiv preprint dates.
     """
-    items = await crossref.search_works(title, year=year, rows=5)
+    response = await crossref.search_works(title, year=year, rows=5)
+    if "error" in response:
+        return _enrich_error(response, "Try a more specific title or use search_arxiv if it's a preprint.")
+    items = response.get("items", [])
 
     results = []
     for item in items:
@@ -1089,7 +1092,10 @@ async def search_wikipedia(
     Returns matching article titles and URLs. Useful for finding the correct
     Wikipedia article title before verifying with get_wikipedia_summary.
     """
-    results = await wikipedia.search(query, limit=limit)
+    response = await wikipedia.search(query, limit=limit)
+    if "error" in response:
+        return _enrich_error(response, "Wikipedia is temporarily unavailable; retry in a few seconds.")
+    results = response.get("results", [])
     return {"query": query, "result_count": len(results), "results": results}
 
 

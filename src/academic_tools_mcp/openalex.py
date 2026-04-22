@@ -2,7 +2,7 @@ from typing import Any
 
 import httpx
 
-from . import cache, config
+from . import _http, cache, config
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
@@ -73,18 +73,21 @@ async def get_author(author_id: str) -> dict[str, Any]:
     api_id = _normalize_author_id(author_id)
     params = _build_params()
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{OPENALEX_BASE_URL}/authors/{api_id}",
-            params=params,
-            timeout=30.0,
-        )
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{OPENALEX_BASE_URL}/authors/{api_id}",
+                params=params,
+                timeout=30.0,
+            )
 
-    if response.status_code == 404:
-        return {"error": f"No author found for ID: {author_id}"}
+        if response.status_code == 404:
+            return {"error": f"No author found for ID: {author_id}"}
 
-    response.raise_for_status()
-    data = response.json()
+        response.raise_for_status()
+        data = response.json()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("OpenAlex", e)
 
     cache.put(NAMESPACE, "authors", canonical, data)
     return data
@@ -104,18 +107,21 @@ async def get_work(doi: str) -> dict[str, Any]:
     api_doi = f"doi:{_normalize_doi(doi)}"
     params = _build_params()
 
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{OPENALEX_BASE_URL}/works/{api_doi}",
-            params=params,
-            timeout=30.0,
-        )
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{OPENALEX_BASE_URL}/works/{api_doi}",
+                params=params,
+                timeout=30.0,
+            )
 
-    if response.status_code == 404:
-        return {"error": f"No work found for DOI: {doi}"}
+        if response.status_code == 404:
+            return {"error": f"No work found for DOI: {doi}"}
 
-    response.raise_for_status()
-    data = response.json()
+        response.raise_for_status()
+        data = response.json()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("OpenAlex", e)
 
     cache.put(NAMESPACE, "works", canonical, data)
     return data

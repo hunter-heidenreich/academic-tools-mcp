@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from . import cache
+from . import _http, cache
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
@@ -112,17 +112,20 @@ async def get_references(doi: str) -> dict[str, Any]:
 
     bare_doi = _normalize_doi(doi)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await _throttled_get(
-            client,
-            f"{OPENCITATIONS_BASE_URL}/references/doi:{bare_doi}",
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await _throttled_get(
+                client,
+                f"{OPENCITATIONS_BASE_URL}/references/doi:{bare_doi}",
+            )
 
-    if response.status_code == 404:
-        return {"error": f"No references found on OpenCitations for DOI: {doi}"}
+        if response.status_code == 404:
+            return {"error": f"No references found on OpenCitations for DOI: {doi}"}
 
-    response.raise_for_status()
-    records = response.json()
+        response.raise_for_status()
+        records = response.json()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("OpenCitations", e)
 
     references = [_format_record(r, "cited") for r in records]
     data: dict[str, Any] = {"references": references, "count": len(references)}
@@ -144,17 +147,20 @@ async def get_citations(doi: str) -> dict[str, Any]:
 
     bare_doi = _normalize_doi(doi)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await _throttled_get(
-            client,
-            f"{OPENCITATIONS_BASE_URL}/citations/doi:{bare_doi}",
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await _throttled_get(
+                client,
+                f"{OPENCITATIONS_BASE_URL}/citations/doi:{bare_doi}",
+            )
 
-    if response.status_code == 404:
-        return {"error": f"No citations found on OpenCitations for DOI: {doi}"}
+        if response.status_code == 404:
+            return {"error": f"No citations found on OpenCitations for DOI: {doi}"}
 
-    response.raise_for_status()
-    records = response.json()
+        response.raise_for_status()
+        records = response.json()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("OpenCitations", e)
 
     citations = [_format_record(r, "citing") for r in records]
     data: dict[str, Any] = {"citations": citations, "count": len(citations)}

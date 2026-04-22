@@ -8,7 +8,7 @@ import httpx
 
 from pathlib import Path
 
-from . import cache
+from . import _http, cache
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 NAMESPACE = "arxiv"
@@ -166,16 +166,20 @@ async def get_paper(arxiv_id: str) -> dict[str, Any]:
 
     api_id = _normalize_arxiv_id(arxiv_id)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await _throttled_get(
-            client,
-            ARXIV_BASE_URL,
-            params={"id_list": api_id},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await _throttled_get(
+                client,
+                ARXIV_BASE_URL,
+                params={"id_list": api_id},
+            )
 
-    response.raise_for_status()
+        response.raise_for_status()
 
-    root = ET.fromstring(response.text)
+        root = ET.fromstring(response.text)
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("arXiv", e)
+
     entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
     if not entries:
@@ -204,20 +208,23 @@ async def search_papers(
     """
     capped = min(max(max_results, 1), 50)
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await _throttled_get(
-            client,
-            ARXIV_BASE_URL,
-            params={
-                "search_query": query,
-                "start": "0",
-                "max_results": str(capped),
-            },
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await _throttled_get(
+                client,
+                ARXIV_BASE_URL,
+                params={
+                    "search_query": query,
+                    "start": "0",
+                    "max_results": str(capped),
+                },
+            )
 
-    response.raise_for_status()
+        response.raise_for_status()
 
-    root = ET.fromstring(response.text)
+        root = ET.fromstring(response.text)
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("arXiv", e)
 
     total_el = root.find(f"{{{_OPENSEARCH_NS}}}totalResults")
     total_results = int(total_el.text) if total_el is not None and total_el.text else 0
@@ -280,10 +287,13 @@ async def download_pdf(arxiv_id: str) -> dict[str, Any]:
     if not pdf_url:
         return {"error": f"No PDF link found for arXiv ID: {arxiv_id}"}
 
-    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        response = await _throttled_get(client, pdf_url)
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await _throttled_get(client, pdf_url)
 
-    response.raise_for_status()
+        response.raise_for_status()
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict("arXiv", e)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(response.content)
