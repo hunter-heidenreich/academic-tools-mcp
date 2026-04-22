@@ -1108,10 +1108,14 @@ async def search_wikipedia(
         Field(description="Maximum results to return (1-10).", ge=1, le=10),
     ] = 5,
 ) -> dict[str, Any]:
-    """Search Wikipedia for articles matching a query.
+    """Search Wikipedia for articles matching a query (titles + URLs only).
 
-    Returns matching article titles and URLs. Useful for finding the correct
-    Wikipedia article title before verifying with get_wikipedia_summary.
+    Returns ``{query, result_count, results: [{title, url}, ...]}``. Capped
+    at 10 hits. Use the title from a hit with get_wikipedia_summary to
+    fetch the article extract.
+
+    Errors: Wikipedia outage / rate limit → ``{error, suggestion}`` with a
+    retry hint.
     """
     response = await wikipedia.search(query, limit=limit)
     if "error" in response:
