@@ -505,6 +505,63 @@ class TestConvertPdfCachePaths:
         assert "PDF not found" in result["error"]
 
 
+class TestConvertPdfSubprocessFailures:
+    """The subprocess path must turn every failure into an {error, ...} dict;
+    nothing should bubble as a raw exception.
+    """
+
+    @pytest.fixture
+    def isolated_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        return tmp_path
+
+    @pytest.fixture
+    def real_pdf(self, tmp_path):
+        # convert_pdf needs the PDF to exist before spawning; the bytes don't
+        # matter because we mock the subprocess.
+        pdf = tmp_path / "fake.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        return pdf
+
+    @pytest.mark.asyncio
+    async def test_spawn_failure_returns_error_dict(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        async def _spawn_fail(*args, **kwargs):
+            raise FileNotFoundError("bash: not found")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn_fail)
+        result = await convert_pdf(real_pdf, "test", "spawn-fail-1")
+        assert "error" in result
+        assert "Could not start" in result["error"]
+        assert result["retryable"] is False
+        assert "pdf_size_mb" in result
+
+    @pytest.mark.asyncio
+    async def test_binary_output_does_not_crash(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        # A converter that crashes can dump binary garbage on stdout.
+        # The non-zero exit handler used to call .decode() with strict UTF-8
+        # and raise UnicodeDecodeError on those bytes.
+        binary_garbage = b"\xff\xfe\xfd boom \xc3\x28 invalid utf-8 \x00\x01"
+
+        class FakeProc:
+            returncode = 1
+
+            async def communicate(self):
+                return binary_garbage, b""
+
+        async def _fake_spawn(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        result = await convert_pdf(real_pdf, "test", "binary-out-1")
+        assert "error" in result
+        assert "exit 1" in result["error"]
+        assert result["retryable"] is False
+
+
 # ---------------------------------------------------------------------------
 # _build_converter_command
 # ---------------------------------------------------------------------------

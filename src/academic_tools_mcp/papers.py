@@ -20,6 +20,7 @@ on the next call.
 import asyncio
 import hashlib
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -329,11 +330,12 @@ async def convert_pdf(
     # Run PDF converter in a subprocess
     extract_dir = Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
     converter_cmd = _build_converter_command(pdf_path, extract_dir)
+    quoted_extract = shlex.quote(str(extract_dir))
 
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", "-c",
-            f'rm -rf "{extract_dir}" 2>/dev/null; {converter_cmd} 2>&1',
+            f'rm -rf {quoted_extract} 2>/dev/null; {converter_cmd} 2>&1',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -348,9 +350,26 @@ async def convert_pdf(
             "retryable": False,
             "pdf_size_mb": round(pdf_size_mb, 1),
         }
+    except OSError as e:
+        # Process spawn failed (bash missing, fork EAGAIN, permission denied).
+        # Different from a converter that ran and failed.
+        return {
+            "error": (
+                f"Could not start PDF converter subprocess: {e}. "
+                "Check that bash is on PATH and that the PDF_CONVERTER / "
+                "PDF_CONVERTER_VENV env vars point at a usable command."
+            ),
+            "retryable": False,
+            "pdf_size_mb": round(pdf_size_mb, 1),
+        }
 
     if proc.returncode != 0:
-        output = (stdout or b"").decode() + (stderr or b"").decode()
+        # Converter output may include binary noise on crashes; replace
+        # undecodable bytes rather than raising UnicodeDecodeError ourselves.
+        output = (
+            (stdout or b"").decode("utf-8", errors="replace")
+            + (stderr or b"").decode("utf-8", errors="replace")
+        )
         return {
             "error": f"PDF conversion failed (exit {proc.returncode}): {output[-500:]}",
             "retryable": False,
