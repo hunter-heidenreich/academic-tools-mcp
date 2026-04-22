@@ -719,11 +719,11 @@ async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
     if cached is not None:
         stored_checksum = cached.get("markdown_checksum", None)
         current_checksum = papers._markdown_checksum(md_path)
-        if stored_checksum is None or stored_checksum == current_checksum:
+        if stored_checksum is not None and stored_checksum == current_checksum:
             # Cache valid — return stored sections
             sections_data = cached
         else:
-            # Checksum mismatch — re-parse and update cache
+            # Missing or mismatched checksum — re-parse and update cache
             markdown = md_path.read_text()
             sections = papers.parse_sections(markdown)
             sections_data = {

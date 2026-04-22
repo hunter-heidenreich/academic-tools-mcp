@@ -498,6 +498,26 @@ class TestConvertPdfCachePaths:
         assert refreshed["markdown_checksum"] != "deadbeef"
 
     @pytest.mark.asyncio
+    async def test_reparses_when_checksum_missing(
+        self, isolated_cache, fail_if_subprocess
+    ):
+        # A sections cache entry written before the checksum field existed
+        # (or by any path that didn't persist one) must be treated as stale,
+        # not valid — otherwise external edits to the markdown go undetected.
+        ns, canonical = "test", "doc-5"
+        md_path = self._seed_markdown(ns, canonical, "## Fresh\n\nbody\n")
+        cache.put(ns, "sections", papers._sections_key(canonical), {
+            "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
+            "markdown_checksum": None,
+        })
+
+        result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical)
+        assert [s["title"] for s in result["sections"]] == ["Fresh"]
+
+        refreshed = cache.get(ns, "sections", papers._sections_key(canonical))
+        assert refreshed["markdown_checksum"] == papers._markdown_checksum(md_path)
+
+    @pytest.mark.asyncio
     async def test_errors_when_neither_markdown_nor_pdf_exists(self, isolated_cache):
         ns, canonical = "test", "doc-4"
         result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical)

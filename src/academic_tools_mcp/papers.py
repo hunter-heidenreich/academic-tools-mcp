@@ -298,7 +298,7 @@ async def convert_pdf(
 
         if cached_sections is not None:
             stored_checksum = cached_sections.get("markdown_checksum")
-            if stored_checksum is None or stored_checksum == current_checksum:
+            if stored_checksum is not None and stored_checksum == current_checksum:
                 return {
                     "markdown_path": str(md_path),
                     "sections": cached_sections.get("sections", parse_sections(markdown)),
