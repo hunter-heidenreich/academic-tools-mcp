@@ -287,22 +287,37 @@ async def convert_pdf(
     """
     md_path = _markdown_path(namespace, canonical)
 
-    # Check if already converted and cache is valid
+    # If the markdown is already cached, never re-run the slow conversion —
+    # re-parse from the existing markdown if the sections cache is missing
+    # or stale, and refresh the sections cache.
     if md_path.exists():
-        cached = cache.get(namespace, "sections", _sections_key(canonical))
-        if cached is not None:
-            # Verify checksum if present; missing checksum means re-parse (legacy behavior)
-            stored_checksum = cached.get("markdown_checksum", None)
-            current_checksum = _markdown_checksum(md_path)
+        markdown = md_path.read_text()
+        current_checksum = _markdown_checksum(md_path)
+        cached_sections = cache.get(namespace, "sections", _sections_key(canonical))
+
+        if cached_sections is not None:
+            stored_checksum = cached_sections.get("markdown_checksum")
             if stored_checksum is None or stored_checksum == current_checksum:
-                # Cache is valid
-                sections = cached.get("sections", parse_sections(md_path.read_text()))
                 return {
                     "markdown_path": str(md_path),
-                    "sections": sections,
+                    "sections": cached_sections.get("sections", parse_sections(markdown)),
                     "cached": True,
                 }
-            # else: checksum mismatch -> re-parse below
+
+        # Sections cache missing or stale — re-parse the existing markdown
+        # and refresh the sections cache. No subprocess needed.
+        sections = parse_sections(markdown)
+        cache.put(
+            namespace,
+            "sections",
+            _sections_key(canonical),
+            {"sections": sections, "markdown_checksum": current_checksum},
+        )
+        return {
+            "markdown_path": str(md_path),
+            "sections": sections,
+            "cached": True,
+        }
 
     if not pdf_path.exists():
         return {"error": f"PDF not found at: {pdf_path}"}

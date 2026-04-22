@@ -635,16 +635,20 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
     """Convert a downloaded PDF to markdown and parse into sections.
 
     Step 2 of the PDF pipeline (download_pdf → convert_paper →
-    get_paper_sections → get_paper_section). Slow: 5-10 minutes per paper.
-    Skips conversion if markdown is already cached.
+    get_paper_sections → get_paper_section). Slow: up to 10 minutes per
+    paper (hard timeout). Skips the subprocess if the markdown is already
+    cached — re-parses from the cached markdown if the sections index
+    is missing or stale.
 
-    Returns ``{namespace, canonical, sections}`` — the section index, same
-    shape as get_paper_sections.
+    Returns ``{sections, cached}`` on success. ``cached`` is true when the
+    expensive conversion was skipped (re-parses also count as cached).
+    Each section entry has ``{index, title, h3s, approx_tokens}``.
 
-    Errors:
-      - PDF not cached → guidance to run download_pdf or import_paper.
-      - Conversion failure → non-retryable; suggests trying a different
-        version or pre-converted markdown via import_paper.
+    Errors: ``{error, retryable: False, pdf_size_mb?, suggestion}``.
+      - PDF not cached → suggestion points at download_pdf / import_paper.
+      - Conversion failure (subprocess error, timeout, no output) →
+        non-retryable; agent should try a different version or a
+        pre-converted markdown via import_paper.
     """
     target = manual._resolve_target(identifier)
     pdf = target["pdf_path"]

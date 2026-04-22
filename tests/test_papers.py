@@ -1,9 +1,14 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+from academic_tools_mcp import cache, papers
 from academic_tools_mcp.papers import (
     _build_converter_command,
     _detect_heading_levels,
+    convert_pdf,
     get_section_content,
     parse_sections,
 )
@@ -406,6 +411,98 @@ class TestGetSectionContent:
         same_by_index = get_section_content(_H2_MARKDOWN, result["index"])
         assert result["title"] == same_by_index["title"]
         assert result["content"] == same_by_index["content"]
+
+
+# ---------------------------------------------------------------------------
+# convert_pdf cache paths (subprocess path is not exercised here)
+# ---------------------------------------------------------------------------
+
+
+class TestConvertPdfCachePaths:
+    """When the markdown is already cached, convert_pdf must never invoke
+    the slow subprocess — even if the sections cache is missing or stale.
+    """
+
+    @pytest.fixture
+    def isolated_cache(self, tmp_path, monkeypatch):
+        # Redirect the cache root so each test runs against a clean filesystem
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        return tmp_path
+
+    @pytest.fixture
+    def fail_if_subprocess(self, monkeypatch):
+        # Any attempt to spawn a subprocess in this test is a bug
+        async def _fail(*args, **kwargs):
+            raise AssertionError("convert_pdf should not invoke the subprocess on this path")
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
+
+    def _seed_markdown(self, namespace, canonical, body):
+        md_path = papers._markdown_path(namespace, canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(body)
+        return md_path
+
+    @pytest.mark.asyncio
+    async def test_uses_cached_sections_when_checksum_matches(
+        self, isolated_cache, fail_if_subprocess
+    ):
+        ns, canonical = "test", "doc-1"
+        md_path = self._seed_markdown(ns, canonical, "## A\n\nx\n\n## B\n\ny\n")
+        sections = papers.parse_sections(md_path.read_text())
+        cache.put(ns, "sections", papers._sections_key(canonical), {
+            "sections": sections,
+            "markdown_checksum": papers._markdown_checksum(md_path),
+        })
+
+        result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical)
+        assert result["cached"] is True
+        assert result["sections"] == sections
+
+    @pytest.mark.asyncio
+    async def test_reparses_when_sections_cache_missing(
+        self, isolated_cache, fail_if_subprocess
+    ):
+        # The bug fix: markdown exists, sections cache missing -> re-parse,
+        # do NOT re-run the subprocess (which would also overwrite markdown).
+        ns, canonical = "test", "doc-2"
+        self._seed_markdown(ns, canonical, "## Intro\n\nhi\n\n## Methods\n\nstuff\n")
+
+        result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical)
+        assert result["cached"] is True
+        titles = [s["title"] for s in result["sections"]]
+        assert titles == ["Intro", "Methods"]
+
+        # And the sections cache is now populated for next time
+        refreshed = cache.get(ns, "sections", papers._sections_key(canonical))
+        assert refreshed is not None
+        assert refreshed["sections"] == result["sections"]
+
+    @pytest.mark.asyncio
+    async def test_reparses_when_checksum_stale(
+        self, isolated_cache, fail_if_subprocess
+    ):
+        # Markdown was edited externally so the cached checksum no longer matches.
+        ns, canonical = "test", "doc-3"
+        self._seed_markdown(ns, canonical, "## Old\n\nold body\n")
+        cache.put(ns, "sections", papers._sections_key(canonical), {
+            "sections": [{"index": 0, "title": "Old", "h3s": [], "approx_tokens": 1}],
+            "markdown_checksum": "deadbeef",  # deliberately wrong
+        })
+
+        result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical)
+        assert result["cached"] is True
+        # Re-parsed from current markdown, not the stale cache
+        assert [s["title"] for s in result["sections"]] == ["Old"]
+
+        refreshed = cache.get(ns, "sections", papers._sections_key(canonical))
+        assert refreshed["markdown_checksum"] != "deadbeef"
+
+    @pytest.mark.asyncio
+    async def test_errors_when_neither_markdown_nor_pdf_exists(self, isolated_cache):
+        ns, canonical = "test", "doc-4"
+        result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical)
+        assert "error" in result
+        assert "PDF not found" in result["error"]
 
 
 # ---------------------------------------------------------------------------
