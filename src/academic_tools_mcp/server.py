@@ -1134,13 +1134,25 @@ async def get_wikipedia_summary(
         ),
     ],
 ) -> dict[str, Any]:
-    """Get a summary of a Wikipedia article: title, description, extract, and URL.
+    """Fetch the structured summary (extract) of a Wikipedia article.
 
-    Also reports the page type — 'standard' for normal articles,
-    'disambiguation' for disambiguation pages. Returns an error if the
-    page does not exist.
+    Returns ``{title, description, extract, url, type, pageid}``. ``type``
+    is ``"standard"`` for normal articles or ``"disambiguation"`` for
+    disambiguation pages (where ``extract`` is typically a list of
+    candidate meanings). Cached per article — one network hit ever.
+
+    Errors: page not found / Wikipedia outage → ``{error, suggestion}``.
+    Use search_wikipedia first if you don't already know the canonical
+    title.
     """
-    return await wikipedia.get_summary(title)
+    result = await wikipedia.get_summary(title)
+    if "error" in result:
+        return _enrich_error(
+            result,
+            "Try search_wikipedia to find the correct title, or retry if "
+            "Wikipedia is temporarily unavailable.",
+        )
+    return result
 
 
 
