@@ -11,18 +11,26 @@ from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bib
 mcp = FastMCP(
     "academic-tools",
     instructions=(
-        "Academic paper research tools. Wraps OpenAlex, arXiv, bioRxiv/medRxiv, "
-        "Crossref, OpenCitations, ACL Anthology, and Wikipedia APIs. "
-        "Use these tools to look up paper metadata, authors, abstracts, BibTeX citations, "
-        "citation/reference graphs, and to download and read full paper content section-by-section. "
-        "Unified paper tools (get_paper_metadata / get_paper_authors / get_paper_abstract / "
-        "get_paper_bibtex) accept arXiv IDs or any DOI and auto-route to arXiv, bioRxiv, or "
-        "OpenAlex — each response carries `_source` so you can interpret provider-specific "
-        "fields. "
-        "PDF pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section, "
-        "auto-detects the provider. For PDFs not on arXiv/bioRxiv/ACL, fetch the file "
-        "yourself and hand it to import_paper (accepts .pdf or .md/.markdown). "
-        "Reference/citation tools use a count-then-page pattern to avoid token blowouts."
+        "Academic paper research. Wraps OpenAlex, arXiv, bioRxiv/medRxiv, "
+        "Crossref, OpenCitations, ACL Anthology, and Wikipedia for paper "
+        "metadata, authors, abstracts, BibTeX, reference/citation graphs, "
+        "and full-text section reading.\n\n"
+        "Unified paper tools (get_paper_metadata / get_paper_authors / "
+        "get_paper_abstract / get_paper_bibtex) take an arXiv ID or any DOI "
+        "and route to the right provider; every response tags `_source` for "
+        "provider-specific fields. get_paper_authors paginates (cap "
+        "page_size=25) for huge collaboration lists.\n\n"
+        "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
+        "get_paper_section. All auto-detect the provider. For PDFs outside "
+        "arXiv/bioRxiv/ACL, fetch the file yourself and hand it to "
+        "import_paper. get_paper_section pages by character offset (re-call "
+        "with offset=next_offset) for long sections.\n\n"
+        "References/citations use count-then-page (`_count` first, then "
+        "paginate). Search tools (search_arxiv, search_crossref_by_title) "
+        "return slim triage hits — chain to get_paper_metadata for the full "
+        "record (free cache hit).\n\n"
+        "All tools return {error, suggestion?} on failure; transient errors "
+        "(5xx, 429, timeouts) include retry hints."
     ),
 )
 
@@ -48,12 +56,15 @@ AUTHOR_ID = Annotated[
 PAPER_ID = Annotated[
     str,
     Field(
-        description="Paper identifier. Auto-detects the source: "
-        "arXiv ID (2301.00001 or hep-th/9901001), "
-        "bioRxiv/medRxiv DOI (10.1101/...), "
-        "ACL Anthology DOI (10.18653/v1/...), "
-        "any other DOI, or a freeform label. "
-        "Accepts bare values, doi: prefix, or full URLs."
+        description="Paper identifier — bare value, doi: prefix, or full URL. "
+        "Auto-detects the source: arXiv IDs (2301.00001 or hep-th/9901001), "
+        "bioRxiv/medRxiv DOIs (10.1101/...), ACL Anthology DOIs "
+        "(10.18653/v1/...), or any other DOI. "
+        "Metadata tools (get_paper_metadata / get_paper_authors / "
+        "get_paper_abstract / get_paper_bibtex) require one of those shapes; "
+        "the PDF pipeline tools (download_pdf / convert_paper / import_paper / "
+        "get_paper_sections / get_paper_section) additionally accept freeform "
+        "labels for manually imported files."
     ),
 ]
 
@@ -468,11 +479,15 @@ async def get_paper_topics(doi: DOI) -> dict[str, Any]:
 
 @mcp.tool
 async def get_author(author_id: AUTHOR_ID) -> dict[str, Any]:
-    """Get an author's full OpenAlex record: profile stats plus affiliation history.
+    """Fetch an author's OpenAlex profile (chain from get_paper_authors).
 
-    Returns name, ORCID, OpenAlex ID, works_count, cited_by_count, h_index,
-    i10_index, current institutions, top 5 topics, and the full affiliation
-    history (institution + country_code + years for each stint).
+    Returns ``{name, openalex_id, orcid, works_count, cited_by_count,
+    h_index, i10_index, current_institutions, top_topics, affiliations}``.
+    ``top_topics`` is capped at 5; ``affiliations`` is the full history
+    (each entry: institution, country_code, sorted years).
+
+    Errors: not found / bad ID → ``{error, suggestion}`` pointing at
+    get_paper_authors (for OpenAlex IDs) or ORCID URLs.
     """
     author = await openalex.get_author(author_id)
     if "error" in author:
@@ -558,7 +573,10 @@ async def search_arxiv(
     """
     result = await arxiv.search_papers(query, max_results=max_results)
     if "error" in result:
-        return result
+        return _enrich_error(
+            result,
+            "Refine the query or retry if arXiv is temporarily unavailable.",
+        )
 
     return {
         "total_results": result["total_results"],
