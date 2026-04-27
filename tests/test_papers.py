@@ -7,7 +7,6 @@ import pytest
 from academic_tools_mcp import cache, papers
 from academic_tools_mcp.papers import (
     _build_converter_command,
-    _detect_heading_levels,
     convert_pdf,
     get_section_content,
     parse_sections,
@@ -136,36 +135,6 @@ Content of second section.
 
 
 # ---------------------------------------------------------------------------
-# _detect_heading_levels
-# ---------------------------------------------------------------------------
-
-
-class TestDetectHeadingLevels:
-    def test_h2_document(self):
-        lines = _H2_MARKDOWN.split("\n")
-        section_level, sub_level = _detect_heading_levels(lines)
-        assert section_level == 2
-        assert sub_level == 3
-
-    def test_h1_document(self):
-        lines = _H1_MARKDOWN.split("\n")
-        section_level, sub_level = _detect_heading_levels(lines)
-        assert section_level == 1
-        assert sub_level == 2
-
-    def test_no_headings_defaults(self):
-        lines = _NO_HEADINGS.split("\n")
-        section_level, sub_level = _detect_heading_levels(lines)
-        assert section_level == 2
-        assert sub_level == 3
-
-    def test_empty_defaults(self):
-        section_level, sub_level = _detect_heading_levels([])
-        assert section_level == 2
-        assert sub_level == 3
-
-
-# ---------------------------------------------------------------------------
 # parse_sections with H2-based documents
 # ---------------------------------------------------------------------------
 
@@ -275,6 +244,71 @@ class TestParseSectionsH1:
         sections = parse_sections(_NO_HEADINGS)
         assert len(sections) == 1
         assert sections[0]["title"] == "Preamble"
+
+
+# ---------------------------------------------------------------------------
+# parse_sections regression: more H3 subsections than H2 sections
+# ---------------------------------------------------------------------------
+
+
+_H2_WITH_MANY_H3S = """\
+## Title
+Preamble-ish.
+
+## Results
+### Sub A
+text
+### Sub B
+text
+### Sub C
+text
+### Sub D
+text
+
+## Methods
+### Method A
+text
+### Method B
+text
+### Method C
+text
+
+## References
+### Refs 1-10
+text
+### Refs 11-20
+text
+### Refs 21-30
+text
+"""
+
+
+class TestParseSectionsH3HeavyDocument:
+    """Regression: a count-based heuristic flipped to H3-as-section once H3s
+    outnumbered H2s, flattening the outline. Sections must follow the H1/H2
+    boundaries regardless of how many H3s a section contains."""
+
+    def test_section_titles(self):
+        sections = parse_sections(_H2_WITH_MANY_H3S)
+        assert [s["title"] for s in sections] == [
+            "Title",
+            "Results",
+            "Methods",
+            "References",
+        ]
+
+    def test_h3s_grouped_under_parent(self):
+        sections = parse_sections(_H2_WITH_MANY_H3S)
+        results = next(s for s in sections if s["title"] == "Results")
+        assert results["h3s"] == ["Sub A", "Sub B", "Sub C", "Sub D"]
+        refs = next(s for s in sections if s["title"] == "References")
+        assert refs["h3s"] == ["Refs 1-10", "Refs 11-20", "Refs 21-30"]
+
+    def test_h3s_never_promoted_to_sections(self):
+        sections = parse_sections(_H2_WITH_MANY_H3S)
+        titles = {s["title"] for s in sections}
+        assert "Sub A" not in titles
+        assert "Refs 1-10" not in titles
 
 
 # ---------------------------------------------------------------------------

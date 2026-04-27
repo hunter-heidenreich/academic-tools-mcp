@@ -9,8 +9,9 @@ This module handles:
 The converter backend is configured via PDF_CONVERTER and PDF_CONVERTER_VENV
 environment variables. See _CONVERTERS for named backends.
 
-Section splitting is adaptive: it detects the heading level used for main
-sections (H1 or H2) based on what the document actually contains.
+Section splitting is fixed, not adaptive: H1 and H2 are both treated as
+section boundaries (different converters use different conventions for the
+top level), H3 is tracked as the sub-heading level, and H4+ are ignored.
 
 Cache invalidation: section indices are checksummed against the source markdown.
 If the markdown file changes (e.g., manual edits), the sections are re-parsed
@@ -89,47 +90,23 @@ def _sections_key(canonical: str) -> str:
     return canonical.replace("/", "_")
 
 
-def _detect_heading_levels(lines: list[str]) -> tuple[int, int]:
-    """Detect which heading levels to use for sections and sub-headings.
-
-    Scans the document for headings and picks the two most-used levels.
-    Returns (section_level, sub_level).
-
-    Heuristic:
-      - Find the most common heading level -> that's the section level
-      - The next level down (section_level + 1) is the sub-heading level
-      - If only one level exists, sub_level = section_level + 1 (won't match anything)
-    """
-    level_counts: dict[int, int] = {}
-    for line in lines:
-        m = _HEADING_RE.match(line)
-        if m:
-            level = len(m.group(1))
-            level_counts[level] = level_counts.get(level, 0) + 1
-
-    if not level_counts:
-        # No headings at all; default to H2/H3
-        return 2, 3
-
-    # Most common level is the section level
-    section_level = max(level_counts, key=lambda k: level_counts[k])
-    sub_level = section_level + 1
-
-    return section_level, sub_level
+# Fixed heading levels: H1 and H2 both open a new section (converters
+# disagree on which level to use for the top), H3 is tracked as the
+# sub-heading level, everything deeper is ignored.
+_SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
+_SUB_LEVEL: int = 3
 
 
 def parse_sections(markdown: str) -> list[dict[str, Any]]:
     """Parse markdown into sections with sub-heading previews.
 
-    Adaptive: detects whether the document uses H1 or H2 for main sections.
-    Returns a list of section dicts:
+    H1 and H2 are both treated as section boundaries; H3 is tracked as a
+    sub-heading within the enclosing section. Returns a list of section dicts:
       {"index": 0, "title": "Introduction", "h3s": ["Background"], "approx_tokens": 800}
 
-    The "h3s" key contains sub-heading titles (one level below the section level).
     Content before the first section heading is captured as a "Preamble" section.
     """
     lines = markdown.split("\n")
-    section_level, sub_level = _detect_heading_levels(lines)
 
     sections: list[dict[str, Any]] = []
     current_title = "Preamble"
@@ -152,13 +129,13 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
         if m:
             level = len(m.group(1))
             title = m.group(2).strip()
-            if level == section_level:
+            if level in _SECTION_LEVELS:
                 _flush()
                 current_title = title
                 current_h3s = []
                 current_lines = []
                 continue
-            elif level == sub_level:
+            elif level == _SUB_LEVEL:
                 current_h3s.append(title)
 
         current_lines.append(line)
@@ -198,7 +175,6 @@ def get_section_content(
         return {"error": f"offset must be non-negative, got {offset}"}
 
     lines = markdown.split("\n")
-    section_level, _ = _detect_heading_levels(lines)
 
     boundaries: list[tuple[str, int, int]] = []
     current_title = "Preamble"
@@ -206,7 +182,7 @@ def get_section_content(
 
     for i, line in enumerate(lines):
         m = _HEADING_RE.match(line)
-        if m and len(m.group(1)) == section_level:
+        if m and len(m.group(1)) in _SECTION_LEVELS:
             boundaries.append((current_title, current_start, i))
             current_title = m.group(2).strip()
             current_start = i + 1
@@ -340,16 +316,7 @@ async def convert_pdf(
             stderr=asyncio.subprocess.PIPE,
         )
 
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=600  # 10 minutes
-        )
-    except asyncio.TimeoutError:
-        return {
-            "error": f"PDF conversion timed out after 10 minutes (PDF: {pdf_size_mb:.1f} MB). "
-            "The document may be too large for the converter.",
-            "retryable": False,
-            "pdf_size_mb": round(pdf_size_mb, 1),
-        }
+        stdout, stderr = await proc.communicate()
     except OSError as e:
         # Process spawn failed (bash missing, fork EAGAIN, permission denied).
         # Different from a converter that ran and failed.
@@ -393,6 +360,16 @@ async def convert_pdf(
 
     source_md = candidates[0]
     markdown = source_md.read_text()
+
+    # Post-process the raw converter output before caching
+    lines = markdown.split("\n")
+    lines = [line.rstrip() for line in lines]
+    markdown = "\n".join(lines)
+
+    # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
+    # When there is no caption, the path is never useful, so drop it.
+    # When there is a caption, keep the caption text and drop the path.
+    markdown = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'![\1]()', markdown)
 
     # Store markdown in cache
     md_path.parent.mkdir(parents=True, exist_ok=True)
