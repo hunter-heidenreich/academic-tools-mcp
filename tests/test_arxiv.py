@@ -487,6 +487,81 @@ class TestGetPaperSingleFlight:
         assert get_calls == 2
 
     @pytest.mark.asyncio
+    async def test_force_refresh_drops_cache_and_refetches(
+        self, tmp_path, monkeypatch
+    ):
+        """force_refresh must invalidate both positive and negative
+        entries before fetching, so an agent can re-pull a paper whose
+        cached record might be stale (e.g. a new version uploaded)."""
+        from academic_tools_mcp import _clients, _singleflight, cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(arxiv, "_pending", 0)
+        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
+        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(
+            arxiv, "_single_flight", _singleflight.SingleFlight()
+        )
+
+        async def mock_sleep(_):
+            pass
+        monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
+
+        atom_xml = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2301.00001v1</id>
+    <title>Test Title</title>
+    <summary>Test summary.</summary>
+    <published>2023-01-01T00:00:00Z</published>
+    <updated>2023-01-01T00:00:00Z</updated>
+    <author><name>Jane Doe</name></author>
+  </entry>
+</feed>"""
+
+        get_calls = 0
+
+        class StubResponse:
+            text = atom_xml
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        class StubClient:
+            async def get(self, url, **kwargs):
+                nonlocal get_calls
+                get_calls += 1
+                return StubResponse()
+
+        monkeypatch.setattr(
+            _clients, "get_client", lambda *a, **kw: StubClient()
+        )
+
+        # Warm the cache.
+        await arxiv.get_paper("2301.00001")
+        assert get_calls == 1
+
+        # Default behaviour: cache hit, no second network call.
+        await arxiv.get_paper("2301.00001")
+        assert get_calls == 1
+
+        # force_refresh: cache is dropped, network is hit again.
+        await arxiv.get_paper("2301.00001", force_refresh=True)
+        assert get_calls == 2
+
+        # Negative cache also dropped: a previously-404'd identifier
+        # can resolve on a forced retry.
+        cache.put_negative(
+            arxiv.NAMESPACE, "papers", "2301.99999",
+            {"error": "stale 404"}, ttl_seconds=86400,
+        )
+        await arxiv.get_paper("2301.99999", force_refresh=True)
+        assert get_calls == 3, (
+            "force_refresh should drop the negative cache and re-fetch"
+        )
+
+    @pytest.mark.asyncio
     async def test_different_ids_dont_block_each_other(
         self, tmp_path, monkeypatch
     ):

@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import _clients, acl_anthology, arxiv, biorxiv, cache, crossref, manual, opencitations, openalex, papers, wikipedia
+from . import _clients, _stats, acl_anthology, arxiv, biorxiv, cache, config, crossref, manual, opencitations, openalex, papers, wikipedia
 from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 
 
@@ -14,11 +14,15 @@ from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bib
 async def _lifespan(app: FastMCP):
     """Manage process-wide resources tied to the server's life.
 
+    On startup: sweep ``.cache/`` for stale ``*.tmp`` files left behind
+    by killed writers from previous runs. Cheap (one rglob, no I/O on
+    files that don't match) and idempotent. New clients are pooled
+    lazily on first use, so we don't pre-build them here.
+
     On shutdown: close every pooled httpx.AsyncClient so we don't leak
-    sockets if the server is stopped while clients are idle. New
-    clients are pooled lazily on first use, so there is nothing to do
-    on startup.
+    sockets if the server is stopped while clients are idle.
     """
+    cache.gc_orphan_tmp_files()
     try:
         yield
     finally:
@@ -41,8 +45,11 @@ mcp = FastMCP(
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
         "get_paper_section. All auto-detect the provider. For PDFs outside "
         "arXiv/bioRxiv/ACL, fetch the file yourself and hand it to "
-        "import_paper. get_paper_section pages by character offset (re-call "
-        "with offset=next_offset) for long sections.\n\n"
+        "import_paper. import_paper also accepts pre-converted .md/.markdown "
+        "files — these skip convert_paper entirely (useful when the converter "
+        "is unavailable or when you have a higher-quality manual conversion). "
+        "get_paper_section pages by character offset (re-call with "
+        "offset=next_offset) for long sections.\n\n"
         "References/citations use count-then-page (`_count` first, then "
         "paginate). Search tools (search_arxiv, search_crossref_by_title) "
         "return slim triage hits — chain to get_paper_metadata for the full "
@@ -130,9 +137,25 @@ def _strip_internal_paths(result: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in result.items() if k not in _INTERNAL_PATH_KEYS}
 
 
-async def _fetch_work(doi: str) -> dict[str, Any]:
+async def _fetch_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch an OpenAlex work and return it, or propagate an error dict."""
-    return await openalex.get_work(doi)
+    return await openalex.get_work(doi, force_refresh=force_refresh)
+
+
+def _canonical_for_source(source: str | None, identifier: str) -> str | None:
+    """Return the provider's canonical form of ``identifier``.
+
+    Echoed back to agents as ``_canonical_id`` on every metadata
+    response so callers can reuse the normalized form across subsequent
+    tool calls instead of re-normalizing input each time.
+    """
+    if source == "arxiv":
+        return arxiv._canonical_arxiv_id(identifier)
+    if source == "biorxiv":
+        return biorxiv._canonical_key(identifier)
+    if source == "openalex":
+        return openalex._canonical_doi(identifier)
+    return None
 
 
 def _unknown_identifier_error(identifier: str) -> dict[str, Any]:
@@ -181,15 +204,78 @@ FOLLOW_PUBLISHED = Annotated[
     ),
 ]
 
+FORCE_REFRESH = Annotated[
+    bool,
+    Field(
+        description=(
+            "If True, drop the cached entry for this paper and re-fetch "
+            "from the upstream provider. Use this when the cached record "
+            "may be stale — a bioRxiv preprint that just got published, "
+            "an OpenAlex citation count that should have grown, or an "
+            "identifier that previously 404'd but should now resolve. "
+            "Default False reads from cache (per-provider TTL applies)."
+        ),
+    ),
+]
+
+PDF_FORCE_REFRESH = Annotated[
+    bool,
+    Field(
+        description=(
+            "If True, drop the cached PDF for this paper and re-download "
+            "from the upstream provider. Use this when the cached PDF is "
+            "corrupt or the provider quietly replaced the file (e.g. a "
+            "v2 arXiv upload under the same canonical key). Has no "
+            "effect on identifiers that import_paper handled — manage "
+            "those by re-running import_paper. Default False reads from "
+            "the cached PDF if present."
+        ),
+    ),
+]
+
+CONVERT_FORCE_REFRESH = Annotated[
+    bool,
+    Field(
+        description=(
+            "If True, drop any cached markdown and section index for "
+            "this paper so the converter subprocess re-runs. Use after "
+            "replacing the source PDF (download_pdf with force_refresh, "
+            "or import_paper with a new file) or after upgrading the "
+            "converter. Conversion is slow (minutes) — only set this "
+            "when you actually need a fresh markdown. Default False "
+            "reuses the cached markdown."
+        ),
+    ),
+]
+
+SECTIONS_FORCE_REFRESH = Annotated[
+    bool,
+    Field(
+        description=(
+            "If True, drop the cached section index for this paper and "
+            "re-parse from the (already-converted) markdown. Cheap — "
+            "no subprocess, no network. Useful if you suspect the "
+            "section index is stale and the checksum-based auto-refresh "
+            "didn't catch it. Default False uses the cached index."
+        ),
+    ),
+]
+
 
 @mcp.tool
 async def get_paper_metadata(
     identifier: PAPER_ID,
     follow_published: FOLLOW_PUBLISHED = False,
+    force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
     """Get core metadata for a paper, dispatched by identifier shape.
 
-    Returns ``{_source, ...source-native fields}``:
+    Every successful response carries ``_canonical_id`` — the provider's
+    normalized form of the identifier (lowercased DOI, version-stripped
+    arXiv ID, etc.) — so subsequent tool calls can reuse it instead of
+    re-normalizing whatever the user typed.
+
+    Returns ``{_source, _canonical_id, ...source-native fields}``:
       - arxiv: arxiv_id, title, published, updated, primary_category,
         categories, pdf_url, doi, journal_ref, comment.
       - biorxiv: doi, title, date, version, type, category, license, server,
@@ -205,13 +291,15 @@ async def get_paper_metadata(
     share the same dispatch and cached upstream object.
     """
     source = manual._resolve_metadata_source(identifier)
+    canonical_id = _canonical_for_source(source, identifier)
 
     if source == "arxiv":
-        paper = await arxiv.get_paper(identifier)
+        paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
             return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
         return {
             "_source": "arxiv",
+            "_canonical_id": canonical_id,
             "arxiv_id": _arxiv_id_from_entry(paper),
             "title": paper.get("title"),
             "published": paper.get("published"),
@@ -225,7 +313,7 @@ async def get_paper_metadata(
         }
 
     if source == "biorxiv":
-        paper = await biorxiv.get_paper(identifier)
+        paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
             return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
         published_doi = paper.get("published_doi")
@@ -235,13 +323,17 @@ async def get_paper_metadata(
             # back to the preprint metadata rather than erroring — the
             # agent asked for "the best version", not "fail if no
             # journal record".
-            work = await openalex.get_work(published_doi)
+            work = await openalex.get_work(published_doi, force_refresh=force_refresh)
             if "error" not in work:
                 primary_location = work.get("primary_location") or {}
                 source_obj = primary_location.get("source") or {}
                 oa = work.get("open_access") or {}
                 return {
                     "_source": "openalex_via_biorxiv",
+                    # _canonical_id is the journal DOI (the paper the
+                    # response now describes); preprint_doi keeps the
+                    # original chain visible.
+                    "_canonical_id": openalex._canonical_doi(published_doi),
                     "preprint_doi": paper.get("doi"),
                     "title": work.get("title"),
                     "doi": work.get("doi"),
@@ -258,6 +350,7 @@ async def get_paper_metadata(
             # see published_doi in the response and decide what to do.
         return {
             "_source": "biorxiv",
+            "_canonical_id": canonical_id,
             "doi": paper.get("doi"),
             "title": paper.get("title"),
             "date": paper.get("date"),
@@ -271,7 +364,7 @@ async def get_paper_metadata(
         }
 
     if source == "openalex":
-        work = await _fetch_work(identifier)
+        work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
             return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
         primary_location = work.get("primary_location") or {}
@@ -279,6 +372,7 @@ async def get_paper_metadata(
         oa = work.get("open_access") or {}
         return {
             "_source": "openalex",
+            "_canonical_id": canonical_id,
             "title": work.get("title"),
             "doi": work.get("doi"),
             "publication_year": work.get("publication_year"),
@@ -310,6 +404,7 @@ async def get_paper_authors(
     identifier: PAPER_ID,
     page: AUTHORS_PAGE = 1,
     page_size: AUTHORS_PAGE_SIZE = 25,
+    force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
     """Get a page of the author list, dispatched by identifier shape.
 
@@ -317,44 +412,56 @@ async def get_paper_authors(
     papers can have thousands of authors — page through with page / page_size
     (cap 25). Slicing is in-memory against the cached paper, no extra API hits.
 
-    Returns ``{_source, author_count, page, page_size, has_more, authors, ...}``:
-      - arxiv: authors = [{name, affiliations?}].
+    Returns ``{_source, author_count, page, page_size, has_more, authors,
+    page_institutions, page_institution_count, ...}``:
+      - arxiv: authors = [{name, affiliations?}]. ``page_institutions``
+        is always [] (arXiv has no per-author institution roll-up).
       - biorxiv: authors = [{name}] plus author_corresponding /
         author_corresponding_institution on every page.
+        ``page_institutions`` is always [] (bioRxiv only exposes the
+        corresponding-author institution, not a per-author roll-up).
       - openalex: authors = [{name, openalex_id, position, is_corresponding,
-        institutions}] plus page_institutions / page_institution_count
-        derived from the current page only (dedupe across pages for a
-        global view). openalex_id chains into get_author.
+        institutions}]. ``page_institutions`` / ``page_institution_count``
+        are derived from the current page only (dedupe across pages for
+        a global view). openalex_id chains into get_author.
 
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
     source = manual._resolve_metadata_source(identifier)
+    canonical_id = _canonical_for_source(source, identifier)
     start = (page - 1) * page_size
     end = start + page_size
 
     if source == "arxiv":
-        paper = await arxiv.get_paper(identifier)
+        paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
             return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
         authors = paper.get("authors", [])
         total = len(authors)
         return {
             "_source": "arxiv",
+            "_canonical_id": canonical_id,
             "author_count": total,
             "page": page,
             "page_size": page_size,
             "has_more": end < total,
             "authors": authors[start:end],
+            # arXiv author entries don't carry institution data — emit
+            # empty so the response shape matches the OpenAlex branch.
+            # Agents that branch on _source still get a stable schema.
+            "page_institutions": [],
+            "page_institution_count": 0,
         }
 
     if source == "biorxiv":
-        paper = await biorxiv.get_paper(identifier)
+        paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
             return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
         authors = paper.get("authors", [])
         total = len(authors)
         return {
             "_source": "biorxiv",
+            "_canonical_id": canonical_id,
             "author_count": total,
             "page": page,
             "page_size": page_size,
@@ -362,10 +469,15 @@ async def get_paper_authors(
             "authors": authors[start:end],
             "author_corresponding": paper.get("author_corresponding"),
             "author_corresponding_institution": paper.get("author_corresponding_institution"),
+            # bioRxiv only exposes the corresponding-author institution
+            # (already returned above), not a per-author roll-up. Empty
+            # here keeps the shape symmetric with arxiv / openalex.
+            "page_institutions": [],
+            "page_institution_count": 0,
         }
 
     if source == "openalex":
-        work = await _fetch_work(identifier)
+        work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
             return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
         all_authorships = work.get("authorships", [])
@@ -392,6 +504,7 @@ async def get_paper_authors(
             })
         return {
             "_source": "openalex",
+            "_canonical_id": canonical_id,
             "author_count": total,
             "page": page,
             "page_size": page_size,
@@ -405,7 +518,10 @@ async def get_paper_authors(
 
 
 @mcp.tool
-async def get_paper_abstract(identifier: PAPER_ID) -> dict[str, Any]:
+async def get_paper_abstract(
+    identifier: PAPER_ID,
+    force_refresh: FORCE_REFRESH = False,
+) -> dict[str, Any]:
     """Get a paper's abstract as plain text, dispatched by identifier shape.
 
     Returns ``{_source, title, abstract}``. OpenAlex abstracts are
@@ -415,33 +531,37 @@ async def get_paper_abstract(identifier: PAPER_ID) -> dict[str, Any]:
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
     source = manual._resolve_metadata_source(identifier)
+    canonical_id = _canonical_for_source(source, identifier)
 
     if source == "arxiv":
-        paper = await arxiv.get_paper(identifier)
+        paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
             return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
         return {
             "_source": "arxiv",
+            "_canonical_id": canonical_id,
             "title": paper.get("title"),
             "abstract": paper.get("summary"),
         }
 
     if source == "biorxiv":
-        paper = await biorxiv.get_paper(identifier)
+        paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
             return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
         return {
             "_source": "biorxiv",
+            "_canonical_id": canonical_id,
             "title": paper.get("title"),
             "abstract": paper.get("abstract"),
         }
 
     if source == "openalex":
-        work = await _fetch_work(identifier)
+        work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
             return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
         return {
             "_source": "openalex",
+            "_canonical_id": canonical_id,
             "title": work.get("title"),
             "abstract": openalex.reconstruct_abstract(work.get("abstract_inverted_index")) or None,
         }
@@ -450,7 +570,10 @@ async def get_paper_abstract(identifier: PAPER_ID) -> dict[str, Any]:
 
 
 @mcp.tool
-async def get_paper_bibtex(identifier: PAPER_ID) -> dict[str, Any]:
+async def get_paper_bibtex(
+    identifier: PAPER_ID,
+    force_refresh: FORCE_REFRESH = False,
+) -> dict[str, Any]:
     """Generate a BibTeX entry, dispatched by identifier shape.
 
     Returns ``{_source, bibtex}``. Entry type per source:
@@ -464,84 +587,39 @@ async def get_paper_bibtex(identifier: PAPER_ID) -> dict[str, Any]:
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
     source = manual._resolve_metadata_source(identifier)
+    canonical_id = _canonical_for_source(source, identifier)
 
     if source == "arxiv":
-        paper = await arxiv.get_paper(identifier)
+        paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
             return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
-        return {"_source": "arxiv", "bibtex": generate_arxiv_bibtex(paper)}
+        return {
+            "_source": "arxiv",
+            "_canonical_id": canonical_id,
+            "bibtex": generate_arxiv_bibtex(paper),
+        }
 
     if source == "biorxiv":
-        paper = await biorxiv.get_paper(identifier)
+        paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
             return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
-        return {"_source": "biorxiv", "bibtex": generate_biorxiv_bibtex(paper)}
+        return {
+            "_source": "biorxiv",
+            "_canonical_id": canonical_id,
+            "bibtex": generate_biorxiv_bibtex(paper),
+        }
 
     if source == "openalex":
-        work = await _fetch_work(identifier)
+        work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
             return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
-        return {"_source": "openalex", "bibtex": generate_bibtex(work)}
+        return {
+            "_source": "openalex",
+            "_canonical_id": canonical_id,
+            "bibtex": generate_bibtex(work),
+        }
 
     return _unknown_identifier_error(identifier)
-
-
-# Temporarily disabled — re-enable by restoring the @mcp.tool decorator.
-# @mcp.tool
-async def get_paper_citations_summary(doi: DOI) -> dict[str, Any]:
-    """Get citation statistics for a paper (OpenAlex only, requires a DOI).
-
-    Returns cited_by_count, referenced_works_count, and is_retracted. For
-    arXiv-only preprints without a DOI this data is not available.
-    """
-    work = await _fetch_work(doi)
-    if "error" in work:
-        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
-
-    return {
-        "title": work.get("title"),
-        "cited_by_count": work.get("cited_by_count"),
-        "referenced_works_count": work.get("referenced_works_count"),
-        "is_retracted": work.get("is_retracted"),
-    }
-
-
-# Temporarily disabled — re-enable by restoring the @mcp.tool decorator.
-# @mcp.tool
-async def get_paper_topics(doi: DOI) -> dict[str, Any]:
-    """Get topic classifications and keywords for a paper (OpenAlex only, requires a DOI).
-
-    For arXiv-only preprints without a DOI this data is not available.
-    """
-    work = await _fetch_work(doi)
-    if "error" in work:
-        return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
-
-    topics = [
-        {
-            "name": t.get("display_name"),
-            "score": round(t.get("score", 0), 4),
-            "subfield": (t.get("subfield") or {}).get("display_name"),
-            "field": (t.get("field") or {}).get("display_name"),
-            "domain": (t.get("domain") or {}).get("display_name"),
-        }
-        for t in work.get("topics", [])
-    ]
-    keywords = [
-        {
-            "keyword": k.get("display_name"),
-            "score": round(k.get("score", 0), 4),
-        }
-        for k in work.get("keywords", [])
-    ]
-
-    return {
-        "title": work.get("title"),
-        "topic_count": len(topics),
-        "topics": topics,
-        "keyword_count": len(keywords),
-        "keywords": keywords,
-    }
 
 
 @mcp.tool
@@ -630,13 +708,17 @@ async def search_arxiv(
 ) -> dict[str, Any]:
     """Search arXiv papers. Returns a slim triage list.
 
-    Each hit carries just ``{arxiv_id, title, first_author, published_year}``
-    — enough to recognize the paper but not the full author list, which
-    can balloon the response. Call get_paper_metadata(arxiv_id) for the
-    full record (free cache hit — each search entry is opportunistically
-    cached).
+    Each hit carries ``{arxiv_id, title, first_author, author_count,
+    published_year}`` — enough to recognize the paper without the full
+    author list (which can balloon to tens of KB on HEP/biology
+    consortium papers). ``author_count`` lets the agent decide whether
+    to call get_paper_authors directly or paginate. Call
+    get_paper_metadata(arxiv_id) for the full record (free cache hit —
+    each search entry is opportunistically cached).
 
-    Returns ``{total_results, papers: [...]}``.
+    Returns ``{total_results, results: [...]}`` — same shape as
+    search_crossref_by_title so an agent can branch on the source
+    without learning per-tool field names.
     """
     result = await arxiv.search_papers(query, max_results=max_results)
     if "error" in result:
@@ -647,11 +729,12 @@ async def search_arxiv(
 
     return {
         "total_results": result["total_results"],
-        "papers": [
+        "results": [
             {
                 "arxiv_id": _arxiv_id_from_entry(p),
                 "title": p.get("title"),
                 "first_author": _first_author_name(p),
+                "author_count": len(p.get("authors") or []),
                 "published_year": _published_year(p),
             }
             for p in result.get("entries", [])
@@ -664,17 +747,19 @@ async def search_arxiv(
 # ---------------------------------------------------------------------------
 
 
-async def _download_pdf_by_provider(identifier: str) -> dict[str, Any]:
+async def _download_pdf_by_provider(
+    identifier: str, *, force_refresh: bool = False
+) -> dict[str, Any]:
     """Dispatch PDF download to the correct provider based on identifier type."""
     target = manual._resolve_target(identifier)
     ns = target["namespace"]
 
     if ns == "arxiv":
-        return await arxiv.download_pdf(identifier)
+        return await arxiv.download_pdf(identifier, force_refresh=force_refresh)
     elif ns == "acl_anthology":
-        return await acl_anthology.download_pdf(identifier)
+        return await acl_anthology.download_pdf(identifier, force_refresh=force_refresh)
     elif ns == "biorxiv":
-        return await biorxiv.download_pdf(identifier)
+        return await biorxiv.download_pdf(identifier, force_refresh=force_refresh)
     else:
         return {
             "error": (
@@ -695,7 +780,10 @@ async def _download_pdf_by_provider(identifier: str) -> dict[str, Any]:
 
 
 @mcp.tool
-async def download_pdf(identifier: PAPER_ID) -> dict[str, Any]:
+async def download_pdf(
+    identifier: PAPER_ID,
+    force_refresh: PDF_FORCE_REFRESH = False,
+) -> dict[str, Any]:
     """Download and cache the PDF for a paper, auto-detecting the source.
 
     Direct download is only supported for three providers:
@@ -709,21 +797,31 @@ async def download_pdf(identifier: PAPER_ID) -> dict[str, Any]:
     access, browser, curl) and pass it to import_paper(file_path, identifier);
     using the same identifier deduplicates with the rest of the pipeline.
 
-    Skips download if already cached. Next step: convert_paper →
-    get_paper_sections → get_paper_section.
+    Skips download if already cached unless ``force_refresh=True``. Note
+    that re-downloading the PDF does NOT invalidate any already-converted
+    markdown — pass ``force_refresh=True`` to convert_paper too if you
+    want the next conversion to pick up the new file.
+
+    Next step: convert_paper → get_paper_sections → get_paper_section.
     """
-    return _strip_internal_paths(await _download_pdf_by_provider(identifier))
+    return _strip_internal_paths(
+        await _download_pdf_by_provider(identifier, force_refresh=force_refresh)
+    )
 
 
 @mcp.tool
-async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
+async def convert_paper(
+    identifier: PAPER_ID,
+    force_refresh: CONVERT_FORCE_REFRESH = False,
+) -> dict[str, Any]:
     """Convert a downloaded PDF to markdown and parse into sections.
 
     Step 2 of the PDF pipeline (download_pdf → convert_paper →
     get_paper_sections → get_paper_section). Slow: up to 10 minutes per
     paper (hard timeout). Skips the subprocess if the markdown is already
     cached — re-parses from the cached markdown if the sections index
-    is missing or stale.
+    is missing or stale. ``force_refresh=True`` drops both the cached
+    markdown and the section index so the converter re-runs.
 
     Returns ``{sections, cached}`` on success. ``cached`` is true when the
     expensive conversion was skipped (re-parses also count as cached).
@@ -749,7 +847,12 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
             "hand it to import_paper (accepts .pdf or .md/.markdown)."
         }
 
-    result = await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
+    result = await papers.convert_pdf(
+        pdf,
+        target["namespace"],
+        target["canonical"],
+        force_refresh=force_refresh,
+    )
     if "error" in result:
         if result.get("busy"):
             return _enrich_error(
@@ -768,11 +871,16 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
 
 
 @mcp.tool
-async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
+async def get_paper_sections(
+    identifier: PAPER_ID,
+    force_refresh: SECTIONS_FORCE_REFRESH = False,
+) -> dict[str, Any]:
     """Get the section index for a converted paper.
 
     Step 3 of the PDF pipeline. Cheap to call (no network, no conversion).
-    Auto re-parses if the cached markdown's checksum changed.
+    Auto re-parses if the cached markdown's checksum changed;
+    ``force_refresh=True`` drops the section index unconditionally so
+    the next read re-parses the markdown.
 
     Returns ``{total_sections, total_approx_tokens, sections}`` where each
     section entry has ``{index, title, preview, approx_tokens}``.
@@ -795,6 +903,8 @@ async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
     # readers of the same paper so they don't both re-parse and race
     # to write the sections cache.
     async with papers._sections_lock(namespace, canonical):
+        if force_refresh:
+            cache.invalidate(namespace, "sections", papers._sections_key(canonical))
         cached = cache.get(namespace, "sections", papers._sections_key(canonical))
         if cached is not None:
             stored_checksum = cached.get("markdown_checksum", None)
@@ -961,10 +1071,11 @@ async def search_crossref_by_title(
 ) -> dict[str, Any]:
     """Search Crossref by title (bibliographic query). Returns a slim triage list.
 
-    Each hit carries just ``{doi, title, first_author, year}`` — enough to
-    recognize the paper but not the full author list, which can balloon
-    on HEP/biology consortium papers. Call get_paper_metadata(doi) for
-    the full record.
+    Each hit carries ``{doi, title, first_author, author_count, year}`` —
+    enough to recognize the paper without the full author list (which
+    can balloon on HEP/biology consortium papers). ``author_count`` lets
+    the agent decide whether to call get_paper_authors directly or
+    paginate. Call get_paper_metadata(doi) for the full record.
 
     Useful for finding the published DOI when you only have a title or
     arXiv ID. Also serves as the de facto search for bioRxiv papers,
@@ -981,8 +1092,9 @@ async def search_crossref_by_title(
 
     results = []
     for item in items:
+        authors = item.get("author") or []
         first_author = None
-        for a in item.get("author", []):
+        for a in authors:
             name_parts = [p for p in (a.get("given"), a.get("family")) if p]
             if name_parts:
                 first_author = " ".join(name_parts)
@@ -995,6 +1107,7 @@ async def search_crossref_by_title(
             "doi": item.get("DOI"),
             "title": (item.get("title") or [None])[0],
             "first_author": first_author,
+            "author_count": len(authors),
             "year": date_parts[0] if date_parts else None,
         })
 
@@ -1206,26 +1319,46 @@ async def get_paper_citations_count(doi: DOI) -> dict[str, Any]:
     return {"doi": doi, "count": data["count"]}
 
 
+CITATION_SOURCE = Annotated[
+    Literal["auto", "opencitations"],
+    Field(
+        description="Which citation source to page through. "
+        "OpenCitations is currently the only provider for incoming "
+        "citations (no Crossref equivalent), so 'auto' and "
+        "'opencitations' behave identically. The parameter is "
+        "reserved so a future second source can be added without a "
+        "breaking change — pin source='opencitations' explicitly if "
+        "your code path must always use it."
+    ),
+]
+
+
 @mcp.tool
 async def get_paper_citations(
     doi: DOI,
+    source: CITATION_SOURCE = "auto",
     page: PAGE = 1,
     page_size: PAGE_SIZE = 20,
 ) -> dict[str, Any]:
     """Page through incoming citations (papers that cite this work) from OpenCitations.
 
-    Returns ``{doi, total, page, page_size, has_more, citations: [...]}``.
+    Returns ``{_source, doi, total, page, page_size, has_more, citations: [...]}``.
     Each citation entry has cross-referenced IDs flattened at the top
     level: doi (citing paper), omid, openalex, pmid, creation (date
     string), journal_self_citation, author_self_citation. No bibliographic
     metadata — chain a citing DOI into get_paper_metadata for that.
 
-    Defaults: page=1, page_size=20 (1-50). Call get_paper_citations_count
-    first to see the total.
+    Defaults: source="auto" (currently always OpenCitations), page=1,
+    page_size=20 (1-50). Call get_paper_citations_count first to see
+    the total.
 
     Errors: bad DOI / upstream failure → ``{error, suggestion}`` with
     retry hints for transient failures.
     """
+    # source is reserved for forward compatibility; both values dispatch
+    # to OpenCitations today. Keeping the parameter in the signature now
+    # means agent code path "page through citations" can pin source=
+    # "opencitations" without breaking when a second source ships.
     data = await opencitations.get_citations(doi)
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
@@ -1237,6 +1370,7 @@ async def get_paper_citations(
     end = start + page_size
 
     return {
+        "_source": "opencitations",
         "doi": doi,
         "total": total,
         "page": page,
@@ -1309,6 +1443,36 @@ async def get_wikipedia_summary(
     return result
 
 
+
+
+# ---------------------------------------------------------------------------
+# Operator-only debug tools (gated behind ENABLE_DEBUG_TOOLS env var)
+# ---------------------------------------------------------------------------
+#
+# These are NOT registered when the env var is absent so agents never
+# see them in normal operation. The env var flips them on for an
+# operator who wants to inspect cumulative cache/HTTP counters from
+# within Claude Code itself, without dropping into a Python REPL.
+
+_DEBUG_TOOLS_ENABLED = (config.get("ENABLE_DEBUG_TOOLS") or "").lower() in (
+    "1", "true", "yes", "on"
+)
+
+if _DEBUG_TOOLS_ENABLED:
+    @mcp.tool
+    async def get_server_stats() -> dict[str, Any]:
+        """Operator-only: snapshot cumulative cache + HTTP counters.
+
+        Only registered when ``ENABLE_DEBUG_TOOLS=1`` in the environment;
+        agents never see it in normal operation. Returns the per-provider
+        counters tracked by ``_stats.snapshot()``: cache_hits / cache_misses
+        / negative_hits, http_calls / http_retries, backpressure_refusals,
+        and live in_flight counts. Cumulative since process start.
+
+        Use this when something feels slow or rate-limit-pressured to see
+        which provider is hitting the network vs. serving from cache.
+        """
+        return _stats.snapshot()
 
 
 if __name__ == "__main__":

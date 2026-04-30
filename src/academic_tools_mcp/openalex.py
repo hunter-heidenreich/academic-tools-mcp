@@ -2,7 +2,7 @@ import asyncio
 import time
 from typing import Any
 
-from . import _clients, _http, _singleflight, cache, config
+from . import _clients, _http, _singleflight, _stats, cache, config
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
@@ -22,6 +22,13 @@ _pending: int = 0
 # unified-paper tools (metadata, authors, abstract, bibtex) plus the
 # OpenAlex-only tools don't all fire in parallel for one paper.
 _single_flight = _singleflight.SingleFlight()
+
+# Positive cache TTL. OpenAlex works grow citation counts and gain
+# authors / topics over time; 30 days is long enough to amortise
+# repeated reads in a session and short enough that a paper's metadata
+# isn't frozen forever. Authors share the same TTL — h_index and
+# works_count drift on the same timescale.
+_POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
 def _normalize_doi(doi: str) -> str:
@@ -85,18 +92,26 @@ async def _throttled_get(url: str, **kwargs: Any):
     """
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
-        raise _http.LocalBackpressureError("OpenAlex", _pending, _MAX_PENDING)
+        _stats.incr(NAMESPACE, "backpressure_refusals")
+        raise _http.LocalBackpressureError(
+            "OpenAlex", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
+        )
     _pending += 1
     try:
         async with _request_lock:
             now = time.monotonic()
             elapsed = now - _last_request_time
+            wait_seconds = 0.0
             if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+                wait_seconds = _MIN_REQUEST_GAP - elapsed
+                await asyncio.sleep(wait_seconds)
+            _stats.log_request(NAMESPACE, url, wait_seconds)
+            _stats.incr(NAMESPACE, "http_calls")
             client = _get_client()
             response = await _http.get_with_retry(
                 client, url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                provider=NAMESPACE,
                 **kwargs,
             )
             _last_request_time = time.monotonic()
@@ -131,7 +146,7 @@ async def get_author(author_id: str) -> dict[str, Any]:
     """
     canonical = _canonical_author_id(author_id)
 
-    cached = cache.get(NAMESPACE, "authors", canonical)
+    cached = cache.get(NAMESPACE, "authors", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
     if cached is not None:
         return cached
     neg = cache.get_negative(NAMESPACE, "authors", canonical)
@@ -139,7 +154,7 @@ async def get_author(author_id: str) -> dict[str, Any]:
         return neg
 
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "authors", canonical)
+        cached = cache.get(NAMESPACE, "authors", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
         if cached is not None:
             return cached
         neg = cache.get_negative(NAMESPACE, "authors", canonical)
@@ -171,22 +186,29 @@ async def get_author(author_id: str) -> dict[str, Any]:
     return await _single_flight.do(("author", canonical), _fetch)
 
 
-async def get_work(doi: str) -> dict[str, Any]:
+async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a work by DOI, using cache when available.
 
     Concurrent callers for the same DOI share one fetch via single-flight.
+
+    ``force_refresh=True`` drops both positive and negative cache entries
+    before fetching — useful when the agent needs a fresh citation
+    count or to retry an identifier that previously 404'd.
     """
     canonical = _canonical_doi(doi)
 
-    cached = cache.get(NAMESPACE, "works", canonical)
-    if cached is not None:
-        return cached
-    neg = cache.get_negative(NAMESPACE, "works", canonical)
-    if neg is not None:
-        return neg
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "works", canonical)
+    else:
+        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "works", canonical)
+        if neg is not None:
+            return neg
 
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "works", canonical)
+        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
         if cached is not None:
             return cached
         neg = cache.get_negative(NAMESPACE, "works", canonical)

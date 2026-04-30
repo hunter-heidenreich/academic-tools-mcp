@@ -202,6 +202,98 @@ def test_negative_entry_missing_expires_at_self_heals(tmp_path, monkeypatch):
     assert not neg_path.exists()
 
 
+def test_max_age_seconds_evicts_stale_entry(tmp_path, monkeypatch):
+    """A positive entry older than max_age_seconds is treated as a miss
+    and unlinked, so a stale citation count or published_doi can't pin
+    the cache for an entire session."""
+    import os
+
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    cache.put("openalex", "works", "10.1/x", {"title": "Stale"})
+    path = tmp_path / "openalex" / "works" / f"{cache._cache_key('10.1/x')}.json"
+    assert path.exists()
+
+    # Backdate the file by an hour so the TTL test fires.
+    old = path.stat().st_mtime - 3600
+    os.utime(path, (old, old))
+
+    # Tight TTL → treated as expired → unlinked.
+    assert cache.get("openalex", "works", "10.1/x", max_age_seconds=60) is None
+    assert not path.exists(), "stale entry should self-heal on read"
+
+
+def test_max_age_seconds_keeps_fresh_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    cache.put("openalex", "works", "fresh", {"title": "Fresh"})
+    # Generous TTL → entry survives.
+    assert cache.get("openalex", "works", "fresh", max_age_seconds=3600) == {
+        "title": "Fresh"
+    }
+
+
+def test_invalidate_drops_positive_and_negative(tmp_path, monkeypatch):
+    """force_refresh drops both halves so a previously-404'd identifier
+    can resolve on the retry — a stale negative wouldn't expire for 24h
+    on its own."""
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    cache.put("openalex", "works", "10.1/x", {"title": "Real"})
+    cache.put_negative("openalex", "works", "10.1/x", {"error": "stale"})
+    assert cache.get("openalex", "works", "10.1/x") is not None
+    assert cache.get_negative("openalex", "works", "10.1/x") is not None
+
+    cache.invalidate("openalex", "works", "10.1/x")
+
+    assert cache.get("openalex", "works", "10.1/x") is None
+    assert cache.get_negative("openalex", "works", "10.1/x") is None
+
+
+def test_invalidate_is_idempotent(tmp_path, monkeypatch):
+    """Calling invalidate on a key that has nothing cached is a silent
+    no-op so callers don't need to feature-detect."""
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    cache.invalidate("openalex", "works", "never-cached")  # must not raise
+
+
+def test_gc_orphan_tmp_files_removes_old_tmps(tmp_path, monkeypatch):
+    """Killed writers leave .tmp siblings around forever; the startup
+    sweep must clean up files older than the threshold while leaving
+    the canonical .json (and any recent .tmp from a live writer)
+    completely alone."""
+    import os
+
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    # Plant a normal cache entry and an orphan .tmp from a "previous run".
+    cache.put("openalex", "works", "k", {"x": 1})
+    json_path = tmp_path / "openalex" / "works" / f"{cache._cache_key('k')}.json"
+    assert json_path.exists()
+
+    orphan = tmp_path / "openalex" / "works" / "leftover.foo.tmp"
+    orphan.write_text("garbage")
+    old = orphan.stat().st_mtime - 7200  # 2h ago, well past 1h cutoff
+    os.utime(orphan, (old, old))
+
+    fresh = tmp_path / "biorxiv" / "papers" / "fresh.bar.tmp"
+    fresh.parent.mkdir(parents=True, exist_ok=True)
+    fresh.write_text("from a live writer")  # mtime = now
+
+    removed = cache.gc_orphan_tmp_files()
+
+    assert removed == 1, f"expected to sweep one orphan, got {removed}"
+    assert not orphan.exists(), "stale orphan must be unlinked"
+    assert fresh.exists(), "live-writer's tmp must NOT be touched"
+    assert json_path.exists(), "canonical entry must survive the sweep"
+
+
+def test_gc_orphan_tmp_files_no_cache_dir(tmp_path, monkeypatch):
+    """First boot has no .cache yet; sweep must not error."""
+    nonexistent = tmp_path / "does-not-exist"
+    monkeypatch.setattr(cache, "_CACHE_ROOT", nonexistent)
+    assert cache.gc_orphan_tmp_files() == 0
+
+
 def test_concurrent_writers_dont_corrupt_file(tmp_path, monkeypatch):
     """Stress test: many writers hammering the same key produce a final
     file that is always valid JSON and matches one of the inputs. With

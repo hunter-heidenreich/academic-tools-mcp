@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import _stats
+
 # Default cache root lives next to the project
 _CACHE_ROOT = Path(__file__).resolve().parent.parent.parent / ".cache"
 
@@ -35,8 +37,20 @@ def _cache_key(identifier: str) -> str:
     return hashlib.sha256(identifier.encode()).hexdigest()
 
 
-def get(namespace: str, entity: str, identifier: str) -> dict[str, Any] | None:
+def get(
+    namespace: str,
+    entity: str,
+    identifier: str,
+    *,
+    max_age_seconds: float | None = None,
+) -> dict[str, Any] | None:
     """Retrieve a cached response. Returns None on miss or corruption.
+
+    ``max_age_seconds`` (optional) treats entries older than that many
+    seconds (by file mtime) as misses, and unlinks them so the next put
+    writes cleanly. Use it on data that drifts over time (citation counts,
+    bioRxiv published_doi appearing, OpenCitations graph growing). Omit
+    it for data that's effectively immutable once written.
 
     A corrupt cache file (e.g. a truncated JSON left behind by a process
     killed mid-write before atomic writes existed, or external tampering)
@@ -45,15 +59,88 @@ def get(namespace: str, entity: str, identifier: str) -> dict[str, Any] | None:
     """
     path = _cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     if not path.exists():
+        _stats.incr(namespace, "cache_misses")
         return None
+    if max_age_seconds is not None:
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            _stats.incr(namespace, "cache_misses")
+            return None
+        if age > max_age_seconds:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            _stats.incr(namespace, "cache_misses")
+            return None
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         try:
             path.unlink()
         except OSError:
             pass
+        _stats.incr(namespace, "cache_misses")
         return None
+    _stats.incr(namespace, "cache_hits")
+    return data
+
+
+# Files older than this are considered orphans of a long-dead writer.
+# 1h is well past any legitimate write (atomic mkstemp -> os.replace
+# completes in milliseconds) and short enough that an operator
+# noticing leakage doesn't have to wait a day for the sweep to act.
+_ORPHAN_TMP_AGE_SECONDS = 3600.0
+
+
+def gc_orphan_tmp_files(*, max_age_seconds: float = _ORPHAN_TMP_AGE_SECONDS) -> int:
+    """Sweep ``.cache/`` for stale ``*.tmp`` files left behind by killed writers.
+
+    ``_atomic_write_json`` lands in a sibling temp file via ``mkstemp``
+    and renames into place — a process killed mid-write before the
+    rename leaves the temp behind. The temp itself is harmless (a
+    self-healing read on the canonical entry won't read it), but they
+    accumulate forever without intervention. Called from the FastMCP
+    lifespan startup so each server restart cleans up after the
+    previous run's untimely deaths.
+
+    Returns the number of files unlinked. Idempotent; safe to call any
+    time. Files newer than ``max_age_seconds`` are skipped so we never
+    race a live writer (which holds the file open for milliseconds).
+    """
+    if not _CACHE_ROOT.exists():
+        return 0
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    for path in _CACHE_ROOT.rglob("*.tmp"):
+        try:
+            if path.stat().st_mtime > cutoff:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            # Concurrent unlink, permissions, race with a writer — all
+            # benign; the next sweep will pick it up if needed.
+            continue
+    return removed
+
+
+def invalidate(namespace: str, entity: str, identifier: str) -> None:
+    """Drop both positive and negative cache entries for an identifier.
+
+    Used by ``force_refresh=True`` on the unified paper tools. Idempotent:
+    missing files are silently skipped. Both halves are unlinked together
+    so a forced refresh of a previously-404'd identifier doesn't keep
+    serving the cached error.
+    """
+    pos = _cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
+    neg = _neg_path(namespace, entity, identifier)
+    for p in (pos, neg):
+        try:
+            p.unlink()
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def _atomic_write_json(path: Path, payload: str) -> None:
@@ -140,6 +227,7 @@ def get_negative(namespace: str, entity: str, identifier: str) -> dict[str, Any]
         except OSError:
             pass
         return None
+    _stats.incr(namespace, "negative_hits")
     return {k: v for k, v in entry.items() if not k.startswith("_")}
 
 

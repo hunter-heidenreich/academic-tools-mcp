@@ -16,6 +16,7 @@ Lifecycle: the FastMCP server registers ``aclose_all`` via lifespan so
 sockets close cleanly on shutdown.
 """
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -69,19 +70,33 @@ def get_client(
     return client
 
 
+# A wedged socket (server gone but the kernel hasn't surfaced an error
+# yet, or a TLS shutdown that's hanging on the peer) can pin aclose
+# indefinitely. 5s is well past any healthy close and short enough that
+# a buggy provider doesn't keep the FastMCP lifespan alive on shutdown.
+_ACLOSE_TIMEOUT_SECONDS = 5.0
+
+
 async def aclose_all() -> None:
     """Close every pooled client. Idempotent; safe to call multiple times.
 
     Drains the registry first so a concurrent ``get_client`` call during
     shutdown can't see a half-closed client (it would build a new one
     instead, which is fine — that one will leak, but only briefly).
+
+    Each ``aclose`` is bounded by ``_ACLOSE_TIMEOUT_SECONDS``: a wedged
+    socket on one provider must not block shutdown on the others, and
+    must not pin the FastMCP lifespan. Timeout falls through silently
+    (the socket gets reaped when the process exits).
     """
     clients = list(_clients.values())
     _clients.clear()
     for client in clients:
         try:
-            await client.aclose()
-        except Exception:
+            await asyncio.wait_for(
+                client.aclose(), timeout=_ACLOSE_TIMEOUT_SECONDS
+            )
+        except (asyncio.TimeoutError, Exception):
             # Shutdown is best-effort; do not let one stuck client
             # block the others from closing.
             pass

@@ -21,11 +21,15 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Runs before every test in the suite. Idempotent and cheap.
     """
-    from academic_tools_mcp import _clients, _singleflight
+    from academic_tools_mcp import _clients, _singleflight, _stats
 
     # Wipe the per-provider client cache so any test that monkeypatches
     # httpx.AsyncClient sees a fresh build on first use.
     _clients._clients.clear()
+
+    # Zero the stats counters so a test that asserts on hit/miss totals
+    # isn't contaminated by counts from prior tests.
+    _stats.reset()
 
     # For every provider module that has its own backpressure counter
     # and single-flight registry, zero them out. Tests that hit the
@@ -38,6 +42,7 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
         "crossref",
         "opencitations",
         "wikipedia",
+        "acl_anthology",
     ):
         try:
             module: Any = __import__(

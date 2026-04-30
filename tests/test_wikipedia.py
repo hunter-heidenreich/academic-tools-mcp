@@ -199,7 +199,7 @@ class TestGetSummary:
 
         # Clear any cached entry
         from academic_tools_mcp import cache
-        monkeypatch.setattr(cache, "get", lambda *a: None)
+        monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
         stored = []
         monkeypatch.setattr(cache, "put", lambda *a: stored.append(a))
 
@@ -234,7 +234,7 @@ class TestGetSummary:
         monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
 
         from academic_tools_mcp import cache
-        monkeypatch.setattr(cache, "get", lambda *a: None)
+        monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
 
         class MockClient:
             async def __aenter__(self):

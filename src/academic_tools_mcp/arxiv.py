@@ -8,7 +8,7 @@ import httpx
 
 from pathlib import Path
 
-from . import _clients, _http, _singleflight, cache
+from . import _clients, _http, _singleflight, _stats, cache
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 NAMESPACE = "arxiv"
@@ -35,6 +35,17 @@ _pending: int = 0
 # abstract, bibtex) for one arXiv ID would each hit the network.
 _single_flight = _singleflight.SingleFlight()
 
+# Shorter than the cache.py default 24h. arXiv IDs go live mid-session
+# (a paper just announced an hour ago) and an agent that 404'd at 9am
+# should surface the new entry by 10am, not tomorrow at 9am.
+_NEG_TTL_SECONDS = 3600.0
+
+# Positive cache TTL. arXiv records are stable per-version, but our
+# canonical key strips the version suffix, so v1 cached today wouldn't
+# reflect a v2 uploaded next week. 14 days is long enough that an active
+# session keeps hitting cache and short enough that revisions surface.
+_POSITIVE_TTL_SECONDS = 14 * 86400.0
+
 
 async def _throttled_get(
     client: httpx.AsyncClient, url: str, **kwargs: Any
@@ -49,19 +60,27 @@ async def _throttled_get(
     """
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
-        raise _http.LocalBackpressureError("arXiv", _pending, _MAX_PENDING)
+        _stats.incr(NAMESPACE, "backpressure_refusals")
+        raise _http.LocalBackpressureError(
+            "arXiv", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
+        )
     _pending += 1
     try:
         async with _request_lock:
             now = time.monotonic()
             elapsed = now - _last_request_time
+            wait_seconds = 0.0
             if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+                wait_seconds = _MIN_REQUEST_GAP - elapsed
+                await asyncio.sleep(wait_seconds)
+            _stats.log_request(NAMESPACE, url, wait_seconds)
+            _stats.incr(NAMESPACE, "http_calls")
             response = await _http.get_with_retry(
                 client, url,
                 # arXiv's 3s gap must apply to the retry too — a 1s
                 # retry would violate their "1 req per 3s" policy.
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                provider=NAMESPACE,
                 **kwargs,
             )
             _last_request_time = time.monotonic()
@@ -181,7 +200,7 @@ def _parse_entry(entry: ET.Element) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def get_paper(arxiv_id: str) -> dict[str, Any]:
+async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a paper by arXiv ID, using cache when available.
 
     Returns a parsed dict with paper metadata. Concurrent callers for
@@ -189,21 +208,31 @@ async def get_paper(arxiv_id: str) -> dict[str, Any]:
     unified-paper tools (metadata, authors, abstract, bibtex) called in
     parallel would all hit arXiv and burn ~12s of throttle gap between
     them for a paper that ends up in cache after the first call.
+
+    ``force_refresh=True`` drops both positive and negative cache entries
+    for this canonical ID before fetching, so an agent can re-pull a
+    paper whose cached entry might be stale (e.g. a new version uploaded).
     """
     canonical = _canonical_arxiv_id(arxiv_id)
 
-    cached = cache.get(NAMESPACE, "papers", canonical)
-    if cached is not None:
-        return cached
-    neg = cache.get_negative(NAMESPACE, "papers", canonical)
-    if neg is not None:
-        return neg
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "papers", canonical)
+    else:
+        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "papers", canonical)
+        if neg is not None:
+            return neg
 
     async def _fetch() -> dict[str, Any]:
         # Re-check cache inside the single-flight slot: the leader for
         # this key may have already finished and populated the cache by
         # the time a follower's coroutine resumed past the outer check.
-        cached = cache.get(NAMESPACE, "papers", canonical)
+        # On a forced refresh we still re-check so concurrent forced
+        # callers share one fetch (the leader writes, the followers see
+        # the fresh entry).
+        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
         if cached is not None:
             return cached
         neg = cache.get_negative(NAMESPACE, "papers", canonical)
@@ -230,7 +259,7 @@ async def get_paper(arxiv_id: str) -> dict[str, Any]:
 
         if not entries:
             err = {"error": f"No paper found for arXiv ID: {arxiv_id}"}
-            cache.put_negative(NAMESPACE, "papers", canonical, err)
+            cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
             return err
 
         # arXiv returns HTTP 200 with an error entry for invalid IDs.
@@ -240,7 +269,7 @@ async def get_paper(arxiv_id: str) -> dict[str, Any]:
         id_el = entry.find(f"{{{_ATOM_NS}}}id")
         if id_el is not None and id_el.text and "api/errors" in id_el.text:
             err = {"error": f"No paper found for arXiv ID: {arxiv_id}"}
-            cache.put_negative(NAMESPACE, "papers", canonical, err)
+            cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
             return err
 
         data = _parse_entry(entry)
@@ -312,13 +341,22 @@ def pdf_path(arxiv_id: str) -> Path:
     return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
-async def download_pdf(arxiv_id: str) -> dict[str, Any]:
+async def download_pdf(
+    arxiv_id: str, *, force_refresh: bool = False
+) -> dict[str, Any]:
     """Download the PDF for an arXiv paper and cache it locally.
+
+    ``force_refresh=True`` removes the cached PDF and re-downloads. Use
+    when you suspect the cached file is corrupt or arXiv replaced the
+    PDF (a v2 upload that landed under the same canonical key).
 
     Returns a dict with the file path and size, or an error.
     """
     canonical = _canonical_arxiv_id(arxiv_id)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+
+    if force_refresh and dest.exists():
+        dest.unlink()
 
     if dest.exists():
         return {

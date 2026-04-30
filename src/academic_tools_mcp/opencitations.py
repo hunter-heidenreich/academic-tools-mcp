@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from . import _clients, _http, _singleflight, cache
+from . import _clients, _http, _singleflight, _stats, cache
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
@@ -22,6 +22,11 @@ _pending: int = 0
 # two distinct in-flight slots, not one.
 _single_flight = _singleflight.SingleFlight()
 
+# Positive cache TTL. The citation graph grows continuously — incoming
+# citations especially. 7 days keeps repeated reads in a session cheap
+# while making sure recent citation activity surfaces within a week.
+_POSITIVE_TTL_SECONDS = 7 * 86400.0
+
 
 async def _throttled_get(
     client: httpx.AsyncClient, url: str, **kwargs: Any
@@ -34,19 +39,25 @@ async def _throttled_get(
     """
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
+        _stats.incr(NAMESPACE, "backpressure_refusals")
         raise _http.LocalBackpressureError(
-            "OpenCitations", _pending, _MAX_PENDING
+            "OpenCitations", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
         )
     _pending += 1
     try:
         async with _request_lock:
             now = time.monotonic()
             elapsed = now - _last_request_time
+            wait_seconds = 0.0
             if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+                wait_seconds = _MIN_REQUEST_GAP - elapsed
+                await asyncio.sleep(wait_seconds)
+            _stats.log_request(NAMESPACE, url, wait_seconds)
+            _stats.incr(NAMESPACE, "http_calls")
             response = await _http.get_with_retry(
                 client, url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                provider=NAMESPACE,
                 **kwargs,
             )
             _last_request_time = time.monotonic()
@@ -128,7 +139,7 @@ async def get_references(doi: str) -> dict[str, Any]:
     """
     canonical = _canonical_doi(doi)
 
-    cached = cache.get(NAMESPACE, "references", canonical)
+    cached = cache.get(NAMESPACE, "references", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
     if cached is not None:
         return cached
     neg = cache.get_negative(NAMESPACE, "references", canonical)
@@ -136,7 +147,7 @@ async def get_references(doi: str) -> dict[str, Any]:
         return neg
 
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "references", canonical)
+        cached = cache.get(NAMESPACE, "references", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
         if cached is not None:
             return cached
         neg = cache.get_negative(NAMESPACE, "references", canonical)
@@ -179,7 +190,7 @@ async def get_citations(doi: str) -> dict[str, Any]:
     """
     canonical = _canonical_doi(doi)
 
-    cached = cache.get(NAMESPACE, "citations", canonical)
+    cached = cache.get(NAMESPACE, "citations", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
     if cached is not None:
         return cached
     neg = cache.get_negative(NAMESPACE, "citations", canonical)
@@ -187,7 +198,7 @@ async def get_citations(doi: str) -> dict[str, Any]:
         return neg
 
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "citations", canonical)
+        cached = cache.get(NAMESPACE, "citations", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
         if cached is not None:
             return cached
         neg = cache.get_negative(NAMESPACE, "citations", canonical)

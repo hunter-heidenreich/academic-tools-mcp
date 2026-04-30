@@ -27,20 +27,30 @@ from typing import Any
 
 import httpx
 
+from . import _stats
+
 
 class LocalBackpressureError(Exception):
     """Raised when a throttle has too many requests already queued.
 
     Distinct from server-side 429: this is the client refusing to stack
     more work behind its own rate limiter. Surfaces to agents as a
-    structured ``{error, retryable: True, backpressure: True}`` so they
-    learn to slow their fan-out instead of waiting silently.
+    structured ``{error, retryable: True, backpressure: True}`` with a
+    concrete remediation (the throttle gap and concurrency cap) so
+    they can pick a sensible retry interval instead of guessing.
     """
 
-    def __init__(self, provider: str, pending: int, max_pending: int):
+    def __init__(
+        self,
+        provider: str,
+        pending: int,
+        max_pending: int,
+        min_gap_seconds: float = 0.0,
+    ):
         self.provider = provider
         self.pending = pending
         self.max_pending = max_pending
+        self.min_gap_seconds = min_gap_seconds
         super().__init__(
             f"{provider}: {pending} requests already queued (cap {max_pending})"
         )
@@ -59,6 +69,22 @@ HTTPX_ERRORS = (
 )
 
 
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Parse a numeric ``Retry-After`` value if the server sent one.
+
+    HTTP-date forms (``Retry-After: Wed, 21 Oct 2015 07:28:00 GMT``) are
+    not supported; we just return None and fall back to our own backoff.
+    """
+    raw = response.headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     """Convert an httpx exception into a structured error dict.
 
@@ -67,24 +93,39 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     is included on 429 responses when the server advertises it.
     """
     if isinstance(exc, LocalBackpressureError):
-        return {
+        # Concrete remediation: tell the agent the throttle gap (so it
+        # picks a sensible retry interval) and the concurrency cap (so
+        # it knows how many parallel calls are safe). Agents that
+        # branch on the structured fields below get the same data
+        # without parsing the error string.
+        gap = exc.min_gap_seconds
+        if gap > 0:
+            wait_hint = f"wait ≥{gap:.2f}s before retrying"
+        else:
+            wait_hint = "retry shortly"
+        result: dict[str, Any] = {
             "error": (
                 f"Local backpressure: {exc.pending} {provider} requests "
-                f"already queued (cap {exc.max_pending}). Slow your fan-out "
-                "and retry shortly. The server enforces this cap before "
-                "hitting the upstream rate limiter."
+                f"already queued (cap {exc.max_pending}). "
+                f"{wait_hint.capitalize()} or reduce concurrency to "
+                f"≤{exc.max_pending} parallel calls. The server enforces "
+                "this cap before hitting the upstream rate limiter."
             ),
             "retryable": True,
             "backpressure": True,
+            "max_concurrency": exc.max_pending,
         }
+        if gap > 0:
+            result["retry_after_seconds"] = gap
+        return result
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if status == 429:
             result: dict[str, Any] = {
                 "error": f"{provider} rate limit (HTTP 429). Transient — wait and retry.",
             }
-            retry_after = exc.response.headers.get("retry-after")
-            if retry_after:
+            retry_after = _retry_after_seconds(exc.response)
+            if retry_after is not None:
                 result["retry_after_seconds"] = retry_after
             return result
         if 500 <= status < 600:
@@ -113,28 +154,13 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
 _RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
-def _retry_after_seconds(response: httpx.Response) -> float | None:
-    """Parse a numeric ``Retry-After`` value if the server sent one.
-
-    HTTP-date forms (``Retry-After: Wed, 21 Oct 2015 07:28:00 GMT``) are
-    not supported; we just return None and fall back to our own backoff.
-    """
-    raw = response.headers.get("retry-after")
-    if not raw:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
-
-
 async def get_with_retry(
     client: httpx.AsyncClient,
     url: str,
     *,
     max_attempts: int = 2,
     backoff_seconds: float = 1.0,
+    provider: str | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
     """Issue a GET with one transparent retry on transient failure.
@@ -168,6 +194,8 @@ async def get_with_retry(
         except (httpx.TimeoutException, httpx.RequestError):
             if attempt >= max_attempts:
                 raise
+            if provider is not None:
+                _stats.incr(provider, "http_retries")
             await asyncio.sleep(backoff_seconds)
             continue
 
@@ -176,6 +204,8 @@ async def get_with_retry(
         if response.status_code not in _RETRYABLE_STATUSES:
             return response
 
+        if provider is not None:
+            _stats.incr(provider, "http_retries")
         retry_after = _retry_after_seconds(response) or 0.0
         sleep_for = min(max(retry_after, backoff_seconds), cap)
         await asyncio.sleep(sleep_for)

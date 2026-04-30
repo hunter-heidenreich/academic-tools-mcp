@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from . import _clients, _http, _singleflight, cache, config
+from . import _clients, _http, _singleflight, _stats, cache, config
 
 NAMESPACE = "wikipedia"
 
@@ -38,6 +38,11 @@ _pending: int = 0
 
 # Coalesces concurrent get_summary calls for the same canonical title.
 _single_flight = _singleflight.SingleFlight()
+
+# Positive cache TTL. Wikipedia summaries change as articles are edited;
+# 30 days is long enough to amortise repeated reads in a session and
+# short enough that significant edits surface within a month.
+_POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
 def _headers() -> dict[str, str]:
@@ -67,17 +72,25 @@ async def _throttled_get(
     """
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
-        raise _http.LocalBackpressureError("Wikipedia", _pending, _MAX_PENDING)
+        _stats.incr(NAMESPACE, "backpressure_refusals")
+        raise _http.LocalBackpressureError(
+            "Wikipedia", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
+        )
     _pending += 1
     try:
         async with _request_lock:
             now = time.monotonic()
             elapsed = now - _last_request_time
+            wait_seconds = 0.0
             if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+                wait_seconds = _MIN_REQUEST_GAP - elapsed
+                await asyncio.sleep(wait_seconds)
+            _stats.log_request(NAMESPACE, url, wait_seconds)
+            _stats.incr(NAMESPACE, "http_calls")
             response = await _http.get_with_retry(
                 client, url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                provider=NAMESPACE,
                 **kwargs,
             )
             _last_request_time = time.monotonic()
@@ -149,7 +162,7 @@ async def get_summary(title: str) -> dict[str, Any]:
 
     # Check cache first
     canonical = url_title.lower()
-    cached = cache.get(NAMESPACE, "summaries", canonical)
+    cached = cache.get(NAMESPACE, "summaries", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
     if cached is not None:
         return cached
     neg = cache.get_negative(NAMESPACE, "summaries", canonical)
@@ -157,7 +170,7 @@ async def get_summary(title: str) -> dict[str, Any]:
         return neg
 
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "summaries", canonical)
+        cached = cache.get(NAMESPACE, "summaries", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
         if cached is not None:
             return cached
         neg = cache.get_negative(NAMESPACE, "summaries", canonical)

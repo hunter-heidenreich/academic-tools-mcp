@@ -561,6 +561,29 @@ class TestConvertPdfCachePaths:
         assert "PDF not found" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_force_refresh_drops_markdown_and_sections(
+        self, isolated_cache
+    ):
+        # force_refresh must blow away the cached markdown AND the
+        # sections cache, so the next call falls through to "PDF not
+        # found" (no PDF here) — proving both halves were cleared.
+        ns, canonical = "test", "doc-force-refresh"
+        md_path = self._seed_markdown(ns, canonical, "## A\n\nbody\n")
+        cache.put(ns, "sections", papers._sections_key(canonical), {
+            "sections": [{"index": 0, "title": "A", "h3s": [], "approx_tokens": 1}],
+            "markdown_checksum": papers._markdown_checksum(md_path),
+        })
+
+        result = await convert_pdf(
+            Path("/nonexistent.pdf"), ns, canonical, force_refresh=True
+        )
+        assert "error" in result
+        assert not md_path.exists(), "force_refresh should unlink the markdown"
+        assert (
+            cache.get(ns, "sections", papers._sections_key(canonical)) is None
+        ), "force_refresh should invalidate the sections cache"
+
+    @pytest.mark.asyncio
     async def test_concurrent_callers_reparse_only_once(
         self, isolated_cache, fail_if_subprocess, monkeypatch
     ):
@@ -573,7 +596,8 @@ class TestConvertPdfCachePaths:
 
         # Reset the lock dict so this test starts from a clean slate
         # regardless of test ordering.
-        monkeypatch.setattr(papers, "_section_locks", {})
+        from collections import OrderedDict
+        monkeypatch.setattr(papers, "_section_locks", OrderedDict())
 
         parse_calls = 0
         real_parse = papers.parse_sections
@@ -598,6 +622,68 @@ class TestConvertPdfCachePaths:
             f"expected exactly one re-parse under the per-paper lock, "
             f"got {parse_calls}"
         )
+
+
+class TestSectionLocksLRU:
+    """The per-paper section lock dict is bounded so a long-running
+    session that touches thousands of papers doesn't accumulate Locks
+    forever. Eviction is FIFO and skips currently-held locks.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_locks(self, monkeypatch):
+        from collections import OrderedDict
+        monkeypatch.setattr(papers, "_section_locks", OrderedDict())
+
+    def test_unbounded_below_cap(self, monkeypatch):
+        monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 100)
+        for i in range(50):
+            papers._sections_lock("test", f"paper-{i}")
+        assert len(papers._section_locks) == 50
+
+    def test_evicts_oldest_when_cap_exceeded(self, monkeypatch):
+        monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 5)
+        for i in range(10):
+            papers._sections_lock("test", f"paper-{i}")
+        assert len(papers._section_locks) == 5
+        # Newest five survive; oldest five evicted.
+        survivors = {k for k in papers._section_locks.keys()}
+        assert survivors == {("test", f"paper-{i}") for i in range(5, 10)}
+
+    def test_touch_promotes_to_end(self, monkeypatch):
+        monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 3)
+        papers._sections_lock("test", "a")
+        papers._sections_lock("test", "b")
+        papers._sections_lock("test", "c")
+        # Touch "a" so it moves to the end of the LRU order.
+        papers._sections_lock("test", "a")
+        # Adding "d" should now evict "b" (the new oldest), not "a".
+        papers._sections_lock("test", "d")
+        keys = list(papers._section_locks.keys())
+        assert ("test", "b") not in keys
+        assert ("test", "a") in keys
+
+    @pytest.mark.asyncio
+    async def test_held_lock_is_not_evicted(self, monkeypatch):
+        # If the oldest lock is held when we try to evict, we skip it
+        # and evict the next free one instead — dropping a held lock
+        # would let a racing caller bypass mutual exclusion.
+        monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 2)
+        held = papers._sections_lock("test", "held")
+        await held.acquire()
+        try:
+            papers._sections_lock("test", "free-1")
+            papers._sections_lock("test", "free-2")
+            keys = set(papers._section_locks.keys())
+            # "held" must still be present; one of the free ones got evicted.
+            assert ("test", "held") in keys
+        finally:
+            held.release()
+
+    def test_returns_same_lock_for_same_key(self):
+        lock1 = papers._sections_lock("test", "same")
+        lock2 = papers._sections_lock("test", "same")
+        assert lock1 is lock2
 
 
 class TestConvertPdfSubprocessFailures:

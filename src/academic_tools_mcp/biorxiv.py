@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from . import _clients, _http, _singleflight, cache
+from . import _clients, _http, _singleflight, _stats, cache
 
 NAMESPACE = "biorxiv"
 _BASE_URL = "https://api.biorxiv.org"
@@ -29,6 +29,17 @@ _pending: int = 0
 # don't all fetch independently.
 _single_flight = _singleflight.SingleFlight()
 
+# Shorter than the cache.py default 24h. bioRxiv DOIs are minted on
+# upload — a paper that 404'd this morning may be visible an hour later
+# and the agent shouldn't have to wait a day to see it.
+_NEG_TTL_SECONDS = 3600.0
+
+# Positive cache TTL. The published_doi field appears asynchronously
+# when a preprint becomes a journal article — a 7-day TTL guarantees
+# the agent sees that transition within a week without re-fetching the
+# unchanging fields (title, abstract, authors) on every call.
+_POSITIVE_TTL_SECONDS = 7 * 86400.0
+
 
 async def _throttled_get(
     client: httpx.AsyncClient, url: str, **kwargs: Any
@@ -41,17 +52,25 @@ async def _throttled_get(
     """
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
-        raise _http.LocalBackpressureError("bioRxiv", _pending, _MAX_PENDING)
+        _stats.incr(NAMESPACE, "backpressure_refusals")
+        raise _http.LocalBackpressureError(
+            "bioRxiv", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
+        )
     _pending += 1
     try:
         async with _request_lock:
             now = time.monotonic()
             elapsed = now - _last_request_time
+            wait_seconds = 0.0
             if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+                wait_seconds = _MIN_REQUEST_GAP - elapsed
+                await asyncio.sleep(wait_seconds)
+            _stats.log_request(NAMESPACE, url, wait_seconds)
+            _stats.incr(NAMESPACE, "http_calls")
             response = await _http.get_with_retry(
                 client, url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                provider=NAMESPACE,
                 **kwargs,
             )
             _last_request_time = time.monotonic()
@@ -185,24 +204,31 @@ def _parse_paper(raw: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def get_paper(doi: str) -> dict[str, Any]:
+async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a paper by bioRxiv/medRxiv DOI, using cache when available.
 
     Tries bioRxiv first, then medRxiv if not found. Concurrent callers
     for the same DOI share one fetch via single-flight.
+
+    ``force_refresh=True`` drops both positive and negative cache entries
+    before fetching — useful when the agent wants the latest
+    ``published_doi`` for a preprint that may have just been published.
     """
     bare = _normalize_doi(doi)
     canonical = _canonical_key(doi)
 
-    cached = cache.get(NAMESPACE, "papers", canonical)
-    if cached is not None:
-        return cached
-    neg = cache.get_negative(NAMESPACE, "papers", canonical)
-    if neg is not None:
-        return neg
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "papers", canonical)
+    else:
+        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "papers", canonical)
+        if neg is not None:
+            return neg
 
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "papers", canonical)
+        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
         if cached is not None:
             return cached
         neg = cache.get_negative(NAMESPACE, "papers", canonical)
@@ -231,7 +257,7 @@ async def get_paper(doi: str) -> dict[str, Any]:
 
         if not collection:
             err = {"error": f"No paper found for DOI: {doi}"}
-            cache.put_negative(NAMESPACE, "papers", canonical, err)
+            cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
             return err
 
         raw = _pick_latest_version(collection)
@@ -254,13 +280,22 @@ def pdf_path(doi: str) -> Path:
     return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
-async def download_pdf(doi: str) -> dict[str, Any]:
+async def download_pdf(
+    doi: str, *, force_refresh: bool = False
+) -> dict[str, Any]:
     """Download the PDF for a bioRxiv/medRxiv paper and cache it locally.
+
+    ``force_refresh=True`` removes the cached PDF and re-downloads. Use
+    when you suspect the cached file is corrupt or the preprint server
+    replaced the PDF with a newer version under the same DOI.
 
     Returns a dict with the file path and size, or an error.
     """
     canonical = _canonical_key(doi)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+
+    if force_refresh and dest.exists():
+        dest.unlink()
 
     if dest.exists():
         return {

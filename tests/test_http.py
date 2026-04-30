@@ -18,12 +18,25 @@ class TestErrorDict:
         result = _http.error_dict("Crossref", exc)
         assert "rate limit" in result["error"].lower()
         assert "Crossref" in result["error"]
-        assert result["retry_after_seconds"] == "12"
+        # Field is named *_seconds, so the value must be numeric — the
+        # raw header string would TypeError if an agent passed it to
+        # asyncio.sleep().
+        assert result["retry_after_seconds"] == 12.0
+        assert isinstance(result["retry_after_seconds"], float)
 
     def test_429_omits_retry_after_when_absent(self):
         exc = _build_status_error(429)
         result = _http.error_dict("OpenAlex", exc)
         assert "rate limit" in result["error"].lower()
+        assert "retry_after_seconds" not in result
+
+    def test_429_ignores_non_numeric_retry_after(self):
+        # HTTP-date forms get dropped rather than returned as a string —
+        # consistent with get_with_retry's behaviour.
+        exc = _build_status_error(
+            429, headers={"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"}
+        )
+        result = _http.error_dict("Crossref", exc)
         assert "retry_after_seconds" not in result
 
     def test_5xx_marks_transient(self):
@@ -69,6 +82,41 @@ class TestErrorDict:
         assert "5" in result["error"]
         assert result["retryable"] is True
         assert result["backpressure"] is True
+
+    def test_backpressure_surfaces_concrete_remediation(self):
+        """The error must tell the agent how long to wait (the throttle
+        gap) and how many parallel calls are safe (the cap), not just
+        say 'backpressure'. Both are exposed as structured fields so
+        agents can branch on them without parsing the message string."""
+        exc = _http.LocalBackpressureError(
+            "arXiv", pending=5, max_pending=5, min_gap_seconds=3.0
+        )
+        result = _http.error_dict("arXiv", exc)
+
+        # Structured fields the agent can read directly.
+        assert result["max_concurrency"] == 5
+        assert result["retry_after_seconds"] == 3.0
+
+        # Human-readable hint embedded in the message for agents that
+        # only parse the error string.
+        msg = result["error"]
+        assert "≥3.00s" in msg or "3.00s" in msg
+        assert "≤5" in msg or "5 parallel" in msg
+
+    def test_backpressure_with_zero_gap_omits_retry_after(self):
+        """Providers like ACL Anthology have no documented rate limit
+        and run with min_gap=0; the error should still be useful (cap
+        + retry hint) without claiming a fictional retry interval."""
+        exc = _http.LocalBackpressureError(
+            "ACL Anthology", pending=5, max_pending=5, min_gap_seconds=0.0
+        )
+        result = _http.error_dict("ACL Anthology", exc)
+
+        assert result["max_concurrency"] == 5
+        assert "retry_after_seconds" not in result, (
+            "no advertised gap → no retry_after, so agents don't pin "
+            "to a fabricated interval"
+        )
 
 
 class TestExceptionTuple:

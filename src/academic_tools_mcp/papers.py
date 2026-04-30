@@ -25,6 +25,7 @@ import re
 import shlex
 import signal
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -66,12 +67,21 @@ def _busy_error(pdf_size_mb: float) -> dict[str, Any]:
 
     Tells the caller what is currently running and how long it has been
     going so an agent can decide whether to back off briefly or move on.
+
+    The holder mutates the ``_current_conversion`` global from inside the
+    lock; a follower reads it without the lock. That's safe by design:
+    the read is a single atomic Python load (GIL-protected), the value
+    is either a fully-populated dict or ``None``, and ``or {}`` plus
+    ``.get(..., default)`` cover the cleared-but-still-locked window
+    (holder finished, cleared the global, hasn't released the lock yet).
+    Worst case the response says "unknown/unknown, 0s" instead of the
+    just-finished work — never a crash, never a partial read.
     """
-    info = _current_conversion or {}
-    started_at = info.get("started_at")
+    snapshot = _current_conversion or {}
+    started_at = snapshot.get("started_at")
     elapsed = (time.monotonic() - started_at) if started_at is not None else 0.0
-    canonical = info.get("canonical", "unknown")
-    namespace = info.get("namespace", "unknown")
+    canonical = snapshot.get("canonical", "unknown")
+    namespace = snapshot.get("namespace", "unknown")
     return {
         "error": (
             f"PDF conversion already in progress for {namespace}/{canonical} "
@@ -158,23 +168,52 @@ def _sections_key(canonical: str) -> str:
 
 
 # Per-paper async lock so two concurrent reads of the same paper don't both
-# re-parse the markdown and race to write the sections cache. The lock dict
-# grows as new papers are seen; entries are tiny (a single Lock) and the
-# pattern of an MCP session is "tens to hundreds of papers", so unbounded
-# growth is acceptable in practice.
-_section_locks: dict[tuple[str, str], asyncio.Lock] = {}
+# re-parse the markdown and race to write the sections cache. We cap the
+# dict at ``_SECTION_LOCKS_MAX`` and evict the oldest entries (FIFO via
+# OrderedDict.move_to_end on touch) so a long-running session that touches
+# thousands of papers doesn't slowly grow this map without bound. Eviction
+# only drops locks that are not currently held — a held lock means a
+# coroutine is mid-section-cache write and dropping it would let a racing
+# caller skip the serialisation we depend on.
+_SECTION_LOCKS_MAX: int = 1024
+_section_locks: "OrderedDict[tuple[str, str], asyncio.Lock]" = OrderedDict()
 
 
 def _sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
     """Return the async lock guarding the sections cache for one paper.
 
-    dict.setdefault is atomic at the GIL level, so racing constructors
+    Adding/looking up under the GIL is atomic, so racing constructors
     are safe — only one Lock wins, the other is discarded uncontended.
+    Touched entries move to the end so the FIFO eviction below removes
+    the least-recently-used keys when the cap is exceeded.
     """
     key = (namespace, canonical)
     lock = _section_locks.get(key)
     if lock is None:
-        lock = _section_locks.setdefault(key, asyncio.Lock())
+        lock = asyncio.Lock()
+        existing = _section_locks.setdefault(key, lock)
+        if existing is lock:
+            # We were the inserting writer — enforce the cap. Evict from
+            # the front (oldest) and skip any lock that is currently
+            # held; a held lock is doing real work right now and the
+            # caller depends on its mutual exclusion.
+            while len(_section_locks) > _SECTION_LOCKS_MAX:
+                evict_key, evict_lock = next(iter(_section_locks.items()))
+                if evict_lock.locked():
+                    # Move it to the end so we don't spin re-checking
+                    # this same held lock; the next eviction pass will
+                    # find a free one ahead of it.
+                    _section_locks.move_to_end(evict_key)
+                    # If every lock is held (extremely unlikely), bail
+                    # rather than spin forever — going slightly over cap
+                    # is fine, hanging is not.
+                    if all(l.locked() for l in _section_locks.values()):
+                        break
+                    continue
+                _section_locks.pop(evict_key, None)
+        else:
+            lock = existing
+    _section_locks.move_to_end(key)
     return lock
 
 
@@ -339,6 +378,8 @@ async def convert_pdf(
     pdf_path: Path,
     namespace: str,
     canonical: str,
+    *,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     """Convert a PDF to markdown, cache the result, and return section index.
 
@@ -346,11 +387,23 @@ async def convert_pdf(
         pdf_path: Path to the cached PDF file.
         namespace: Cache namespace (e.g., "arxiv").
         canonical: Canonical ID for cache keying.
+        force_refresh: If True, drop any cached markdown + section index
+            for this paper so the converter subprocess re-runs. Use after
+            replacing the source PDF or upgrading the converter.
 
     Returns:
         Dict with markdown_path, sections list, or an error.
     """
     md_path = _markdown_path(namespace, canonical)
+
+    if force_refresh:
+        # Drop both halves under the per-paper lock so a concurrent reader
+        # can't catch a half-cleared state (markdown gone, stale sections
+        # entry still pointing at the old checksum).
+        async with _sections_lock(namespace, canonical):
+            if md_path.exists():
+                md_path.unlink()
+            cache.invalidate(namespace, "sections", _sections_key(canonical))
 
     # If the markdown is already cached, never re-run the slow conversion —
     # re-parse from the existing markdown if the sections cache is missing
