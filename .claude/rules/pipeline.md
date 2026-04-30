@@ -17,6 +17,7 @@ Converter-agnostic PDF-to-markdown pipeline and section-level access.
 - Already-converted papers' cached-path early-return is NOT subject to the global lock — agents can keep reading sections of converted papers while a different one is converting.
 - `parse_sections()` splits by H2 headings with H3 previews (adaptive — detects H1 vs H2 documents). `get_section_content()` retrieves individual sections by index or title substring. Section indices cached under `.cache/<namespace>/sections/`.
 - **Per-paper sections lock** (`_section_locks` keyed by `(namespace, canonical)`) serialises concurrent re-parse attempts on the same paper. The lock dict is an `OrderedDict` capped at `_SECTION_LOCKS_MAX=1024` with FIFO eviction; currently-held locks are skipped on eviction so mutual exclusion can't be silently dropped out from under a writer.
+- `find_in_markdown(markdown, query, *, max_results=20, case_sensitive=False, whole_words=False)` — substring (regex with `\b…\b` when `whole_words=True`) scan returning `[{section_index, section, char_offset, match, snippet}, ...]` ordered by document position. Snippets are ~120-char windows centred on each match, newlines collapsed. `char_offset` is computed against the same `"\n".join(lines[s:e]).strip()` recipe `get_section_content` uses, so an agent can chain into `get_paper_section(identifier, section_index, offset=char_offset)` without further bookkeeping. Wired through the `find_in_paper` MCP tool, wrapped in `asyncio.to_thread` so heavy match counts don't pin the event loop.
 
 ## manual.py
 

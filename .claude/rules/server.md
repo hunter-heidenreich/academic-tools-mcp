@@ -8,7 +8,9 @@ paths:
 
 ## server.py
 
-FastMCP tool definitions (19 live tools) plus `_lifespan` async context manager that closes pooled clients via `_clients.aclose_all()` on shutdown. Each tool fetches the full cached object then returns only the relevant slice. Tools use `Annotated` types (`DOI`, `AUTHOR_ID`, `PAPER_ID`) for parameter descriptions.
+FastMCP tool definitions (21 live tools) plus `_lifespan` async context manager that closes pooled clients via `_clients.aclose_all()` on shutdown. Each tool fetches the full cached object then returns only the relevant slice. Tools use `Annotated` types (`DOI`, `AUTHOR_ID`, `PAPER_ID`) for parameter descriptions.
+
+Per-source metadata formatting is factored into helpers (`_format_arxiv_metadata` / `_format_biorxiv_metadata` / `_format_openalex_metadata` / `_format_openalex_via_biorxiv`) so `get_paper_metadata` and `get_papers_metadata` produce identical per-paper payloads without duplicating the field mapping.
 
 ### Unified paper family
 
@@ -20,6 +22,14 @@ FastMCP tool definitions (19 live tools) plus `_lifespan` async context manager 
 There is no lowest-common-denominator normalisation — agents branch on `_source` for provider-specific fields. All four also accept `force_refresh: bool = False` — drops both positive and negative cache entries via `cache.invalidate(...)` and re-fetches; useful for stale citation counts, a bioRxiv preprint that just got published, or retrying a previously-404'd identifier.
 
 `get_paper_metadata` additionally accepts `follow_published: bool = False` — when `True` and a bioRxiv paper has a `published_doi`, auto-chains to `openalex.get_work(published_doi, force_refresh=force_refresh)` and returns the journal record with `_source: "openalex_via_biorxiv"`, `_canonical_id` set to the journal DOI, plus a `preprint_doi` field. Falls back to the preprint record if OpenAlex misses (paper too new to index).
+
+### Batch metadata: `get_papers_metadata(identifiers)`
+
+For 30+ identifiers at once (typical reference-graph enrichment after `get_paper_references`). Groups identifiers by source, fans out arXiv / bioRxiv as concurrent singletons (now efficient with `_MAX_CONCURRENT > 1`), and routes OpenAlex DOIs through `openalex.get_works_batch` — one HTTP call per 50 DOIs via `/works?filter=doi:...|...`.
+
+Returns `{count, papers: [...]}`. Each paper entry mirrors the corresponding `get_paper_metadata` payload exactly, plus an `_input` field carrying the original (un-normalised) identifier so an agent can correlate input → output. Order matches the input list. Per-paper failures appear as `{_input, error, suggestion?}` entries; one failure does not affect the others.
+
+Cap is 100 identifiers per call; for larger sets the agent pages. Does NOT support `follow_published` — chain bioRxiv-to-journal explicitly via per-paper `get_paper_metadata` calls.
 
 ### get_paper_authors pagination
 
@@ -35,9 +45,11 @@ The OpenAlex-shaped `get_paper_authors` response includes `openalex_id` per auth
 
 `force_refresh: bool = False` on the first three with stage-specific semantics:
 
-- `download_pdf` — unlinks the cached PDF and re-downloads (use when cached file is corrupt or provider replaced it under the same canonical key).
+- `download_pdf` — unlinks the cached PDF and re-downloads. **Cascades**: when the re-download succeeds (`cached=False` in the result), `_download_pdf_by_provider` also unlinks the cached markdown and invalidates the section index for that paper, and tags the response with `cascaded_invalidated: ["markdown", "sections"]`. The next `convert_paper` therefore picks up the new bytes — no need for the agent to remember to also `convert_paper(force_refresh=True)`. Cache hits (cached=True) do NOT cascade because the existing markdown is still consistent.
 - `convert_paper` — drops both cached markdown and section index so the converter subprocess re-runs (use after replacing source PDF or upgrading converter).
 - `get_paper_sections` — drops just the section index so next read re-parses markdown.
+
+PDF downloads stream chunks (64 KiB) to a sibling temp file via `_pdf_download.stream_to_file` and atomic-rename into place, so peak memory stays at one chunk and a crash mid-download cannot leave a half-written canonical PDF. The `MAX_PDF_BYTES` env var (default 200 MB) caps total bytes; oversize streams abort mid-download with `{error, retryable: False, max_bytes}` rather than filling the disk.
 
 `get_paper_section` reads the markdown file directly (no derived cache) so it has no `force_refresh`. Paginated by character offset: `offset` (default 0) + `max_chars` (default 16000, hard cap 200000). Every response carries `total_chars`, `chars_returned`, `has_more`, `next_offset` so agents read long sections by re-calling with `offset=next_offset` rather than asking for an unbounded slice. Carries `anthropic/maxResultSizeChars=200000` meta so Claude Code doesn't persist large results to disk.
 
@@ -68,6 +80,7 @@ Crossref provides structured reference metadata (author, title, year, journal, D
 - `search_arxiv` — `{total_results, results: [...]}`; each hit `{arxiv_id, title, first_author, author_count, published_year}`. Full-author lists balloon on HEP/biology papers, so search drops everything beyond triage. Each entry opportunistically cached — follow-up `get_paper_metadata(arxiv_id)` is free.
 - `search_crossref_by_title` — DOI discovery by bibliographic query. Useful when you only have a title or arXiv ID and need the published DOI (e.g. ACL Anthology DOI for an arXiv paper). Year filtering is optional but Crossref publication dates may differ from arXiv preprint dates. De facto search for bioRxiv (no title search endpoint upstream — Crossref indexes all bioRxiv DOIs). Hits return `{doi, title, first_author, author_count, year}` (parallel to `search_arxiv`). Each hit also opportunistically warms `crossref/works`.
 - `search_cached_papers` — BM25 over locally-converted markdown across all namespaces (or filtered to one). Use case: "I read this paper a few weeks ago, what was its identifier?" or "which of my imported PDFs talked about X?" — neither answerable by upstream search APIs. Returns `{namespace, canonical_id, score, title, snippet, section, char_count}`; chain `get_paper_section(canonical_id, section)`. Pure keyword match — won't bridge synonyms, doesn't see un-converted PDFs.
+- `find_in_paper` — substring (or whole-word) search inside one converted paper. Returns `{query, paper_identifier, result_count, results: [{section_index, section, char_offset, match, snippet}, ...]}`. `char_offset` aligns with `get_paper_section`'s stripped section text so an agent can chain straight to the surrounding context. Pairs with `search_cached_papers`: that one tells you *which* paper mentions X, this one tells you *where in the paper*. Errors out cleanly if the paper isn't converted yet.
 
 ## bibtex.py
 

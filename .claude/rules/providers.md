@@ -16,7 +16,8 @@ paths:
 Every per-provider client uses the same pattern:
 
 - Persistent `httpx.AsyncClient` from `_clients.get_client(NAMESPACE, ...)`.
-- `_throttled_get` enforcing `_MIN_REQUEST_GAP`, `_MAX_PENDING=5` burst cap, routing through `_http.get_with_retry` with `backoff_seconds=max(_MIN_REQUEST_GAP, 1.0)` so per-provider rate-limit policies apply to retries too.
+- `_throttled_get` enforcing the three-layer gating (`_MAX_PENDING=5` burst cap → `_request_sem` of size `_MAX_CONCURRENT` → `_request_lock` for the inter-start gap), routing through `_http.get_with_retry` with `backoff_seconds=max(_MIN_REQUEST_GAP, 1.0)` so per-provider rate-limit policies apply to retries too. The arxiv / biorxiv / acl_anthology modules also expose `_request_slot` as an `@contextlib.asynccontextmanager` so streaming PDF downloads (via `_pdf_download.stream_to_file`) can hold the slot for the whole stream lifetime.
+- `_MAX_CONCURRENT` per-provider: arxiv=1 (single-connection rule), openalex=4, acl_anthology=4, crossref=3 (polite-pool concurrency budget), biorxiv=2, opencitations=2, wikipedia=2.
 - Module-level `_single_flight` keyed by canonical identifier (sometimes tuple-keyed, e.g. `("references", canonical)` so different sub-fetches for the same DOI run independently).
 - Cache lookup re-checked **inside** the single-flight slot to catch a leader's just-written entry.
 - Negative cache check both **before** and **inside** the slot.
@@ -29,6 +30,8 @@ If the data is mutable enough that an agent might want to bypass the cache, acce
 Singleton endpoints (`/works/{id}`, `/authors/{id}`). ID normalization for DOI formats, OpenAlex URLs, ORCIDs. Each entity has `_normalize_*` + `_canonical_*` pair. Rate limit ~10 req/sec (100ms gap). `_get_client()` bakes in the polite-pool `User-Agent` from `OPENALEX_MAILTO`. Cache namespaces: `openalex/works`, `openalex/authors`. Single-flight keys tuple-prefixed (`("work", canonical)`, `("author", canonical)`) — parallel work-and-author fetch on the same paper runs as two slots.
 
 **Limits:** singleton lookups (ID/DOI/ORCID) are free and unlimited. Search (1000/day), List+filter (10000/day), Content download (100/day) are not currently used.
+
+**Batch fetch:** `get_works_batch(dois, *, force_refresh=False)` collapses N cache-miss DOIs into ⌈N/50⌉ HTTP calls via `/works?filter=doi:DOI1|DOI2|...`. Cached entries (positive or negative) are served without a network call. Each fetched work is written to the singleton cache, so a follow-up `get_work(doi)` is a free hit. DOIs requested but missing from the response are negative-cached the same way singleton 404s are. Used by `server.get_papers_metadata` for reference-graph enrichment.
 
 ## arxiv.py
 

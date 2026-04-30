@@ -1,12 +1,12 @@
 import asyncio
-import re
+import contextlib
 import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from . import _clients, _http, _singleflight, _stats, cache
+from . import _clients, _http, _pdf_download, _singleflight, _stats, cache
 
 NAMESPACE = "acl_anthology"
 
@@ -17,6 +17,11 @@ _ACL_DOI_PREFIX = "10.18653/v1/"
 # rate limit so the gap is zero, but the burst cap, retry plumbing, and
 # pooled connection still apply — same robustness primitives every other
 # provider gets, just without the per-second pacing.
+# Concurrency cap of 4 — ACL Anthology is a static-file CDN with no
+# documented rate limit, so we let multiple PDF downloads run in
+# parallel; the burst cap still applies past _MAX_PENDING.
+_MAX_CONCURRENT = 4
+_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
 _request_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.0
@@ -31,15 +36,14 @@ _single_flight = _singleflight.SingleFlight()
 _PDF_TIMEOUT_SECONDS = 60.0
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
-    """Execute a GET against ACL Anthology with the canonical pooled shape.
+@contextlib.asynccontextmanager
+async def _request_slot(url: str):
+    """Acquire ACL Anthology's rate-limit slot for the with-block lifetime.
 
     No throttle gap (the site has no documented rate limit), but the
-    burst cap, retry plumbing, and stats counters still apply so a
-    misbehaving fan-out fails fast and a transient blip surfaces a
-    structured error.
+    concurrency cap, burst cap, and stats counters still apply so a
+    misbehaving fan-out fails fast and a streaming download holds an
+    open connection that counts toward the cap.
     """
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
@@ -49,25 +53,37 @@ async def _throttled_get(
         )
     _pending += 1
     try:
-        async with _request_lock:
-            now = time.monotonic()
-            elapsed = now - _last_request_time
-            wait_seconds = 0.0
-            if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                wait_seconds = _MIN_REQUEST_GAP - elapsed
-                await asyncio.sleep(wait_seconds)
+        async with _request_sem:
+            async with _request_lock:
+                now = time.monotonic()
+                elapsed = now - _last_request_time
+                wait_seconds = 0.0
+                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
+                    wait_seconds = _MIN_REQUEST_GAP - elapsed
+                    await asyncio.sleep(wait_seconds)
+                _last_request_time = time.monotonic()
             _stats.log_request(NAMESPACE, url, wait_seconds)
             _stats.incr(NAMESPACE, "http_calls")
-            response = await _http.get_with_retry(
-                client, url,
-                backoff_seconds=1.0,
-                provider=NAMESPACE,
-                **kwargs,
-            )
-            _last_request_time = time.monotonic()
-            return response
+            yield
     finally:
         _pending -= 1
+
+
+async def _throttled_get(
+    client: httpx.AsyncClient, url: str, **kwargs: Any
+) -> httpx.Response:
+    """Execute a GET against ACL Anthology with the canonical pooled shape.
+
+    Thin wrapper over ``_request_slot`` so a transient blip surfaces a
+    structured error and the burst cap shields against runaway fan-out.
+    """
+    async with _request_slot(url):
+        return await _http.get_with_retry(
+            client, url,
+            backoff_seconds=1.0,
+            provider=NAMESPACE,
+            **kwargs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -176,29 +192,24 @@ async def download_pdf(
             }
 
         url = pdf_url(aid)
-
-        try:
-            client = _clients.get_client(
-                NAMESPACE, timeout=_PDF_TIMEOUT_SECONDS
-            )
-            response = await _throttled_get(client, url)
-
-            if response.status_code == 404:
-                return {"error": f"PDF not found on ACL Anthology for: {aid}"}
-
-            response.raise_for_status()
-        except _http.HTTPX_ERRORS as e:
-            return _http.error_dict("ACL Anthology", e)
-
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(response.content)
-
+        client = _clients.get_client(NAMESPACE, timeout=_PDF_TIMEOUT_SECONDS)
+        result = await _pdf_download.stream_to_file(
+            client,
+            url,
+            dest,
+            slot_factory=lambda: _request_slot(url),
+            provider_label="ACL Anthology",
+            timeout=_PDF_TIMEOUT_SECONDS,
+            not_found_message=f"PDF not found on ACL Anthology for: {aid}",
+        )
+        if "error" in result:
+            return result
+        # Add ACL-specific provenance fields on top of the helper's
+        # canonical {path, size_bytes, cached} payload.
         return {
             "anthology_id": aid,
             "pdf_url": url,
-            "path": str(dest),
-            "size_bytes": len(response.content),
-            "cached": False,
+            **result,
         }
 
     return await _single_flight.do(canonical, _fetch)

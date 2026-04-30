@@ -10,7 +10,10 @@ CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
 
 # Rate limiting for the polite pool: max 10 req/sec, 3 concurrent.
-# We enforce a conservative 100ms minimum gap between requests.
+# Concurrency cap of 3 matches the polite-pool concurrency budget; gap
+# of 100ms gives 10 req/sec sustained.
+_MAX_CONCURRENT = 3
+_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
 _request_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.1  # 100ms -> ~10 req/sec max
@@ -69,23 +72,23 @@ async def _throttled_get(
         )
     _pending += 1
     try:
-        async with _request_lock:
-            now = time.monotonic()
-            elapsed = now - _last_request_time
-            wait_seconds = 0.0
-            if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                wait_seconds = _MIN_REQUEST_GAP - elapsed
-                await asyncio.sleep(wait_seconds)
+        async with _request_sem:
+            async with _request_lock:
+                now = time.monotonic()
+                elapsed = now - _last_request_time
+                wait_seconds = 0.0
+                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
+                    wait_seconds = _MIN_REQUEST_GAP - elapsed
+                    await asyncio.sleep(wait_seconds)
+                _last_request_time = time.monotonic()
             _stats.log_request(NAMESPACE, url, wait_seconds)
             _stats.incr(NAMESPACE, "http_calls")
-            response = await _http.get_with_retry(
+            return await _http.get_with_retry(
                 client, url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
                 provider=NAMESPACE,
                 **kwargs,
             )
-            _last_request_time = time.monotonic()
-            return response
     finally:
         _pending -= 1
 

@@ -79,6 +79,7 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | Tool | Description |
 |------|-------------|
 | `get_paper_metadata` | Title, dates, venue / categories, identifiers — shape varies by `_source`. Optional `follow_published=True` auto-chains a bioRxiv preprint to its journal version on OpenAlex when one exists. |
+| `get_papers_metadata` | Bulk metadata for many identifiers at once. OpenAlex DOIs collapse into one batched HTTP call per 50; arXiv / bioRxiv fan out concurrently. Designed for reference-graph enrichment after `get_paper_references`. Cap 100 per call. |
 | `get_paper_authors` | Author list with source-appropriate detail (affiliations, corresponding author, OpenAlex IDs) |
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
@@ -101,10 +102,11 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 
 | Tool | Description |
 |------|-------------|
-| `download_pdf` | Download and cache the PDF — auto-detects arXiv, ACL Anthology, bioRxiv/medRxiv |
+| `download_pdf` | Download and cache the PDF — auto-detects arXiv, ACL Anthology, bioRxiv/medRxiv. Streams chunks to disk (peak memory = 64 KiB) and aborts mid-stream if the response would exceed `MAX_PDF_BYTES` (default 200 MB). Re-downloading with `force_refresh=True` cascades: the cached markdown + section index are dropped automatically so the next `convert_paper` picks up the new bytes. |
 | `convert_paper` | Convert PDF to markdown, parse into sections (slow: tens of minutes; `PDF_CONVERT_TIMEOUT` caps it at 30 min by default). The server runs at most one conversion at a time across all callers — a second concurrent caller gets `{busy: True, retryable: True, in_progress: {...}}` immediately rather than queueing |
 | `get_paper_sections` | Section index with titles, sub-heading previews, token counts |
 | `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
+| `find_in_paper` | Substring (or whole-word) search inside one converted paper. Returns each hit's section + char offset + ~120-char snippet. Char offsets align with `get_paper_section`'s stripped text so you can chain straight to the surrounding context. |
 
 All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, fetch the PDF yourself and hand it to `import_paper` — see [Manual import](#manual-import) below.
 
@@ -215,7 +217,7 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 
 ```bash
 uv sync                          # Install dependencies
-uv run pytest -v                 # Run all tests (363 tests)
+uv run pytest -v                 # Run all tests (485 tests)
 uv run pytest tests/test_bibtex.py -v   # Run one test file
 uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ```
@@ -223,16 +225,19 @@ uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ## Architecture
 
 ```
-server.py (18 MCP tools; FastMCP lifespan closes pooled clients on shutdown)
+server.py (21 MCP tools; FastMCP lifespan closes pooled clients on shutdown)
   │
   ├── API clients          openalex.py, arxiv.py, biorxiv.py,
-  │                        crossref.py, opencitations.py, wikipedia.py
+  │                        crossref.py, opencitations.py, wikipedia.py,
+  │                        acl_anthology.py
   │
-  ├── PDF + content        acl_anthology.py (static PDF URLs)
-  │                        manual.py        (local-file import)
-  │                        papers.py        (PDF → markdown → sections;
-  │                                          global single-conversion lock)
-  │                        bibtex.py        (BibTeX generation)
+  ├── PDF + content        manual.py         (local-file import)
+  │                        papers.py         (PDF → markdown → sections;
+  │                                           global single-conversion lock;
+  │                                           in-paper find_in_markdown)
+  │                        cache_search.py   (BM25 over cached markdown)
+  │                        bibtex.py         (BibTeX generation)
+  │                        _pdf_download.py  (streaming download helper)
   │
   └── Shared infrastructure (every API client routes through these)
         _http.py           one-shot retry, structured errors, backpressure
@@ -245,10 +250,13 @@ server.py (18 MCP tools; FastMCP lifespan closes pooled clients on shutdown)
 
 - **Lean responses.** Tools return only what's needed — not the full API response. An agent calling `get_paper_authors` doesn't get flooded with unrelated metadata.
 - **One tool per job, auto-routed.** The four core paper tools (`get_paper_metadata`, `get_paper_authors`, `get_paper_abstract`, `get_paper_bibtex`) dispatch on identifier shape rather than forcing the agent to pick between arXiv/bioRxiv/OpenAlex families. Provider-native fields are preserved and tagged with `_source`.
+- **Batch where it matters.** `get_papers_metadata` collapses N parallel singletons into one HTTP call per 50 OpenAlex DOIs (`/works?filter=doi:...|...`) plus concurrent fan-out for arXiv / bioRxiv — designed for reference-graph enrichment.
 - **One API hit per entity.** All tools for a given DOI share one cached response. Concurrent same-key callers are coalesced by single-flight to one fetch.
+- **Per-provider concurrency.** Each provider has its own concurrency cap (arxiv=1 single-connection rule, openalex=4, crossref=3, etc.) — multiple GETs run in flight up to the cap while a brief gap-lock enforces inter-start spacing. Reference-graph traversals are dramatically faster than the previous serialise-everything model.
 - **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry that honours `Retry-After` (capped) before surfacing to the agent.
 - **Burst caps with structured backpressure.** Each provider refuses to stack more than 5 concurrent callers behind its rate-limit gap. The 6th gets `{error, retryable: True, backpressure: True}` immediately so the agent learns to slow down rather than waiting silently.
 - **Negative caching for definitive 404s.** Known-bad identifiers are cached for 24h so retries don't burn rate budget; transient errors are NOT cached.
+- **Streaming PDF downloads with size guard.** PDFs stream chunked to a temp file with atomic rename — peak memory = 64 KiB, not 2× the PDF — and abort mid-stream if `MAX_PDF_BYTES` (default 200 MB) is exceeded. Force-refresh cascades: re-downloading drops the cached markdown + sections so the next conversion picks up the new bytes.
 - **Single-conversion lock for PDFs.** At most one PDF→markdown subprocess runs at a time across the whole server; concurrent callers get a `busy` error with what's running and how long it's been going.
 - **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching. `get_paper_references(source="auto")` does the survey for you.
 - **Provider-aware routing.** Manual imports auto-detect identifier types and store in the correct provider's cache, preventing duplicates.

@@ -30,9 +30,12 @@ server.py (MCP tools, FastMCP lifespan)
   │
   ├── PDF + content modules
   │     manual.py           (local file import + identifier dispatchers)
-  │     papers.py           (PDF → markdown → sections, global convert lock)
+  │     papers.py           (PDF → markdown → sections, global convert lock,
+  │                          find_in_markdown for in-paper search)
   │     bibtex.py           (BibTeX generation)
   │     cache_search.py     (BM25 keyword search across cached markdown)
+  │     _pdf_download.py    (streaming download helper: chunked write,
+  │                          atomic rename, MAX_PDF_BYTES cap)
   │
   └── Shared infrastructure (every API client routes through these)
         _http.py            (retry helper, error normalization, backpressure error)
@@ -52,13 +55,17 @@ Per-module deep detail (atomic writes, throttle/backpressure semantics, single-f
 
 ## Cross-cutting design decisions
 
-- **Uniform robustness primitives across providers.** Every API client (arxiv, openalex, biorxiv, crossref, opencitations, wikipedia, acl_anthology) has the same shape: persistent `httpx.AsyncClient`, throttle gap + 5-deep burst cap (`LocalBackpressureError` past that), single-flight by canonical identifier, one transparent retry on transient failure honouring `Retry-After`, negative caching on definitive 404s (default 24h TTL; arxiv/biorxiv override to 1h because preprint identifiers go live mid-session), positive cache TTL eviction, `_stats` counters.
+- **Uniform robustness primitives across providers.** Every API client (arxiv, openalex, biorxiv, crossref, opencitations, wikipedia, acl_anthology) has the same shape: persistent `httpx.AsyncClient`, two-stage gating (`_request_sem` of size `_MAX_CONCURRENT` caps simultaneous in-flight requests, `_request_lock` briefly serialises the inter-start gap update), 5-deep burst cap (`LocalBackpressureError` past that), single-flight by canonical identifier, one transparent retry on transient failure honouring `Retry-After`, negative caching on definitive 404s (default 24h TTL; arxiv/biorxiv override to 1h because preprint identifiers go live mid-session), positive cache TTL eviction, `_stats` counters.
+- **Per-provider concurrency caps**, not a single global serial lock. `_MAX_CONCURRENT` per module: arxiv=1 (single-connection rule), openalex=4 and acl_anthology=4, crossref=3 (polite-pool concurrency budget), biorxiv/opencitations/wikipedia=2. Multiple GETs run in flight up to the cap; the gap-lock just enforces inter-start spacing. Reference-graph traversals are dramatically faster than the previous serialise-everything model. The PDF-downloading providers (arxiv, biorxiv, acl_anthology) expose a `_request_slot` async context manager so streaming downloads can hold the slot open for the lifetime of the stream — preventing fan-out from exceeding documented limits while slow streams flush.
+- **Streaming PDF downloads.** `_pdf_download.stream_to_file` writes chunks (64 KiB) to a sibling temp file and atomic-renames into place — peak memory stays at one chunk, not the whole PDF, and a crash mid-download cannot leave a half-written canonical file. The `MAX_PDF_BYTES` env var caps total bytes (default 200 MB; set to `none`/`off`/`disabled`/`0` to disable) so a misrouted URL can't fill the disk.
 - **One paper tool per job, not one per provider.** The four core paper tools (`get_paper_metadata` / `_authors` / `_abstract` / `_bibtex`) take any identifier and dispatch internally via `manual._resolve_metadata_source()`. Responses tag `_source` and `_canonical_id` so agents can branch on provider-specific fields and reuse the canonical form. Dispatch is by identifier shape, not by which provider has more data — `get_paper_metadata("2301.00001")` returns arXiv's native response even if the paper is also in OpenAlex. Agents wanting OpenAlex-specific data (topics, citations, venue) call dedicated OpenAlex-only tools with the paper's DOI.
+- **Batch metadata.** `get_papers_metadata(identifiers: list[str])` collapses N parallel singletons into ⌈N/50⌉ HTTP calls for OpenAlex DOIs (`/works?filter=doi:...|...`) plus concurrent fan-out for arXiv / bioRxiv. Designed for reference-graph enrichment where N is 30–200. Each batch hit warms the singleton cache so a follow-up `get_paper_metadata` is free.
 - **Tool responses are intentionally small.** Each tool fetches the full cached object then returns only the relevant slice — an LLM agent should not receive the full OpenAlex response.
 - **Single shared cache across tools.** All tools for a given DOI or arXiv ID share one cached API response. Multiple tool calls = one API hit. Concurrent same-key callers are coalesced by single-flight to one outbound fetch.
-- **`force_refresh=True`** on the four unified paper tools and the first three pipeline tools (`download_pdf`, `convert_paper`, `get_paper_sections`) drops cache entries via `cache.invalidate(...)` and re-fetches/re-runs. Stage-specific semantics for the pipeline tools — see `.claude/rules/server.md`.
+- **`force_refresh=True`** on the four unified paper tools and the first three pipeline tools (`download_pdf`, `convert_paper`, `get_paper_sections`) drops cache entries via `cache.invalidate(...)` and re-fetches/re-runs. Stage-specific semantics for the pipeline tools — see `.claude/rules/server.md`. **`download_pdf(force_refresh=True)` cascades**: when the PDF is actually re-downloaded (`cached=False`), the cached markdown + section index for that paper are dropped automatically so the next `convert_paper` picks up the new bytes.
 - **Manual import is deduplicated by provider routing.** `import_paper(file, identifier)` detects identifier type and stores under the matching provider's namespace, so a subsequent `download_pdf(identifier)` finds the cached PDF — no duplicate downloads or conversions.
 - **bioRxiv → journal chaining.** `get_paper_metadata(biorxiv_doi, follow_published=True)` auto-chains to OpenAlex when `published_doi` is set; falls back to the preprint record if OpenAlex misses.
+- **In-paper search.** `find_in_paper(identifier, query)` scans a converted paper's markdown for substring (or whole-word) matches and returns `[{section, section_index, char_offset, snippet}, ...]`. Char offsets align with `get_paper_section`'s stripped section text so an agent can chain straight to the surrounding context. Pairs with `search_cached_papers` (BM25 across the corpus): "which paper mentioned X?" + "where in the paper does it say X?".
 
 ## Cache TTLs
 

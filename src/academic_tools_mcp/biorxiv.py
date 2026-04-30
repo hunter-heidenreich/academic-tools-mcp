@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import re
 import time
 from pathlib import Path
@@ -6,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from . import _clients, _http, _singleflight, _stats, cache
+from . import _clients, _http, _pdf_download, _singleflight, _stats, cache
 
 NAMESPACE = "biorxiv"
 _BASE_URL = "https://api.biorxiv.org"
@@ -15,6 +16,10 @@ _BASE_URL = "https://api.biorxiv.org"
 _DOI_PREFIX = "10.1101/"
 
 # Rate limiting: no documented limit, but be polite (~2 req/sec).
+# Concurrency cap of 2 allows a metadata + PDF-URL chase to run in
+# parallel without hammering the (unmonitored) API.
+_MAX_CONCURRENT = 2
+_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
 _request_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.5
@@ -41,14 +46,13 @@ _NEG_TTL_SECONDS = 3600.0
 _POSITIVE_TTL_SECONDS = 7 * 86400.0
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
-    """Execute a GET request with polite rate limiting.
+@contextlib.asynccontextmanager
+async def _request_slot(url: str):
+    """Acquire bioRxiv's rate-limit slot for the lifetime of the with block.
 
-    Refuses past ``_MAX_PENDING`` queued callers via
-    ``LocalBackpressureError`` so an agent that fans out gets fast
-    feedback rather than waiting half a second per slot.
+    See ``arxiv._request_slot`` for the two-stage gating shape; same
+    pattern here so streaming PDF downloads can hold the slot open
+    while bytes flow.
     """
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
@@ -58,25 +62,40 @@ async def _throttled_get(
         )
     _pending += 1
     try:
-        async with _request_lock:
-            now = time.monotonic()
-            elapsed = now - _last_request_time
-            wait_seconds = 0.0
-            if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                wait_seconds = _MIN_REQUEST_GAP - elapsed
-                await asyncio.sleep(wait_seconds)
+        async with _request_sem:
+            async with _request_lock:
+                now = time.monotonic()
+                elapsed = now - _last_request_time
+                wait_seconds = 0.0
+                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
+                    wait_seconds = _MIN_REQUEST_GAP - elapsed
+                    await asyncio.sleep(wait_seconds)
+                _last_request_time = time.monotonic()
             _stats.log_request(NAMESPACE, url, wait_seconds)
             _stats.incr(NAMESPACE, "http_calls")
-            response = await _http.get_with_retry(
-                client, url,
-                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
-                provider=NAMESPACE,
-                **kwargs,
-            )
-            _last_request_time = time.monotonic()
-            return response
+            yield
     finally:
         _pending -= 1
+
+
+async def _throttled_get(
+    client: httpx.AsyncClient, url: str, **kwargs: Any
+) -> httpx.Response:
+    """Execute a GET request with polite rate limiting.
+
+    Thin wrapper over ``_request_slot`` — the slot does the gating, this
+    just fires the GET (with one transparent retry) inside it. Refuses
+    past ``_MAX_PENDING`` queued callers via ``LocalBackpressureError``
+    so an agent that fans out gets fast feedback rather than waiting
+    half a second per slot.
+    """
+    async with _request_slot(url):
+        return await _http.get_with_retry(
+            client, url,
+            backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+            provider=NAMESPACE,
+            **kwargs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +308,11 @@ async def download_pdf(
     when you suspect the cached file is corrupt or the preprint server
     replaced the PDF with a newer version under the same DOI.
 
+    Streams the response to a temp file in chunks (peak memory = one
+    chunk, not the whole PDF) and renames into place atomically. The
+    download aborts mid-stream if it would exceed ``MAX_PDF_BYTES`` so a
+    misrouted URL can't fill the disk.
+
     Returns a dict with the file path and size, or an error.
     """
     canonical = _canonical_key(doi)
@@ -313,23 +337,13 @@ async def download_pdf(
     if not pdf_url:
         return {"error": f"No PDF URL found for DOI: {doi}"}
 
-    try:
-        # Per-call timeout overrides the default for this larger payload.
-        client = _clients.get_client(NAMESPACE, timeout=30.0)
-        response = await _throttled_get(client, pdf_url, timeout=60.0)
-
-        if response.status_code == 404:
-            return {"error": f"PDF not found for DOI: {doi}"}
-
-        response.raise_for_status()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("bioRxiv", e)
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(response.content)
-
-    return {
-        "path": str(dest),
-        "size_bytes": len(response.content),
-        "cached": False,
-    }
+    client = _clients.get_client(NAMESPACE, timeout=30.0)
+    return await _pdf_download.stream_to_file(
+        client,
+        pdf_url,
+        dest,
+        slot_factory=lambda: _request_slot(pdf_url),
+        provider_label="bioRxiv",
+        timeout=60.0,
+        not_found_message=f"PDF not found for DOI: {doi}",
+    )

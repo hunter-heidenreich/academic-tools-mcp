@@ -273,6 +273,84 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
     return sections
 
 
+# Snippet window around an in-paper match. ~60 chars on each side gives
+# the agent enough context to recognise relevance without overflowing.
+_FIND_SNIPPET_WINDOW = 60
+
+
+def find_in_markdown(
+    markdown: str,
+    query: str,
+    *,
+    max_results: int = 20,
+    case_sensitive: bool = False,
+    whole_words: bool = False,
+) -> list[dict[str, Any]]:
+    """Scan markdown for occurrences of ``query`` and return per-hit context.
+
+    Each hit carries the section title, section index (matching what
+    ``get_paper_section`` exposes), the character offset within that
+    section's stripped text (so an agent can call
+    ``get_paper_section(identifier, section_index, offset=char_offset)``
+    to land at the match), and a ~120-char snippet centred on the match.
+
+    ``whole_words=True`` wraps the query in ``\\b…\\b`` so "set" doesn't
+    match "subset". ``case_sensitive=False`` is the default — academic
+    prose capitalisation is unreliable.
+
+    Hit offsets align with ``get_paper_section``'s stripped section text
+    because both apply the same ``"\\n".join(lines[s:e]).strip()`` recipe.
+    """
+    if not query:
+        return []
+
+    lines = markdown.split("\n")
+    boundaries: list[tuple[str, int, int]] = []
+    current_title = "Preamble"
+    current_start = 0
+    for i, line in enumerate(lines):
+        m = _HEADING_RE.match(line)
+        if m and len(m.group(1)) in _SECTION_LEVELS:
+            boundaries.append((current_title, current_start, i))
+            current_title = m.group(2).strip()
+            current_start = i + 1
+    boundaries.append((current_title, current_start, len(lines)))
+    # Drop empty sections so the indexing matches get_section_content.
+    boundaries = [
+        (t, s, e) for t, s, e in boundaries
+        if "\n".join(lines[s:e]).strip()
+    ]
+
+    pattern = re.escape(query)
+    if whole_words:
+        pattern = rf"\b{pattern}\b"
+    flags = 0 if case_sensitive else re.IGNORECASE
+    regex = re.compile(pattern, flags)
+
+    hits: list[dict[str, Any]] = []
+    for section_index, (title, start, end) in enumerate(boundaries):
+        # Same recipe as get_section_content so offsets align.
+        section_text = "\n".join(lines[start:end]).strip()
+        for match in regex.finditer(section_text):
+            if len(hits) >= max_results:
+                return hits
+            pos = match.start()
+            matched = match.group()
+            ws = max(0, pos - _FIND_SNIPPET_WINDOW)
+            we = min(len(section_text), pos + len(matched) + _FIND_SNIPPET_WINDOW)
+            # Collapse newlines so the snippet renders on one line in
+            # the agent's view; the surrounding context stays readable.
+            snippet = section_text[ws:we].replace("\n", " ").strip()
+            hits.append({
+                "section_index": section_index,
+                "section": title,
+                "char_offset": pos,
+                "match": matched,
+                "snippet": snippet,
+            })
+    return hits
+
+
 def get_section_content(
     markdown: str,
     section: int | str,

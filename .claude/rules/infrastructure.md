@@ -5,6 +5,7 @@ paths:
   - "src/academic_tools_mcp/_clients.py"
   - "src/academic_tools_mcp/_singleflight.py"
   - "src/academic_tools_mcp/_stats.py"
+  - "src/academic_tools_mcp/_pdf_download.py"
   - "src/academic_tools_mcp/config.py"
 ---
 
@@ -57,6 +58,20 @@ When adding a new provider: append the module name to `_PROVIDER_MODULES` so its
 
 Loads `.env` from project root. All API credentials come from env vars, never from tool parameters.
 
-## Burst cap (uniform across providers)
+## Throttle shape (uniform across providers)
 
-Every provider's `_throttled_get` enforces a 5-deep burst cap behind its rate-limit gap. The 6th concurrent caller raises `LocalBackpressureError` (caught by the existing `try/except _http.HTTPX_ERRORS` and surfaced as `{error, retryable: True, backpressure: True}`) instead of silently queueing. `_MAX_PENDING = 5` is a per-module constant — bump it per-provider if needed.
+Every provider's `_throttled_get` (and, in the PDF-downloading providers, `_request_slot` async context manager) enforces three layers in this order:
+
+1. **Burst cap** — `_pending >= _MAX_PENDING` (default 5) raises `LocalBackpressureError` immediately, before any sem/lock acquisition. The 6th concurrent caller fails fast instead of silently queueing.
+2. **Concurrency cap** — `_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)` caps simultaneous in-flight requests. Per-provider values: arxiv=1 (single-connection rule), openalex=4, acl_anthology=4, crossref=3 (polite-pool concurrency budget), biorxiv=2, opencitations=2, wikipedia=2.
+3. **Inter-start gap** — `_request_lock` is held only briefly to enforce `_MIN_REQUEST_GAP` between request *starts* (not durations). Released before the actual GET so concurrent in-flight requests don't block each other.
+
+`_request_slot` exposes the gating as a context manager so streaming PDF downloads can hold the slot for the whole stream lifetime — open connections counting toward `_MAX_CONCURRENT` is the correct semantics, since releasing earlier would let a fan-out exceed documented limits while slow streams flush. `_throttled_get` becomes a thin wrapper that fires `_http.get_with_retry` inside the slot.
+
+## _pdf_download.py
+
+Shared streaming-download helper used by `arxiv.download_pdf`, `biorxiv.download_pdf`, and `acl_anthology.download_pdf`. The slot acquisition is per-provider (different gap / concurrency caps), but the streaming + size-capping + atomic-rename logic is identical and lives here.
+
+- **`stream_to_file(client, url, dest, *, slot_factory, provider_label, timeout=60.0, not_found_message=None)`** — opens `client.stream("GET", ...)` inside the provider's slot, writes 64 KiB chunks to a sibling `.tmp` file via `mkstemp`, and `os.replace`s into place on success. Peak memory = one chunk, not the whole PDF (the previous `response.content` + `write_bytes` path peaked at 2× PDF size).
+- **MAX_PDF_BYTES cap** — `resolve_max_pdf_bytes()` reads `MAX_PDF_BYTES` env var (default 200_000_000; `none`/`off`/`disabled`/`0` disables). A download that would exceed the cap is aborted mid-stream with `{error, retryable: False, max_bytes}`; the partial temp is unlinked, dest is never created. Fires *during* the download so a misrouted URL can't fill the disk before any size check.
+- **Cleanup** — every non-success path (404, transport error, size cap, exception) unlinks the temp file. The fd is closed manually if we never reached `os.fdopen` (early-return before the write loop). Success paths leave `tmp_path.unlink()` as a no-op because `os.replace` already moved the file.

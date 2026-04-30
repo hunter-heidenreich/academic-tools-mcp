@@ -41,19 +41,28 @@ mcp = FastMCP(
         "get_paper_abstract / get_paper_bibtex) take an arXiv ID or any DOI "
         "and route to the right provider; every response tags `_source` for "
         "provider-specific fields. get_paper_authors paginates (cap "
-        "page_size=25) for huge collaboration lists.\n\n"
+        "page_size=25) for huge collaboration lists. For 30+ identifiers "
+        "at once (e.g. enriching a reference list), use get_papers_metadata "
+        "— OpenAlex DOIs collapse into batched HTTP calls and arXiv / "
+        "bioRxiv fetch concurrently.\n\n"
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
-        "get_paper_section. All auto-detect the provider. For PDFs outside "
-        "arXiv/bioRxiv/ACL, fetch the file yourself and hand it to "
-        "import_paper. import_paper also accepts pre-converted .md/.markdown "
-        "files — these skip convert_paper entirely (useful when the converter "
-        "is unavailable or when you have a higher-quality manual conversion). "
-        "get_paper_section pages by character offset (re-call with "
-        "offset=next_offset) for long sections.\n\n"
+        "get_paper_section. All auto-detect the provider. find_in_paper "
+        "scans a converted paper for a substring and returns section + "
+        "char_offset for every hit (chain into get_paper_section to read "
+        "context). For PDFs outside arXiv/bioRxiv/ACL, fetch the file "
+        "yourself and hand it to import_paper. import_paper also accepts "
+        "pre-converted .md/.markdown files — these skip convert_paper "
+        "entirely (useful when the converter is unavailable or when you "
+        "have a higher-quality manual conversion). get_paper_section pages "
+        "by character offset (re-call with offset=next_offset) for long "
+        "sections. download_pdf with force_refresh=True automatically "
+        "drops cached markdown + sections so the next convert_paper "
+        "picks up the new bytes.\n\n"
         "References/citations use count-then-page (`_count` first, then "
         "paginate). Search tools (search_arxiv, search_crossref_by_title) "
         "return slim triage hits — chain to get_paper_metadata for the full "
-        "record (free cache hit).\n\n"
+        "record (free cache hit). search_cached_papers does BM25 across "
+        "every converted paper in your local cache.\n\n"
         "All tools return {error, suggestion?} on failure; transient errors "
         "(5xx, 429, timeouts) include retry hints."
     ),
@@ -262,6 +271,81 @@ SECTIONS_FORCE_REFRESH = Annotated[
 ]
 
 
+# ---------------------------------------------------------------------------
+# Metadata formatters — shared between get_paper_metadata (single) and
+# get_papers_metadata (batch). One function per source so each branch can
+# evolve independently without rewriting the dispatch code.
+# ---------------------------------------------------------------------------
+
+
+_ARXIV_METADATA_HINT = "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv."
+_BIORXIV_METADATA_HINT = "Check the DOI format (10.1101/...) or use search_crossref_by_title."
+_OPENALEX_METADATA_HINT = "Check the DOI format or use search_crossref_by_title to find the correct DOI."
+
+
+def _format_arxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
+    return {
+        "_source": "arxiv",
+        "_canonical_id": canonical_id,
+        "arxiv_id": _arxiv_id_from_entry(paper),
+        "title": paper.get("title"),
+        "published": paper.get("published"),
+        "updated": paper.get("updated"),
+        "primary_category": paper.get("primary_category"),
+        "categories": paper.get("categories"),
+        "pdf_url": _arxiv_pdf_url(paper),
+        "doi": paper.get("doi"),
+        "journal_ref": paper.get("journal_ref"),
+        "comment": paper.get("comment"),
+    }
+
+
+def _format_biorxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
+    return {
+        "_source": "biorxiv",
+        "_canonical_id": canonical_id,
+        "doi": paper.get("doi"),
+        "title": paper.get("title"),
+        "date": paper.get("date"),
+        "version": paper.get("version"),
+        "type": paper.get("type"),
+        "category": paper.get("category"),
+        "license": paper.get("license"),
+        "server": paper.get("server"),
+        "published_doi": paper.get("published_doi"),
+        "pdf_url": paper.get("pdf_url"),
+    }
+
+
+def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
+    primary_location = work.get("primary_location") or {}
+    source_obj = primary_location.get("source") or {}
+    oa = work.get("open_access") or {}
+    return {
+        "_source": "openalex",
+        "_canonical_id": canonical_id,
+        "title": work.get("title"),
+        "doi": work.get("doi"),
+        "publication_year": work.get("publication_year"),
+        "publication_date": work.get("publication_date"),
+        "type": work.get("type"),
+        "language": work.get("language"),
+        "venue": source_obj.get("display_name"),
+        "is_oa": oa.get("is_oa"),
+        "oa_status": oa.get("oa_status"),
+        "oa_url": oa.get("oa_url"),
+    }
+
+
+def _format_openalex_via_biorxiv(
+    work: dict[str, Any], preprint_doi: str | None, journal_canonical: str
+) -> dict[str, Any]:
+    base = _format_openalex_metadata(work, journal_canonical)
+    base["_source"] = "openalex_via_biorxiv"
+    base["preprint_doi"] = preprint_doi
+    return base
+
+
 @mcp.tool
 async def get_paper_metadata(
     identifier: PAPER_ID,
@@ -289,6 +373,10 @@ async def get_paper_metadata(
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     Sibling tools (get_paper_authors / get_paper_abstract / get_paper_bibtex)
     share the same dispatch and cached upstream object.
+
+    For many identifiers at once, use get_papers_metadata — it batches
+    OpenAlex DOIs into one HTTP call and fans out arXiv / bioRxiv
+    fetches concurrently.
     """
     source = manual._resolve_metadata_source(identifier)
     canonical_id = _canonical_for_source(source, identifier)
@@ -296,26 +384,13 @@ async def get_paper_metadata(
     if source == "arxiv":
         paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
-        return {
-            "_source": "arxiv",
-            "_canonical_id": canonical_id,
-            "arxiv_id": _arxiv_id_from_entry(paper),
-            "title": paper.get("title"),
-            "published": paper.get("published"),
-            "updated": paper.get("updated"),
-            "primary_category": paper.get("primary_category"),
-            "categories": paper.get("categories"),
-            "pdf_url": _arxiv_pdf_url(paper),
-            "doi": paper.get("doi"),
-            "journal_ref": paper.get("journal_ref"),
-            "comment": paper.get("comment"),
-        }
+            return _enrich_error(paper, _ARXIV_METADATA_HINT)
+        return _format_arxiv_metadata(paper, canonical_id)
 
     if source == "biorxiv":
         paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+            return _enrich_error(paper, _BIORXIV_METADATA_HINT)
         published_doi = paper.get("published_doi")
         if follow_published and published_doi:
             # Chain to OpenAlex for the journal version. If OpenAlex
@@ -325,67 +400,139 @@ async def get_paper_metadata(
             # journal record".
             work = await openalex.get_work(published_doi, force_refresh=force_refresh)
             if "error" not in work:
-                primary_location = work.get("primary_location") or {}
-                source_obj = primary_location.get("source") or {}
-                oa = work.get("open_access") or {}
-                return {
-                    "_source": "openalex_via_biorxiv",
-                    # _canonical_id is the journal DOI (the paper the
-                    # response now describes); preprint_doi keeps the
-                    # original chain visible.
-                    "_canonical_id": openalex._canonical_doi(published_doi),
-                    "preprint_doi": paper.get("doi"),
-                    "title": work.get("title"),
-                    "doi": work.get("doi"),
-                    "publication_year": work.get("publication_year"),
-                    "publication_date": work.get("publication_date"),
-                    "type": work.get("type"),
-                    "language": work.get("language"),
-                    "venue": source_obj.get("display_name"),
-                    "is_oa": oa.get("is_oa"),
-                    "oa_status": oa.get("oa_status"),
-                    "oa_url": oa.get("oa_url"),
-                }
+                return _format_openalex_via_biorxiv(
+                    work,
+                    paper.get("doi"),
+                    openalex._canonical_doi(published_doi),
+                )
             # Fall through to preprint metadata; the agent can still
             # see published_doi in the response and decide what to do.
-        return {
-            "_source": "biorxiv",
-            "_canonical_id": canonical_id,
-            "doi": paper.get("doi"),
-            "title": paper.get("title"),
-            "date": paper.get("date"),
-            "version": paper.get("version"),
-            "type": paper.get("type"),
-            "category": paper.get("category"),
-            "license": paper.get("license"),
-            "server": paper.get("server"),
-            "published_doi": published_doi,
-            "pdf_url": paper.get("pdf_url"),
-        }
+        return _format_biorxiv_metadata(paper, canonical_id)
 
     if source == "openalex":
         work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
-            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
-        primary_location = work.get("primary_location") or {}
-        source_obj = primary_location.get("source") or {}
-        oa = work.get("open_access") or {}
-        return {
-            "_source": "openalex",
-            "_canonical_id": canonical_id,
-            "title": work.get("title"),
-            "doi": work.get("doi"),
-            "publication_year": work.get("publication_year"),
-            "publication_date": work.get("publication_date"),
-            "type": work.get("type"),
-            "language": work.get("language"),
-            "venue": source_obj.get("display_name"),
-            "is_oa": oa.get("is_oa"),
-            "oa_status": oa.get("oa_status"),
-            "oa_url": oa.get("oa_url"),
-        }
+            return _enrich_error(work, _OPENALEX_METADATA_HINT)
+        return _format_openalex_metadata(work, canonical_id)
 
     return _unknown_identifier_error(identifier)
+
+
+@mcp.tool
+async def get_papers_metadata(
+    identifiers: Annotated[
+        list[str],
+        Field(
+            description=(
+                "List of paper identifiers (arXiv IDs and/or DOIs). Mixed "
+                "sources are fine; each is dispatched to the right "
+                "provider. Cap 100 per call to keep responses bounded — "
+                "for larger sets, page through in batches."
+            ),
+            min_length=1,
+            max_length=100,
+        ),
+    ],
+    force_refresh: FORCE_REFRESH = False,
+) -> dict[str, Any]:
+    """Batch metadata fetch — same payload as get_paper_metadata, in bulk.
+
+    Optimised for reference-graph traversal where an agent has 30–200
+    DOIs from get_paper_references and wants metadata for all of them.
+    OpenAlex DOIs are fanned into one ``/works?filter=doi:...|...`` call
+    per 50 (vs. one HTTP call per DOI); arXiv and bioRxiv identifiers
+    are fetched concurrently up to each provider's concurrency cap.
+    Cached entries (positive or negative) are served without an HTTP
+    call. Each successfully-fetched paper warms the singleton cache so
+    a follow-up get_paper_metadata / get_paper_authors call is free.
+
+    Does NOT support follow_published — chain bioRxiv-to-journal
+    explicitly via per-paper get_paper_metadata calls.
+
+    Returns ``{count, papers: [...]}`` where each entry is the same
+    shape ``get_paper_metadata`` would return for that identifier (with
+    an added ``_input`` field carrying the original input string so an
+    agent can correlate input → output without re-resolving). Order
+    matches the input list. Per-paper failures appear as
+    ``{_input, error, suggestion?}`` entries; one failure does not
+    affect the others.
+    """
+    n = len(identifiers)
+    results: list[dict[str, Any] | None] = [None] * n
+
+    arxiv_tasks: list[asyncio.Task] = []
+    biorxiv_tasks: list[asyncio.Task] = []
+    openalex_indices: list[tuple[int, str]] = []  # (slot, original input)
+
+    async def _arxiv_one(slot: int, ident: str) -> None:
+        canonical = arxiv._canonical_arxiv_id(ident)
+        paper = await arxiv.get_paper(ident, force_refresh=force_refresh)
+        if "error" in paper:
+            results[slot] = {
+                "_input": ident,
+                **_enrich_error(paper, _ARXIV_METADATA_HINT),
+            }
+            return
+        formatted = _format_arxiv_metadata(paper, canonical)
+        formatted["_input"] = ident
+        results[slot] = formatted
+
+    async def _biorxiv_one(slot: int, ident: str) -> None:
+        canonical = biorxiv._canonical_key(ident)
+        paper = await biorxiv.get_paper(ident, force_refresh=force_refresh)
+        if "error" in paper:
+            results[slot] = {
+                "_input": ident,
+                **_enrich_error(paper, _BIORXIV_METADATA_HINT),
+            }
+            return
+        formatted = _format_biorxiv_metadata(paper, canonical)
+        formatted["_input"] = ident
+        results[slot] = formatted
+
+    for i, ident in enumerate(identifiers):
+        source = manual._resolve_metadata_source(ident)
+        if source == "arxiv":
+            arxiv_tasks.append(asyncio.create_task(_arxiv_one(i, ident)))
+        elif source == "biorxiv":
+            biorxiv_tasks.append(asyncio.create_task(_biorxiv_one(i, ident)))
+        elif source == "openalex":
+            openalex_indices.append((i, ident))
+        else:
+            results[i] = {"_input": ident, **_unknown_identifier_error(ident)}
+
+    async def _openalex_batch() -> None:
+        if not openalex_indices:
+            return
+        batch = await openalex.get_works_batch(
+            [d for _, d in openalex_indices], force_refresh=force_refresh
+        )
+        for slot, ident in openalex_indices:
+            canonical = openalex._canonical_doi(ident)
+            work = batch.get(canonical)
+            if work is None or "error" in work:
+                err = work or {"error": f"No work found for DOI: {ident}"}
+                results[slot] = {
+                    "_input": ident,
+                    **_enrich_error(dict(err), _OPENALEX_METADATA_HINT),
+                }
+                continue
+            formatted = _format_openalex_metadata(work, canonical)
+            formatted["_input"] = ident
+            results[slot] = formatted
+
+    await asyncio.gather(*arxiv_tasks, *biorxiv_tasks, _openalex_batch())
+
+    # Defensive: every slot should be filled. Anything still None is a
+    # bug — surface as an error rather than crashing the caller.
+    for i, r in enumerate(results):
+        if r is None:
+            results[i] = {
+                "_input": identifiers[i],
+                "error": "Internal: no result produced for this identifier.",
+            }
+
+    return {"count": n, "papers": results}
 
 
 AUTHORS_PAGE = Annotated[
@@ -750,16 +897,25 @@ async def search_arxiv(
 async def _download_pdf_by_provider(
     identifier: str, *, force_refresh: bool = False
 ) -> dict[str, Any]:
-    """Dispatch PDF download to the correct provider based on identifier type."""
+    """Dispatch PDF download to the correct provider based on identifier type.
+
+    When ``force_refresh=True`` causes a real re-download (``cached``
+    comes back ``False``), the cached markdown + section index for this
+    paper become stale relative to the new bytes on disk. Drop them
+    here so the next ``convert_paper`` picks up the replacement file
+    instead of returning previously-converted text — without this
+    cascade an agent that re-downloads has to remember to also
+    ``convert_paper(force_refresh=True)`` or quietly read stale text.
+    """
     target = manual._resolve_target(identifier)
     ns = target["namespace"]
 
     if ns == "arxiv":
-        return await arxiv.download_pdf(identifier, force_refresh=force_refresh)
+        result = await arxiv.download_pdf(identifier, force_refresh=force_refresh)
     elif ns == "acl_anthology":
-        return await acl_anthology.download_pdf(identifier, force_refresh=force_refresh)
+        result = await acl_anthology.download_pdf(identifier, force_refresh=force_refresh)
     elif ns == "biorxiv":
-        return await biorxiv.download_pdf(identifier, force_refresh=force_refresh)
+        result = await biorxiv.download_pdf(identifier, force_refresh=force_refresh)
     else:
         return {
             "error": (
@@ -777,6 +933,24 @@ async def _download_pdf_by_provider(
                 "files, which skip the convert_paper step entirely."
             ),
         }
+
+    if (
+        force_refresh
+        and "error" not in result
+        and result.get("cached") is False
+    ):
+        canonical = target["canonical"]
+        md_path = papers._markdown_path(ns, canonical)
+        try:
+            md_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        cache.invalidate(ns, "sections", papers._sections_key(canonical))
+        result["cascaded_invalidated"] = ["markdown", "sections"]
+
+    return result
 
 
 @mcp.tool
@@ -1377,6 +1551,107 @@ async def get_paper_citations(
         "page_size": page_size,
         "has_more": end < total,
         "citations": cites[start:end],
+    }
+
+
+# ---------------------------------------------------------------------------
+# In-paper search — find query occurrences within a single converted paper
+# ---------------------------------------------------------------------------
+
+
+_FIND_MAX_RESULTS = Annotated[
+    int,
+    Field(
+        description=(
+            "Maximum number of hits to return (1-100, default 20). "
+            "Hits are ordered by document position; if the query matches "
+            "more than this many times the trailing matches are dropped."
+        ),
+        ge=1,
+        le=100,
+    ),
+]
+
+
+@mcp.tool
+async def find_in_paper(
+    identifier: PAPER_ID,
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "Substring (or regex with whole_words=True) to find. "
+                "Plain literal text — special regex characters are "
+                "escaped automatically."
+            ),
+            min_length=1,
+        ),
+    ],
+    max_results: _FIND_MAX_RESULTS = 20,
+    case_sensitive: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, match the query case-sensitively. Default "
+                "False — academic prose capitalisation is unreliable."
+            ),
+        ),
+    ] = False,
+    whole_words: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, wrap the query in word boundaries so 'set' "
+                "won't match 'subset'. Default False (substring match)."
+            ),
+        ),
+    ] = False,
+) -> dict[str, Any]:
+    """Find every occurrence of a query inside one converted paper.
+
+    Use this when you want to jump straight to the part of a paper that
+    discusses X, instead of paging through every section with
+    get_paper_section. Pairs well with the BM25 corpus search
+    (search_cached_papers) — that one tells you which paper mentions X,
+    this one tells you where in the paper.
+
+    Returns ``{query, paper_identifier, result_count, results: [...]}``
+    where each hit has ``{section_index, section, char_offset, match,
+    snippet}``. Chain into get_paper_section(identifier, section_index,
+    offset=char_offset) to read the surrounding context — offsets are
+    aligned with that tool's stripped section text.
+
+    Errors: paper not converted yet → ``{error}`` with guidance to run
+    convert_paper. No matches → ``{result_count: 0, results: []}`` (an
+    empty result is not an error).
+    """
+    target = manual._resolve_target(identifier)
+    md_path = papers._markdown_path(target["namespace"], target["canonical"])
+
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet for: {identifier}. "
+            "Pipeline: download_pdf → convert_paper → find_in_paper / "
+            "get_paper_sections / get_paper_section."
+        }
+
+    markdown = md_path.read_text()
+
+    # Wrap the synchronous regex pass in to_thread so a paper with
+    # thousands of matches doesn't pin the event loop.
+    hits = await asyncio.to_thread(
+        papers.find_in_markdown,
+        markdown,
+        query,
+        max_results=max_results,
+        case_sensitive=case_sensitive,
+        whole_words=whole_words,
+    )
+    return {
+        "query": query,
+        "paper_identifier": identifier,
+        "result_count": len(hits),
+        "results": hits,
     }
 
 

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -8,7 +9,7 @@ import httpx
 
 from pathlib import Path
 
-from . import _clients, _http, _singleflight, _stats, cache
+from . import _clients, _http, _pdf_download, _singleflight, _stats, cache
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 NAMESPACE = "arxiv"
@@ -19,6 +20,12 @@ _ARXIV_NS = "http://arxiv.org/schemas/atom"
 _OPENSEARCH_NS = "http://a9.com/-/spec/opensearch/1.1/"
 
 # Rate limiting: max 1 request per 3 seconds, single connection.
+# arXiv's documented "single connection" rule means concurrency=1; the
+# semaphore enforces that, the gap-lock briefly serialises the gap
+# update + start-time record, and the actual GET runs while only the
+# semaphore is held.
+_MAX_CONCURRENT = 1
+_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
 _request_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 3.0
@@ -47,16 +54,27 @@ _NEG_TTL_SECONDS = 3600.0
 _POSITIVE_TTL_SECONDS = 14 * 86400.0
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
-    """Execute a GET request respecting arXiv's rate limit.
+@contextlib.asynccontextmanager
+async def _request_slot(url: str):
+    """Acquire arXiv's rate-limit slot for the lifetime of the with block.
 
-    Enforces: max 1 concurrent request, minimum 3-second gap between
-    requests, and a burst cap of ``_MAX_PENDING`` queued callers. The
-    burst cap raises ``LocalBackpressureError`` rather than queueing
-    indefinitely, so an agent that fans out 10 calls in microseconds
-    gets fast feedback on the 6th.
+    Two-stage gating:
+      1. ``_request_sem`` (size ``_MAX_CONCURRENT``) caps simultaneous
+         in-flight requests to honour arXiv's "single connection" rule.
+      2. ``_request_lock`` is held only briefly to serialise the gap
+         sleep + ``_last_request_time`` update; the actual GET runs
+         outside the lock so that on providers with concurrency > 1
+         multiple requests can be in flight at once. For arXiv (cap=1)
+         the sem already gives strict serialisation, but the same shape
+         is used everywhere so behaviour is uniform.
+
+    Burst cap raises ``LocalBackpressureError`` past ``_MAX_PENDING``
+    queued callers so an agent that fans out 10 calls in microseconds
+    gets fast feedback on the 6th instead of stacking forever.
+
+    Used by both ``_throttled_get`` and the streaming PDF download —
+    the latter needs the slot held for the whole stream lifetime, not
+    just one fire-and-return GET.
     """
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
@@ -66,27 +84,39 @@ async def _throttled_get(
         )
     _pending += 1
     try:
-        async with _request_lock:
-            now = time.monotonic()
-            elapsed = now - _last_request_time
-            wait_seconds = 0.0
-            if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                wait_seconds = _MIN_REQUEST_GAP - elapsed
-                await asyncio.sleep(wait_seconds)
+        async with _request_sem:
+            async with _request_lock:
+                now = time.monotonic()
+                elapsed = now - _last_request_time
+                wait_seconds = 0.0
+                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
+                    wait_seconds = _MIN_REQUEST_GAP - elapsed
+                    await asyncio.sleep(wait_seconds)
+                _last_request_time = time.monotonic()
             _stats.log_request(NAMESPACE, url, wait_seconds)
             _stats.incr(NAMESPACE, "http_calls")
-            response = await _http.get_with_retry(
-                client, url,
-                # arXiv's 3s gap must apply to the retry too — a 1s
-                # retry would violate their "1 req per 3s" policy.
-                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
-                provider=NAMESPACE,
-                **kwargs,
-            )
-            _last_request_time = time.monotonic()
-            return response
+            yield
     finally:
         _pending -= 1
+
+
+async def _throttled_get(
+    client: httpx.AsyncClient, url: str, **kwargs: Any
+) -> httpx.Response:
+    """Execute a GET request respecting arXiv's rate limit.
+
+    Thin wrapper over ``_request_slot`` — the slot does the gating, this
+    just fires the GET (with one transparent retry) inside it.
+    """
+    async with _request_slot(url):
+        return await _http.get_with_retry(
+            client, url,
+            # arXiv's 3s gap must apply to the retry too — a 1s
+            # retry would violate their "1 req per 3s" policy.
+            backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+            provider=NAMESPACE,
+            **kwargs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +380,11 @@ async def download_pdf(
     when you suspect the cached file is corrupt or arXiv replaced the
     PDF (a v2 upload that landed under the same canonical key).
 
+    Streams the response to a temp file in chunks (peak memory = one
+    chunk, not the whole PDF) and renames into place atomically. The
+    download aborts mid-stream if it would exceed ``MAX_PDF_BYTES`` so a
+    misrouted URL can't fill the disk.
+
     Returns a dict with the file path and size, or an error.
     """
     canonical = _canonical_arxiv_id(arxiv_id)
@@ -379,21 +414,13 @@ async def download_pdf(
     if not pdf_url:
         return {"error": f"No PDF link found for arXiv ID: {arxiv_id}"}
 
-    try:
-        # Pool client: the per-call timeout overrides the client default
-        # because PDF downloads can be much larger than metadata calls.
-        client = _clients.get_client(NAMESPACE, timeout=30.0)
-        response = await _throttled_get(client, pdf_url, timeout=60.0)
-
-        response.raise_for_status()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("arXiv", e)
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(response.content)
-
-    return {
-        "path": str(dest),
-        "size_bytes": len(response.content),
-        "cached": False,
-    }
+    client = _clients.get_client(NAMESPACE, timeout=30.0)
+    return await _pdf_download.stream_to_file(
+        client,
+        pdf_url,
+        dest,
+        slot_factory=lambda: _request_slot(pdf_url),
+        provider_label="arXiv",
+        timeout=60.0,
+        not_found_message=f"No PDF found for arXiv ID: {arxiv_id}",
+    )
