@@ -12,8 +12,9 @@ wheels/
 # Cache
 .cache/
 
-# Claude Code
-.claude/
+# Claude Code (personal config local; project-shared rules tracked)
+.claude/*
+!.claude/rules/
 
 # Secrets
 .env
