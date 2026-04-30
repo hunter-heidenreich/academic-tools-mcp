@@ -16,7 +16,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
 | [Wikipedia](https://www.wikipedia.org/) | Article search, summaries, page existence checks | Optional email (for User-Agent) |
 
-All API responses are cached locally. Multiple tool calls for the same paper = one API hit.
+All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry, and definitive 404s are negative-cached for 24 hours so retry-happy agents don't burn rate budget on guaranteed misses.
 
 ## Setup
 
@@ -41,6 +41,7 @@ All configuration is via environment variables in `.env`. Nothing is required to
 | `WIKIPEDIA_MAILTO` | No | Your email — required by [Wikimedia policy](https://meta.wikimedia.org/wiki/User-Agent_policy) for the User-Agent header |
 | `PDF_CONVERTER` | No | PDF-to-markdown backend: `mineru` (default), `marker`, or a custom command (see [PDF Pipeline](#pdf-pipeline)) |
 | `PDF_CONVERTER_VENV` | No | Path to a virtualenv to activate before running the converter (e.g. `~/.venvs/mineru`) |
+| `PDF_CONVERT_TIMEOUT` | No | Hard timeout for a single PDF→markdown conversion in seconds (default `1800` = 30 min). Set to `none` / `off` / `disabled` to disable. |
 
 ## Usage
 
@@ -77,7 +78,7 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 
 | Tool | Description |
 |------|-------------|
-| `get_paper_metadata` | Title, dates, venue / categories, identifiers — shape varies by `_source` |
+| `get_paper_metadata` | Title, dates, venue / categories, identifiers — shape varies by `_source`. Optional `follow_published=True` auto-chains a bioRxiv preprint to its journal version on OpenAlex when one exists. |
 | `get_paper_authors` | Author list with source-appropriate detail (affiliations, corresponding author, OpenAlex IDs) |
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
@@ -101,23 +102,23 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 | Tool | Description |
 |------|-------------|
 | `download_pdf` | Download and cache the PDF — auto-detects arXiv, ACL Anthology, bioRxiv/medRxiv |
-| `convert_paper` | Convert PDF to markdown, parse into sections (slow: 5-10 min) |
+| `convert_paper` | Convert PDF to markdown, parse into sections (slow: tens of minutes; `PDF_CONVERT_TIMEOUT` caps it at 30 min by default). The server runs at most one conversion at a time across all callers — a second concurrent caller gets `{busy: True, retryable: True, in_progress: {...}}` immediately rather than queueing |
 | `get_paper_sections` | Section index with titles, sub-heading previews, token counts |
 | `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
 
-All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, fetch the PDF yourself and hand it to `import_pdf` (or `import_markdown` for pre-converted text) — see [Manual import](#manual-import) below.
+All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, fetch the PDF yourself and hand it to `import_paper` — see [Manual import](#manual-import) below.
 
 ### References and citations (DOI required)
 
 | Tool | Description |
 |------|-------------|
 | `get_paper_references_count` | Survey outgoing-reference coverage across both Crossref and OpenCitations in one call — returns per-source counts so you can pick which to page through |
-| `get_paper_references` | Paginated outgoing references from the chosen `source` (`crossref` for structured metadata, `opencitations` for broader DOI coverage) |
+| `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from whichever has more; pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
 | `get_paper_citations_count` | Number of incoming citations (OpenCitations) |
 | `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
-| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers) |
+| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); each hit warms the works cache so a follow-up `get_paper_metadata(doi)` is free |
 
-The count tools follow a **count-then-page** pattern: call `_count` first to see totals (and for references, to compare source coverage), then page through with `page` and `page_size`. Paginated responses include `_source` (on references) and `has_more` so agents know which shape to expect and when to stop. This prevents token blowouts on papers with long bibliographies or many citations.
+For citations, follow the **count-then-page** pattern: call `get_paper_citations_count` first to see the total, then page through with `page` and `page_size`. For references the `source="auto"` default does the survey for you on the first call. Paginated responses include `_source` (on references) and `has_more` so agents know which shape to expect and when to stop. This prevents token blowouts on papers with long bibliographies or many citations.
 
 **Source trade-off for references**: Crossref returns structured reference metadata (author, title, year, journal, DOI) when publishers deposit it; quality varies. OpenCitations aggregates from Crossref, PubMed, DataCite, OpenAIRE, and JaLC — it may have entries Crossref lacks, but returns DOI-to-DOI links only (no bibliographic metadata).
 
@@ -208,13 +209,13 @@ API responses and downloaded files are cached under `.cache/`:
   manual/sections/         # Section indices (JSON)
 ```
 
-Cache keys are SHA-256 hashes of canonical identifiers. No expiration — delete `.cache/` to start fresh.
+Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp file + `os.replace`) so a crash mid-write can't leave a corrupt entry; corrupt entries from earlier versions self-heal on read. Positive entries have no expiration — delete `.cache/` to start fresh. **Negative entries** (definitive 404s) live in a sibling `_neg/` subdirectory under each entity with a 24-hour TTL, so retry-happy agents don't repeatedly hit the network for known-bad identifiers but newly-registered DOIs still surface within a day.
 
 ## Development
 
 ```bash
 uv sync                          # Install dependencies
-uv run pytest -v                 # Run all tests (278 tests)
+uv run pytest -v                 # Run all tests (363 tests)
 uv run pytest tests/test_bibtex.py -v   # Run one test file
 uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ```
@@ -222,25 +223,34 @@ uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ## Architecture
 
 ```
-server.py (18 MCP tools)
-  ├── openalex.py       → OpenAlex API     → cache.py
-  ├── arxiv.py          → arXiv Atom API   → cache.py
-  ├── biorxiv.py        → bioRxiv API      → cache.py
-  ├── crossref.py       → Crossref API     → cache.py
-  ├── opencitations.py  → OpenCitations API→ cache.py
-  ├── acl_anthology.py  → ACL PDF URLs     → cache.py
-  ├── manual.py         → local/URL import → cache.py
-  ├── wikipedia.py      → Wikipedia API    → cache.py
-  ├── papers.py         → PDF → markdown → sections
-  └── bibtex.py         → BibTeX generation
+server.py (18 MCP tools; FastMCP lifespan closes pooled clients on shutdown)
+  │
+  ├── API clients          openalex.py, arxiv.py, biorxiv.py,
+  │                        crossref.py, opencitations.py, wikipedia.py
+  │
+  ├── PDF + content        acl_anthology.py (static PDF URLs)
+  │                        manual.py        (local-file import)
+  │                        papers.py        (PDF → markdown → sections;
+  │                                          global single-conversion lock)
+  │                        bibtex.py        (BibTeX generation)
+  │
+  └── Shared infrastructure (every API client routes through these)
+        _http.py           one-shot retry, structured errors, backpressure
+        _clients.py        per-provider pooled httpx.AsyncClient
+        _singleflight.py   concurrent same-key callers coalesce to one fetch
+        cache.py           atomic file cache with negative-cache (24h TTL)
 ```
 
 **Key design decisions:**
 
 - **Lean responses.** Tools return only what's needed — not the full API response. An agent calling `get_paper_authors` doesn't get flooded with unrelated metadata.
 - **One tool per job, auto-routed.** The four core paper tools (`get_paper_metadata`, `get_paper_authors`, `get_paper_abstract`, `get_paper_bibtex`) dispatch on identifier shape rather than forcing the agent to pick between arXiv/bioRxiv/OpenAlex families. Provider-native fields are preserved and tagged with `_source`.
-- **One API hit per entity.** All tools for a given DOI share one cached response.
-- **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching.
+- **One API hit per entity.** All tools for a given DOI share one cached response. Concurrent same-key callers are coalesced by single-flight to one fetch.
+- **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry that honours `Retry-After` (capped) before surfacing to the agent.
+- **Burst caps with structured backpressure.** Each provider refuses to stack more than 5 concurrent callers behind its rate-limit gap. The 6th gets `{error, retryable: True, backpressure: True}` immediately so the agent learns to slow down rather than waiting silently.
+- **Negative caching for definitive 404s.** Known-bad identifiers are cached for 24h so retries don't burn rate budget; transient errors are NOT cached.
+- **Single-conversion lock for PDFs.** At most one PDF→markdown subprocess runs at a time across the whole server; concurrent callers get a `busy` error with what's running and how long it's been going.
+- **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching. `get_paper_references(source="auto")` does the survey for you.
 - **Provider-aware routing.** Manual imports auto-detect identifier types and store in the correct provider's cache, preventing duplicates.
 - **Subprocess isolation for PDF converters.** The PDF pipeline shells out to external tools rather than importing them, keeping the dependency tree light and avoiding license entanglement.
 - **Pre-computed aggregates.** List responses include counts (`author_count`, `topic_count`, `total_sections`, etc.) so agents don't need follow-up calls to check sizes.
