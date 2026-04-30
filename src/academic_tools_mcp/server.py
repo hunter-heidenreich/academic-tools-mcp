@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import _clients, _stats, acl_anthology, arxiv, biorxiv, cache, config, crossref, manual, opencitations, openalex, papers, wikipedia
+from . import _clients, _stats, acl_anthology, arxiv, biorxiv, cache, cache_search, config, crossref, manual, opencitations, openalex, papers, wikipedia
 from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 
 
@@ -1377,6 +1377,97 @@ async def get_paper_citations(
         "page_size": page_size,
         "has_more": end < total,
         "citations": cites[start:end],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Local-cache full-text search
+# ---------------------------------------------------------------------------
+
+
+_CACHE_SEARCH_NAMESPACE = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Optional cache namespace to restrict the search to "
+            "(arxiv, biorxiv, acl_anthology, manual). Default None "
+            "searches every cached namespace."
+        ),
+    ),
+]
+
+_CACHE_SEARCH_TOP_K = Annotated[
+    int,
+    Field(
+        description=(
+            "Maximum number of hits to return (1-50, default 10). "
+            "Hits are ranked by BM25; ties go to the first-seen file "
+            "in alphabetical order."
+        ),
+        ge=1,
+        le=50,
+    ),
+]
+
+
+@mcp.tool
+async def search_cached_papers(
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "Free-text query against the converted-markdown cache. "
+                "Tokenised on words; stopwords dropped. Phrasal queries "
+                "work as a bag-of-words (no positional matching), so "
+                "'variational dropout' ranks docs by how often each "
+                "term appears, not strictly the bigram."
+            ),
+        ),
+    ],
+    top_k: _CACHE_SEARCH_TOP_K = 10,
+    namespace: _CACHE_SEARCH_NAMESPACE = None,
+) -> dict[str, Any]:
+    """BM25 full-text search across every paper you've already converted.
+
+    Walks ``.cache/<namespace>/markdown/*.md`` for every namespace (or
+    just the one passed via ``namespace=``) and ranks each document
+    against the query using standard BM25. Useful for:
+
+      - Recovering a paper by content when you don't remember the
+        identifier ("which paper mentioned variational dropout?")
+      - Finding all cached papers that discuss a concept
+      - Triage on a manual-import collection where the identifier is a
+        freeform label and search_arxiv / search_crossref_by_title
+        can't help
+
+    Returns ``{query, result_count, results: [{namespace, canonical_id,
+    score, title, snippet, section, char_count}, ...]}``. ``snippet``
+    is a ~200-char window centred on the most-distinct cluster of
+    matching terms; ``section`` is the H2 the snippet falls under so
+    you can chain into get_paper_section(canonical_id, section).
+
+    Hits with score 0 (no query term appears) are dropped — empty
+    results means the cache contains no relevant paper, not that the
+    search failed. Searches the cache live on every call; for a
+    personal-MCP corpus this runs in well under 100ms.
+
+    Limits: pure keyword match (BM25 doesn't know synonyms — "self-
+    attention" won't surface a paper that only says "scaled dot-
+    product attention"). Only converted papers are searchable; PDFs
+    that haven't been through convert_paper / import_paper are not in
+    the index.
+    """
+    # Wrap the synchronous BM25 pass in to_thread so it doesn't pin the
+    # event loop on a large corpus. Even at hundreds of papers this is
+    # tens of milliseconds, but agents may run searches concurrently
+    # with HTTP fetches and we shouldn't starve those.
+    results = await asyncio.to_thread(
+        cache_search.search, query, top_k=top_k, namespace=namespace
+    )
+    return {
+        "query": query,
+        "result_count": len(results),
+        "results": results,
     }
 
 
