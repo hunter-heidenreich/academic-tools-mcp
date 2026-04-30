@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from . import _http, cache
+from . import _clients, _http, _singleflight, cache
 
 NAMESPACE = "biorxiv"
 _BASE_URL = "https://api.biorxiv.org"
@@ -14,25 +14,50 @@ _BASE_URL = "https://api.biorxiv.org"
 # All bioRxiv/medRxiv DOIs use this prefix
 _DOI_PREFIX = "10.1101/"
 
-# Rate limiting: no documented limit, but be polite (~2 req/sec)
+# Rate limiting: no documented limit, but be polite (~2 req/sec).
 _request_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.5
+
+# Burst cap. Same shape as the other providers: past 5 stacked callers,
+# the next gets a structured backpressure error instead of silent queueing.
+_MAX_PENDING = 5
+_pending: int = 0
+
+# Coalesces concurrent calls for the same canonical DOI so the unified
+# paper tools called in parallel (metadata, authors, abstract, bibtex)
+# don't all fetch independently.
+_single_flight = _singleflight.SingleFlight()
 
 
 async def _throttled_get(
     client: httpx.AsyncClient, url: str, **kwargs: Any
 ) -> httpx.Response:
-    """Execute a GET request with polite rate limiting."""
-    global _last_request_time
-    async with _request_lock:
-        now = time.monotonic()
-        elapsed = now - _last_request_time
-        if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-            await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
-        response = await client.get(url, **kwargs)
-        _last_request_time = time.monotonic()
-        return response
+    """Execute a GET request with polite rate limiting.
+
+    Refuses past ``_MAX_PENDING`` queued callers via
+    ``LocalBackpressureError`` so an agent that fans out gets fast
+    feedback rather than waiting half a second per slot.
+    """
+    global _last_request_time, _pending
+    if _pending >= _MAX_PENDING:
+        raise _http.LocalBackpressureError("bioRxiv", _pending, _MAX_PENDING)
+    _pending += 1
+    try:
+        async with _request_lock:
+            now = time.monotonic()
+            elapsed = now - _last_request_time
+            if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
+                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+            response = await _http.get_with_retry(
+                client, url,
+                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                **kwargs,
+            )
+            _last_request_time = time.monotonic()
+            return response
+    finally:
+        _pending -= 1
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +188,8 @@ def _parse_paper(raw: dict[str, Any]) -> dict[str, Any]:
 async def get_paper(doi: str) -> dict[str, Any]:
     """Fetch a paper by bioRxiv/medRxiv DOI, using cache when available.
 
-    Tries bioRxiv first, then medRxiv if not found.
+    Tries bioRxiv first, then medRxiv if not found. Concurrent callers
+    for the same DOI share one fetch via single-flight.
     """
     bare = _normalize_doi(doi)
     canonical = _canonical_key(doi)
@@ -171,9 +197,20 @@ async def get_paper(doi: str) -> dict[str, Any]:
     cached = cache.get(NAMESPACE, "papers", canonical)
     if cached is not None:
         return cached
+    neg = cache.get_negative(NAMESPACE, "papers", canonical)
+    if neg is not None:
+        return neg
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+    async def _fetch() -> dict[str, Any]:
+        cached = cache.get(NAMESPACE, "papers", canonical)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "papers", canonical)
+        if neg is not None:
+            return neg
+
+        try:
+            client = _clients.get_client(NAMESPACE, timeout=30.0)
             # Try bioRxiv first
             url = f"{_BASE_URL}/details/biorxiv/{bare}/na/json"
             response = await _throttled_get(client, url)
@@ -189,16 +226,20 @@ async def get_paper(doi: str) -> dict[str, Any]:
                 response.raise_for_status()
                 data = response.json()
                 collection = data.get("collection", [])
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("bioRxiv", e)
+        except _http.HTTPX_ERRORS as e:
+            return _http.error_dict("bioRxiv", e)
 
-    if not collection:
-        return {"error": f"No paper found for DOI: {doi}"}
+        if not collection:
+            err = {"error": f"No paper found for DOI: {doi}"}
+            cache.put_negative(NAMESPACE, "papers", canonical, err)
+            return err
 
-    raw = _pick_latest_version(collection)
-    paper = _parse_paper(raw)
-    cache.put(NAMESPACE, "papers", canonical, paper)
-    return paper
+        raw = _pick_latest_version(collection)
+        paper = _parse_paper(raw)
+        cache.put(NAMESPACE, "papers", canonical, paper)
+        return paper
+
+    return await _single_flight.do(canonical, _fetch)
 
 
 def _pdf_filename(canonical: str) -> str:
@@ -238,8 +279,9 @@ async def download_pdf(doi: str) -> dict[str, Any]:
         return {"error": f"No PDF URL found for DOI: {doi}"}
 
     try:
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            response = await _throttled_get(client, pdf_url)
+        # Per-call timeout overrides the default for this larger payload.
+        client = _clients.get_client(NAMESPACE, timeout=30.0)
+        response = await _throttled_get(client, pdf_url, timeout=60.0)
 
         if response.status_code == 404:
             return {"error": f"PDF not found for DOI: {doi}"}

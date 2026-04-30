@@ -59,6 +59,17 @@ class TestErrorDict:
         assert "network error" in result["error"].lower()
         assert "bioRxiv" in result["error"]
 
+    def test_local_backpressure_is_retryable(self):
+        # Backpressure is the local throttle saying "you're queueing
+        # too deep, slow down" — it's transient and the agent should
+        # back off and retry, not give up.
+        exc = _http.LocalBackpressureError("arXiv", pending=5, max_pending=5)
+        result = _http.error_dict("arXiv", exc)
+        assert "backpressure" in result["error"].lower()
+        assert "5" in result["error"]
+        assert result["retryable"] is True
+        assert result["backpressure"] is True
+
 
 class TestExceptionTuple:
     def test_includes_status_timeout_and_request(self):
@@ -66,3 +77,202 @@ class TestExceptionTuple:
         assert httpx.HTTPStatusError in _http.HTTPX_ERRORS
         assert httpx.TimeoutException in _http.HTTPX_ERRORS
         assert httpx.RequestError in _http.HTTPX_ERRORS
+
+    def test_includes_local_backpressure(self):
+        # Caller `try/except HTTPX_ERRORS` blocks must catch our local
+        # backpressure error too so it routes through error_dict like
+        # any other transient failure.
+        assert _http.LocalBackpressureError in _http.HTTPX_ERRORS
+
+
+# ---------------------------------------------------------------------------
+# get_with_retry
+# ---------------------------------------------------------------------------
+
+
+class _FakeClient:
+    """Minimal AsyncClient stub. Plays back a sequence of outcomes for
+    successive ``get`` calls. An outcome is either an ``httpx.Response``
+    (returned) or an ``Exception`` (raised).
+    """
+
+    def __init__(self, outcomes):
+        self._outcomes = list(outcomes)
+        self.calls: list[tuple[str, dict]] = []
+
+    async def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def _response(status: int, headers: dict | None = None) -> httpx.Response:
+    request = httpx.Request("GET", "https://example.com/api")
+    return httpx.Response(status, headers=headers or {}, request=request)
+
+
+class TestGetWithRetry:
+    """One transparent retry on transient failures. Sleep is patched out
+    so each test runs in microseconds; what matters is the call count
+    and the value passed to asyncio.sleep, not the wall time.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _patch_sleep(self, monkeypatch):
+        slept: list[float] = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        monkeypatch.setattr(_http.asyncio, "sleep", fake_sleep)
+        self.slept = slept
+
+    @pytest.mark.asyncio
+    async def test_returns_2xx_on_first_attempt_no_sleep(self):
+        client = _FakeClient([_response(200)])
+        resp = await _http.get_with_retry(client,"u")
+        assert resp.status_code == 200
+        assert len(client.calls) == 1
+        assert self.slept == []
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_on_404(self):
+        # 404 is the caller's responsibility (real "not found"); we
+        # must not waste a retry on it.
+        client = _FakeClient([_response(404)])
+        resp = await _http.get_with_retry(client,"u")
+        assert resp.status_code == 404
+        assert len(client.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_on_400(self):
+        client = _FakeClient([_response(400)])
+        resp = await _http.get_with_retry(client,"u")
+        assert resp.status_code == 400
+        assert len(client.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_retries_on_429_and_returns_success(self):
+        client = _FakeClient([_response(429), _response(200)])
+        resp = await _http.get_with_retry(client,"u")
+        assert resp.status_code == 200
+        assert len(client.calls) == 2
+        assert self.slept == [1.0]  # default backoff_seconds
+
+    @pytest.mark.asyncio
+    async def test_retries_on_503_and_returns_success(self):
+        client = _FakeClient([_response(503), _response(200)])
+        resp = await _http.get_with_retry(client,"u")
+        assert resp.status_code == 200
+        assert len(client.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_each_5xx(self):
+        # Spot-check that the standard 5xx range is all retryable.
+        for status in (500, 502, 503, 504):
+            client = _FakeClient([_response(status), _response(200)])
+            resp = await _http.get_with_retry(client,"u")
+            assert resp.status_code == 200, status
+            assert len(client.calls) == 2, status
+
+    @pytest.mark.asyncio
+    async def test_retries_on_timeout(self):
+        timeout = httpx.ReadTimeout(
+            "slow", request=httpx.Request("GET", "https://x")
+        )
+        client = _FakeClient([timeout, _response(200)])
+        resp = await _http.get_with_retry(client,"u")
+        assert resp.status_code == 200
+        assert len(client.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_on_connect_error(self):
+        connect = httpx.ConnectError(
+            "dns", request=httpx.Request("GET", "https://x")
+        )
+        client = _FakeClient([connect, _response(200)])
+        resp = await _http.get_with_retry(client,"u")
+        assert resp.status_code == 200
+        assert len(client.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_returns_final_failure_response_after_exhausting_retries(self):
+        # Two 503s back-to-back: the second one is returned, NOT raised,
+        # so the caller's existing raise_for_status() / status branch
+        # surfaces it the same way it always has.
+        client = _FakeClient([_response(503), _response(503)])
+        resp = await _http.get_with_retry(client,"u")
+        assert resp.status_code == 503
+        assert len(client.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_raises_final_exception_after_exhausting_retries(self):
+        timeout = httpx.ReadTimeout(
+            "slow", request=httpx.Request("GET", "https://x")
+        )
+        client = _FakeClient([timeout, timeout])
+        with pytest.raises(httpx.ReadTimeout):
+            await _http.get_with_retry(client,"u")
+        assert len(client.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_after_header_extends_backoff(self):
+        # A larger Retry-After should win over our default backoff.
+        client = _FakeClient([
+            _response(429, headers={"Retry-After": "12"}),
+            _response(200),
+        ])
+        await _http.get_with_retry(client,"u")
+        assert self.slept == [12.0]
+
+    @pytest.mark.asyncio
+    async def test_retry_after_smaller_than_backoff_uses_backoff(self):
+        # backoff_seconds is the floor — we never go below the
+        # provider's own throttle gap even if the server says it's OK.
+        client = _FakeClient([
+            _response(429, headers={"Retry-After": "0.5"}),
+            _response(200),
+        ])
+        await _http.get_with_retry(
+            client, "u", backoff_seconds=3.0
+        )
+        assert self.slept == [3.0]
+
+    @pytest.mark.asyncio
+    async def test_retry_after_capped_to_avoid_indefinite_pin(self):
+        # A misconfigured server returning a huge Retry-After must not
+        # pin our throttle for hours; the cap is backoff * 30.
+        client = _FakeClient([
+            _response(503, headers={"Retry-After": "999999"}),
+            _response(200),
+        ])
+        await _http.get_with_retry(
+            client, "u", backoff_seconds=1.0
+        )
+        assert self.slept == [30.0]
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_retry_after_falls_back_to_backoff(self):
+        # HTTP-date Retry-After is the other RFC form; we just ignore
+        # it and use our own backoff. This is documented behaviour.
+        client = _FakeClient([
+            _response(429, headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}),
+            _response(200),
+        ])
+        await _http.get_with_retry(
+            client, "u", backoff_seconds=2.0
+        )
+        assert self.slept == [2.0]
+
+    @pytest.mark.asyncio
+    async def test_kwargs_forwarded_to_request(self):
+        client = _FakeClient([_response(200)])
+        await _http.get_with_retry(
+            client, "u",
+            params={"q": "hi"},
+            headers={"X-Test": "1"},
+        )
+        assert client.calls[0][1]["params"] == {"q": "hi"}
+        assert client.calls[0][1]["headers"] == {"X-Test": "1"}

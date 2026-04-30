@@ -4,16 +4,23 @@ from typing import Any
 
 import httpx
 
-from . import _http, cache
+from . import _clients, _http, _singleflight, cache
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
 
-# Rate limiting: 180 req/min = 3 req/sec.
-# Enforce a minimum 334ms gap between requests.
+# Rate limiting: 180 req/min = 3 req/sec. Enforce a minimum 334ms gap.
 _request_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.334  # ~3 req/sec max
+_MAX_PENDING = 5
+_pending: int = 0
+
+# Coalesces concurrent calls for the same canonical DOI on each
+# direction (references / citations). Keyed by (kind, canonical) so a
+# parallel references-and-citations fetch on the same paper runs as
+# two distinct in-flight slots, not one.
+_single_flight = _singleflight.SingleFlight()
 
 
 async def _throttled_get(
@@ -21,17 +28,31 @@ async def _throttled_get(
 ) -> httpx.Response:
     """Execute a GET request respecting OpenCitations' rate limit.
 
-    Enforces: max 1 concurrent request, minimum 334ms gap (180 req/min).
+    Refuses past ``_MAX_PENDING`` queued callers via
+    ``LocalBackpressureError`` so an agent that fans out gets fast
+    feedback rather than waiting through 1.7 s of stacked gaps.
     """
-    global _last_request_time
-    async with _request_lock:
-        now = time.monotonic()
-        elapsed = now - _last_request_time
-        if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-            await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
-        response = await client.get(url, **kwargs)
-        _last_request_time = time.monotonic()
-        return response
+    global _last_request_time, _pending
+    if _pending >= _MAX_PENDING:
+        raise _http.LocalBackpressureError(
+            "OpenCitations", _pending, _MAX_PENDING
+        )
+    _pending += 1
+    try:
+        async with _request_lock:
+            now = time.monotonic()
+            elapsed = now - _last_request_time
+            if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
+                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+            response = await _http.get_with_retry(
+                client, url,
+                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                **kwargs,
+            )
+            _last_request_time = time.monotonic()
+            return response
+    finally:
+        _pending -= 1
 
 
 # ---------------------------------------------------------------------------
@@ -102,68 +123,100 @@ async def get_references(doi: str) -> dict[str, Any]:
     """Fetch outgoing references for a DOI from OpenCitations.
 
     Returns a dict with the list of citation records. Each record contains
-    parsed IDs (doi, omid, openalex, pmid), creation date, and self-citation flags.
+    parsed IDs (doi, omid, openalex, pmid), creation date, and self-citation
+    flags. Concurrent callers for the same DOI share one fetch.
     """
     canonical = _canonical_doi(doi)
 
     cached = cache.get(NAMESPACE, "references", canonical)
     if cached is not None:
         return cached
+    neg = cache.get_negative(NAMESPACE, "references", canonical)
+    if neg is not None:
+        return neg
 
-    bare_doi = _normalize_doi(doi)
+    async def _fetch() -> dict[str, Any]:
+        cached = cache.get(NAMESPACE, "references", canonical)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "references", canonical)
+        if neg is not None:
+            return neg
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        bare_doi = _normalize_doi(doi)
+
+        try:
+            client = _clients.get_client(NAMESPACE, timeout=30.0)
             response = await _throttled_get(
                 client,
                 f"{OPENCITATIONS_BASE_URL}/references/doi:{bare_doi}",
             )
 
-        if response.status_code == 404:
-            return {"error": f"No references found on OpenCitations for DOI: {doi}"}
+            if response.status_code == 404:
+                err = {"error": f"No references found on OpenCitations for DOI: {doi}"}
+                cache.put_negative(NAMESPACE, "references", canonical, err)
+                return err
 
-        response.raise_for_status()
-        records = response.json()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("OpenCitations", e)
+            response.raise_for_status()
+            records = response.json()
+        except _http.HTTPX_ERRORS as e:
+            return _http.error_dict("OpenCitations", e)
 
-    references = [_format_record(r, "cited") for r in records]
-    data: dict[str, Any] = {"references": references, "count": len(references)}
+        references = [_format_record(r, "cited") for r in records]
+        data: dict[str, Any] = {"references": references, "count": len(references)}
 
-    cache.put(NAMESPACE, "references", canonical, data)
-    return data
+        cache.put(NAMESPACE, "references", canonical, data)
+        return data
+
+    return await _single_flight.do(("references", canonical), _fetch)
 
 
 async def get_citations(doi: str) -> dict[str, Any]:
     """Fetch incoming citations for a DOI from OpenCitations.
 
     Returns a dict with the list of citation records (works that cite this DOI).
+    Concurrent callers for the same DOI share one fetch.
     """
     canonical = _canonical_doi(doi)
 
     cached = cache.get(NAMESPACE, "citations", canonical)
     if cached is not None:
         return cached
+    neg = cache.get_negative(NAMESPACE, "citations", canonical)
+    if neg is not None:
+        return neg
 
-    bare_doi = _normalize_doi(doi)
+    async def _fetch() -> dict[str, Any]:
+        cached = cache.get(NAMESPACE, "citations", canonical)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "citations", canonical)
+        if neg is not None:
+            return neg
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        bare_doi = _normalize_doi(doi)
+
+        try:
+            client = _clients.get_client(NAMESPACE, timeout=30.0)
             response = await _throttled_get(
                 client,
                 f"{OPENCITATIONS_BASE_URL}/citations/doi:{bare_doi}",
             )
 
-        if response.status_code == 404:
-            return {"error": f"No citations found on OpenCitations for DOI: {doi}"}
+            if response.status_code == 404:
+                err = {"error": f"No citations found on OpenCitations for DOI: {doi}"}
+                cache.put_negative(NAMESPACE, "citations", canonical, err)
+                return err
 
-        response.raise_for_status()
-        records = response.json()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("OpenCitations", e)
+            response.raise_for_status()
+            records = response.json()
+        except _http.HTTPX_ERRORS as e:
+            return _http.error_dict("OpenCitations", e)
 
-    citations = [_format_record(r, "citing") for r in records]
-    data: dict[str, Any] = {"citations": citations, "count": len(citations)}
+        citations = [_format_record(r, "citing") for r in records]
+        data: dict[str, Any] = {"citations": citations, "count": len(citations)}
 
-    cache.put(NAMESPACE, "citations", canonical, data)
-    return data
+        cache.put(NAMESPACE, "citations", canonical, data)
+        return data
+
+    return await _single_flight.do(("citations", canonical), _fetch)

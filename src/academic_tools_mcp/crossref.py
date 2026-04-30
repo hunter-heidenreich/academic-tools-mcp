@@ -4,35 +4,22 @@ from typing import Any
 
 import httpx
 
-from . import _http, cache, config
+from . import _clients, _http, _singleflight, cache, config
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
 
-# Rate limiting for polite pool: max 10 req/sec, 3 concurrent.
+# Rate limiting for the polite pool: max 10 req/sec, 3 concurrent.
 # We enforce a conservative 100ms minimum gap between requests.
 _request_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.1  # 100ms -> ~10 req/sec max
+_MAX_PENDING = 5
+_pending: int = 0
 
-
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
-    """Execute a GET request respecting Crossref's rate limit.
-
-    Enforces: max 1 concurrent request, minimum 100ms gap between requests.
-    With the polite pool (mailto header), Crossref allows 10 req/sec.
-    """
-    global _last_request_time
-    async with _request_lock:
-        now = time.monotonic()
-        elapsed = now - _last_request_time
-        if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-            await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
-        response = await client.get(url, **kwargs)
-        _last_request_time = time.monotonic()
-        return response
+# Coalesces concurrent calls for the same canonical DOI so the unified
+# paper tools called in parallel don't all hit Crossref independently.
+_single_flight = _singleflight.SingleFlight()
 
 
 def _build_headers() -> dict[str, str]:
@@ -45,6 +32,48 @@ def _build_headers() -> dict[str, str]:
             f"(https://github.com/academic-tools-mcp; mailto:{mailto})"
         )
     return headers
+
+
+def _get_client():
+    """Return the persistent AsyncClient for Crossref calls.
+
+    The polite-pool User-Agent header is baked into the client at
+    construction so every call automatically opts into the higher rate
+    limits.
+    """
+    return _clients.get_client(
+        NAMESPACE, headers=_build_headers(), timeout=30.0
+    )
+
+
+async def _throttled_get(
+    client: httpx.AsyncClient, url: str, **kwargs: Any
+) -> httpx.Response:
+    """Execute a GET request respecting Crossref's rate limit.
+
+    Refuses past ``_MAX_PENDING`` queued callers via
+    ``LocalBackpressureError`` so an agent that fans out queries gets
+    fast feedback rather than waiting tens of slots deep.
+    """
+    global _last_request_time, _pending
+    if _pending >= _MAX_PENDING:
+        raise _http.LocalBackpressureError("Crossref", _pending, _MAX_PENDING)
+    _pending += 1
+    try:
+        async with _request_lock:
+            now = time.monotonic()
+            elapsed = now - _last_request_time
+            if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
+                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+            response = await _http.get_with_retry(
+                client, url,
+                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                **kwargs,
+            )
+            _last_request_time = time.monotonic()
+            return response
+    finally:
+        _pending -= 1
 
 
 # ---------------------------------------------------------------------------
@@ -99,25 +128,41 @@ async def search_works(
         params["filter"] = f"from-pub-date:{year},until-pub-date:{year}"
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await _throttled_get(
-                client,
-                f"{CROSSREF_BASE_URL}/works",
-                headers=headers,
-                params=params,
-            )
+        client = _get_client()
+        response = await _throttled_get(
+            client,
+            f"{CROSSREF_BASE_URL}/works",
+            headers=headers,
+            params=params,
+        )
 
         response.raise_for_status()
         data = response.json()
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("Crossref", e)
 
-    return {"items": data.get("message", {}).get("items", [])}
+    items = data.get("message", {}).get("items", [])
+
+    # Opportunistically warm the works cache. Each search hit is the
+    # same shape as a /works/{doi} response, so a follow-up get_work
+    # call (the inevitable "now fetch the full record for this hit"
+    # pattern) becomes a free cache hit. Mirrors arxiv.search_papers.
+    # Use cache.has to avoid stomping a fresher entry.
+    for item in items:
+        doi = item.get("DOI")
+        if not doi:
+            continue
+        canonical = _canonical_doi(doi)
+        if not cache.has(NAMESPACE, "works", canonical):
+            cache.put(NAMESPACE, "works", canonical, item)
+
+    return {"items": items}
 
 
 async def get_work(doi: str) -> dict[str, Any]:
     """Fetch a work by DOI from Crossref, using cache when available.
 
+    Concurrent callers for the same DOI share one fetch via single-flight.
     Returns the Crossref work object (the 'message' from the API response).
     """
     canonical = _canonical_doi(doi)
@@ -125,26 +170,41 @@ async def get_work(doi: str) -> dict[str, Any]:
     cached = cache.get(NAMESPACE, "works", canonical)
     if cached is not None:
         return cached
+    neg = cache.get_negative(NAMESPACE, "works", canonical)
+    if neg is not None:
+        return neg
 
-    bare_doi = _normalize_doi(doi)
-    headers = _build_headers()
+    async def _fetch() -> dict[str, Any]:
+        cached = cache.get(NAMESPACE, "works", canonical)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "works", canonical)
+        if neg is not None:
+            return neg
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        bare_doi = _normalize_doi(doi)
+        headers = _build_headers()
+
+        try:
+            client = _get_client()
             response = await _throttled_get(
                 client,
                 f"{CROSSREF_BASE_URL}/works/{bare_doi}",
                 headers=headers,
             )
 
-        if response.status_code == 404:
-            return {"error": f"No work found on Crossref for DOI: {doi}"}
+            if response.status_code == 404:
+                err = {"error": f"No work found on Crossref for DOI: {doi}"}
+                cache.put_negative(NAMESPACE, "works", canonical, err)
+                return err
 
-        response.raise_for_status()
-        data = response.json()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("Crossref", e)
+            response.raise_for_status()
+            data = response.json()
+        except _http.HTTPX_ERRORS as e:
+            return _http.error_dict("Crossref", e)
 
-    work = data.get("message", {})
-    cache.put(NAMESPACE, "works", canonical, work)
-    return work
+        work = data.get("message", {})
+        cache.put(NAMESPACE, "works", canonical, work)
+        return work
+
+    return await _single_flight.do(canonical, _fetch)

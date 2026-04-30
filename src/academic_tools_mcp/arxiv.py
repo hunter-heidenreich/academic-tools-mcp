@@ -8,7 +8,7 @@ import httpx
 
 from pathlib import Path
 
-from . import _http, cache
+from . import _clients, _http, _singleflight, cache
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 NAMESPACE = "arxiv"
@@ -18,10 +18,22 @@ _ATOM_NS = "http://www.w3.org/2005/Atom"
 _ARXIV_NS = "http://arxiv.org/schemas/atom"
 _OPENSEARCH_NS = "http://a9.com/-/spec/opensearch/1.1/"
 
-# Rate limiting: max 1 request per 3 seconds, single connection
+# Rate limiting: max 1 request per 3 seconds, single connection.
 _request_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 3.0
+
+# Burst cap: refuse to stack more than this many requests behind the
+# throttle. With a 3s gap, 5 pending = 15s of agent-blocking — past that
+# we'd rather tell the agent to back off than silently queue forever.
+# A 6th concurrent caller gets a structured backpressure error.
+_MAX_PENDING = 5
+_pending: int = 0
+
+# Coalesces concurrent calls for the same canonical paper ID into one
+# fetch. Without this, 4 parallel unified-paper tools (metadata, authors,
+# abstract, bibtex) for one arXiv ID would each hit the network.
+_single_flight = _singleflight.SingleFlight()
 
 
 async def _throttled_get(
@@ -29,17 +41,33 @@ async def _throttled_get(
 ) -> httpx.Response:
     """Execute a GET request respecting arXiv's rate limit.
 
-    Enforces: max 1 concurrent request, minimum 3-second gap between requests.
+    Enforces: max 1 concurrent request, minimum 3-second gap between
+    requests, and a burst cap of ``_MAX_PENDING`` queued callers. The
+    burst cap raises ``LocalBackpressureError`` rather than queueing
+    indefinitely, so an agent that fans out 10 calls in microseconds
+    gets fast feedback on the 6th.
     """
-    global _last_request_time
-    async with _request_lock:
-        now = time.monotonic()
-        elapsed = now - _last_request_time
-        if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-            await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
-        response = await client.get(url, **kwargs)
-        _last_request_time = time.monotonic()
-        return response
+    global _last_request_time, _pending
+    if _pending >= _MAX_PENDING:
+        raise _http.LocalBackpressureError("arXiv", _pending, _MAX_PENDING)
+    _pending += 1
+    try:
+        async with _request_lock:
+            now = time.monotonic()
+            elapsed = now - _last_request_time
+            if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
+                await asyncio.sleep(_MIN_REQUEST_GAP - elapsed)
+            response = await _http.get_with_retry(
+                client, url,
+                # arXiv's 3s gap must apply to the retry too — a 1s
+                # retry would violate their "1 req per 3s" policy.
+                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
+                **kwargs,
+            )
+            _last_request_time = time.monotonic()
+            return response
+    finally:
+        _pending -= 1
 
 
 # ---------------------------------------------------------------------------
@@ -156,44 +184,70 @@ def _parse_entry(entry: ET.Element) -> dict[str, Any]:
 async def get_paper(arxiv_id: str) -> dict[str, Any]:
     """Fetch a paper by arXiv ID, using cache when available.
 
-    Returns a parsed dict with paper metadata.
+    Returns a parsed dict with paper metadata. Concurrent callers for
+    the same ID share one fetch via single-flight — without this, four
+    unified-paper tools (metadata, authors, abstract, bibtex) called in
+    parallel would all hit arXiv and burn ~12s of throttle gap between
+    them for a paper that ends up in cache after the first call.
     """
     canonical = _canonical_arxiv_id(arxiv_id)
 
     cached = cache.get(NAMESPACE, "papers", canonical)
     if cached is not None:
         return cached
+    neg = cache.get_negative(NAMESPACE, "papers", canonical)
+    if neg is not None:
+        return neg
 
-    api_id = _normalize_arxiv_id(arxiv_id)
+    async def _fetch() -> dict[str, Any]:
+        # Re-check cache inside the single-flight slot: the leader for
+        # this key may have already finished and populated the cache by
+        # the time a follower's coroutine resumed past the outer check.
+        cached = cache.get(NAMESPACE, "papers", canonical)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "papers", canonical)
+        if neg is not None:
+            return neg
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        api_id = _normalize_arxiv_id(arxiv_id)
+
+        try:
+            client = _clients.get_client(NAMESPACE, timeout=30.0)
             response = await _throttled_get(
                 client,
                 ARXIV_BASE_URL,
                 params={"id_list": api_id},
             )
 
-        response.raise_for_status()
+            response.raise_for_status()
 
-        root = ET.fromstring(response.text)
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("arXiv", e)
+            root = ET.fromstring(response.text)
+        except _http.HTTPX_ERRORS as e:
+            return _http.error_dict("arXiv", e)
 
-    entries = root.findall(f"{{{_ATOM_NS}}}entry")
+        entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
-    if not entries:
-        return {"error": f"No paper found for arXiv ID: {arxiv_id}"}
+        if not entries:
+            err = {"error": f"No paper found for arXiv ID: {arxiv_id}"}
+            cache.put_negative(NAMESPACE, "papers", canonical, err)
+            return err
 
-    # arXiv returns HTTP 200 with an error entry for invalid IDs
-    entry = entries[0]
-    id_el = entry.find(f"{{{_ATOM_NS}}}id")
-    if id_el is not None and id_el.text and "api/errors" in id_el.text:
-        return {"error": f"No paper found for arXiv ID: {arxiv_id}"}
+        # arXiv returns HTTP 200 with an error entry for invalid IDs.
+        # Cache it the same way as a real 404 — both mean "definitively
+        # not found", which is what negative caching is for.
+        entry = entries[0]
+        id_el = entry.find(f"{{{_ATOM_NS}}}id")
+        if id_el is not None and id_el.text and "api/errors" in id_el.text:
+            err = {"error": f"No paper found for arXiv ID: {arxiv_id}"}
+            cache.put_negative(NAMESPACE, "papers", canonical, err)
+            return err
 
-    data = _parse_entry(entry)
-    cache.put(NAMESPACE, "papers", canonical, data)
-    return data
+        data = _parse_entry(entry)
+        cache.put(NAMESPACE, "papers", canonical, data)
+        return data
+
+    return await _single_flight.do(canonical, _fetch)
 
 
 async def search_papers(
@@ -209,16 +263,16 @@ async def search_papers(
     capped = min(max(max_results, 1), 50)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await _throttled_get(
-                client,
-                ARXIV_BASE_URL,
-                params={
-                    "search_query": query,
-                    "start": "0",
-                    "max_results": str(capped),
-                },
-            )
+        client = _clients.get_client(NAMESPACE, timeout=30.0)
+        response = await _throttled_get(
+            client,
+            ARXIV_BASE_URL,
+            params={
+                "search_query": query,
+                "start": "0",
+                "max_results": str(capped),
+            },
+        )
 
         response.raise_for_status()
 
@@ -288,8 +342,10 @@ async def download_pdf(arxiv_id: str) -> dict[str, Any]:
         return {"error": f"No PDF link found for arXiv ID: {arxiv_id}"}
 
     try:
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            response = await _throttled_get(client, pdf_url)
+        # Pool client: the per-call timeout overrides the client default
+        # because PDF downloads can be much larger than metadata calls.
+        client = _clients.get_client(NAMESPACE, timeout=30.0)
+        response = await _throttled_get(client, pdf_url, timeout=60.0)
 
         response.raise_for_status()
     except _http.HTTPX_ERRORS as e:

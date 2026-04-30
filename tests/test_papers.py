@@ -6,7 +6,9 @@ import pytest
 
 from academic_tools_mcp import cache, papers
 from academic_tools_mcp.papers import (
+    _DEFAULT_PDF_CONVERT_TIMEOUT,
     _build_converter_command,
+    _resolve_convert_timeout,
     convert_pdf,
     get_section_content,
     parse_sections,
@@ -558,6 +560,45 @@ class TestConvertPdfCachePaths:
         assert "error" in result
         assert "PDF not found" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_reparse_only_once(
+        self, isolated_cache, fail_if_subprocess, monkeypatch
+    ):
+        # Two concurrent callers on the same paper with no sections cache
+        # must serialise via the per-paper lock: only the first re-parses,
+        # the second sees the freshly written cache entry. Without the lock
+        # both would re-parse and race to write.
+        ns, canonical = "test", "concurrent-1"
+        self._seed_markdown(ns, canonical, "## A\n\nx\n\n## B\n\ny\n")
+
+        # Reset the lock dict so this test starts from a clean slate
+        # regardless of test ordering.
+        monkeypatch.setattr(papers, "_section_locks", {})
+
+        parse_calls = 0
+        real_parse = papers.parse_sections
+
+        def counting_parse(markdown):
+            nonlocal parse_calls
+            parse_calls += 1
+            return real_parse(markdown)
+
+        monkeypatch.setattr(papers, "parse_sections", counting_parse)
+
+        results = await asyncio.gather(
+            convert_pdf(Path("/nonexistent.pdf"), ns, canonical),
+            convert_pdf(Path("/nonexistent.pdf"), ns, canonical),
+            convert_pdf(Path("/nonexistent.pdf"), ns, canonical),
+        )
+
+        assert all(r.get("cached") is True for r in results)
+        titles = [s["title"] for s in results[0]["sections"]]
+        assert titles == ["A", "B"]
+        assert parse_calls == 1, (
+            f"expected exactly one re-parse under the per-paper lock, "
+            f"got {parse_calls}"
+        )
+
 
 class TestConvertPdfSubprocessFailures:
     """The subprocess path must turn every failure into an {error, ...} dict;
@@ -590,6 +631,148 @@ class TestConvertPdfSubprocessFailures:
         assert "Could not start" in result["error"]
         assert result["retryable"] is False
         assert "pdf_size_mb" in result
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_process_group_and_returns_error(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        # FakeProc whose communicate() never finishes — exactly the
+        # failure mode the timeout exists to bound.
+        killed_pgids: list[int] = []
+
+        class HangingProc:
+            pid = 424242
+            returncode = None
+
+            async def communicate(self):
+                await asyncio.sleep(3600)
+
+            async def wait(self):
+                # Pretend the SIGKILL took effect immediately.
+                self.returncode = -9
+                return -9
+
+        async def _fake_spawn(*args, **kwargs):
+            assert kwargs.get("start_new_session") is True, (
+                "convert_pdf must spawn with start_new_session=True so the "
+                "whole process tree can be signalled on timeout"
+            )
+            return HangingProc()
+
+        def _fake_getpgid(pid):
+            return pid
+
+        def _fake_killpg(pgid, sig):
+            killed_pgids.append(pgid)
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        monkeypatch.setattr("academic_tools_mcp.papers.os.getpgid", _fake_getpgid)
+        monkeypatch.setattr("academic_tools_mcp.papers.os.killpg", _fake_killpg)
+        # Force a tiny timeout via env so the test runs fast.
+        monkeypatch.setattr(
+            "academic_tools_mcp.papers.config.get",
+            lambda key: "0.05" if key == "PDF_CONVERT_TIMEOUT" else None,
+        )
+
+        result = await convert_pdf(real_pdf, "test", "timeout-1")
+
+        assert "error" in result
+        assert "timed out" in result["error"].lower()
+        assert result["retryable"] is False
+        assert result["timed_out"] is True
+        assert result["timeout_seconds"] == pytest.approx(0.05)
+        assert "pdf_size_mb" in result
+        assert killed_pgids == [HangingProc.pid], (
+            "timeout path must SIGKILL the converter's process group"
+        )
+
+    @pytest.mark.asyncio
+    async def test_second_caller_gets_busy_while_one_in_flight(
+        self, isolated_cache, monkeypatch
+    ):
+        # Server runs at most one PDF conversion at a time. The second
+        # caller, while another conversion is mid-flight, must get a
+        # structured `busy` error — NOT queue, NOT spawn its own
+        # subprocess. The first caller's run is unaffected.
+        pdf_a = isolated_cache / "a.pdf"
+        pdf_a.write_bytes(b"%PDF-1.4 stub a")
+        pdf_b = isolated_cache / "b.pdf"
+        pdf_b.write_bytes(b"%PDF-1.4 stub b")
+
+        # Reset the global lock + state so we don't inherit anything
+        # from another test that ran in this loop.
+        monkeypatch.setattr(papers, "_global_convert_lock", asyncio.Lock())
+        monkeypatch.setattr(papers, "_current_conversion", None)
+
+        spawn_count = 0
+        spawn_started = asyncio.Event()
+        release_subprocess = asyncio.Event()
+
+        class HangingProc:
+            pid = 313131
+            returncode = None
+
+            async def communicate(self):
+                # Wait until the test releases us, then return success-ish.
+                # We won't actually parse anything because returncode!=0
+                # is set below to short-circuit the post-processing.
+                await release_subprocess.wait()
+                self.returncode = 1
+                return b"converter aborted by test", b""
+
+            async def wait(self):
+                self.returncode = -9
+                return -9
+
+        async def fake_spawn(*args, **kwargs):
+            nonlocal spawn_count
+            spawn_count += 1
+            spawn_started.set()
+            return HangingProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+        # First caller — start it as a background task so we can run
+        # the second caller while the first one is still in the lock.
+        task_a = asyncio.create_task(convert_pdf(pdf_a, "test", "paper-a"))
+
+        # Wait until the first task has actually entered the subprocess
+        # block (i.e. has acquired the global lock). spawn_started fires
+        # from inside `async with _global_convert_lock`.
+        await spawn_started.wait()
+
+        # Second caller — different paper. Must get busy without spawning.
+        result_b = await convert_pdf(pdf_b, "test", "paper-b")
+        assert result_b.get("busy") is True
+        assert result_b.get("retryable") is True
+        assert "already in progress" in result_b["error"]
+        assert result_b["in_progress"]["canonical"] == "paper-a"
+        assert result_b["in_progress"]["namespace"] == "test"
+        assert result_b["in_progress"]["elapsed_seconds"] >= 0
+        assert "pdf_size_mb" in result_b
+
+        # Third caller, same paper as the in-flight one — still busy.
+        # We deliberately do not collapse same-paper requests; the second
+        # caller could observe a half-written cache, so making them retry
+        # after the first one finishes is the safe answer.
+        result_a2 = await convert_pdf(pdf_a, "test", "paper-a")
+        assert result_a2.get("busy") is True
+
+        # Only the first caller ever spawned a subprocess.
+        assert spawn_count == 1, (
+            f"expected exactly one subprocess spawn under the global "
+            f"convert lock, got {spawn_count}"
+        )
+
+        # Let the first caller finish so the test doesn't leak the task.
+        release_subprocess.set()
+        result_a = await task_a
+        assert "error" in result_a  # converter exited 1 by design
+
+        # Lock is released — a fresh caller can now proceed (would spawn
+        # again if we let it). Just confirm the gate is open.
+        assert papers._global_convert_lock.locked() is False
+        assert papers._current_conversion is None
 
     @pytest.mark.asyncio
     async def test_binary_output_does_not_crash(
@@ -657,3 +840,45 @@ class TestBuildConverterCommand:
             cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
         assert "source" not in cmd
         assert "activate" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# _resolve_convert_timeout
+# ---------------------------------------------------------------------------
+
+class TestResolveConvertTimeout:
+    """PDF_CONVERT_TIMEOUT parsing — bad input must never raise."""
+
+    def _env(self, value):
+        def _get(key):
+            return value if key == "PDF_CONVERT_TIMEOUT" else None
+        return patch("academic_tools_mcp.papers.config.get", side_effect=_get)
+
+    def test_unset_uses_default(self):
+        with self._env(None):
+            assert _resolve_convert_timeout() == _DEFAULT_PDF_CONVERT_TIMEOUT
+
+    def test_explicit_seconds(self):
+        with self._env("600"):
+            assert _resolve_convert_timeout() == 600.0
+
+    def test_float_seconds(self):
+        with self._env("90.5"):
+            assert _resolve_convert_timeout() == 90.5
+
+    def test_zero_disables(self):
+        with self._env("0"):
+            assert _resolve_convert_timeout() is None
+
+    def test_negative_disables(self):
+        with self._env("-1"):
+            assert _resolve_convert_timeout() is None
+
+    def test_word_disables(self):
+        for word in ("none", "off", "disabled", "NONE", "Off"):
+            with self._env(word):
+                assert _resolve_convert_timeout() is None, word
+
+    def test_garbage_falls_back_to_default(self):
+        with self._env("not-a-number"):
+            assert _resolve_convert_timeout() == _DEFAULT_PDF_CONVERT_TIMEOUT

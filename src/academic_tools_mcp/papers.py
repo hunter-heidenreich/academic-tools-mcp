@@ -20,12 +20,29 @@ on the next call.
 
 import asyncio
 import hashlib
+import os
 import re
 import shlex
+import signal
+import time
 from pathlib import Path
 from typing import Any
 
 from . import cache, config
+
+# Default subprocess timeout for PDF→markdown conversion. Big PDFs on
+# CPU-only MinerU runs can legitimately take 20+ minutes, so we err
+# generous. Tunable via PDF_CONVERT_TIMEOUT (seconds); 0/empty disables.
+_DEFAULT_PDF_CONVERT_TIMEOUT = 1800.0
+
+# Global cap: at most one PDF→markdown conversion runs across the whole
+# server at a time. Conversion can pin a CPU/GPU for tens of minutes;
+# running multiple in parallel just thrashes resources. A second caller
+# that arrives while one is already running gets a structured "busy"
+# error and is expected to retry later — we deliberately do NOT queue,
+# because a caller that wanted to wait could have done so itself.
+_global_convert_lock = asyncio.Lock()
+_current_conversion: dict[str, Any] | None = None
 
 # Approximate tokens per character (conservative estimate for English text)
 _CHARS_PER_TOKEN = 4
@@ -42,6 +59,56 @@ _CONVERTERS: dict[str, str] = {
     "mineru": 'mineru -p "{input}" -o "{output_dir}"',
     "marker": 'marker_single "{input}" --output_dir "{output_dir}"',
 }
+
+
+def _busy_error(pdf_size_mb: float) -> dict[str, Any]:
+    """Build the response for a caller that hit the global conversion gate.
+
+    Tells the caller what is currently running and how long it has been
+    going so an agent can decide whether to back off briefly or move on.
+    """
+    info = _current_conversion or {}
+    started_at = info.get("started_at")
+    elapsed = (time.monotonic() - started_at) if started_at is not None else 0.0
+    canonical = info.get("canonical", "unknown")
+    namespace = info.get("namespace", "unknown")
+    return {
+        "error": (
+            f"PDF conversion already in progress for {namespace}/{canonical} "
+            f"({elapsed:.0f}s elapsed). The server runs at most one conversion "
+            "at a time; retry shortly."
+        ),
+        "retryable": True,
+        "busy": True,
+        "in_progress": {
+            "namespace": namespace,
+            "canonical": canonical,
+            "elapsed_seconds": round(elapsed, 1),
+        },
+        "pdf_size_mb": round(pdf_size_mb, 1),
+    }
+
+
+def _resolve_convert_timeout() -> float | None:
+    """Resolve the PDF conversion timeout from PDF_CONVERT_TIMEOUT.
+
+    Returns the timeout in seconds, or None to disable the timeout.
+    Unset / empty / "0" / negative / non-numeric values are treated as
+    "use the default"; an explicit "none" / "off" / "disabled" disables.
+    """
+    raw = config.get("PDF_CONVERT_TIMEOUT")
+    if raw is None:
+        return _DEFAULT_PDF_CONVERT_TIMEOUT
+    raw = raw.strip().lower()
+    if raw in {"none", "off", "disabled", "0"}:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_PDF_CONVERT_TIMEOUT
+    if value <= 0:
+        return None
+    return value
 
 
 def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
@@ -88,6 +155,27 @@ def _markdown_path(namespace: str, canonical: str) -> Path:
 def _sections_key(canonical: str) -> str:
     """Cache key for section index JSON."""
     return canonical.replace("/", "_")
+
+
+# Per-paper async lock so two concurrent reads of the same paper don't both
+# re-parse the markdown and race to write the sections cache. The lock dict
+# grows as new papers are seen; entries are tiny (a single Lock) and the
+# pattern of an MCP session is "tens to hundreds of papers", so unbounded
+# growth is acceptable in practice.
+_section_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
+    """Return the async lock guarding the sections cache for one paper.
+
+    dict.setdefault is atomic at the GIL level, so racing constructors
+    are safe — only one Lock wins, the other is discarded uncontended.
+    """
+    key = (namespace, canonical)
+    lock = _section_locks.get(key)
+    if lock is None:
+        lock = _section_locks.setdefault(key, asyncio.Lock())
+    return lock
 
 
 # Fixed heading levels: H1 and H2 both open a new section (converters
@@ -266,35 +354,47 @@ async def convert_pdf(
 
     # If the markdown is already cached, never re-run the slow conversion —
     # re-parse from the existing markdown if the sections cache is missing
-    # or stale, and refresh the sections cache.
+    # or stale, and refresh the sections cache. The lock serialises this
+    # block per paper so two concurrent callers don't both re-parse.
     if md_path.exists():
-        markdown = md_path.read_text()
-        current_checksum = _markdown_checksum(md_path)
-        cached_sections = cache.get(namespace, "sections", _sections_key(canonical))
+        async with _sections_lock(namespace, canonical):
+            markdown = md_path.read_text()
+            current_checksum = _markdown_checksum(md_path)
+            cached_sections = cache.get(
+                namespace, "sections", _sections_key(canonical)
+            )
 
-        if cached_sections is not None:
-            stored_checksum = cached_sections.get("markdown_checksum")
-            if stored_checksum is not None and stored_checksum == current_checksum:
-                return {
-                    "markdown_path": str(md_path),
-                    "sections": cached_sections.get("sections", parse_sections(markdown)),
-                    "cached": True,
-                }
+            if cached_sections is not None:
+                stored_checksum = cached_sections.get("markdown_checksum")
+                if (
+                    stored_checksum is not None
+                    and stored_checksum == current_checksum
+                ):
+                    # Don't use dict.get's default arg — it evaluates eagerly
+                    # and would call parse_sections on every cache hit.
+                    sections = cached_sections.get("sections")
+                    if sections is None:
+                        sections = parse_sections(markdown)
+                    return {
+                        "markdown_path": str(md_path),
+                        "sections": sections,
+                        "cached": True,
+                    }
 
-        # Sections cache missing or stale — re-parse the existing markdown
-        # and refresh the sections cache. No subprocess needed.
-        sections = parse_sections(markdown)
-        cache.put(
-            namespace,
-            "sections",
-            _sections_key(canonical),
-            {"sections": sections, "markdown_checksum": current_checksum},
-        )
-        return {
-            "markdown_path": str(md_path),
-            "sections": sections,
-            "cached": True,
-        }
+            # Sections cache missing or stale — re-parse the existing markdown
+            # and refresh the sections cache. No subprocess needed.
+            sections = parse_sections(markdown)
+            cache.put(
+                namespace,
+                "sections",
+                _sections_key(canonical),
+                {"sections": sections, "markdown_checksum": current_checksum},
+            )
+            return {
+                "markdown_path": str(md_path),
+                "sections": sections,
+                "cached": True,
+            }
 
     if not pdf_path.exists():
         return {"error": f"PDF not found at: {pdf_path}"}
@@ -303,92 +403,145 @@ async def convert_pdf(
     pdf_size_bytes = pdf_path.stat().st_size
     pdf_size_mb = pdf_size_bytes / (1024 * 1024)
 
-    # Run PDF converter in a subprocess
-    extract_dir = Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
-    converter_cmd = _build_converter_command(pdf_path, extract_dir)
-    quoted_extract = shlex.quote(str(extract_dir))
+    # Global single-conversion gate. The check-then-acquire is safe
+    # because asyncio.Lock.acquire() on an uncontended lock returns
+    # without yielding — no other coroutine can sneak in between
+    # `if locked()` and `async with`.
+    if _global_convert_lock.locked():
+        return _busy_error(pdf_size_mb)
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "bash", "-c",
-            f'rm -rf {quoted_extract} 2>/dev/null; {converter_cmd} 2>&1',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        stdout, stderr = await proc.communicate()
-    except OSError as e:
-        # Process spawn failed (bash missing, fork EAGAIN, permission denied).
-        # Different from a converter that ran and failed.
-        return {
-            "error": (
-                f"Could not start PDF converter subprocess: {e}. "
-                "Check that bash is on PATH and that the PDF_CONVERTER / "
-                "PDF_CONVERTER_VENV env vars point at a usable command."
-            ),
-            "retryable": False,
-            "pdf_size_mb": round(pdf_size_mb, 1),
+    async with _global_convert_lock:
+        global _current_conversion
+        _current_conversion = {
+            "namespace": namespace,
+            "canonical": canonical,
+            "started_at": time.monotonic(),
         }
+        try:
+            # Run PDF converter in a subprocess
+            extract_dir = Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
+            converter_cmd = _build_converter_command(pdf_path, extract_dir)
+            quoted_extract = shlex.quote(str(extract_dir))
 
-    if proc.returncode != 0:
-        # Converter output may include binary noise on crashes; replace
-        # undecodable bytes rather than raising UnicodeDecodeError ourselves.
-        output = (
-            (stdout or b"").decode("utf-8", errors="replace")
-            + (stderr or b"").decode("utf-8", errors="replace")
-        )
-        return {
-            "error": f"PDF conversion failed (exit {proc.returncode}): {output[-500:]}",
-            "retryable": False,
-            "pdf_size_mb": round(pdf_size_mb, 1),
-        }
+            timeout = _resolve_convert_timeout()
 
-    # Find the generated markdown file in the output directory
-    stem = pdf_path.stem
-    candidates = list(extract_dir.glob(f"**/{stem}.md"))
+            try:
+                # start_new_session=True puts the converter (and any children
+                # it spawns) into a fresh process group so we can SIGKILL the
+                # whole tree on timeout. Without it, killing `proc` only kills
+                # bash and orphans the converter, which keeps eating CPU/GPU.
+                proc = await asyncio.create_subprocess_exec(
+                    "bash", "-c",
+                    f'rm -rf {quoted_extract} 2>/dev/null; {converter_cmd} 2>&1',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+            except OSError as e:
+                # Process spawn failed (bash missing, fork EAGAIN, perms).
+                # Different from a converter that ran and failed.
+                return {
+                    "error": (
+                        f"Could not start PDF converter subprocess: {e}. "
+                        "Check that bash is on PATH and that the PDF_CONVERTER / "
+                        "PDF_CONVERTER_VENV env vars point at a usable command."
+                    ),
+                    "retryable": False,
+                    "pdf_size_mb": round(pdf_size_mb, 1),
+                }
 
-    if not candidates:
-        # Try any .md file in the output
-        candidates = list(extract_dir.glob("**/*.md"))
+            try:
+                if timeout is None:
+                    stdout, stderr = await proc.communicate()
+                else:
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout
+                    )
+            except asyncio.TimeoutError:
+                # Take down the whole process group, then give it a moment to
+                # actually exit before we return so we don't leave zombies.
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
+                return {
+                    "error": (
+                        f"PDF conversion timed out after {timeout:.0f}s "
+                        f"(PDF: {pdf_size_mb:.1f} MB). "
+                        "Increase PDF_CONVERT_TIMEOUT or set it to 'none' to disable."
+                    ),
+                    "retryable": False,
+                    "timed_out": True,
+                    "timeout_seconds": timeout,
+                    "pdf_size_mb": round(pdf_size_mb, 1),
+                }
 
-    if not candidates:
-        return {
-            "error": f"PDF converter produced no markdown output (PDF: {pdf_size_mb:.1f} MB).",
-            "retryable": False,
-            "pdf_size_mb": round(pdf_size_mb, 1),
-        }
+            if proc.returncode != 0:
+                # Converter output may include binary noise on crashes;
+                # replace undecodable bytes rather than raising
+                # UnicodeDecodeError ourselves.
+                output = (
+                    (stdout or b"").decode("utf-8", errors="replace")
+                    + (stderr or b"").decode("utf-8", errors="replace")
+                )
+                return {
+                    "error": f"PDF conversion failed (exit {proc.returncode}): {output[-500:]}",
+                    "retryable": False,
+                    "pdf_size_mb": round(pdf_size_mb, 1),
+                }
 
-    source_md = candidates[0]
-    markdown = source_md.read_text()
+            # Find the generated markdown file in the output directory
+            stem = pdf_path.stem
+            candidates = list(extract_dir.glob(f"**/{stem}.md"))
 
-    # Post-process the raw converter output before caching
-    lines = markdown.split("\n")
-    lines = [line.rstrip() for line in lines]
-    markdown = "\n".join(lines)
+            if not candidates:
+                # Try any .md file in the output
+                candidates = list(extract_dir.glob("**/*.md"))
 
-    # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
-    # When there is no caption, the path is never useful, so drop it.
-    # When there is a caption, keep the caption text and drop the path.
-    markdown = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'![\1]()', markdown)
+            if not candidates:
+                return {
+                    "error": f"PDF converter produced no markdown output (PDF: {pdf_size_mb:.1f} MB).",
+                    "retryable": False,
+                    "pdf_size_mb": round(pdf_size_mb, 1),
+                }
 
-    # Store markdown in cache
-    md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(markdown)
+            source_md = candidates[0]
+            markdown = source_md.read_text()
 
-    # Parse sections and cache with checksum
-    sections = parse_sections(markdown)
-    sections_data = {
-        "sections": sections,
-        "markdown_checksum": _markdown_checksum(md_path),
-    }
-    cache.put(namespace, "sections", _sections_key(canonical), sections_data)
+            # Post-process the raw converter output before caching
+            lines = markdown.split("\n")
+            lines = [line.rstrip() for line in lines]
+            markdown = "\n".join(lines)
 
-    # Clean up temp directory
-    import shutil
-    shutil.rmtree(extract_dir, ignore_errors=True)
+            # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
+            # When there is no caption, the path is never useful, so drop it.
+            # When there is a caption, keep the caption text and drop the path.
+            markdown = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'![\1]()', markdown)
 
-    return {
-        "markdown_path": str(md_path),
-        "sections": sections,
-        "cached": False,
-    }
+            # Store markdown in cache
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(markdown)
+
+            # Parse sections and cache with checksum
+            sections = parse_sections(markdown)
+            sections_data = {
+                "sections": sections,
+                "markdown_checksum": _markdown_checksum(md_path),
+            }
+            cache.put(namespace, "sections", _sections_key(canonical), sections_data)
+
+            # Clean up temp directory
+            import shutil
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+            return {
+                "markdown_path": str(md_path),
+                "sections": sections,
+                "cached": False,
+            }
+        finally:
+            _current_conversion = None

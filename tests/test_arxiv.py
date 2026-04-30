@@ -253,3 +253,298 @@ class TestThrottledGet:
         result = await arxiv._throttled_get(mock_client, "http://example.com")
         assert result is mock_response
         assert len(slept) == 0
+
+
+# ---------------------------------------------------------------------------
+# Burst-cap backpressure
+# ---------------------------------------------------------------------------
+
+
+class TestThrottleBackpressure:
+    """The throttle refuses to stack more than ``_MAX_PENDING`` callers
+    behind itself. Past that, the next caller raises
+    ``LocalBackpressureError`` so the agent gets fast feedback rather
+    than quietly queueing for tens of seconds.
+    """
+
+    @pytest.mark.asyncio
+    async def test_overflow_raises_local_backpressure(self, monkeypatch):
+        # Force the gauge to the cap so the next call trips it.
+        monkeypatch.setattr(arxiv, "_pending", arxiv._MAX_PENDING)
+        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+
+        mock_client = MagicMock()
+        # An overflow must NOT issue a network request; if it did, the
+        # AsyncMock would record the call.
+        mock_client.get = AsyncMock(side_effect=AssertionError(
+            "throttle should refuse before issuing a request"
+        ))
+
+        with pytest.raises(arxiv._http.LocalBackpressureError) as ei:
+            await arxiv._throttled_get(mock_client, "http://example.com")
+
+        exc = ei.value
+        assert exc.provider == "arXiv"
+        assert exc.pending == arxiv._MAX_PENDING
+        assert exc.max_pending == arxiv._MAX_PENDING
+
+        # The gauge must not have been bumped by an overflow call;
+        # otherwise legitimate callers further down the line would
+        # trip the cap when they shouldn't.
+        assert arxiv._pending == arxiv._MAX_PENDING
+
+    @pytest.mark.asyncio
+    async def test_pending_resets_when_request_succeeds(self, monkeypatch):
+        # One happy-path call should bump the gauge and drop it back.
+        monkeypatch.setattr(arxiv, "_pending", 0)
+        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
+        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+
+        async def mock_sleep(_):
+            pass
+
+        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=MagicMock())
+
+        await arxiv._throttled_get(mock_client, "http://example.com")
+        assert arxiv._pending == 0
+
+    @pytest.mark.asyncio
+    async def test_pending_resets_when_request_raises(self, monkeypatch):
+        # An upstream failure mid-request must still drop the gauge —
+        # otherwise a single transient error would permanently lower
+        # our effective burst budget.
+        monkeypatch.setattr(arxiv, "_pending", 0)
+        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
+        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+
+        async def mock_sleep(_):
+            pass
+
+        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with pytest.raises(RuntimeError):
+            await arxiv._throttled_get(mock_client, "http://example.com")
+        assert arxiv._pending == 0
+
+
+# ---------------------------------------------------------------------------
+# Single-flight on get_paper
+# ---------------------------------------------------------------------------
+
+
+class TestGetPaperSingleFlight:
+    """Concurrent get_paper(id) calls for the same canonical ID must
+    collapse into one outbound HTTP fetch. Without this, four parallel
+    unified-paper tools (metadata / authors / abstract / bibtex) for
+    the same arXiv ID would each fetch the same paper and collectively
+    burn ~12s of throttle gap.
+    """
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_id_collapses_to_one_fetch(
+        self, tmp_path, monkeypatch
+    ):
+        from academic_tools_mcp import _clients, _singleflight, cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(arxiv, "_pending", 0)
+        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
+        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(
+            arxiv, "_single_flight", _singleflight.SingleFlight()
+        )
+
+        async def mock_sleep(_):
+            pass
+        monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
+
+        atom_xml = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2301.00001v1</id>
+    <title>Test Title</title>
+    <summary>Test summary.</summary>
+    <published>2023-01-01T00:00:00Z</published>
+    <updated>2023-01-01T00:00:00Z</updated>
+    <author><name>Jane Doe</name></author>
+  </entry>
+</feed>"""
+
+        get_calls = 0
+
+        class StubResponse:
+            text = atom_xml
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        class StubClient:
+            async def get(self, url, **kwargs):
+                nonlocal get_calls
+                get_calls += 1
+                # Yield so the other 4 callers pile up behind the
+                # single-flight slot before this leader resolves.
+                await asyncio.sleep(0)
+                return StubResponse()
+
+        monkeypatch.setattr(
+            _clients, "get_client", lambda *a, **kw: StubClient()
+        )
+
+        results = await asyncio.gather(*[
+            arxiv.get_paper("2301.00001") for _ in range(5)
+        ])
+
+        assert get_calls == 1, (
+            f"single-flight should have coalesced 5 calls into 1 fetch, "
+            f"got {get_calls}"
+        )
+        assert all(r["title"] == "Test Title" for r in results)
+        assert all(r["authors"][0]["name"] == "Jane Doe" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_404_is_negative_cached_no_second_fetch(
+        self, tmp_path, monkeypatch
+    ):
+        # arXiv returns 200 with an "api/errors" entry for invalid IDs.
+        # That's a definitive "not found" — the second call for the
+        # same bad ID must NOT hit the network. Without negative
+        # caching, an agent that retries on error would re-fetch on
+        # every attempt and burn through the throttle budget.
+        from academic_tools_mcp import _clients, _singleflight, cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(arxiv, "_pending", 0)
+        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
+        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(
+            arxiv, "_single_flight", _singleflight.SingleFlight()
+        )
+
+        async def mock_sleep(_):
+            pass
+        monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
+
+        not_found_atom = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format</id>
+    <title>Error</title>
+    <summary>incorrect id format</summary>
+    <published>2023-01-01T00:00:00Z</published>
+    <updated>2023-01-01T00:00:00Z</updated>
+  </entry>
+</feed>"""
+
+        get_calls = 0
+
+        class StubResponse:
+            text = not_found_atom
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        class StubClient:
+            async def get(self, url, **kwargs):
+                nonlocal get_calls
+                get_calls += 1
+                return StubResponse()
+
+        monkeypatch.setattr(
+            _clients, "get_client", lambda *a, **kw: StubClient()
+        )
+
+        # First call: hits the network, gets the not-found, caches it.
+        result1 = await arxiv.get_paper("bogus-id")
+        assert "error" in result1
+        assert "No paper found" in result1["error"]
+        assert get_calls == 1
+
+        # Second call: served from negative cache, no network.
+        result2 = await arxiv.get_paper("bogus-id")
+        assert result2 == result1, (
+            "negative cache must return the same error payload as the "
+            "original not-found, byte-for-byte"
+        )
+        assert "_expires_at" not in result2, (
+            "negative cache bookkeeping must not leak to the agent"
+        )
+        assert get_calls == 1, (
+            f"second call should be served from negative cache, got "
+            f"{get_calls} network calls"
+        )
+
+        # Different bad ID — separate entry, must hit the network.
+        await arxiv.get_paper("another-bogus-id")
+        assert get_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_different_ids_dont_block_each_other(
+        self, tmp_path, monkeypatch
+    ):
+        # Different canonical IDs must NOT share a single-flight slot.
+        # Otherwise unrelated papers would serialise on each other,
+        # which defeats the point.
+        from academic_tools_mcp import _clients, _singleflight, cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(arxiv, "_pending", 0)
+        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
+        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(
+            arxiv, "_single_flight", _singleflight.SingleFlight()
+        )
+
+        async def mock_sleep(_):
+            pass
+        monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
+
+        get_calls = 0
+
+        def _atom(arxiv_id):
+            return f"""<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/{arxiv_id}v1</id>
+    <title>Title {arxiv_id}</title>
+    <summary>Summary.</summary>
+    <published>2023-01-01T00:00:00Z</published>
+    <updated>2023-01-01T00:00:00Z</updated>
+    <author><name>Jane Doe</name></author>
+  </entry>
+</feed>"""
+
+        class StubClient:
+            async def get(self, url, **kwargs):
+                nonlocal get_calls
+                get_calls += 1
+                aid = kwargs["params"]["id_list"]
+                await asyncio.sleep(0)
+                return type("R", (), {
+                    "text": _atom(aid),
+                    "status_code": 200,
+                    "raise_for_status": lambda self: None,
+                })()
+
+        monkeypatch.setattr(
+            _clients, "get_client", lambda *a, **kw: StubClient()
+        )
+
+        results = await asyncio.gather(
+            arxiv.get_paper("2301.00001"),
+            arxiv.get_paper("2302.00002"),
+        )
+
+        assert get_calls == 2, (
+            f"two different IDs should hit the network twice, got {get_calls}"
+        )
+        titles = sorted(r["title"] for r in results)
+        assert titles == ["Title 2301.00001", "Title 2302.00002"]

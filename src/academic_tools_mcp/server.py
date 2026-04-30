@@ -1,15 +1,33 @@
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import acl_anthology, arxiv, biorxiv, cache, crossref, manual, opencitations, openalex, papers, wikipedia
+from . import _clients, acl_anthology, arxiv, biorxiv, cache, crossref, manual, opencitations, openalex, papers, wikipedia
 from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
+
+
+@asynccontextmanager
+async def _lifespan(app: FastMCP):
+    """Manage process-wide resources tied to the server's life.
+
+    On shutdown: close every pooled httpx.AsyncClient so we don't leak
+    sockets if the server is stopped while clients are idle. New
+    clients are pooled lazily on first use, so there is nothing to do
+    on startup.
+    """
+    try:
+        yield
+    finally:
+        await _clients.aclose_all()
+
 
 mcp = FastMCP(
     "academic-tools",
+    lifespan=_lifespan,
     instructions=(
         "Academic paper research. Wraps OpenAlex, arXiv, bioRxiv/medRxiv, "
         "Crossref, OpenCitations, ACL Anthology, and Wikipedia for paper "
@@ -149,8 +167,26 @@ def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+FOLLOW_PUBLISHED = Annotated[
+    bool,
+    Field(
+        description=(
+            "If True and this is a bioRxiv/medRxiv preprint that has a "
+            "journal version (published_doi field), automatically chain "
+            "to OpenAlex and return the published record instead. "
+            "Response carries _source='openalex_via_biorxiv' and a "
+            "preprint_doi field so the chain stays visible. Has no "
+            "effect for other identifier shapes or unpublished preprints."
+        ),
+    ),
+]
+
+
 @mcp.tool
-async def get_paper_metadata(identifier: PAPER_ID) -> dict[str, Any]:
+async def get_paper_metadata(
+    identifier: PAPER_ID,
+    follow_published: FOLLOW_PUBLISHED = False,
+) -> dict[str, Any]:
     """Get core metadata for a paper, dispatched by identifier shape.
 
     Returns ``{_source, ...source-native fields}``:
@@ -160,6 +196,9 @@ async def get_paper_metadata(identifier: PAPER_ID) -> dict[str, Any]:
         published_doi (chain to OpenAlex for the journal version), pdf_url.
       - openalex: title, doi, publication_year, publication_date, type,
         language, venue, is_oa, oa_status, oa_url.
+      - openalex_via_biorxiv: identical to openalex, plus preprint_doi.
+        Only produced when ``follow_published=True`` for a bioRxiv DOI
+        that has a journal version.
 
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     Sibling tools (get_paper_authors / get_paper_abstract / get_paper_bibtex)
@@ -189,6 +228,34 @@ async def get_paper_metadata(identifier: PAPER_ID) -> dict[str, Any]:
         paper = await biorxiv.get_paper(identifier)
         if "error" in paper:
             return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+        published_doi = paper.get("published_doi")
+        if follow_published and published_doi:
+            # Chain to OpenAlex for the journal version. If OpenAlex
+            # doesn't have it (paper too new to index, etc.) we fall
+            # back to the preprint metadata rather than erroring — the
+            # agent asked for "the best version", not "fail if no
+            # journal record".
+            work = await openalex.get_work(published_doi)
+            if "error" not in work:
+                primary_location = work.get("primary_location") or {}
+                source_obj = primary_location.get("source") or {}
+                oa = work.get("open_access") or {}
+                return {
+                    "_source": "openalex_via_biorxiv",
+                    "preprint_doi": paper.get("doi"),
+                    "title": work.get("title"),
+                    "doi": work.get("doi"),
+                    "publication_year": work.get("publication_year"),
+                    "publication_date": work.get("publication_date"),
+                    "type": work.get("type"),
+                    "language": work.get("language"),
+                    "venue": source_obj.get("display_name"),
+                    "is_oa": oa.get("is_oa"),
+                    "oa_status": oa.get("oa_status"),
+                    "oa_url": oa.get("oa_url"),
+                }
+            # Fall through to preprint metadata; the agent can still
+            # see published_doi in the response and decide what to do.
         return {
             "_source": "biorxiv",
             "doi": paper.get("doi"),
@@ -199,7 +266,7 @@ async def get_paper_metadata(identifier: PAPER_ID) -> dict[str, Any]:
             "category": paper.get("category"),
             "license": paper.get("license"),
             "server": paper.get("server"),
-            "published_doi": paper.get("published_doi"),
+            "published_doi": published_doi,
             "pdf_url": paper.get("pdf_url"),
         }
 
@@ -662,8 +729,11 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
     expensive conversion was skipped (re-parses also count as cached).
     Each section entry has ``{index, title, h3s, approx_tokens}``.
 
-    Errors: ``{error, retryable: False, pdf_size_mb?, suggestion}``.
+    Errors: ``{error, retryable, pdf_size_mb?, suggestion}``.
       - PDF not cached → suggestion points at download_pdf / import_paper.
+      - Server already running another conversion →
+        ``{busy: True, retryable: True, in_progress: {...}}``. Only one
+        conversion runs at a time; retry shortly.
       - Conversion failure (subprocess error, timeout, no output) →
         non-retryable; agent should try a different version or a
         pre-converted markdown via import_paper.
@@ -681,6 +751,13 @@ async def convert_paper(identifier: PAPER_ID) -> dict[str, Any]:
 
     result = await papers.convert_pdf(pdf, target["namespace"], target["canonical"])
     if "error" in result:
+        if result.get("busy"):
+            return _enrich_error(
+                result,
+                "Another PDF is being converted right now. Wait and retry; "
+                "in the meantime you can still read sections of papers that "
+                "are already converted, or work on non-PDF tools.",
+            )
         return _enrich_error(
             result,
             "Conversion failed permanently — do not retry. "
@@ -714,32 +791,35 @@ async def get_paper_sections(identifier: PAPER_ID) -> dict[str, Any]:
             "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
         }
 
-    # Check cache with checksum validation
-    cached = cache.get(namespace, "sections", papers._sections_key(canonical))
-    if cached is not None:
-        stored_checksum = cached.get("markdown_checksum", None)
-        current_checksum = papers._markdown_checksum(md_path)
-        if stored_checksum is not None and stored_checksum == current_checksum:
-            # Cache valid — return stored sections
-            sections_data = cached
+    # Check cache with checksum validation. Lock serialises concurrent
+    # readers of the same paper so they don't both re-parse and race
+    # to write the sections cache.
+    async with papers._sections_lock(namespace, canonical):
+        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
+        if cached is not None:
+            stored_checksum = cached.get("markdown_checksum", None)
+            current_checksum = papers._markdown_checksum(md_path)
+            if stored_checksum is not None and stored_checksum == current_checksum:
+                # Cache valid — return stored sections
+                sections_data = cached
+            else:
+                # Missing or mismatched checksum — re-parse and update cache
+                markdown = md_path.read_text()
+                sections = papers.parse_sections(markdown)
+                sections_data = {
+                    "sections": sections,
+                    "markdown_checksum": current_checksum,
+                }
+                cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
         else:
-            # Missing or mismatched checksum — re-parse and update cache
+            # No cache — parse and create
             markdown = md_path.read_text()
             sections = papers.parse_sections(markdown)
             sections_data = {
                 "sections": sections,
-                "markdown_checksum": current_checksum,
+                "markdown_checksum": papers._markdown_checksum(md_path),
             }
             cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
-    else:
-        # No cache — parse and create
-        markdown = md_path.read_text()
-        sections = papers.parse_sections(markdown)
-        sections_data = {
-            "sections": sections,
-            "markdown_checksum": papers._markdown_checksum(md_path),
-        }
-        cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
 
     sections_list = sections_data.get("sections", [])
     return {
@@ -949,15 +1029,19 @@ def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
 
 
 REF_SOURCE = Annotated[
-    Literal["crossref", "opencitations"],
+    Literal["auto", "crossref", "opencitations"],
     Field(
         description="Which reference source to page through. "
+        "'auto' (default) surveys both providers in parallel and picks "
+        "the one with more references — saves a turn versus calling "
+        "get_paper_references_count first. "
         "'crossref' gives structured metadata (author, title, year, journal, DOI) "
         "but quality varies by publisher. "
         "'opencitations' gives DOI-to-DOI links with cross-referenced IDs "
         "(OMID, OpenAlex, PMID) and self-citation flags, aggregated from "
         "Crossref/PubMed/DataCite/OpenAIRE/JaLC — may have entries Crossref lacks. "
-        "Call get_paper_references_count first to compare coverage."
+        "Call get_paper_references_count first only if you want to compare "
+        "coverage explicitly before paginating."
     ),
 ]
 
@@ -997,53 +1081,23 @@ async def get_paper_references_count(doi: DOI) -> dict[str, Any]:
     return {"doi": doi, "sources": sources}
 
 
-@mcp.tool
-async def get_paper_references(
-    doi: DOI,
-    source: REF_SOURCE,
-    page: PAGE = 1,
-    page_size: PAGE_SIZE = 20,
-) -> dict[str, Any]:
-    """Page through outgoing references (bibliography) from the chosen source.
+def _crossref_refs_page(work: dict[str, Any], doi: str, page: int, page_size: int) -> dict[str, Any]:
+    raw_refs = work.get("reference") or []
+    total = len(raw_refs)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        "_source": "crossref",
+        "doi": doi,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < total,
+        "references": [_format_crossref_reference(r) for r in raw_refs[start:end]],
+    }
 
-    Returns ``{_source, doi, total, page, page_size, has_more, references: [...]}``.
-    The per-entry shape differs by source:
-      - crossref: structured metadata, fields conditionally present based
-        on publisher deposit quality. Possible keys: doi, author, title,
-        year, journal, volume, first_page, unstructured (raw citation
-        text fallback when structured fields are absent).
-      - opencitations: DOI-to-DOI links with cross-referenced IDs flattened
-        at the top level. Possible keys: doi (cited paper), omid, openalex,
-        pmid, creation (date string), journal_self_citation,
-        author_self_citation. No bibliographic metadata.
 
-    Defaults: page=1, page_size=20 (1-50). Call get_paper_references_count
-    first to compare coverage and see totals.
-
-    Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
-    hints for transient failures.
-    """
-    if source == "crossref":
-        work = await _fetch_crossref_work(doi)
-        if "error" in work:
-            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
-        raw_refs = work.get("reference") or []
-        total = len(raw_refs)
-        start = (page - 1) * page_size
-        end = start + page_size
-        return {
-            "_source": "crossref",
-            "doi": doi,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "has_more": end < total,
-            "references": [_format_crossref_reference(r) for r in raw_refs[start:end]],
-        }
-
-    data = await opencitations.get_references(doi)
-    if "error" in data:
-        return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
+def _opencitations_refs_page(data: dict[str, Any], doi: str, page: int, page_size: int) -> dict[str, Any]:
     refs = data.get("references", [])
     total = len(refs)
     start = (page - 1) * page_size
@@ -1057,6 +1111,84 @@ async def get_paper_references(
         "has_more": end < total,
         "references": refs[start:end],
     }
+
+
+@mcp.tool
+async def get_paper_references(
+    doi: DOI,
+    source: REF_SOURCE = "auto",
+    page: PAGE = 1,
+    page_size: PAGE_SIZE = 20,
+) -> dict[str, Any]:
+    """Page through outgoing references (bibliography) from the chosen source.
+
+    Default ``source="auto"`` fires Crossref and OpenCitations in parallel,
+    picks whichever has more references, and pages from that one — saves
+    a turn vs. calling get_paper_references_count first. The chosen
+    source is reported in ``_source`` so subsequent pagination calls can
+    pin it explicitly. If one provider errors, the other wins
+    automatically; if both error, the response carries both errors.
+
+    Returns ``{_source, doi, total, page, page_size, has_more, references: [...]}``.
+    The per-entry shape differs by source:
+      - crossref: structured metadata, fields conditionally present based
+        on publisher deposit quality. Possible keys: doi, author, title,
+        year, journal, volume, first_page, unstructured (raw citation
+        text fallback when structured fields are absent).
+      - opencitations: DOI-to-DOI links with cross-referenced IDs flattened
+        at the top level. Possible keys: doi (cited paper), omid, openalex,
+        pmid, creation (date string), journal_self_citation,
+        author_self_citation. No bibliographic metadata.
+
+    Defaults: page=1, page_size=20 (1-50). Call get_paper_references_count
+    explicitly only if you want to compare coverage before committing.
+
+    Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
+    hints for transient failures.
+    """
+    if source == "crossref":
+        work = await _fetch_crossref_work(doi)
+        if "error" in work:
+            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+        return _crossref_refs_page(work, doi, page, page_size)
+
+    if source == "opencitations":
+        data = await opencitations.get_references(doi)
+        if "error" in data:
+            return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
+        return _opencitations_refs_page(data, doi, page, page_size)
+
+    # source == "auto": survey both, pick the bigger. The fetches are
+    # cached so a follow-up page=2 call with the same source doesn't
+    # re-survey or re-fetch.
+    cr_task = _fetch_crossref_work(doi)
+    oc_task = opencitations.get_references(doi)
+    cr_work, oc_data = await asyncio.gather(cr_task, oc_task)
+
+    cr_count = len(cr_work.get("reference") or []) if "error" not in cr_work else -1
+    oc_count = oc_data.get("count", 0) if "error" not in oc_data else -1
+
+    if cr_count < 0 and oc_count < 0:
+        # Both upstreams failed. Surface both errors so the agent can
+        # decide whether to retry or pick one explicitly.
+        return {
+            "error": "Both reference sources failed for this DOI.",
+            "sources": {
+                "crossref": {"error": cr_work.get("error")},
+                "opencitations": {"error": oc_data.get("error")},
+            },
+            "suggestion": (
+                "Both Crossref and OpenCitations are unreachable or have "
+                "no record for this DOI. Check the DOI format with "
+                "search_crossref_by_title, or retry — these were transient "
+                "failures if either error message says 'Transient'."
+            ),
+        }
+
+    # Pick the bigger count; tie goes to Crossref (richer metadata).
+    if cr_count >= oc_count:
+        return _crossref_refs_page(cr_work, doi, page, page_size)
+    return _opencitations_refs_page(oc_data, doi, page, page_size)
 
 
 @mcp.tool

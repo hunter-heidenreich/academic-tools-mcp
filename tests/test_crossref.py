@@ -190,6 +190,91 @@ class TestSearchWorksParams:
 
 
 # ---------------------------------------------------------------------------
+# search_works opportunistic cache-warming
+# ---------------------------------------------------------------------------
+
+
+class TestSearchWorksCacheWarming:
+    """Each search hit is the same shape as a /works/{doi} response, so
+    caching it under the works namespace turns an inevitable follow-up
+    get_work(doi) call into a free cache hit. Mirrors arxiv.search_papers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_search_hits_warm_works_cache(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(crossref, "_last_request_time", 0.0)
+        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
+
+        # Two hits with DOIs + one hit without (real-world quirk —
+        # Crossref occasionally returns items missing a DOI). The
+        # missing-DOI hit must NOT crash and must NOT be cached.
+        items = [
+            {"DOI": "10.1234/A", "title": ["A"], "type": "journal-article"},
+            {"DOI": "10.5678/B", "title": ["B"], "type": "journal-article"},
+            {"title": ["C — no DOI"], "type": "journal-article"},
+        ]
+
+        async def mock_get(url, **kwargs):
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.raise_for_status = MagicMock()
+            mock_resp.json.return_value = {"message": {"items": items}}
+            return mock_resp
+
+        mock_client = MagicMock()
+        mock_client.get = mock_get
+
+        monkeypatch.setattr(
+            crossref._clients, "get_client", lambda *a, **kw: mock_client
+        )
+
+        await crossref.search_works("anything")
+
+        # The two DOIs are cached under the works namespace and a
+        # subsequent get_work hits the cache without going to network.
+        assert cache.get(crossref.NAMESPACE, "works", "10.1234/a") == items[0]
+        assert cache.get(crossref.NAMESPACE, "works", "10.5678/b") == items[1]
+
+    @pytest.mark.asyncio
+    async def test_existing_cached_entry_not_clobbered(self, tmp_path, monkeypatch):
+        # If a search hit comes back with a sparser version of an
+        # already-cached work, do NOT overwrite — the cached version
+        # was deliberately fetched and may have richer fields.
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(crossref, "_last_request_time", 0.0)
+        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
+
+        # Pre-seed a richer cached version.
+        rich = {"DOI": "10.1234/A", "title": ["A"], "abstract": "<p>full</p>"}
+        cache.put(crossref.NAMESPACE, "works", "10.1234/a", rich)
+
+        sparse = {"DOI": "10.1234/A", "title": ["A"]}
+
+        async def mock_get(url, **kwargs):
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.raise_for_status = MagicMock()
+            mock_resp.json.return_value = {"message": {"items": [sparse]}}
+            return mock_resp
+
+        mock_client = MagicMock()
+        mock_client.get = mock_get
+        monkeypatch.setattr(
+            crossref._clients, "get_client", lambda *a, **kw: mock_client
+        )
+
+        await crossref.search_works("anything")
+
+        # Rich entry survives.
+        assert cache.get(crossref.NAMESPACE, "works", "10.1234/a") == rich
+
+
+# ---------------------------------------------------------------------------
 # Headers
 # ---------------------------------------------------------------------------
 
