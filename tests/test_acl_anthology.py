@@ -55,6 +55,21 @@ class TestDoiToAnthologyId:
     def test_whitespace_stripped(self):
         assert acl_anthology.doi_to_anthology_id("  10.18653/v1/2023.acl-long.1  ") == "2023.acl-long.1"
 
+    def test_old_format_lowercased_uppercased(self):
+        # Crossref hands old-format DOIs back lowercased; the CDN path is
+        # case-sensitive, so the extracted ID must be uppercased.
+        assert acl_anthology.doi_to_anthology_id("10.18653/v1/p16-1160") == "P16-1160"
+
+    def test_old_format_already_uppercase_idempotent(self):
+        assert acl_anthology.doi_to_anthology_id("10.18653/v1/P16-1160") == "P16-1160"
+
+    def test_old_format_workshop_venue(self):
+        assert acl_anthology.doi_to_anthology_id("10.18653/v1/w04-1013") == "W04-1013"
+
+    def test_new_format_stays_lowercase(self):
+        # New-format IDs carry lowercase venue letters that must be preserved.
+        assert acl_anthology.doi_to_anthology_id("10.18653/v1/2023.acl-long.1") == "2023.acl-long.1"
+
 
 # ---------------------------------------------------------------------------
 # PDF URL construction
@@ -67,6 +82,32 @@ class TestPdfUrl:
 
     def test_emnlp(self):
         assert acl_anthology.pdf_url("2022.emnlp-main.100") == "https://aclanthology.org/2022.emnlp-main.100.pdf"
+
+    def test_old_format_lowercased_doi_round_trip(self):
+        # A Crossref-lowercased old-format DOI must produce the case-sensitive
+        # URL the CDN expects (P16-1160.pdf, not p16-1160.pdf).
+        aid = acl_anthology.doi_to_anthology_id("10.18653/v1/p16-1160")
+        assert acl_anthology.pdf_url(aid) == "https://aclanthology.org/P16-1160.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Anthology ID normalization
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeAnthologyId:
+    def test_old_format_lowercased(self):
+        assert acl_anthology._normalize_anthology_id("p16-1160") == "P16-1160"
+
+    def test_old_format_already_uppercase(self):
+        assert acl_anthology._normalize_anthology_id("P16-1160") == "P16-1160"
+
+    def test_new_format_unchanged(self):
+        assert acl_anthology._normalize_anthology_id("2023.acl-long.1") == "2023.acl-long.1"
+
+    def test_new_format_mixed_case_left_as_is(self):
+        # Not an old-format match, so it is returned verbatim (no spurious upper()).
+        assert acl_anthology._normalize_anthology_id("2023.ACL-long.1") == "2023.ACL-long.1"
 
 
 # ---------------------------------------------------------------------------

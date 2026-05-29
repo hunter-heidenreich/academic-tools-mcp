@@ -34,7 +34,7 @@ The findings are grouped by severity-of-action, not by subsystem:
 | 1 | ~~`force_refresh` deletes cached PDF *before* re-download; failed refetch loses the only copy~~ **(RESOLVED)** | `arxiv.py:393`, `biorxiv.py:321`, `acl_anthology.py:170` | Bug | Medium |
 | 2 | ~~Temp extraction dir leaks on every conversion *failure* path~~ **(RESOLVED)** | `papers.py:553`, early returns vs. `:669` | Bug | Low |
 | 3 | `get_with_retry` clamps `Retry-After` to 30s; docstring claims 5-min waits are respected | `_http.py:190`, `:209` vs. `:174` | Bug (doc/code mismatch) | Low |
-| 4 | ACL old-style IDs are case-sensitive in the URL; no normalization | `acl_anthology.py:111`, `:128` | Fragility | Medium |
+| 4 | ~~ACL old-style IDs are case-sensitive in the URL; no normalization~~ **(RESOLVED)** | `acl_anthology.py:111`, `:128` | Fragility | Medium |
 | 5 | ~~`find_in_paper` truncates silently at `max_results` with no "more exist" flag~~ **(RESOLVED)** | `papers.py:335` | Fragility | Low |
 | 6 | ~~`import_markdown` caches sections without a checksum (inconsistent with `convert_pdf`)~~ **(RESOLVED)** | `manual.py:290` | Fragility | Low |
 | 7 | Section-lock eviction can spin O(N) over a full held map | `papers.py:210` | Fragility | Very low |
@@ -192,7 +192,19 @@ or an absolute `min(retry_after, 600)`) and keep a sanity ceiling. The
 
 ## 2. Fragilities
 
-### 2.1 ACL Anthology old-style IDs are case-sensitive and not normalized
+### 2.1 ACL Anthology old-style IDs are case-sensitive and not normalized — **RESOLVED**
+
+**Resolution.** `doi_to_anthology_id` now routes the extracted suffix through a
+new `_normalize_anthology_id` helper that uppercases old-format IDs (matched by
+`_OLD_FORMAT_ID_RE = ^[A-Za-z]\d{2}-\d+$`, e.g. `p16-1160` → `P16-1160`) and
+leaves new-format IDs (`2023.acl-long.1`) untouched. Old-format IDs are letter +
+digits only, so `.upper()` is safe. Because `pdf_url`, `pdf_path`, and
+`_pdf_filename` all derive from `doi_to_anthology_id`'s output, the single
+chokepoint fix corrects both the CDN URL and the cache filename; the lowercased
+cache key via `_canonical_key` is unchanged. A Crossref-lowercased DOI now fetches
+instead of 404ing. Regression coverage in `tests/test_acl_anthology.py`
+(`TestNormalizeAnthologyId` plus old-format cases in `TestDoiToAnthologyId` and a
+`TestPdfUrl` round-trip). Original analysis retained below.
 
 **Where.** `acl_anthology.py:111-120` extracts the ID verbatim from the DOI, and
 `:128-130` builds the PDF URL by direct interpolation:
@@ -471,8 +483,8 @@ If picking these up, a sensible sequence:
 1. ~~**Finding 1.1** (force_refresh data loss) — highest-value correctness fix,
    localized to three call sites plus the shared stream helper.~~ **DONE.**
 2. ~~**Finding 1.2** (temp-dir leak) — one `finally` block in `papers.py`.~~ **DONE.**
-3. **Finding 2.1** (ACL case normalization) — removes a recurring operator paper
-   cut; small, testable.
+3. ~~**Finding 2.1** (ACL case normalization) — removes a recurring operator paper
+   cut; small, testable.~~ **DONE.**
 4. ~~**Findings 2.2 / 2.3** — cheap correctness/consistency cleanups.~~ **DONE.**
    **Finding 1.3** (`Retry-After` clamp doc/code mismatch) — still open.
 5. **Finding 3.1 or 3.2** (OA-URL download path, or fast-extract fallback) — the
