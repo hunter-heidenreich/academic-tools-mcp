@@ -289,9 +289,20 @@ class TestGetWithRetry:
         assert self.slept == [3.0]
 
     @pytest.mark.asyncio
+    async def test_retry_after_long_cooldown_respected(self):
+        # A genuine multi-minute Retry-After is honoured (it sits below the
+        # 10-minute absolute ceiling). This used to clamp to 30s.
+        client = _FakeClient([
+            _response(429, headers={"Retry-After": "300"}),
+            _response(200),
+        ])
+        await _http.get_with_retry(client, "u")
+        assert self.slept == [300.0]
+
+    @pytest.mark.asyncio
     async def test_retry_after_capped_to_avoid_indefinite_pin(self):
         # A misconfigured server returning a huge Retry-After must not
-        # pin our throttle for hours; the cap is backoff * 30.
+        # pin our throttle for hours; the absolute ceiling is 600s (10 min).
         client = _FakeClient([
             _response(503, headers={"Retry-After": "999999"}),
             _response(200),
@@ -299,7 +310,7 @@ class TestGetWithRetry:
         await _http.get_with_retry(
             client, "u", backoff_seconds=1.0
         )
-        assert self.slept == [30.0]
+        assert self.slept == [600.0]
 
     @pytest.mark.asyncio
     async def test_non_numeric_retry_after_falls_back_to_backoff(self):

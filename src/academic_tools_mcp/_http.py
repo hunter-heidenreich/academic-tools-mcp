@@ -153,6 +153,12 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
 # the rest are 429 + standard 5xx.
 _RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
+# Absolute ceiling on a single Retry-After sleep. We honour genuine
+# multi-minute cooldowns (max_attempts=2 means at most one sleep ever
+# happens), but a misconfigured ``Retry-After: 86400`` must not pin our
+# throttle for hours.
+_MAX_RETRY_AFTER_SECONDS = 600.0  # 10 minutes
+
 
 async def get_with_retry(
     client: httpx.AsyncClient,
@@ -171,11 +177,12 @@ async def get_with_retry(
     or status-code branch handles them.
 
     On 429 (and 503) we honour ``Retry-After`` when present. The actual
-    sleep is ``max(Retry-After, backoff_seconds)`` so a server that asks
-    us to wait 5 minutes is respected, but a missing or zero header
-    doesn't drop us below the provider's own throttle gap. There's a
-    safety cap at ``backoff_seconds * 30`` so a misconfigured server can
-    not pin our throttle indefinitely.
+    sleep is ``min(max(Retry-After, backoff_seconds), _MAX_RETRY_AFTER_SECONDS)``,
+    so a server that asks us to wait several minutes is respected (up to a
+    10-minute ceiling), a missing or zero header doesn't drop us below the
+    provider's own throttle gap (``backoff_seconds`` is the floor), and a
+    misconfigured ``Retry-After: 86400`` can't pin our throttle for hours.
+    Because ``max_attempts=2`` at most one such sleep ever occurs.
 
     On the FINAL attempt the result is returned (or the exception
     re-raised) without further retry. ``max_attempts=2`` means 1 original
@@ -187,7 +194,6 @@ async def get_with_retry(
     and the caller's existing test mocks all stub ``client.get``, so a
     method-agnostic helper would force unrelated mock churn.
     """
-    cap = backoff_seconds * 30
     for attempt in range(1, max_attempts + 1):
         try:
             response = await client.get(url, **kwargs)
@@ -207,7 +213,7 @@ async def get_with_retry(
         if provider is not None:
             _stats.incr(provider, "http_retries")
         retry_after = _retry_after_seconds(response) or 0.0
-        sleep_for = min(max(retry_after, backoff_seconds), cap)
+        sleep_for = min(max(retry_after, backoff_seconds), _MAX_RETRY_AFTER_SECONDS)
         await asyncio.sleep(sleep_for)
 
     # Unreachable: the loop always returns or raises before falling out.

@@ -24,6 +24,10 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- `get_with_retry` now honors a server's `Retry-After` up to a 10-minute ceiling
+  instead of clamping it to ~30s, so a provider asking for a genuine multi-minute
+  cooldown (e.g. a sustained arXiv 429) is respected rather than retried
+  aggressively. A misconfigured huge `Retry-After` is still bounded. ([#10])
 - `download_pdf(force_refresh=True)` no longer deletes the cached PDF *before*
   attempting the re-download. A failed refetch (404, transport error,
   `MAX_PDF_BYTES` abort) now leaves the existing file intact; the new bytes are
@@ -137,3 +141,4 @@ grouped by milestone rather than per commit.
 [#6]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/6
 [#8]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/8
 [#9]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/9
+[#10]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/10
