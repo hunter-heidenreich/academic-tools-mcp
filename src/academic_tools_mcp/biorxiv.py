@@ -304,9 +304,11 @@ async def download_pdf(
 ) -> dict[str, Any]:
     """Download the PDF for a bioRxiv/medRxiv paper and cache it locally.
 
-    ``force_refresh=True`` removes the cached PDF and re-downloads. Use
-    when you suspect the cached file is corrupt or the preprint server
-    replaced the PDF with a newer version under the same DOI.
+    ``force_refresh=True`` re-downloads and atomically replaces the
+    cached PDF. Use when you suspect the cached file is corrupt or the
+    preprint server replaced the PDF with a newer version under the same
+    DOI. The existing cached file is kept if the re-download fails, so a
+    flaky network can't leave you worse off than before.
 
     Streams the response to a temp file in chunks (peak memory = one
     chunk, not the whole PDF) and renames into place atomically. The
@@ -318,10 +320,7 @@ async def download_pdf(
     canonical = _canonical_key(doi)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
-    if force_refresh and dest.exists():
-        dest.unlink()
-
-    if dest.exists():
+    if not force_refresh and dest.exists():
         return {
             "path": str(dest),
             "size_bytes": dest.stat().st_size,

@@ -153,9 +153,11 @@ async def download_pdf(
 ) -> dict[str, Any]:
     """Download the PDF for an ACL Anthology paper and cache it locally.
 
-    ``force_refresh=True`` removes the cached PDF and re-downloads. The
-    Anthology occasionally re-issues camera-ready PDFs at the same URL,
-    so this is the escape hatch when the cached file is wrong.
+    ``force_refresh=True`` re-downloads and atomically replaces the
+    cached PDF. The Anthology occasionally re-issues camera-ready PDFs at
+    the same URL, so this is the escape hatch when the cached file is
+    wrong. The existing cached file is kept if the re-download fails, so a
+    flaky network can't leave you worse off than before.
 
     Returns a dict with the file path and size, or an error. Concurrent
     callers for the same DOI share one fetch via single-flight.
@@ -167,10 +169,7 @@ async def download_pdf(
     canonical = _canonical_key(doi)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(aid)
 
-    if force_refresh and dest.exists():
-        dest.unlink()
-
-    if dest.exists():
+    if not force_refresh and dest.exists():
         return {
             "anthology_id": aid,
             "pdf_url": pdf_url(aid),
@@ -181,8 +180,10 @@ async def download_pdf(
 
     async def _fetch() -> dict[str, Any]:
         # Re-check after acquiring the slot — a concurrent leader may
-        # have just written the file.
-        if dest.exists():
+        # have just written the file. Skip the short-circuit under
+        # force_refresh: the caller explicitly wants fresh bytes, and the
+        # streaming download replaces dest atomically on success.
+        if not force_refresh and dest.exists():
             return {
                 "anthology_id": aid,
                 "pdf_url": pdf_url(aid),
