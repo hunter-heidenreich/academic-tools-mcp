@@ -388,8 +388,9 @@ The transformer outperforms baselines on every set.
 
 class TestFindInMarkdown:
     def test_returns_hits_with_section_and_offset(self):
-        hits = papers.find_in_markdown(_FIND_DOC, "transformer")
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "transformer")
         assert len(hits) >= 4
+        assert truncated is False
         assert all("section" in h for h in hits)
         assert all("char_offset" in h for h in hits)
         assert all("snippet" in h for h in hits)
@@ -398,45 +399,70 @@ class TestFindInMarkdown:
         assert hits[0]["section"] == "Introduction"
 
     def test_case_insensitive_default(self):
-        hits = papers.find_in_markdown(_FIND_DOC, "TRANSFORMER")
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "TRANSFORMER")
         assert len(hits) >= 4
         # Match preserves the original case of the matched text
         assert hits[0]["match"] == "transformer"
 
     def test_case_sensitive_filters(self):
-        hits = papers.find_in_markdown(
+        hits, truncated = papers.find_in_markdown(
             _FIND_DOC, "TRANSFORMER", case_sensitive=True
         )
         assert hits == []
+        assert truncated is False
 
     def test_whole_words_excludes_partial(self):
         # "use" matches both standalone ("We use a transformer") and as
         # a substring of "uses" ("Training uses transformer-friendly").
         # whole_words must drop the substring hit.
-        all_hits = papers.find_in_markdown(_FIND_DOC, "use")
-        whole = papers.find_in_markdown(_FIND_DOC, "use", whole_words=True)
+        all_hits, _ = papers.find_in_markdown(_FIND_DOC, "use")
+        whole, _ = papers.find_in_markdown(_FIND_DOC, "use", whole_words=True)
         assert len(all_hits) > len(whole) >= 1
         for h in whole:
             assert h["match"] == "use"
 
-    def test_max_results_caps_output(self):
-        hits = papers.find_in_markdown(_FIND_DOC, "transformer", max_results=2)
+    def test_max_results_caps_output_and_flags_truncated(self):
+        # _FIND_DOC has 4+ "transformer" matches; capping at 2 must report
+        # truncated so the caller knows more exist.
+        hits, truncated = papers.find_in_markdown(
+            _FIND_DOC, "transformer", max_results=2
+        )
         assert len(hits) == 2
+        assert truncated is True
+
+    def test_not_truncated_when_under_cap(self):
+        # Exactly one match, well under the cap → not truncated.
+        hits, truncated = papers.find_in_markdown(
+            _FIND_DOC, "multi-head attention", max_results=20
+        )
+        assert len(hits) == 1
+        assert truncated is False
+
+    def test_not_truncated_when_matches_equal_cap(self):
+        # When the match count exactly equals max_results the scan finishes
+        # naturally without hitting the early-return, so truncated is False.
+        all_hits, _ = papers.find_in_markdown(_FIND_DOC, "transformer")
+        exact = len(all_hits)
+        hits, truncated = papers.find_in_markdown(
+            _FIND_DOC, "transformer", max_results=exact
+        )
+        assert len(hits) == exact
+        assert truncated is False
 
     def test_offsets_align_with_get_section_content(self):
         """The char_offset returned should land at the match in the
         same string get_section_content exposes."""
-        hits = papers.find_in_markdown(_FIND_DOC, "multi-head attention")
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "multi-head attention")
         assert len(hits) == 1
         h = hits[0]
         section = papers.get_section_content(_FIND_DOC, h["section_index"])
         assert section["content"][h["char_offset"]:h["char_offset"] + len("multi-head attention")] == "multi-head attention"
 
     def test_no_match_returns_empty(self):
-        assert papers.find_in_markdown(_FIND_DOC, "quantum entanglement") == []
+        assert papers.find_in_markdown(_FIND_DOC, "quantum entanglement") == ([], False)
 
     def test_empty_query_returns_empty(self):
-        assert papers.find_in_markdown(_FIND_DOC, "") == []
+        assert papers.find_in_markdown(_FIND_DOC, "") == ([], False)
 
 
 class TestFindInPaperTool:
@@ -468,7 +494,15 @@ class TestFindInPaperTool:
             assert "error" not in result, result
             assert result["query"] == "transformer"
             assert result["result_count"] >= 4
+            assert result["truncated"] is False
             assert result["paper_identifier"] == identifier
             assert all("section" in r for r in result["results"])
+
+            # A low max_results must surface the truncated signal.
+            capped = await server.find_in_paper(
+                identifier=identifier, query="transformer", max_results=2
+            )
+            assert capped["result_count"] == 2
+            assert capped["truncated"] is True
         finally:
             md_path.unlink(missing_ok=True)

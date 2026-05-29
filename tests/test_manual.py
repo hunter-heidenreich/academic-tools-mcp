@@ -295,6 +295,25 @@ class TestImportMarkdown:
         assert cached is not None
         assert len(cached["sections"]) == 2
 
+    def test_cached_sections_carry_markdown_checksum(self, tmp_path):
+        """import_markdown must store a markdown_checksum like convert_pdf,
+        so a later convert_paper trusts the cache instead of re-parsing."""
+        md = tmp_path / "paper.md"
+        md.write_text("## Intro\n\nHello.\n\n## Methods\n\nBody.")
+
+        import uuid
+        from academic_tools_mcp import cache, papers
+        ident = f"10.1038/test-md-checksum-{uuid.uuid4().hex[:8]}"
+        result = manual.import_markdown(str(md), ident)
+
+        namespace = result["namespace"]
+        canonical = manual._resolve_target(ident)["canonical"]
+        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
+        assert cached is not None
+        # Checksum present and matches the markdown actually written to cache.
+        md_path = papers._markdown_path(namespace, canonical)
+        assert cached["markdown_checksum"] == papers._markdown_checksum(md_path)
+
     def test_arxiv_markdown_routes_to_arxiv_namespace(self, tmp_path):
         md = tmp_path / "paper.md"
         md.write_text("## Abstract\n\nText.\n\n## Introduction\n\nMore text.")

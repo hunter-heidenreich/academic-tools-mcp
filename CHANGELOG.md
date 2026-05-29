@@ -15,6 +15,13 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Changed
+
+- `find_in_paper` now returns a `truncated` boolean in its response. It is
+  `true` when more matches exist than `max_results` returned, so an agent doing
+  exhaustive evidence-gathering knows the result set was capped rather than
+  silently mistaking the first N hits for all of them. ([#8])
+
 ### Fixed
 
 - `download_pdf(force_refresh=True)` no longer deletes the cached PDF *before*
@@ -22,6 +29,14 @@ grouped by milestone rather than per commit.
   `MAX_PDF_BYTES` abort) now leaves the existing file intact; the new bytes are
   streamed to a temp file and atomically swapped in only on success. Affects all
   three PDF providers (arXiv, bioRxiv/medRxiv, ACL Anthology). ([#6])
+- `convert_paper` no longer leaks its `/tmp/pdf-convert-*` extraction directory
+  when a conversion fails (spawn error, timeout, non-zero exit, or no markdown
+  produced). Cleanup now runs on every exit path, so a long-running server
+  doesn't accumulate orphaned extraction dirs from failed conversions. ([#8])
+- `import_paper` for pre-converted markdown now stores a `markdown_checksum`
+  alongside the cached section index, matching the PDF-conversion path. A later
+  `convert_paper` / section read on an imported paper now trusts the cache
+  instead of re-parsing the markdown on every call. ([#8])
 
 ## [2026.04.30] — 2026-04-30
 
@@ -116,3 +131,4 @@ grouped by milestone rather than per commit.
 [#4]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/4
 [#5]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/5
 [#6]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/6
+[#8]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/8
