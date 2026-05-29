@@ -27,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from . import cache
+from . import _textnorm, cache
 
 # Standard BM25 hyperparameters. k1 controls term-frequency saturation
 # (higher = more weight to repeated terms); b controls length
@@ -69,12 +69,18 @@ _STOPWORDS = frozenset({
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
 
-def _tokenize(text: str) -> list[str]:
+def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
     """Lowercase, drop stopwords, return a list of content tokens.
 
     Preserves intra-word hyphens and dots so domain terms like
     ``self-attention`` and ``BM25`` survive intact.
+
+    With ``normalize=True``, NFKD-fold and strip combining marks first so
+    "café" and "cafe" tokenise identically. Must be applied to BOTH the
+    query and the documents or the BM25 vocabulary won't align.
     """
+    if normalize:
+        text = _textnorm.fold(text)
     return [
         tok
         for tok in _TOKEN_RE.findall(text.lower())
@@ -117,6 +123,8 @@ def _extract_snippet(
     markdown: str,
     query_terms: set[str],
     window: int = _SNIPPET_CHARS,
+    *,
+    normalize: bool = False,
 ) -> tuple[str, int | None]:
     """Return ``(snippet, char_offset)`` for the best matching position.
 
@@ -124,6 +132,12 @@ def _extract_snippet(
     in the surrounding window (so we prefer "variational dropout"
     cooccurrence over a lone "dropout"). Falls back to the document
     head if no term appears at all.
+
+    With ``normalize=True`` the ``query_terms`` are already diacritic-
+    folded (by ``_tokenize(query, normalize=True)``), so we locate them
+    against a folded copy of the markdown but map every hit back to an
+    ORIGINAL offset, keeping ``char_offset`` and the snippet slice
+    aligned with the un-folded text.
     """
     if not query_terms:
         return markdown[:window].strip(), 0
@@ -131,12 +145,18 @@ def _extract_snippet(
     # Find every occurrence of every query term, collecting (offset, term).
     # Word-boundary match so "drop" doesn't hit inside "dropout".
     hits: list[tuple[int, str]] = []
-    lowered = markdown.lower()
+    if normalize:
+        folded, index_map = _textnorm.fold_with_map(markdown)
+        lowered = folded.lower()
+    else:
+        index_map = None
+        lowered = markdown.lower()
     for term in query_terms:
         # Escape regex metacharacters in the term itself.
         pattern = re.compile(rf"\b{re.escape(term)}\b")
         for m in pattern.finditer(lowered):
-            hits.append((m.start(), term))
+            off = index_map[m.start()] if index_map is not None else m.start()
+            hits.append((off, term))
 
     if not hits:
         return markdown[:window].strip(), None
@@ -260,6 +280,7 @@ def search(
     *,
     top_k: int = 10,
     namespace: str | None = None,
+    normalize: bool = False,
 ) -> list[dict[str, Any]]:
     """Rank cached markdown files against ``query`` using BM25.
 
@@ -281,9 +302,14 @@ def search(
     them would just inflate the response without helping the agent.
     The corpus is read fresh on every call; for the personal-MCP scale
     this is well under 100ms and avoids any index-staleness concerns.
+
+    ``normalize=True`` NFKD-folds the query and every document (and the
+    snippet locator) before tokenising, so "cafe" and "café" rank
+    identically. It is threaded consistently to the query, documents,
+    and snippet so the BM25 vocabulary stays aligned.
     """
     top_k = max(1, min(top_k, _MAX_TOP_K))
-    query_tokens = _tokenize(query)
+    query_tokens = _tokenize(query, normalize=normalize)
     if not query_tokens:
         return []
 
@@ -303,7 +329,7 @@ def search(
             # A file that vanished mid-walk (concurrent eviction, etc.)
             # — skip it rather than fail the whole search.
             continue
-        tokens = _tokenize(text)
+        tokens = _tokenize(text, normalize=normalize)
         if not tokens:
             continue
         tf = Counter(tokens)
@@ -358,7 +384,9 @@ def search(
             break
         text = doc["text"]
         title = _extract_title(text)
-        snippet, snippet_offset = _extract_snippet(text, unique_query_terms)
+        snippet, snippet_offset = _extract_snippet(
+            text, unique_query_terms, normalize=normalize
+        )
         section = (
             _section_for_offset(text, snippet_offset)
             if snippet_offset is not None

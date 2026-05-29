@@ -31,7 +31,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from . import cache, config
+from . import _textnorm, cache, config
 
 # Default subprocess timeout for PDF→markdown conversion. Big PDFs on
 # CPU-only MinerU runs can legitimately take 20+ minutes, so we err
@@ -330,6 +330,7 @@ def find_in_markdown(
     max_results: int = 20,
     case_sensitive: bool = False,
     whole_words: bool = False,
+    normalize: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Scan markdown for occurrences of ``query`` and return per-hit context.
 
@@ -342,6 +343,17 @@ def find_in_markdown(
     ``whole_words=True`` wraps the query in ``\\b…\\b`` so "set" doesn't
     match "subset". ``case_sensitive=False`` is the default — academic
     prose capitalisation is unreliable.
+
+    ``normalize=True`` NFKD-folds the query and each section's text and
+    strips combining marks before matching, so "cafe" matches "café" and
+    "Gutierrez" matches "Gutiérrez" (and vice versa). Offsets, ``match``,
+    and ``snippet`` are still sliced from the ORIGINAL (un-folded) text —
+    a fold-with-position-map translates each match back to original
+    offsets — so chaining into ``get_paper_section`` still lands on the
+    match. Caveat: ``\\b`` word boundaries are ASCII-oriented; folding
+    turns diacritic Latin words into ASCII so ``whole_words`` works for
+    them, but non-Latin scripts (CJK, Arabic) stay unreliable for
+    ``whole_words`` and are largely unaffected by folding.
 
     Hit offsets align with ``get_paper_section``'s stripped section text
     because both apply the same ``"\\n".join(lines[s:e]).strip()`` recipe.
@@ -370,7 +382,15 @@ def find_in_markdown(
         if "\n".join(lines[s:e]).strip()
     ]
 
-    pattern = re.escape(query)
+    if normalize:
+        folded_query = _textnorm.fold(query)
+        if not folded_query:
+            # Query was entirely combining marks — an empty pattern would
+            # match at every position, so there is nothing to find.
+            return [], False
+        pattern = re.escape(folded_query)
+    else:
+        pattern = re.escape(query)
     if whole_words:
         pattern = rf"\b{pattern}\b"
     flags = 0 if case_sensitive else re.IGNORECASE
@@ -380,11 +400,23 @@ def find_in_markdown(
     for section_index, (title, start, end) in enumerate(boundaries):
         # Same recipe as get_section_content so offsets align.
         section_text = "\n".join(lines[start:end]).strip()
-        for match in regex.finditer(section_text):
+        # When normalising, match against the folded text but keep a map
+        # back to original offsets so char_offset/match/snippet stay
+        # aligned with the un-folded section text get_section_content
+        # returns.
+        if normalize:
+            search_text, index_map = _textnorm.fold_with_map(section_text)
+        else:
+            search_text, index_map = section_text, None
+        for match in regex.finditer(search_text):
             if len(hits) >= max_results:
                 return hits, True
-            pos = match.start()
-            matched = match.group()
+            if index_map is None:
+                pos = match.start()
+                matched = match.group()
+            else:
+                pos = index_map[match.start()]
+                matched = section_text[pos:index_map[match.end()]]
             ws = max(0, pos - _FIND_SNIPPET_WINDOW)
             we = min(len(section_text), pos + len(matched) + _FIND_SNIPPET_WINDOW)
             # Collapse newlines so the snippet renders on one line in

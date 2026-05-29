@@ -41,7 +41,7 @@ The findings are grouped by severity-of-action, not by subsystem:
 | 8 | ~~`download_pdf` supports only 3 providers — the dominant operator friction~~ **(RESOLVED via opt-in OA-URL path)** | `server.py:920` | Intentional | (enhancement) |
 | 9 | ~~Single global conversion lock + coarse 30-min timeout serializes batches~~ **(RESOLVED via opt-in `mode="fast"`)** | `papers.py:45`, `:37` | Intentional | (enhancement) |
 | 10 | ~~No provider fallback when OpenAlex 404s a valid DOI~~ **(RESOLVED via opt-in `fallback_crossref`)** | `manual.py:74`, `server.py` | Intentional | (enhancement) |
-| 11 | Literal/ASCII-boundary search misses diacritics & non-Latin scripts | `papers.py:324`, `cache_search.py:137` | Intentional | (limitation) |
+| 11 | ~~Literal/ASCII-boundary search misses diacritics~~ **(RESOLVED via opt-in `normalize`)** — non-Latin word boundaries still limited | `papers.py:324`, `cache_search.py:137` | Intentional | (limitation) |
 | 12 | BM25 rescans the whole corpus on every call (O(N)) | `cache_search.py:258` | Intentional | (scaling limit) |
 
 ---
@@ -453,7 +453,26 @@ fallback_crossref=True)` that tries Crossref *only* when OpenAlex returns a
 case without a general spray. Crossref coverage of recent DOIs is often ahead of
 OpenAlex's indexing lag.
 
-### 3.4 Search is literal + ASCII word-boundaries (diacritics/non-Latin)
+### 3.4 Search is literal + ASCII word-boundaries (diacritics/non-Latin) — **RESOLVED for diacritics (opt-in)**
+
+**Resolution.** Implemented the enhancement sketch below. `find_in_paper(query,
+normalize=True)` and `search_cached_papers(query, normalize=True)` NFKD-fold the
+query (and the document text) and strip combining marks before matching, so
+`cafe` matches `café` and `Gutierrez` matches `Gutiérrez` (bidirectional). The
+fold helpers live in a new `_textnorm.py` (`fold` + `fold_with_map`), mirroring
+`bibtex._strip_accents_for_key`. The hard part — keeping `find_in_paper`'s
+`char_offset`/`match`/`snippet` aligned with `get_paper_section`'s stripped text
+even though NFKD changes length — is handled by `fold_with_map`, which returns a
+position map from folded offsets back to original offsets; matches are found in
+folded text but reported against the original. In `cache_search`, a single
+`normalize` flag threads through `_tokenize` (query + docs) and `_extract_snippet`
+so the BM25 vocabulary stays aligned. `normalize` defaults to `False`, so literal
+behaviour is unchanged, and the ASCII-word-boundary caveat is documented in both
+tool descriptions. **Still open:** non-Latin word-boundary matching — `\b` stays
+ASCII-oriented and folding does nothing for CJK/Arabic; adding the `regex`
+dependency for Unicode boundaries was deliberately declined. Coverage in
+`tests/test_textnorm.py` plus normalize cases in `tests/test_audit_features.py`
+and `tests/test_cache_search.py`. Original analysis retained below.
 
 **Where.** `papers.py:324` (`re.escape(query)` — literal substring, no real
 regex) and `:326` (`\b…\b`); `cache_search.py:137` (same `\b` boundaries).
@@ -551,6 +570,9 @@ If picking these up, a sensible sequence:
 6. ~~**Finding 3.2** (fast-extract fallback) — supported degraded path for the
    timeout/serialisation case.~~ **DONE (opt-in `mode="fast"`).**
 7. ~~**Finding 3.3** (Crossref fallback on OpenAlex 404) — opt-in
-   `fallback_crossref=True` on `get_paper_metadata`.~~ **DONE.** Remaining open
-   items: **3.4** (diacritic-aware search) and **3.5** (BM25 index scaling) —
-   both still open if there's appetite.
+   `fallback_crossref=True` on `get_paper_metadata`.~~ **DONE.**
+8. ~~**Finding 3.4** (diacritic-aware search) — opt-in `normalize=True` on
+   `find_in_paper` and `search_cached_papers`.~~ **DONE (diacritics; non-Latin
+   word boundaries still open).** Remaining open items: **3.5** (BM25 index
+   scaling) and the non-Latin word-boundary tail of **3.4** — both still open if
+   there's appetite.
