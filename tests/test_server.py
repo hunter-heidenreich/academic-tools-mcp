@@ -52,6 +52,9 @@ class TestFollowPublished:
         assert result["_source"] == "biorxiv"
         assert result["title"] == "Preprint title"
         assert result["published_doi"] == "10.1038/s41586-024-07000-0"
+        # No chain requested → the followed_published signal must stay absent
+        # so the default response shape is unchanged.
+        assert "followed_published" not in result
 
     @pytest.mark.asyncio
     async def test_follow_published_returns_openalex_journal_record(
@@ -95,6 +98,8 @@ class TestFollowPublished:
         # The chain must remain visible — agents that want to know
         # the original preprint can find it here.
         assert result["preprint_doi"] == "10.1101/2024.01.01.123"
+        # The chain succeeded: signal it explicitly.
+        assert result["followed_published"] is True
 
     @pytest.mark.asyncio
     async def test_follow_published_no_published_doi_returns_preprint(
@@ -124,6 +129,9 @@ class TestFollowPublished:
         )
         assert result["_source"] == "biorxiv"
         assert result["title"] == "Still preprint"
+        # No journal version to follow → no chain attempted → the signal is
+        # absent (the null published_doi already tells the story).
+        assert "followed_published" not in result
 
     @pytest.mark.asyncio
     async def test_follow_published_falls_back_when_openalex_misses(
@@ -153,6 +161,10 @@ class TestFollowPublished:
         assert result["_source"] == "biorxiv"
         assert result["title"] == "Fresh preprint"
         assert result["published_doi"] == "10.1038/not-yet-indexed"
+        # A chain was attempted and OpenAlex missed — the agent must be able
+        # to tell this is preprint-era metadata for a *published* paper, not
+        # one that simply has no journal version yet.
+        assert result["followed_published"] is False
 
 
 # ---------------------------------------------------------------------------

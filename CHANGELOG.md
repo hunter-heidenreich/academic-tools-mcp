@@ -17,6 +17,16 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- `get_paper_metadata(biorxiv_doi, follow_published=True)` now reports a
+  `followed_published` signal so the bioRxiv→journal chain is no longer silent
+  when it falls back. On a successful chain the `openalex_via_biorxiv` response
+  carries `followed_published=True`; when the preprint has a `published_doi` but
+  OpenAlex hasn't indexed the journal version yet, the response falls back to the
+  preprint record (`_source="biorxiv"`) with `followed_published=False` — so a
+  consumer can tell it's looking at preprint-era metadata for a paper that *is*
+  published, rather than one that simply isn't published yet. The field stays
+  absent when no chain was attempted (`follow_published=False` or no
+  `published_doi`), so the default response shape is unchanged. ([#16])
 - `find_in_paper(identifier, query, normalize=True)` and
   `search_cached_papers(query, normalize=True)` opt into diacritic-insensitive
   search: both NFKD-fold the query (and the document text) and strip combining
@@ -206,3 +216,4 @@ grouped by milestone rather than per commit.
 [#13]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/13
 [#14]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/14
 [#15]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/15
+[#16]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/16

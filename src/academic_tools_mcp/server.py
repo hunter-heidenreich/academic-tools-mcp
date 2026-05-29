@@ -206,9 +206,13 @@ FOLLOW_PUBLISHED = Annotated[
             "If True and this is a bioRxiv/medRxiv preprint that has a "
             "journal version (published_doi field), automatically chain "
             "to OpenAlex and return the published record instead. "
-            "Response carries _source='openalex_via_biorxiv' and a "
-            "preprint_doi field so the chain stays visible. Has no "
-            "effect for other identifier shapes or unpublished preprints."
+            "On success the response carries _source='openalex_via_biorxiv', "
+            "a preprint_doi field so the chain stays visible, and "
+            "followed_published=True. If OpenAlex hasn't indexed the journal "
+            "version yet, falls back to the preprint record with "
+            "_source='biorxiv' and followed_published=False so the lag is "
+            "explicit. Has no effect for other identifier shapes or "
+            "unpublished preprints (no published_doi → field absent)."
         ),
     ),
 ]
@@ -352,8 +356,13 @@ def _format_arxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> d
     }
 
 
-def _format_biorxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
-    return {
+def _format_biorxiv_metadata(
+    paper: dict[str, Any],
+    canonical_id: str | None,
+    *,
+    followed_published: bool | None = None,
+) -> dict[str, Any]:
+    result = {
         "_source": "biorxiv",
         "_canonical_id": canonical_id,
         "doi": paper.get("doi"),
@@ -367,6 +376,11 @@ def _format_biorxiv_metadata(paper: dict[str, Any], canonical_id: str | None) ->
         "published_doi": paper.get("published_doi"),
         "pdf_url": paper.get("pdf_url"),
     }
+    # Only surfaced when a follow_published chain was actually attempted; left
+    # absent otherwise so the default response shape is unchanged.
+    if followed_published is not None:
+        result["followed_published"] = followed_published
+    return result
 
 
 def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
@@ -396,6 +410,9 @@ def _format_openalex_via_biorxiv(
     base = _format_openalex_metadata(work, journal_canonical)
     base["_source"] = "openalex_via_biorxiv"
     base["preprint_doi"] = preprint_doi
+    # The chain succeeded — symmetric with the fall-through case, which sets
+    # followed_published=False on the preprint record.
+    base["followed_published"] = True
     return base
 
 
@@ -476,11 +493,16 @@ async def get_paper_metadata(
         categories, pdf_url, doi, journal_ref, comment.
       - biorxiv: doi, title, date, version, type, category, license, server,
         published_doi (chain to OpenAlex for the journal version), pdf_url.
+        When ``follow_published=True`` was requested but OpenAlex hasn't
+        indexed the journal version yet, also carries
+        ``followed_published=False`` (preprint-era metadata for a paper that
+        *is* published). The field is absent when no chain was attempted
+        (``follow_published=False`` or no ``published_doi``).
       - openalex: title, doi, publication_year, publication_date, type,
         language, venue, is_oa, oa_status, oa_url.
-      - openalex_via_biorxiv: identical to openalex, plus preprint_doi.
-        Only produced when ``follow_published=True`` for a bioRxiv DOI
-        that has a journal version.
+      - openalex_via_biorxiv: identical to openalex, plus preprint_doi and
+        ``followed_published=True``. Only produced when ``follow_published=True``
+        for a bioRxiv DOI whose journal version is in OpenAlex.
       - crossref: title, doi, publication_year, publication_date, type,
         language, venue, plus null OA fields. Only produced when
         ``fallback_crossref=True`` and OpenAlex 404s the DOI. Crossref
@@ -522,8 +544,13 @@ async def get_paper_metadata(
                     paper.get("doi"),
                     openalex._canonical_doi(published_doi),
                 )
-            # Fall through to preprint metadata; the agent can still
-            # see published_doi in the response and decide what to do.
+            # OpenAlex hasn't indexed the journal version yet — fall back to
+            # the preprint record but signal followed_published=False so the
+            # agent knows it's looking at preprint-era metadata for a paper
+            # that *is* published (vs. one that simply isn't published yet).
+            return _format_biorxiv_metadata(
+                paper, canonical_id, followed_published=False
+            )
         return _format_biorxiv_metadata(paper, canonical_id)
 
     if source == "openalex":

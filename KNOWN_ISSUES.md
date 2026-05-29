@@ -544,11 +544,18 @@ mistaken for tool defects:
   helps but only chains one direction and only when OpenAlex has indexed the
   journal version (and it is not available in the batch `get_papers_metadata`).
 
-A small in-tool improvement that *would* help: when `follow_published` falls back
-to preprint metadata because OpenAlex hasn't indexed the journal version, the
-response currently does so silently. Adding a `followed_published: false` (or a
-`note`) field would let a careful consumer know it's looking at preprint-era
-metadata.
+A small in-tool improvement that *would* help — **RESOLVED.** `get_paper_metadata`
+no longer falls back from a `follow_published` chain silently. When the preprint
+has a `published_doi` but OpenAlex hasn't indexed the journal version yet, the
+preprint-record response now carries `followed_published: false`; a successful
+chain (`_source="openalex_via_biorxiv"`) carries `followed_published: true`. The
+field stays absent when no chain was attempted (`follow_published=False` or no
+`published_doi`, the latter already signalled by `published_doi: null`), so the
+default response shape is unchanged. A careful consumer can now tell it's looking
+at preprint-era metadata for a paper that *is* published. Coverage in
+`tests/test_server.py::TestFollowPublished`. (PR #16.) The batch
+`get_papers_metadata` still doesn't support `follow_published` — chain explicitly
+per-paper.
 
 ---
 
