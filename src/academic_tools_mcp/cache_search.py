@@ -12,17 +12,26 @@ extracts the document title (first H1/H2), a ~200-char snippet centred
 on the highest-scoring matching term, and the H2 section the snippet
 falls under so the agent can chain into ``get_paper_section``.
 
-The corpus is small (tens to hundreds of papers for a personal MCP),
-the per-doc tokenisation is cheap, and the BM25 score is computed in
-pure Python in a single pass — no embeddings, no external index, no
-new dependencies. If keyword recall ever becomes the bottleneck,
-embedding-based rerank is the natural follow-up.
+A persistent on-disk index (``.cache/__search_index__/index.json``)
+holds each document's term frequencies keyed by a cheap ``os.stat``
+staleness signal (``mtime_ns`` + ``size``), so a search only re-reads
+and re-tokenises files that actually changed since the last call —
+everything else is served straight from the index. The full corpus is
+still *stat*-walked each call (cheap), and the top-``k`` winners are
+re-read to extract snippets, but the O(corpus) read+tokenise that used
+to run on every call is gone. The BM25 score is still computed in pure
+Python — no embeddings, no third-party index. If keyword recall ever
+becomes the bottleneck, embedding-based rerank is the natural
+follow-up; if the index JSON parse itself becomes the bottleneck at
+very large corpora, sharding it per-namespace is the next lever.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -67,6 +76,21 @@ _STOPWORDS = frozenset({
 
 # Heading regex matching the same shape used by papers.parse_sections.
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+
+# Persistent index. Lives in a reserved double-underscore namespace dir
+# that _iter_markdown_files naturally skips (it has no ``markdown/``
+# subdir). Bump _INDEX_VERSION to force a full rebuild when the entry
+# schema or tokeniser changes. The lock serialises the load→refresh→save
+# critical section across the worker threads that search() runs in (it is
+# dispatched via asyncio.to_thread at the tool layer); BM25 scoring and
+# snippet extraction run lock-free on the freshly-parsed per-call dict.
+_INDEX_VERSION = 1
+_INDEX_DIRNAME = "__search_index__"
+_INDEX_FILENAME = "index.json"
+_INDEX_LOCK = threading.Lock()
+# NUL can't occur in a namespace dir name or a filename stem, so it is a
+# collision-free separator for the flat entry key.
+_INDEX_KEY_SEP = "\x00"
 
 
 def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
@@ -275,12 +299,149 @@ def _iter_markdown_files(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Persistent incremental index
+# ---------------------------------------------------------------------------
+
+
+def _index_path() -> Path:
+    """Path to the on-disk index, resolved live against the cache root.
+
+    Read ``cache._CACHE_ROOT`` on every call (never cache at import) so a
+    test that monkeypatches the cache root keeps the index sandboxed.
+    """
+    return cache._CACHE_ROOT / _INDEX_DIRNAME / _INDEX_FILENAME
+
+
+def _empty_index() -> dict[str, Any]:
+    return {"version": _INDEX_VERSION, "entries": {}}
+
+
+def _entry_key(namespace: str, stem: str) -> str:
+    return f"{namespace}{_INDEX_KEY_SEP}{stem}"
+
+
+def _load_index() -> dict[str, Any]:
+    """Load and validate the index, self-healing to empty on any problem.
+
+    A corrupt/unreadable JSON file, a version mismatch, or a malformed
+    shape all return a fresh empty index — the next dirty save overwrites
+    the bad file atomically, so no explicit unlink is needed. A version
+    bump therefore forces a full rebuild (every file looks "new").
+    """
+    try:
+        data = json.loads(_index_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return _empty_index()
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != _INDEX_VERSION
+        or not isinstance(data.get("entries"), dict)
+    ):
+        return _empty_index()
+    return data
+
+
+def _save_index(index: dict[str, Any]) -> None:
+    """Persist the index atomically (reuses the shared cache helper)."""
+    cache._atomic_write_json(
+        _index_path(), json.dumps(index, ensure_ascii=False)
+    )
+
+
+def _build_entry(
+    namespace: str, path: Path, *, mtime_ns: int, size: int
+) -> dict[str, Any] | None:
+    """Tokenise one markdown file into an index entry, or ``None`` to skip.
+
+    Both tokenisation modes are computed and stored so a single index
+    serves ``normalize=True`` and ``normalize=False`` queries without a
+    re-tokenise on mode flip (normalised token frequencies cannot be
+    derived from the un-normalised ones — diacritics change the token
+    boundaries). Returns ``None`` for an unreadable file (skip, mirroring
+    the old mid-walk skip) or a file with no content tokens in either mode
+    (so it never enters the corpus, exactly as the old ``if not tokens``
+    guard did).
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    tokens = _tokenize(text)
+    tokens_norm = _tokenize(text, normalize=True)
+    if not tokens and not tokens_norm:
+        return None
+    return {
+        "namespace": namespace,
+        "stem": path.stem,
+        "mtime_ns": mtime_ns,
+        "size": size,
+        "length": len(tokens),
+        "length_norm": len(tokens_norm),
+        "tf": dict(Counter(tokens)),
+        "tf_norm": dict(Counter(tokens_norm)),
+    }
+
+
+def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
+    """Bring the on-disk index in sync with the markdown corpus.
+
+    Stats every cached markdown file (cheap, no read); reuses an existing
+    entry when ``(mtime_ns, size)`` are unchanged, otherwise re-reads and
+    re-tokenises it; prunes entries whose file is gone. Persists only when
+    something actually changed. Always walks the *full* corpus (never the
+    namespace-filtered subset) so the index stays globally complete
+    regardless of which namespace the calling search filtered on. Returns
+    the freshly-parsed in-memory index — a per-call dict, so callers can
+    score against it lock-free after this returns.
+    """
+    with _INDEX_LOCK:
+        index = _load_index()
+        entries: dict[str, Any] = index["entries"]
+        dirty = False
+        seen: set[str] = set()
+        for ns, path in _iter_markdown_files(None):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            key = _entry_key(ns, path.stem)
+            seen.add(key)
+            existing = entries.get(key)
+            if (
+                not force_refresh
+                and existing is not None
+                and existing.get("mtime_ns") == st.st_mtime_ns
+                and existing.get("size") == st.st_size
+            ):
+                continue
+            entry = _build_entry(
+                ns, path, mtime_ns=st.st_mtime_ns, size=st.st_size
+            )
+            if entry is None:
+                # Unreadable or no-content file — drop any stale entry.
+                if key in entries:
+                    del entries[key]
+                    dirty = True
+                continue
+            entries[key] = entry
+            dirty = True
+        # Prune entries whose markdown file no longer exists on disk.
+        for key in [k for k in entries if k not in seen]:
+            del entries[key]
+            dirty = True
+        if dirty:
+            _save_index(index)
+        return index
+
+
 def search(
     query: str,
     *,
     top_k: int = 10,
     namespace: str | None = None,
     normalize: bool = False,
+    force_refresh: bool = False,
 ) -> list[dict[str, Any]]:
     """Rank cached markdown files against ``query`` using BM25.
 
@@ -300,47 +461,51 @@ def search(
 
     Hits with score 0 (no query term appeared) are dropped — returning
     them would just inflate the response without helping the agent.
-    The corpus is read fresh on every call; for the personal-MCP scale
-    this is well under 100ms and avoids any index-staleness concerns.
+    Term frequencies are served from a persistent incremental index
+    (``_refresh_index``): only files that changed since the last call are
+    re-read and re-tokenised, and only the ``top_k`` winners are re-read
+    to extract snippets. The output is identical to a fresh full scan.
 
     ``normalize=True`` NFKD-folds the query and every document (and the
     snippet locator) before tokenising, so "cafe" and "café" rank
-    identically. It is threaded consistently to the query, documents,
-    and snippet so the BM25 vocabulary stays aligned.
+    identically. Both folded and un-folded term frequencies live in the
+    index, so flipping ``normalize`` never forces a re-tokenise.
+
+    ``force_refresh=True`` rebuilds every index entry from disk regardless
+    of the staleness signal — a safety valve for the rare case where a
+    file changed without its ``mtime``/``size`` changing.
     """
     top_k = max(1, min(top_k, _MAX_TOP_K))
     query_tokens = _tokenize(query, normalize=normalize)
     if not query_tokens:
         return []
 
-    files = _iter_markdown_files(namespace)
-    if not files:
-        return []
+    index = _refresh_index(force_refresh=force_refresh)
 
-    # First pass: tokenise each doc, collect term-frequency Counters and
-    # document lengths. Memory cost is one Counter per doc — fine for
-    # tens to hundreds of papers.
+    # Build the working doc set from the index, selecting the term
+    # frequencies for the requested mode. Skip entries with no tokens in
+    # this mode (a doc whose only content is accented surfaces under
+    # normalize=True but is invisible under normalize=False, and vice
+    # versa) so the corpus stats match the old per-mode scan exactly.
+    # Namespace filtering happens here so avgdl/df stay scoped to the
+    # filtered subset, as before.
+    tf_field = "tf_norm" if normalize else "tf"
+    len_field = "length_norm" if normalize else "length"
     docs: list[dict[str, Any]] = []
     total_length = 0
-    for ns, path in files:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            # A file that vanished mid-walk (concurrent eviction, etc.)
-            # — skip it rather than fail the whole search.
+    for entry in index["entries"].values():
+        if namespace is not None and entry["namespace"] != namespace:
             continue
-        tokens = _tokenize(text, normalize=normalize)
-        if not tokens:
+        tf = entry[tf_field]
+        if not tf:
             continue
-        tf = Counter(tokens)
         docs.append({
-            "namespace": ns,
-            "path": path,
-            "text": text,
+            "namespace": entry["namespace"],
+            "stem": entry["stem"],
             "tf": tf,
-            "length": len(tokens),
+            "length": entry[len_field],
         })
-        total_length += len(tokens)
+        total_length += entry[len_field]
 
     if not docs:
         return []
@@ -382,7 +547,18 @@ def search(
     for score, doc in scored[:top_k]:
         if score <= 0:
             break
-        text = doc["text"]
+        # Re-read only the winners (≤ top_k ≤ 50) to extract the snippet,
+        # section, and title. Title is recomputed from this read rather
+        # than cached in the index so the output is byte-identical to a
+        # fresh scan. A winner that vanished since the refresh is skipped.
+        path = (
+            cache._CACHE_ROOT / doc["namespace"] / "markdown"
+            / f"{doc['stem']}.md"
+        )
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
         title = _extract_title(text)
         snippet, snippet_offset = _extract_snippet(
             text, unique_query_terms, normalize=normalize
@@ -392,7 +568,7 @@ def search(
             if snippet_offset is not None
             else None
         )
-        canonical_id = _filename_to_canonical(doc["namespace"], doc["path"].stem)
+        canonical_id = _filename_to_canonical(doc["namespace"], doc["stem"])
         out.append({
             "namespace": doc["namespace"],
             "canonical_id": canonical_id,

@@ -1908,6 +1908,18 @@ async def search_cached_papers(
             ),
         ),
     ] = False,
+    force_refresh: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, rebuild every entry of the on-disk search index "
+                "from scratch instead of trusting the per-file mtime/size "
+                "staleness check. Default False — the index updates "
+                "incrementally on its own. Use only if a cached markdown "
+                "file changed without its modification time changing."
+            ),
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """BM25 full-text search across every paper you've already converted.
 
@@ -1930,8 +1942,9 @@ async def search_cached_papers(
 
     Hits with score 0 (no query term appears) are dropped — empty
     results means the cache contains no relevant paper, not that the
-    search failed. Searches the cache live on every call; for a
-    personal-MCP corpus this runs in well under 100ms.
+    search failed. Backed by a persistent incremental index: only papers
+    that changed since the last search are re-tokenised, so repeat
+    searches stay fast as the corpus grows.
 
     ``normalize=True`` folds diacritics on both query and documents
     before tokenising, so 'cafe' and 'café' rank identically (useful for
@@ -1954,6 +1967,7 @@ async def search_cached_papers(
         top_k=top_k,
         namespace=namespace,
         normalize=normalize,
+        force_refresh=force_refresh,
     )
     return {
         "query": query,
