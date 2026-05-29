@@ -227,6 +227,23 @@ FORCE_REFRESH = Annotated[
     ),
 ]
 
+FALLBACK_CROSSREF = Annotated[
+    bool,
+    Field(
+        description=(
+            "If True and OpenAlex returns a definitive 'not found' for a "
+            "DOI (HTTP 404 — not a transient 5xx/429/timeout), fall back "
+            "to Crossref, whose indexing of recent DOIs is often ahead of "
+            "OpenAlex. Useful for brand-new papers and niche venues. The "
+            "fallback response carries _source='crossref' and a reduced "
+            "field set: no abstract and no open-access fields "
+            "(is_oa/oa_status/oa_url/pdf_url are null). Default False "
+            "keeps the hard 'not found' error. Only affects DOI lookups "
+            "that route to OpenAlex; no effect for arXiv/bioRxiv shapes."
+        ),
+    ),
+]
+
 PDF_FORCE_REFRESH = Annotated[
     bool,
     Field(
@@ -382,11 +399,70 @@ def _format_openalex_via_biorxiv(
     return base
 
 
+def _first(value: Any) -> Any:
+    """First element of a list, else the value itself (or None for empties).
+
+    Crossref returns several scalar-ish fields (title, container-title) as
+    single-element lists, so unwrap them to match the OpenAlex shape.
+    """
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
+    """Extract (year, ISO-date) from a Crossref work's date-parts.
+
+    Crossref dates are ``{"date-parts": [[year, month, day]]}`` with month
+    and day optional. Prefers ``issued`` (the canonical publication date),
+    falling back to print/online dates. Returns the year and, when month
+    (and optionally day) are present, a zero-padded ISO string.
+    """
+    for key in ("issued", "published-print", "published-online", "published"):
+        parts = ((work.get(key) or {}).get("date-parts") or [[]])
+        first = parts[0] if parts else []
+        if first and isinstance(first[0], int):
+            year = first[0]
+            iso = f"{year:04d}"
+            if len(first) >= 2 and isinstance(first[1], int):
+                iso += f"-{first[1]:02d}"
+                if len(first) >= 3 and isinstance(first[2], int):
+                    iso += f"-{first[2]:02d}"
+            return year, iso
+    return None, None
+
+
+def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
+    """Format a raw Crossref work object into the unified metadata shape.
+
+    Mirrors ``_format_openalex_metadata`` so callers branching on
+    ``_source`` see a near-identical key set, but Crossref carries no
+    open-access information — the OA fields are always null here.
+    """
+    year, date = _crossref_date(work)
+    return {
+        "_source": "crossref",
+        "_canonical_id": canonical_id,
+        "title": _first(work.get("title")),
+        "doi": work.get("DOI"),
+        "publication_year": year,
+        "publication_date": date,
+        "type": work.get("type"),
+        "language": work.get("language"),
+        "venue": _first(work.get("container-title")),
+        "is_oa": None,
+        "oa_status": None,
+        "oa_url": None,
+        "pdf_url": None,
+    }
+
+
 @mcp.tool
 async def get_paper_metadata(
     identifier: PAPER_ID,
     follow_published: FOLLOW_PUBLISHED = False,
     force_refresh: FORCE_REFRESH = False,
+    fallback_crossref: FALLBACK_CROSSREF = False,
 ) -> dict[str, Any]:
     """Get core metadata for a paper, dispatched by identifier shape.
 
@@ -405,6 +481,11 @@ async def get_paper_metadata(
       - openalex_via_biorxiv: identical to openalex, plus preprint_doi.
         Only produced when ``follow_published=True`` for a bioRxiv DOI
         that has a journal version.
+      - crossref: title, doi, publication_year, publication_date, type,
+        language, venue, plus null OA fields. Only produced when
+        ``fallback_crossref=True`` and OpenAlex 404s the DOI. Crossref
+        often indexes new DOIs before OpenAlex but carries no open-access
+        info (and get_paper_abstract has no Crossref path).
 
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     Sibling tools (get_paper_authors / get_paper_abstract / get_paper_bibtex)
@@ -447,6 +528,16 @@ async def get_paper_metadata(
 
     if source == "openalex":
         work = await _fetch_work(identifier, force_refresh=force_refresh)
+        if work.get("not_found") and fallback_crossref:
+            # OpenAlex definitively 404'd this DOI (not a transient error).
+            # Crossref often indexes new/niche DOIs ahead of OpenAlex, so
+            # try it as a narrow, opt-in fallback. Crossref has its own
+            # cache and no force_refresh knob — force_refresh applied to
+            # the OpenAlex lookup above. If Crossref also misses, fall
+            # through to the OpenAlex error below.
+            cr = await _fetch_crossref_work(identifier)
+            if "error" not in cr:
+                return _format_crossref_metadata(cr, crossref._canonical_doi(identifier))
         if "error" in work:
             return _enrich_error(work, _OPENALEX_METADATA_HINT)
         return _format_openalex_metadata(work, canonical_id)

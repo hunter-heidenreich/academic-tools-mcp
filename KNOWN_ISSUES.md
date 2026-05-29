@@ -40,7 +40,7 @@ The findings are grouped by severity-of-action, not by subsystem:
 | 7 | Section-lock eviction can spin O(N) over a full held map | `papers.py:210` | Fragility | Very low |
 | 8 | ~~`download_pdf` supports only 3 providers — the dominant operator friction~~ **(RESOLVED via opt-in OA-URL path)** | `server.py:920` | Intentional | (enhancement) |
 | 9 | ~~Single global conversion lock + coarse 30-min timeout serializes batches~~ **(RESOLVED via opt-in `mode="fast"`)** | `papers.py:45`, `:37` | Intentional | (enhancement) |
-| 10 | No provider fallback when OpenAlex 404s a valid DOI | `manual.py:74` | Intentional | (enhancement) |
+| 10 | ~~No provider fallback when OpenAlex 404s a valid DOI~~ **(RESOLVED via opt-in `fallback_crossref`)** | `manual.py:74`, `server.py` | Intentional | (enhancement) |
 | 11 | Literal/ASCII-boundary search misses diacritics & non-Latin scripts | `papers.py:324`, `cache_search.py:137` | Intentional | (limitation) |
 | 12 | BM25 rescans the whole corpus on every call (O(N)) | `cache_search.py:258` | Intentional | (scaling limit) |
 
@@ -420,7 +420,23 @@ and it would let batch ingests get *something* for every paper without
 serializing on the heavy converter. The `timed_out: true` error at `:609` is a
 natural trigger point to suggest it.
 
-### 3.3 No provider fallback on OpenAlex 404
+### 3.3 No provider fallback on OpenAlex 404 — **RESOLVED (opt-in)**
+
+**Resolution.** Implemented the narrow, opt-in fallback from the enhancement sketch
+below. `get_paper_metadata(doi, fallback_crossref=True)` now falls back to Crossref
+when — and only when — OpenAlex returns a definitive 404. To distinguish a true 404
+from a transient error (5xx/429/timeout, which differ only by message text and should
+be retried, not masked), `openalex.get_work`'s 404 path now tags its error dict with
+`"not_found": True` (also applied to the batch path at `openalex.py:390`, since both
+share the negative cache), and the server gates the fallback strictly on
+`work.get("not_found")`. The Crossref work is mapped into the unified metadata shape by
+a new `_format_crossref_metadata` (`_source="crossref"`), reusing the existing
+`_fetch_crossref_work` helper. The Crossref response carries no OA fields
+(`is_oa`/`oa_status`/`oa_url`/`pdf_url` are null) and there is no abstract path, so the
+fallback is scoped to `get_paper_metadata` only. `fallback_crossref` defaults to `False`,
+so the hard error is unchanged by default. `force_refresh` applies to the OpenAlex lookup
+(Crossref's `get_work` has no such knob). Coverage in `tests/test_crossref_fallback.py`
+plus a `not_found` assertion in `tests/test_openalex.py`. Original analysis retained below.
 
 **Where.** `manual.py:74-98` (`_resolve_metadata_source`). Identifier *shape*
 alone picks the provider: arXiv shape → arXiv, bioRxiv DOI → bioRxiv, any other
@@ -533,6 +549,8 @@ If picking these up, a sensible sequence:
 5. ~~**Finding 3.1** (OA-URL download path) — the enhancement that most reduces
    day-to-day friction.~~ **DONE (opt-in `allow_oa_url=True`).**
 6. ~~**Finding 3.2** (fast-extract fallback) — supported degraded path for the
-   timeout/serialisation case.~~ **DONE (opt-in `mode="fast"`).** Remaining open
-   items: **3.3** (Crossref fallback on OpenAlex 404), **3.4** (diacritic-aware
-   search), **3.5** (BM25 index scaling) — all still open if there's appetite.
+   timeout/serialisation case.~~ **DONE (opt-in `mode="fast"`).**
+7. ~~**Finding 3.3** (Crossref fallback on OpenAlex 404) — opt-in
+   `fallback_crossref=True` on `get_paper_metadata`.~~ **DONE.** Remaining open
+   items: **3.4** (diacritic-aware search) and **3.5** (BM25 index scaling) —
+   both still open if there's appetite.

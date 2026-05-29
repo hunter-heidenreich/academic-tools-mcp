@@ -257,7 +257,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             )
 
             if response.status_code == 404:
-                err = {"error": f"No work found for DOI: {doi}"}
+                err = {"error": f"No work found for DOI: {doi}", "not_found": True}
                 cache.put_negative(NAMESPACE, "works", canonical, err)
                 return err
 
@@ -387,7 +387,7 @@ async def get_works_batch(
         for canonical in chunk:
             if canonical in seen_in_chunk:
                 continue
-            err = {"error": f"No work found for DOI: {canonical}"}
+            err = {"error": f"No work found for DOI: {canonical}", "not_found": True}
             cache.put_negative(NAMESPACE, "works", canonical, err)
             out[canonical] = err
 

@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- `get_paper_metadata(doi, fallback_crossref=True)` opts into a Crossref fallback
+  when OpenAlex returns a definitive "not found" (HTTP 404) for a DOI — Crossref's
+  indexing of new and niche-venue DOIs is often ahead of OpenAlex's. The fallback
+  fires *only* on a true 404, never on a transient OpenAlex error (5xx/429/timeout),
+  which should be retried instead. The response carries `_source="crossref"` with a
+  reduced field set: no open-access info (`is_oa`/`oa_status`/`oa_url`/`pdf_url` are
+  null) and no abstract path. Default stays `False`, so the hard "not found" error is
+  unchanged. ([#13])
 - `convert_paper(identifier, mode="fast")` adds an opt-in lightweight extraction
   fallback. It shells out to a text-only extractor (`PDF_FAST_CONVERTER`, named
   backends `pdftotext` — default — and `pymupdf` via the new `[fast]` optional
@@ -171,3 +179,4 @@ grouped by milestone rather than per commit.
 [#10]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/10
 [#11]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/11
 [#12]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/12
+[#13]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/13
