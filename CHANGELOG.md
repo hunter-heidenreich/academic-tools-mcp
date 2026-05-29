@@ -15,6 +15,8 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+## [2026.05.29] — 2026-05-29
+
 ### Added
 
 - `get_paper_metadata(biorxiv_doi, follow_published=True)` now reports a
@@ -204,7 +206,8 @@ grouped by milestone rather than per commit.
 - Configurable external PDF converter, env-based API configuration
   (mailto / keys), MIT license, and a public-facing README.
 
-[Unreleased]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.30...HEAD
+[Unreleased]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.05.29...HEAD
+[2026.05.29]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.30...v2026.05.29
 [2026.04.30]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.22...v2026.04.30
 [2026.04.22]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.16...v2026.04.22
 [2026.04.16]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.05...v2026.04.16
