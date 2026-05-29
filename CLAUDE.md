@@ -53,6 +53,8 @@ Per-module deep detail (atomic writes, throttle/backpressure semantics, single-f
 - `.claude/rules/pipeline.md` — `papers.py`, `manual.py`, `cache_search.py`
 - `.claude/rules/server.md` — `server.py`, `bibtex.py`
 
+Known bugs, fragile code paths, and intentional-constraint trade-offs (with `file:line` references and fix sketches) are inventoried in [`KNOWN_ISSUES.md`](./KNOWN_ISSUES.md). Read it before touching the PDF download/convert pipeline or the retry/backpressure layer.
+
 ## Cross-cutting design decisions
 
 - **Uniform robustness primitives across providers.** Every API client (arxiv, openalex, biorxiv, crossref, opencitations, wikipedia, acl_anthology) has the same shape: persistent `httpx.AsyncClient`, two-stage gating (`_request_sem` of size `_MAX_CONCURRENT` caps simultaneous in-flight requests, `_request_lock` briefly serialises the inter-start gap update), 5-deep burst cap (`LocalBackpressureError` past that), single-flight by canonical identifier, one transparent retry on transient failure honouring `Retry-After`, negative caching on definitive 404s (default 24h TTL; arxiv/biorxiv override to 1h because preprint identifiers go live mid-session), positive cache TTL eviction, `_stats` counters.
