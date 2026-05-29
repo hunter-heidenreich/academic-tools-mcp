@@ -42,7 +42,7 @@ The findings are grouped by severity-of-action, not by subsystem:
 | 9 | ~~Single global conversion lock + coarse 30-min timeout serializes batches~~ **(RESOLVED via opt-in `mode="fast"`)** | `papers.py:45`, `:37` | Intentional | (enhancement) |
 | 10 | ~~No provider fallback when OpenAlex 404s a valid DOI~~ **(RESOLVED via opt-in `fallback_crossref`)** | `manual.py:74`, `server.py` | Intentional | (enhancement) |
 | 11 | ~~Literal/ASCII-boundary search misses diacritics~~ **(RESOLVED via opt-in `normalize`)** — non-Latin word boundaries still limited | `papers.py:324`, `cache_search.py:137` | Intentional | (limitation) |
-| 12 | BM25 rescans the whole corpus on every call (O(N)) | `cache_search.py:258` | Intentional | (scaling limit) |
+| 12 | ~~BM25 rescans the whole corpus on every call (O(N))~~ **(RESOLVED via persistent incremental index)** | `cache_search.py:258` | Intentional | (scaling limit) |
 
 ---
 
@@ -492,7 +492,28 @@ strips combining marks on both query and text before matching. Document the
 ASCII-boundary caveat in the tool description so 0-hit results aren't
 over-trusted.
 
-### 3.5 BM25 corpus rescanned on every `search_cached_papers` call
+### 3.5 BM25 corpus rescanned on every `search_cached_papers` call — **RESOLVED (persistent incremental index)**
+
+**Resolution.** Replaced the full-corpus read+tokenise on every call with a
+persistent incremental index at `.cache/__search_index__/index.json`. Each
+document's term frequencies (both diacritic-folded and un-folded) are cached and
+keyed by a cheap `os.stat` staleness signal (`mtime_ns` + `size`), so a search
+re-reads and re-tokenises only the files that changed since the last call and
+re-reads only the top-`k` winners for snippet/section/title extraction. The walk
+is now a stat-only pass; the O(corpus) tokenise is gone. `_refresh_index()` runs
+under a module-level `threading.Lock` (search executes in `asyncio.to_thread`
+worker threads), reuses unchanged entries, prunes entries for deleted files, and
+persists atomically via the existing `cache._atomic_write_json` only when
+something changed. Storing both token-frequency modes means flipping `normalize`
+never forces a re-tokenise. A corrupt index or `_INDEX_VERSION` bump self-heals
+by rebuilding; an opt-in `search(force_refresh=True)` (wired through the tool)
+rebuilds every entry for the rare same-mtime-same-size edit. Output is
+byte-identical to the old full-scan path. The reserved `__search_index__` dir has
+no `markdown/` subdir so `_iter_markdown_files` already skips it. If the index
+JSON parse itself ever dominates at very large corpora, sharding it per-namespace
+is the next lever (embedding-rerank remains the recall follow-up). Coverage in
+`tests/test_cache_search.py::TestIncrementalIndex`. Original analysis retained
+below.
 
 **Where.** `cache_search.py:258-377`. Every call walks all cached markdown,
 tokenizes, and scores in pure Python. The docstring (`:15-19`) is candid that
@@ -573,6 +594,8 @@ If picking these up, a sensible sequence:
    `fallback_crossref=True` on `get_paper_metadata`.~~ **DONE.**
 8. ~~**Finding 3.4** (diacritic-aware search) — opt-in `normalize=True` on
    `find_in_paper` and `search_cached_papers`.~~ **DONE (diacritics; non-Latin
-   word boundaries still open).** Remaining open items: **3.5** (BM25 index
-   scaling) and the non-Latin word-boundary tail of **3.4** — both still open if
-   there's appetite.
+   word boundaries still open).**
+9. ~~**Finding 3.5** (BM25 index scaling) — persistent incremental index keyed by
+   `os.stat` staleness.~~ **DONE.** Remaining open items: **2.4** (section-lock
+   eviction O(N), "very low") and the non-Latin word-boundary tail of **3.4** —
+   both still open if there's appetite.

@@ -61,6 +61,18 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- `search_cached_papers` is now backed by a persistent incremental index
+  (`.cache/__search_index__/index.json`) instead of re-reading and re-tokenising
+  every cached markdown file on every call. Each document's term frequencies are
+  cached and keyed by a cheap `os.stat` staleness signal (`mtime_ns` + `size`), so
+  a search only re-tokenises papers that actually changed since the last call and
+  re-reads only the top-`k` winners to extract snippets. Results are byte-identical
+  to the old full-scan path; the change is purely a scaling fix (the previous
+  O(corpus) tokenise-per-call approached tool timeouts at thousands of cached
+  papers). Both diacritic-folded and un-folded frequencies are stored, so toggling
+  `normalize` never forces a re-tokenise. A new opt-in `force_refresh=True` rebuilds
+  every index entry for the rare case a file changed without its mtime/size
+  changing; a corrupt index or a version bump self-heals by rebuilding. ([#15])
 - `get_paper_metadata` now surfaces a `pdf_url` field on OpenAlex-sourced responses,
   carrying the best open-access PDF link OpenAlex knows (preferring a direct PDF over
   a landing page). ([#11])
@@ -193,3 +205,4 @@ grouped by milestone rather than per commit.
 [#12]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/12
 [#13]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/13
 [#14]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/14
+[#15]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/15
