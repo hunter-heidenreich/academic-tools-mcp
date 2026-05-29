@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import _clients, _stats, acl_anthology, arxiv, biorxiv, cache, cache_search, config, crossref, manual, opencitations, openalex, papers, wikipedia
+from . import _clients, _stats, acl_anthology, arxiv, biorxiv, cache, cache_search, config, crossref, manual, oa_download, opencitations, openalex, papers, wikipedia
 from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 
 
@@ -242,6 +242,24 @@ PDF_FORCE_REFRESH = Annotated[
     ),
 ]
 
+ALLOW_OA_URL = Annotated[
+    bool,
+    Field(
+        description=(
+            "If True, papers that are NOT arXiv / bioRxiv / ACL (i.e. "
+            "generic publisher DOIs) may be downloaded from the "
+            "open-access PDF URL that OpenAlex reports for the DOI. Only "
+            "the URL already present in the paper's OpenAlex metadata is "
+            "fetched — never an arbitrary URL — so this stays gated, not a "
+            "general scraper. Errors if the paper is closed-access, isn't "
+            "in OpenAlex, or the URL turns out to be a landing page rather "
+            "than a PDF. Default False keeps the strict refusal: fetch "
+            "those PDFs yourself and use import_paper. Ignored for arXiv / "
+            "bioRxiv / ACL identifiers, which always download directly."
+        ),
+    ),
+]
+
 CONVERT_FORCE_REFRESH = Annotated[
     bool,
     Field(
@@ -334,6 +352,7 @@ def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) ->
         "is_oa": oa.get("is_oa"),
         "oa_status": oa.get("oa_status"),
         "oa_url": oa.get("oa_url"),
+        "pdf_url": openalex.best_pdf_url(work),
     }
 
 
@@ -895,7 +914,7 @@ async def search_arxiv(
 
 
 async def _download_pdf_by_provider(
-    identifier: str, *, force_refresh: bool = False
+    identifier: str, *, force_refresh: bool = False, allow_oa_url: bool = False
 ) -> dict[str, Any]:
     """Dispatch PDF download to the correct provider based on identifier type.
 
@@ -916,6 +935,12 @@ async def _download_pdf_by_provider(
         result = await acl_anthology.download_pdf(identifier, force_refresh=force_refresh)
     elif ns == "biorxiv":
         result = await biorxiv.download_pdf(identifier, force_refresh=force_refresh)
+    elif allow_oa_url:
+        # Generic publisher DOI + opt-in: fetch the open-access PDF URL
+        # OpenAlex reports for this DOI (never an arbitrary URL). Lands in
+        # the manual namespace, so the force_refresh cascade below and the
+        # rest of the pipeline treat it like any other manual-namespace PDF.
+        result = await oa_download.download_pdf(identifier, force_refresh=force_refresh)
     else:
         return {
             "error": (
@@ -925,12 +950,15 @@ async def _download_pdf_by_provider(
                 "(10.18653/v1/...)."
             ),
             "suggestion": (
-                "Obtain the PDF yourself (publisher site, institutional access, "
-                "browser, curl, etc.), then call import_paper(file_path, identifier) "
-                "with the SAME identifier — it will be cached in the correct "
-                "namespace so convert_paper → get_paper_sections → get_paper_section "
-                "find it. import_paper also accepts pre-converted .md/.markdown "
-                "files, which skip the convert_paper step entirely."
+                "For a generic publisher DOI, retry with allow_oa_url=True to "
+                "fetch the open-access PDF URL OpenAlex reports (if any). "
+                "Otherwise obtain the PDF yourself (publisher site, "
+                "institutional access, browser, curl, etc.), then call "
+                "import_paper(file_path, identifier) with the SAME identifier "
+                "— it will be cached in the correct namespace so convert_paper "
+                "→ get_paper_sections → get_paper_section find it. import_paper "
+                "also accepts pre-converted .md/.markdown files, which skip the "
+                "convert_paper step entirely."
             ),
         }
 
@@ -957,19 +985,26 @@ async def _download_pdf_by_provider(
 async def download_pdf(
     identifier: PAPER_ID,
     force_refresh: PDF_FORCE_REFRESH = False,
+    allow_oa_url: ALLOW_OA_URL = False,
 ) -> dict[str, Any]:
     """Download and cache the PDF for a paper, auto-detecting the source.
 
-    Direct download is only supported for three providers:
+    Direct download is supported for three providers:
       - arXiv IDs (e.g. 2301.00001)
       - bioRxiv/medRxiv DOIs (10.1101/...)
       - ACL Anthology DOIs (10.18653/v1/...)
 
     Any other identifier (generic publisher DOI, freeform label, etc.)
-    returns an error — this tool will NOT attempt to fetch arbitrary PDFs.
-    For those papers, obtain the file yourself (publisher site, institutional
-    access, browser, curl) and pass it to import_paper(file_path, identifier);
-    using the same identifier deduplicates with the rest of the pipeline.
+    returns an error by default — this tool will NOT fetch arbitrary URLs.
+    For a generic publisher DOI you can opt in with ``allow_oa_url=True``:
+    the tool then fetches ONLY the open-access PDF URL that OpenAlex
+    reports for that DOI (gold/hybrid/green OA). It still never fetches a
+    caller-supplied URL, and it errors cleanly if the paper is
+    closed-access, isn't in OpenAlex, or the URL turns out to be a landing
+    page rather than a PDF — fall back to import_paper in those cases.
+    Obtaining the file yourself and passing it to
+    import_paper(file_path, identifier) with the same identifier always
+    works and deduplicates with the rest of the pipeline.
 
     Skips download if already cached unless ``force_refresh=True``. Note
     that re-downloading the PDF does NOT invalidate any already-converted
@@ -979,7 +1014,9 @@ async def download_pdf(
     Next step: convert_paper → get_paper_sections → get_paper_section.
     """
     return _strip_internal_paths(
-        await _download_pdf_by_provider(identifier, force_refresh=force_refresh)
+        await _download_pdf_by_provider(
+            identifier, force_refresh=force_refresh, allow_oa_url=allow_oa_url
+        )
     )
 
 

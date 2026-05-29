@@ -47,6 +47,7 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
         "opencitations",
         "wikipedia",
         "acl_anthology",
+        "oa_download",
     ):
         try:
             module: Any = __import__(

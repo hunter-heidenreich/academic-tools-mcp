@@ -45,6 +45,7 @@ _PROVIDER_MODULES = (
     "opencitations",
     "wikipedia",
     "acl_anthology",
+    "oa_download",
 )
 
 
