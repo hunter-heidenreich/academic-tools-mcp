@@ -684,6 +684,25 @@ class TestSectionLocksLRU:
         finally:
             held.release()
 
+    @pytest.mark.asyncio
+    async def test_all_locks_held_bails_over_cap(self, monkeypatch):
+        # When every lock is held, eviction must bail (go over cap) rather
+        # than spin — and must do so without dropping a held lock.
+        monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 2)
+        a = papers._sections_lock("test", "a")
+        b = papers._sections_lock("test", "b")
+        await a.acquire()
+        await b.acquire()
+        try:
+            papers._sections_lock("test", "c")  # over cap, but a/b are held
+            keys = set(papers._section_locks.keys())
+            assert ("test", "a") in keys
+            assert ("test", "b") in keys
+            assert ("test", "c") in keys  # added; nothing evictable
+        finally:
+            a.release()
+            b.release()
+
     def test_returns_same_lock_for_same_key(self):
         lock1 = papers._sections_lock("test", "same")
         lock2 = papers._sections_lock("test", "same")

@@ -37,7 +37,7 @@ The findings are grouped by severity-of-action, not by subsystem:
 | 4 | ~~ACL old-style IDs are case-sensitive in the URL; no normalization~~ **(RESOLVED)** | `acl_anthology.py:111`, `:128` | Fragility | Medium |
 | 5 | ~~`find_in_paper` truncates silently at `max_results` with no "more exist" flag~~ **(RESOLVED)** | `papers.py:335` | Fragility | Low |
 | 6 | ~~`import_markdown` caches sections without a checksum (inconsistent with `convert_pdf`)~~ **(RESOLVED)** | `manual.py:290` | Fragility | Low |
-| 7 | Section-lock eviction can spin O(N) over a full held map | `papers.py:210` | Fragility | Very low |
+| 7 | ~~Section-lock eviction can spin O(N) over a full held map~~ **(RESOLVED)** | `papers.py:210` | Fragility | Very low |
 | 8 | ~~`download_pdf` supports only 3 providers — the dominant operator friction~~ **(RESOLVED via opt-in OA-URL path)** | `server.py:920` | Intentional | (enhancement) |
 | 9 | ~~Single global conversion lock + coarse 30-min timeout serializes batches~~ **(RESOLVED via opt-in `mode="fast"`)** | `papers.py:45`, `:37` | Intentional | (enhancement) |
 | 10 | ~~No provider fallback when OpenAlex 404s a valid DOI~~ **(RESOLVED via opt-in `fallback_crossref`)** | `manual.py:74`, `server.py` | Intentional | (enhancement) |
@@ -306,7 +306,21 @@ work, not wrong answers.
 `convert_pdf` does: `"markdown_checksum": papers._markdown_checksum(md_path)`
 after the `md_path.write_text(markdown)` at `:286`.
 
-### 2.4 Section-lock eviction can scan a fully-held map
+### 2.4 Section-lock eviction can scan a fully-held map — **RESOLVED**
+
+**Resolution.** The O(N) `all(l.locked() for l in ...)` bail re-check on every
+iteration was replaced with a `held_skips` counter: each un-evictable lock is
+rotated to the back and counted, and the loop bails once `held_skips` reaches
+the current map size (cycled past every entry, none evictable). A full pass is
+now O(N) instead of O(N²). Fixing this also closed a latent crash on the same
+all-held path: the inserting writer could evict the lock it had *just*
+inserted and then `KeyError` on the trailing `move_to_end(key)` — eviction now
+skips `key` itself (`evict_key == key`), so the caller's own lock is never
+dropped. Normal (few-held) behaviour is unchanged: free front locks are still
+popped, held locks preserved, and the map still goes slightly over cap rather
+than drop a held lock. Regression coverage in
+`tests/test_papers.py::TestSectionLocksLRU::test_all_locks_held_bails_over_cap`.
+Original analysis retained below.
 
 **Where.** `papers.py:200-213`. When `_section_locks` exceeds `_SECTION_LOCKS_MAX`
 (1024) and the front lock is held, the code re-checks `all(l.locked() ...)` over
@@ -603,6 +617,13 @@ If picking these up, a sensible sequence:
    `find_in_paper` and `search_cached_papers`.~~ **DONE (diacritics; non-Latin
    word boundaries still open).**
 9. ~~**Finding 3.5** (BM25 index scaling) — persistent incremental index keyed by
-   `os.stat` staleness.~~ **DONE.** Remaining open items: **2.4** (section-lock
-   eviction O(N), "very low") and the non-Latin word-boundary tail of **3.4** —
-   both still open if there's appetite.
+   `os.stat` staleness.~~ **DONE.**
+10. ~~**Finding 2.4** (section-lock eviction O(N)) — bounded the eviction probe to
+    O(N) and closed a latent all-held crash.~~ **DONE.**
+
+The only remaining open item is the **non-Latin word-boundary tail of 3.4**
+(Unicode `\b` for CJK/Arabic), which was *deliberately declined* — it would
+require adding the `regex` dependency and folding does nothing for those
+scripts. Every other finding in this report is resolved; the document is kept
+as a historical record (resolved analyses, verified non-issues, upstream
+metadata caveats).

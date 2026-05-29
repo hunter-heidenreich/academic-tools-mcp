@@ -239,23 +239,27 @@ def _sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
         existing = _section_locks.setdefault(key, lock)
         if existing is lock:
             # We were the inserting writer — enforce the cap. Evict from
-            # the front (oldest) and skip any lock that is currently
-            # held; a held lock is doing real work right now and the
-            # caller depends on its mutual exclusion.
+            # the front (oldest), skipping any lock that is currently
+            # held (a held lock is doing real work right now and the
+            # caller depends on its mutual exclusion) and the key we just
+            # inserted (the caller is about to use it). ``held_skips``
+            # counts consecutive un-evictable locks rotated to the back;
+            # once it reaches the map size we've cycled past every entry
+            # and none is evictable, so we bail rather than spin — going
+            # slightly over cap is fine, hanging is not. Bounding the
+            # probe this way keeps a full pass O(N) instead of re-scanning
+            # the whole map with all(...) on every iteration.
+            held_skips = 0
             while len(_section_locks) > _SECTION_LOCKS_MAX:
+                if held_skips >= len(_section_locks):
+                    break
                 evict_key, evict_lock = next(iter(_section_locks.items()))
-                if evict_lock.locked():
-                    # Move it to the end so we don't spin re-checking
-                    # this same held lock; the next eviction pass will
-                    # find a free one ahead of it.
+                if evict_key == key or evict_lock.locked():
                     _section_locks.move_to_end(evict_key)
-                    # If every lock is held (extremely unlikely), bail
-                    # rather than spin forever — going slightly over cap
-                    # is fine, hanging is not.
-                    if all(l.locked() for l in _section_locks.values()):
-                        break
+                    held_skips += 1
                     continue
                 _section_locks.pop(evict_key, None)
+                held_skips = 0
         else:
             lock = existing
     _section_locks.move_to_end(key)
