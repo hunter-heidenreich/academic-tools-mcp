@@ -93,6 +93,13 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- Section-lock eviction (the per-paper LRU map that serialises section-cache
+  re-parses) is now bounded to O(N) per pass when many locks are held, instead
+  of re-scanning the whole map with `all(...)` on every iteration. The same
+  pathological all-held path also no longer crashes by evicting the
+  just-inserted lock and then `KeyError`-ing — the inserting key is now skipped
+  during eviction. No behaviour change in the normal (few-held) case.
+  (`KNOWN_ISSUES` 2.4) ([#17])
 - `get_with_retry` now honors a server's `Retry-After` up to a 10-minute ceiling
   instead of clamping it to ~30s, so a provider asking for a genuine multi-minute
   cooldown (e.g. a sustained arXiv 429) is respected rather than retried
@@ -217,3 +224,4 @@ grouped by milestone rather than per commit.
 [#14]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/14
 [#15]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/15
 [#16]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/16
+[#17]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/17
