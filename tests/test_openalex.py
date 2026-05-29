@@ -1,3 +1,6 @@
+import pytest
+
+from academic_tools_mcp import cache, openalex
 from academic_tools_mcp.openalex import (
     _canonical_author_id,
     _canonical_doi,
@@ -70,3 +73,36 @@ class TestReconstructAbstract:
 
     def test_none(self):
         assert reconstruct_abstract(None) == ""
+
+
+class TestGetWork404Marker:
+    """A definitive 404 from get_work tags its error dict with
+    ``not_found: True`` so server.get_paper_metadata can distinguish a true
+    miss (eligible for the Crossref fallback) from a transient error."""
+
+    @pytest.mark.asyncio
+    async def test_404_error_carries_not_found_and_negative_caches(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+        class StubResponse:
+            status_code = 404
+
+            def raise_for_status(self):
+                pass
+
+        async def fake_throttled_get(url, **kwargs):
+            return StubResponse()
+
+        monkeypatch.setattr(openalex, "_throttled_get", fake_throttled_get)
+
+        result = await openalex.get_work("10.9999/does-not-exist")
+        assert result.get("not_found") is True
+        assert "No work found for DOI" in result["error"]
+
+        # The marker is persisted in the negative cache too, so a later
+        # read (e.g. via a batch that warmed it) still triggers the fallback.
+        neg = cache.get_negative(openalex.NAMESPACE, "works", "10.9999/does-not-exist")
+        assert neg is not None
+        assert neg.get("not_found") is True
