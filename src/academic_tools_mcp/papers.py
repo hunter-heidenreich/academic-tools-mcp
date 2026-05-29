@@ -25,6 +25,7 @@ import re
 import shlex
 import shutil
 import signal
+import sys
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -36,6 +37,11 @@ from . import cache, config
 # CPU-only MinerU runs can legitimately take 20+ minutes, so we err
 # generous. Tunable via PDF_CONVERT_TIMEOUT (seconds); 0/empty disables.
 _DEFAULT_PDF_CONVERT_TIMEOUT = 1800.0
+
+# Default timeout for the lightweight "fast" extraction path. Text-only
+# extraction is seconds, not minutes, so the ceiling is tight. Tunable via
+# PDF_FAST_CONVERT_TIMEOUT (seconds); 0/empty disables.
+_DEFAULT_FAST_CONVERT_TIMEOUT = 120.0
 
 # Global cap: at most one PDF→markdown conversion runs across the whole
 # server at a time. Conversion can pin a CPU/GPU for tens of minutes;
@@ -60,6 +66,17 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 _CONVERTERS: dict[str, str] = {
     "mineru": 'mineru -p "{input}" -o "{output_dir}"',
     "marker": 'marker_single "{input}" --output_dir "{output_dir}"',
+}
+
+# Built-in lightweight ("fast") extractor command templates. Unlike the heavy
+# converters above, these emit extracted text to *stdout* (not an output dir)
+# and produce plain text, not structured markdown — a deliberately degraded
+# fallback. {input} = PDF path, {python} = the server's own interpreter (so the
+# bundled pymupdf runner resolves against the env where the optional `[fast]`
+# extra is installed).
+_FAST_CONVERTERS: dict[str, str] = {
+    "pdftotext": 'pdftotext -layout "{input}" -',
+    "pymupdf": '{python} -m academic_tools_mcp._fast_extract "{input}"',
 }
 
 
@@ -100,26 +117,36 @@ def _busy_error(pdf_size_mb: float) -> dict[str, Any]:
     }
 
 
-def _resolve_convert_timeout() -> float | None:
-    """Resolve the PDF conversion timeout from PDF_CONVERT_TIMEOUT.
+def _resolve_timeout(env_var: str, default: float) -> float | None:
+    """Resolve a subprocess timeout from an env var.
 
     Returns the timeout in seconds, or None to disable the timeout.
     Unset / empty / "0" / negative / non-numeric values are treated as
     "use the default"; an explicit "none" / "off" / "disabled" disables.
     """
-    raw = config.get("PDF_CONVERT_TIMEOUT")
+    raw = config.get(env_var)
     if raw is None:
-        return _DEFAULT_PDF_CONVERT_TIMEOUT
+        return default
     raw = raw.strip().lower()
     if raw in {"none", "off", "disabled", "0"}:
         return None
     try:
         value = float(raw)
     except ValueError:
-        return _DEFAULT_PDF_CONVERT_TIMEOUT
+        return default
     if value <= 0:
         return None
     return value
+
+
+def _resolve_convert_timeout() -> float | None:
+    """Resolve the full PDF conversion timeout from PDF_CONVERT_TIMEOUT."""
+    return _resolve_timeout("PDF_CONVERT_TIMEOUT", _DEFAULT_PDF_CONVERT_TIMEOUT)
+
+
+def _resolve_fast_convert_timeout() -> float | None:
+    """Resolve the fast-extraction timeout from PDF_FAST_CONVERT_TIMEOUT."""
+    return _resolve_timeout("PDF_FAST_CONVERT_TIMEOUT", _DEFAULT_FAST_CONVERT_TIMEOUT)
 
 
 def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
@@ -143,6 +170,23 @@ def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
         cmd = f'source "{activate}" && {cmd}'
 
     return cmd
+
+
+def _build_fast_converter_command(pdf_path: Path) -> str:
+    """Build the shell command for lightweight ("fast") text extraction.
+
+    Reads PDF_FAST_CONVERTER from environment. It can be a named backend
+    ("pdftotext" — the default — or "pymupdf") or a custom command template
+    containing an {input} placeholder. The command MUST emit the extracted
+    text to stdout. {python} expands to the server's own interpreter so the
+    bundled pymupdf runner resolves against the env where the optional
+    `[fast]` extra is installed.
+    """
+    converter = config.get("PDF_FAST_CONVERTER") or "pdftotext"
+    template = _FAST_CONVERTERS.get(converter, converter)
+    # str.format ignores the unused {python} key for templates (e.g. pdftotext)
+    # that don't reference it.
+    return template.format(input=pdf_path, python=shlex.quote(sys.executable))
 
 
 def _markdown_checksum(md_path: Path) -> str:
@@ -457,12 +501,182 @@ def get_section_content(
     }
 
 
+def _finalize_markdown(
+    namespace: str,
+    canonical: str,
+    md_path: Path,
+    raw_markdown: str,
+    mode: str,
+) -> dict[str, Any]:
+    """Post-process extractor output, cache it, and return the section index.
+
+    Shared tail for both conversion modes ("full" and "fast"): normalise
+    trailing whitespace, strip image paths, write the markdown to the cache,
+    parse sections, and store the section index tagged with the conversion
+    mode so callers can tell a degraded fast extraction from a full one.
+    """
+    # Normalise trailing whitespace line-by-line.
+    markdown = "\n".join(line.rstrip() for line in raw_markdown.split("\n"))
+
+    # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
+    # When there is no caption, the path is never useful, so drop it.
+    # When there is a caption, keep the caption text and drop the path.
+    markdown = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'![\1]()', markdown)
+
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(markdown)
+
+    sections = parse_sections(markdown)
+    cache.put(
+        namespace,
+        "sections",
+        _sections_key(canonical),
+        {
+            "sections": sections,
+            "markdown_checksum": _markdown_checksum(md_path),
+            "conversion_mode": mode,
+        },
+    )
+    return {
+        "markdown_path": str(md_path),
+        "sections": sections,
+        "cached": False,
+        "conversion_mode": mode,
+    }
+
+
+async def _convert_fast(
+    pdf_path: Path,
+    namespace: str,
+    canonical: str,
+    pdf_size_mb: float,
+) -> dict[str, Any]:
+    """Lightweight text extraction, run *outside* the global conversion lock.
+
+    Shells out to PDF_FAST_CONVERTER (default ``pdftotext``) capturing stdout,
+    then caches the text as markdown via the shared finaliser. Deliberately
+    degraded: plain text, no tables/equations/figures, no real headings. Cheap
+    and not GPU-bound, so it never serialises behind a heavy MinerU conversion
+    and never returns a ``busy`` error. The per-paper sections lock serialises
+    concurrent fast calls on the same paper so they don't both spawn and race
+    the cache write; stderr is captured separately so stdout stays clean text.
+    """
+    md_path = _markdown_path(namespace, canonical)
+    async with _sections_lock(namespace, canonical):
+        # A racing fast caller may have written the markdown between the outer
+        # cached-check and our acquiring this lock — re-check before spawning.
+        if md_path.exists():
+            markdown = md_path.read_text()
+            sections = parse_sections(markdown)
+            cache.put(
+                namespace,
+                "sections",
+                _sections_key(canonical),
+                {
+                    "sections": sections,
+                    "markdown_checksum": _markdown_checksum(md_path),
+                    "conversion_mode": "fast",
+                },
+            )
+            return {
+                "markdown_path": str(md_path),
+                "sections": sections,
+                "cached": True,
+                "conversion_mode": "fast",
+            }
+
+        cmd = _build_fast_converter_command(pdf_path)
+        timeout = _resolve_fast_convert_timeout()
+
+        try:
+            # start_new_session=True so a timeout can SIGKILL the whole tree.
+            # stderr is kept separate (not merged) so stdout is pure text.
+            proc = await asyncio.create_subprocess_exec(
+                "bash", "-c", cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as e:
+            return {
+                "error": (
+                    f"Could not start fast PDF extractor subprocess: {e}. "
+                    "Check that the PDF_FAST_CONVERTER command is installed "
+                    "(default 'pdftotext' needs poppler-utils; 'pymupdf' needs "
+                    "`pip install academic-tools-mcp[fast]`)."
+                ),
+                "retryable": False,
+                "conversion_mode": "fast",
+                "pdf_size_mb": round(pdf_size_mb, 1),
+            }
+
+        try:
+            if timeout is None:
+                stdout, stderr = await proc.communicate()
+            else:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+        except asyncio.TimeoutError:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            return {
+                "error": (
+                    f"Fast PDF extraction timed out after {timeout:.0f}s "
+                    f"(PDF: {pdf_size_mb:.1f} MB). "
+                    "Increase PDF_FAST_CONVERT_TIMEOUT or set it to 'none' to disable."
+                ),
+                "retryable": False,
+                "timed_out": True,
+                "timeout_seconds": timeout,
+                "conversion_mode": "fast",
+                "pdf_size_mb": round(pdf_size_mb, 1),
+            }
+
+        if proc.returncode != 0:
+            # Prefer stderr (where extractors write diagnostics); fall back to
+            # stdout. Replace undecodable bytes rather than raising.
+            output = (stderr or b"").decode("utf-8", errors="replace") or (
+                stdout or b""
+            ).decode("utf-8", errors="replace")
+            return {
+                "error": f"Fast PDF extraction failed (exit {proc.returncode}): {output[-500:]}",
+                "retryable": False,
+                "conversion_mode": "fast",
+                "pdf_size_mb": round(pdf_size_mb, 1),
+            }
+
+        markdown = (stdout or b"").decode("utf-8", errors="replace")
+        # pdftotext separates pages with a form-feed; turn it into a blank line.
+        markdown = markdown.replace("\f", "\n")
+        if not markdown.strip():
+            return {
+                "error": (
+                    f"Fast PDF extractor produced no text (PDF: {pdf_size_mb:.1f} MB). "
+                    "The PDF may be image-only/scanned — try full conversion (MinerU "
+                    "runs OCR) instead."
+                ),
+                "retryable": False,
+                "conversion_mode": "fast",
+                "pdf_size_mb": round(pdf_size_mb, 1),
+            }
+
+        return _finalize_markdown(namespace, canonical, md_path, markdown, "fast")
+
+
 async def convert_pdf(
     pdf_path: Path,
     namespace: str,
     canonical: str,
     *,
     force_refresh: bool = False,
+    mode: str = "full",
 ) -> dict[str, Any]:
     """Convert a PDF to markdown, cache the result, and return section index.
 
@@ -471,11 +685,17 @@ async def convert_pdf(
         namespace: Cache namespace (e.g., "arxiv").
         canonical: Canonical ID for cache keying.
         force_refresh: If True, drop any cached markdown + section index
-            for this paper so the converter subprocess re-runs. Use after
-            replacing the source PDF or upgrading the converter.
+            for this paper so the converter re-runs. Use after replacing the
+            source PDF or upgrading the converter.
+        mode: ``"full"`` (default) runs the heavy converter (MinerU/Marker)
+            under the global single-conversion lock. ``"fast"`` runs a
+            lightweight text extractor (PDF_FAST_CONVERTER, default
+            ``pdftotext``) outside that lock — a deliberately degraded path
+            that never serialises or returns ``busy``, useful when the full
+            converter times out or is unavailable.
 
     Returns:
-        Dict with markdown_path, sections list, or an error.
+        Dict with markdown_path, sections, cached, conversion_mode, or an error.
     """
     md_path = _markdown_path(namespace, canonical)
 
@@ -515,21 +735,33 @@ async def convert_pdf(
                         "markdown_path": str(md_path),
                         "sections": sections,
                         "cached": True,
+                        "conversion_mode": cached_sections.get("conversion_mode"),
                     }
 
             # Sections cache missing or stale — re-parse the existing markdown
-            # and refresh the sections cache. No subprocess needed.
+            # and refresh the sections cache. No subprocess needed. Preserve the
+            # recorded conversion_mode if a (stale-checksum) entry carried one.
+            recorded_mode = (
+                cached_sections.get("conversion_mode")
+                if cached_sections is not None
+                else None
+            )
             sections = parse_sections(markdown)
             cache.put(
                 namespace,
                 "sections",
                 _sections_key(canonical),
-                {"sections": sections, "markdown_checksum": current_checksum},
+                {
+                    "sections": sections,
+                    "markdown_checksum": current_checksum,
+                    "conversion_mode": recorded_mode,
+                },
             )
             return {
                 "markdown_path": str(md_path),
                 "sections": sections,
                 "cached": True,
+                "conversion_mode": recorded_mode,
             }
 
     if not pdf_path.exists():
@@ -538,6 +770,11 @@ async def convert_pdf(
     # Report PDF size so callers can gauge feasibility
     pdf_size_bytes = pdf_path.stat().st_size
     pdf_size_mb = pdf_size_bytes / (1024 * 1024)
+
+    # Fast path: lightweight extraction outside the global lock. Never
+    # serialises behind a heavy conversion and never returns a busy error.
+    if mode == "fast":
+        return await _convert_fast(pdf_path, namespace, canonical, pdf_size_mb)
 
     # Global single-conversion gate. The check-then-acquire is safe
     # because asyncio.Lock.acquire() on an uncontended lock returns
@@ -649,35 +886,9 @@ async def convert_pdf(
                 }
 
             source_md = candidates[0]
-            markdown = source_md.read_text()
-
-            # Post-process the raw converter output before caching
-            lines = markdown.split("\n")
-            lines = [line.rstrip() for line in lines]
-            markdown = "\n".join(lines)
-
-            # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
-            # When there is no caption, the path is never useful, so drop it.
-            # When there is a caption, keep the caption text and drop the path.
-            markdown = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'![\1]()', markdown)
-
-            # Store markdown in cache
-            md_path.parent.mkdir(parents=True, exist_ok=True)
-            md_path.write_text(markdown)
-
-            # Parse sections and cache with checksum
-            sections = parse_sections(markdown)
-            sections_data = {
-                "sections": sections,
-                "markdown_checksum": _markdown_checksum(md_path),
-            }
-            cache.put(namespace, "sections", _sections_key(canonical), sections_data)
-
-            return {
-                "markdown_path": str(md_path),
-                "sections": sections,
-                "cached": False,
-            }
+            return _finalize_markdown(
+                namespace, canonical, md_path, source_md.read_text(), "full"
+            )
         finally:
             # Clean up the temp extraction dir on every exit — success *and*
             # all four failure paths (spawn error, timeout, non-zero exit,

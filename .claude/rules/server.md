@@ -53,11 +53,13 @@ PDF downloads stream chunks (64 KiB) to a sibling temp file via `_pdf_download.s
 
 `get_paper_section` reads the markdown file directly (no derived cache) so it has no `force_refresh`. Paginated by character offset: `offset` (default 0) + `max_chars` (default 16000, hard cap 200000). Every response carries `total_chars`, `chars_returned`, `has_more`, `next_offset` so agents read long sections by re-calling with `offset=next_offset` rather than asking for an unbounded slice. Carries `anthropic/maxResultSizeChars=200000` meta so Claude Code doesn't persist large results to disk.
 
+`convert_paper(..., mode=...)` — `CONVERT_MODE` is `Literal["full", "fast"]`, default `"full"`. `"full"` is the heavy MinerU/Marker path (high quality, slow, serialised under the global lock). `"fast"` runs a lightweight stdout-capturing text extractor (`PDF_FAST_CONVERTER`, default `pdftotext`; `pymupdf` via the `[fast]` extra) *outside* the lock — seconds, never `busy`, but **degraded** (plain text, no tables/equations/figures/headings). Both write the same cache slot, so a later `mode="full"` + `force_refresh` upgrades a fast conversion. Every successful response echoes `conversion_mode` (may be `null` for papers converted before the field existed); the tool passes `mode` straight through to `papers.convert_pdf`.
+
 ### convert_paper error shapes
 
-- `{error, retryable: False}` for permanent failures (missing PDF, converter crash).
-- `{error, retryable: False, timed_out: True, timeout_seconds, pdf_size_mb}` on `PDF_CONVERT_TIMEOUT`.
-- `{error, retryable: True, busy: True, in_progress: {...}}` when another conversion is already in flight.
+- `{error, retryable: False}` for permanent failures (missing PDF, converter crash). Fast mode tags these `conversion_mode: "fast"` and the spawn-failure suggestion points at installing poppler-utils / the `[fast]` extra.
+- `{error, retryable: False, timed_out: True, timeout_seconds, pdf_size_mb}` on `PDF_CONVERT_TIMEOUT` (full) or `PDF_FAST_CONVERT_TIMEOUT` (fast). On a **full-mode** timeout the tool's suggestion points the agent at retrying with `mode="fast"`.
+- `{error, retryable: True, busy: True, in_progress: {...}}` when another conversion is already in flight — **full mode only**; the busy suggestion now also offers `mode="fast"` (which skips the lock). Fast mode never produces this.
 
 ### Pipeline tool boundary
 

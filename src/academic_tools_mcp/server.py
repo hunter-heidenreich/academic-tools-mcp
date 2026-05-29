@@ -275,6 +275,23 @@ CONVERT_FORCE_REFRESH = Annotated[
     ),
 ]
 
+CONVERT_MODE = Annotated[
+    Literal["full", "fast"],
+    Field(
+        description=(
+            "Conversion backend. 'full' (default) runs the heavy converter "
+            "(MinerU/Marker) for high-quality markdown with tables/equations, "
+            "but is slow (minutes) and serialised server-wide — only one runs "
+            "at a time, others get a retryable 'busy' error. 'fast' runs a "
+            "lightweight text extractor (pdftotext/pymupdf) outside that lock: "
+            "seconds, never 'busy', but DEGRADED — plain text only, no tables, "
+            "equations, figures, or real headings. Use 'fast' when 'full' "
+            "times out, the heavy converter is unavailable, or you just need "
+            "searchable text quickly. The response echoes conversion_mode."
+        ),
+    ),
+]
+
 SECTIONS_FORCE_REFRESH = Annotated[
     bool,
     Field(
@@ -1024,28 +1041,40 @@ async def download_pdf(
 async def convert_paper(
     identifier: PAPER_ID,
     force_refresh: CONVERT_FORCE_REFRESH = False,
+    mode: CONVERT_MODE = "full",
 ) -> dict[str, Any]:
     """Convert a downloaded PDF to markdown and parse into sections.
 
     Step 2 of the PDF pipeline (download_pdf → convert_paper →
-    get_paper_sections → get_paper_section). Slow: up to 10 minutes per
-    paper (hard timeout). Skips the subprocess if the markdown is already
-    cached — re-parses from the cached markdown if the sections index
-    is missing or stale. ``force_refresh=True`` drops both the cached
-    markdown and the section index so the converter re-runs.
+    get_paper_sections → get_paper_section). Skips the subprocess if the
+    markdown is already cached — re-parses from the cached markdown if the
+    sections index is missing or stale. ``force_refresh=True`` drops both the
+    cached markdown and the section index so the converter re-runs.
 
-    Returns ``{sections, cached}`` on success. ``cached`` is true when the
-    expensive conversion was skipped (re-parses also count as cached).
-    Each section entry has ``{index, title, h3s, approx_tokens}``.
+    ``mode="full"`` (default): heavy converter (MinerU/Marker), high quality
+    (tables/equations), but slow (up to 10 minutes, hard timeout) and
+    serialised — only one full conversion runs server-wide at a time.
+    ``mode="fast"``: lightweight text extractor (pdftotext/pymupdf), runs
+    *outside* that lock — seconds, never ``busy`` — but DEGRADED (plain text,
+    no tables/equations/figures/headings). Reach for it when ``full`` times
+    out, the heavy converter isn't installed, or you just need searchable
+    text. Both modes write the same cache slot; a later ``force_refresh``
+    full conversion upgrades a fast one.
+
+    Returns ``{sections, cached, conversion_mode}`` on success. ``cached`` is
+    true when the expensive conversion was skipped (re-parses also count as
+    cached). ``conversion_mode`` echoes which backend produced the markdown
+    (may be null for papers converted before this field existed). Each section
+    entry has ``{index, title, h3s, approx_tokens}``.
 
     Errors: ``{error, retryable, pdf_size_mb?, suggestion}``.
       - PDF not cached → suggestion points at download_pdf / import_paper.
-      - Server already running another conversion →
-        ``{busy: True, retryable: True, in_progress: {...}}``. Only one
-        conversion runs at a time; retry shortly.
+      - Server already running another conversion (full mode only) →
+        ``{busy: True, retryable: True, in_progress: {...}}``. Retry shortly,
+        or call again with ``mode="fast"`` (it doesn't take the lock).
       - Conversion failure (subprocess error, timeout, no output) →
-        non-retryable; agent should try a different version or a
-        pre-converted markdown via import_paper.
+        non-retryable. On a full-mode timeout the suggestion points at
+        ``mode="fast"``.
     """
     target = manual._resolve_target(identifier)
     pdf = target["pdf_path"]
@@ -1063,6 +1092,7 @@ async def convert_paper(
         target["namespace"],
         target["canonical"],
         force_refresh=force_refresh,
+        mode=mode,
     )
     if "error" in result:
         if result.get("busy"):
@@ -1070,7 +1100,17 @@ async def convert_paper(
                 result,
                 "Another PDF is being converted right now. Wait and retry; "
                 "in the meantime you can still read sections of papers that "
-                "are already converted, or work on non-PDF tools.",
+                "are already converted, retry this one with mode='fast' (a "
+                "quick degraded text-only extraction that skips the lock), or "
+                "work on non-PDF tools.",
+            )
+        if result.get("timed_out") and mode == "full":
+            return _enrich_error(
+                result,
+                "Full conversion exceeded the timeout. For a quick degraded "
+                "fallback, retry with mode='fast' (plain-text extraction, no "
+                "tables/equations) — or raise PDF_CONVERT_TIMEOUT if you need "
+                "the full-quality markdown.",
             )
         return _enrich_error(
             result,

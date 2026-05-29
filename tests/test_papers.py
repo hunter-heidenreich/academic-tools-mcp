@@ -7,9 +7,12 @@ import pytest
 
 from academic_tools_mcp import cache, papers
 from academic_tools_mcp.papers import (
+    _DEFAULT_FAST_CONVERT_TIMEOUT,
     _DEFAULT_PDF_CONVERT_TIMEOUT,
     _build_converter_command,
+    _build_fast_converter_command,
     _resolve_convert_timeout,
+    _resolve_fast_convert_timeout,
     convert_pdf,
     get_section_content,
     parse_sections,
@@ -1135,3 +1138,256 @@ class TestResolveConvertTimeout:
     def test_garbage_falls_back_to_default(self):
         with self._env("not-a-number"):
             assert _resolve_convert_timeout() == _DEFAULT_PDF_CONVERT_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# _build_fast_converter_command
+# ---------------------------------------------------------------------------
+
+class TestBuildFastConverterCommand:
+    """The fast extractor command builder mirrors the full one but emits to
+    stdout and has no output-dir. {python} expands to the server interpreter.
+    """
+
+    def _env(self, **overrides):
+        def _get(key):
+            return overrides.get(key)
+        return patch("academic_tools_mcp.papers.config.get", side_effect=_get)
+
+    def test_default_is_pdftotext(self):
+        with self._env():
+            cmd = _build_fast_converter_command(Path("/a/b.pdf"))
+        assert cmd == 'pdftotext -layout "/a/b.pdf" -'
+
+    def test_named_pymupdf_uses_server_interpreter(self):
+        import shlex
+        import sys
+        with self._env(PDF_FAST_CONVERTER="pymupdf"):
+            cmd = _build_fast_converter_command(Path("/a/b.pdf"))
+        assert cmd == (
+            f'{shlex.quote(sys.executable)} -m academic_tools_mcp._fast_extract '
+            f'"/a/b.pdf"'
+        )
+
+    def test_custom_command_template(self):
+        custom = 'my-extractor --src "{input}"'
+        with self._env(PDF_FAST_CONVERTER=custom):
+            cmd = _build_fast_converter_command(Path("/a/b.pdf"))
+        assert cmd == 'my-extractor --src "/a/b.pdf"'
+
+
+# ---------------------------------------------------------------------------
+# _resolve_fast_convert_timeout
+# ---------------------------------------------------------------------------
+
+class TestResolveFastConvertTimeout:
+    """PDF_FAST_CONVERT_TIMEOUT parsing — same rules as the full timeout."""
+
+    def _env(self, value):
+        def _get(key):
+            return value if key == "PDF_FAST_CONVERT_TIMEOUT" else None
+        return patch("academic_tools_mcp.papers.config.get", side_effect=_get)
+
+    def test_unset_uses_default(self):
+        with self._env(None):
+            assert _resolve_fast_convert_timeout() == _DEFAULT_FAST_CONVERT_TIMEOUT
+
+    def test_explicit_seconds(self):
+        with self._env("30"):
+            assert _resolve_fast_convert_timeout() == 30.0
+
+    def test_word_disables(self):
+        with self._env("none"):
+            assert _resolve_fast_convert_timeout() is None
+
+    def test_garbage_falls_back_to_default(self):
+        with self._env("nope"):
+            assert _resolve_fast_convert_timeout() == _DEFAULT_FAST_CONVERT_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# convert_pdf(mode="fast")
+# ---------------------------------------------------------------------------
+
+class TestConvertPdfFastMode:
+    """Fast mode: lightweight stdout-capturing extraction that runs outside
+    the global conversion lock and tags its output conversion_mode='fast'.
+    """
+
+    @pytest.fixture
+    def isolated_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        return tmp_path
+
+    @pytest.fixture
+    def real_pdf(self, tmp_path):
+        pdf = tmp_path / "fake.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        return pdf
+
+    @staticmethod
+    def _stdout_proc(text: bytes, returncode: int = 0, stderr: bytes = b""):
+        class FakeProc:
+            pid = 909090
+
+            def __init__(self):
+                self.returncode = returncode
+
+            async def communicate(self):
+                return text, stderr
+
+            async def wait(self):
+                self.returncode = -9
+                return -9
+
+        return FakeProc
+
+    @pytest.mark.asyncio
+    async def test_fast_extraction_caches_markdown_and_sections(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        proc_cls = self._stdout_proc(b"## Intro\n\nHello from pdftotext.")
+
+        async def _fake_spawn(*args, **kwargs):
+            return proc_cls()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        result = await convert_pdf(real_pdf, "test", "fast-1", mode="fast")
+
+        assert result["cached"] is False
+        assert result["conversion_mode"] == "fast"
+        assert result["sections"]
+
+        # Markdown landed in the cache and the section index carries the
+        # checksum plus the conversion_mode tag.
+        md_path = papers._markdown_path("test", "fast-1")
+        assert md_path.exists()
+        cached = cache.get("test", "sections", papers._sections_key("fast-1"))
+        assert cached["conversion_mode"] == "fast"
+        assert cached["markdown_checksum"] == papers._markdown_checksum(md_path)
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_runs_outside_global_lock(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        # Hold the global convert lock — a full conversion would get `busy`.
+        # Fast mode must succeed anyway because it never takes the lock.
+        monkeypatch.setattr(papers, "_global_convert_lock", asyncio.Lock())
+        monkeypatch.setattr(papers, "_current_conversion", None)
+        await papers._global_convert_lock.acquire()
+        try:
+            proc_cls = self._stdout_proc(b"Plain extracted text.")
+
+            async def _fake_spawn(*args, **kwargs):
+                return proc_cls()
+
+            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+            result = await convert_pdf(real_pdf, "test", "fast-nolock", mode="fast")
+
+            assert result.get("busy") is not True
+            assert result["conversion_mode"] == "fast"
+            assert result["cached"] is False
+        finally:
+            papers._global_convert_lock.release()
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_cached_markdown_skips_subprocess(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        # Seed the markdown cache, then assert the subprocess is never spawned.
+        md_path = papers._markdown_path("test", "fast-cached")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("## Cached\n\nAlready converted.")
+
+        async def _fail(*args, **kwargs):
+            raise AssertionError("fast mode must not spawn when markdown is cached")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
+        result = await convert_pdf(real_pdf, "test", "fast-cached", mode="fast")
+        assert result["cached"] is True
+        assert result["sections"]
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_nonzero_exit_returns_error(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        proc_cls = self._stdout_proc(b"", returncode=2, stderr=b"pdftotext: boom")
+
+        async def _fake_spawn(*args, **kwargs):
+            return proc_cls()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        result = await convert_pdf(real_pdf, "test", "fast-fail", mode="fast")
+        assert "error" in result
+        assert "exit 2" in result["error"]
+        assert result["retryable"] is False
+        assert result["conversion_mode"] == "fast"
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_empty_output_returns_error(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        # Exit 0 but whitespace-only stdout (e.g. a scanned image-only PDF).
+        proc_cls = self._stdout_proc(b"   \n\f\n  ", returncode=0)
+
+        async def _fake_spawn(*args, **kwargs):
+            return proc_cls()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        result = await convert_pdf(real_pdf, "test", "fast-empty", mode="fast")
+        assert "error" in result
+        assert "no text" in result["error"]
+        assert result["conversion_mode"] == "fast"
+        # Nothing should have been cached.
+        assert not papers._markdown_path("test", "fast-empty").exists()
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_spawn_failure_returns_error(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        async def _spawn_fail(*args, **kwargs):
+            raise FileNotFoundError("pdftotext: not found")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn_fail)
+        result = await convert_pdf(real_pdf, "test", "fast-spawn", mode="fast")
+        assert "error" in result
+        assert "Could not start" in result["error"]
+        assert result["retryable"] is False
+        assert result["conversion_mode"] == "fast"
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_timeout_kills_and_returns_error(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        killed_pgids: list[int] = []
+
+        class HangingProc:
+            pid = 717171
+            returncode = None
+
+            async def communicate(self):
+                await asyncio.sleep(3600)
+
+            async def wait(self):
+                self.returncode = -9
+                return -9
+
+        async def _fake_spawn(*args, **kwargs):
+            assert kwargs.get("start_new_session") is True
+            return HangingProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        monkeypatch.setattr("academic_tools_mcp.papers.os.getpgid", lambda pid: pid)
+        monkeypatch.setattr(
+            "academic_tools_mcp.papers.os.killpg",
+            lambda pgid, sig: killed_pgids.append(pgid),
+        )
+        monkeypatch.setattr(
+            "academic_tools_mcp.papers.config.get",
+            lambda key: "0.05" if key == "PDF_FAST_CONVERT_TIMEOUT" else None,
+        )
+        result = await convert_pdf(real_pdf, "test", "fast-timeout", mode="fast")
+        assert result.get("timed_out") is True
+        assert result["conversion_mode"] == "fast"
+        assert result["retryable"] is False
+        assert killed_pgids == [HangingProc.pid]
