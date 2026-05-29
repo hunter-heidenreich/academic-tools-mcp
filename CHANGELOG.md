@@ -37,6 +37,10 @@ grouped by milestone rather than per commit.
   alongside the cached section index, matching the PDF-conversion path. A later
   `convert_paper` / section read on an imported paper now trusts the cache
   instead of re-parsing the markdown on every call. ([#8])
+- `download_pdf` now normalizes old-style ACL Anthology paper IDs (e.g.
+  `P16-1160`) to the case-sensitive form `aclanthology.org` expects, so a
+  Crossref-lowercased DOI like `10.18653/v1/p16-1160` no longer 404s. New-format
+  IDs (`2023.acl-long.1`) are left untouched. ([#9])
 
 ## [2026.04.30] — 2026-04-30
 
@@ -132,3 +136,4 @@ grouped by milestone rather than per commit.
 [#5]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/5
 [#6]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/6
 [#8]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/8
+[#9]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/9

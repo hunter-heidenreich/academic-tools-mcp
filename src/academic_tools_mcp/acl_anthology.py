@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,26 @@ def _normalize_doi(doi: str) -> str:
     return doi
 
 
+# Old-format Anthology IDs (pre-2020) are <LETTER><2-digit-year>-<digits>, e.g.
+# P16-1160, W04-1013, D14-1162. The aclanthology.org CDN serves them under a
+# case-sensitive path (P16-1160.pdf resolves, p16-1160.pdf 404s), but Crossref
+# hands these DOIs back lowercased. New-format IDs (YYYY.venue-track.n) are
+# lowercase and must stay untouched.
+_OLD_FORMAT_ID_RE = re.compile(r"^[A-Za-z]\d{2}-\d+$")
+
+
+def _normalize_anthology_id(anthology_id: str) -> str:
+    """Uppercase old-format Anthology IDs so the CDN URL resolves.
+
+    Old-format IDs (P16-1160) are case-sensitive on aclanthology.org; new-format
+    IDs (2023.acl-long.1) contain lowercase venue letters that must be preserved.
+    Old-format IDs are letter + digits only, so .upper() is safe for them.
+    """
+    if _OLD_FORMAT_ID_RE.match(anthology_id):
+        return anthology_id.upper()
+    return anthology_id
+
+
 def doi_to_anthology_id(doi: str) -> str | None:
     """Extract an ACL Anthology ID from a DOI.
 
@@ -117,7 +138,7 @@ def doi_to_anthology_id(doi: str) -> str | None:
     bare = _normalize_doi(doi)
     if not bare.startswith(_ACL_DOI_PREFIX):
         return None
-    return bare[len(_ACL_DOI_PREFIX):]
+    return _normalize_anthology_id(bare[len(_ACL_DOI_PREFIX):])
 
 
 def _canonical_key(doi: str) -> str:
