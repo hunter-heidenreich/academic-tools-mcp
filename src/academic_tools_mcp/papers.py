@@ -23,6 +23,7 @@ import hashlib
 import os
 import re
 import shlex
+import shutil
 import signal
 import time
 from collections import OrderedDict
@@ -285,7 +286,7 @@ def find_in_markdown(
     max_results: int = 20,
     case_sensitive: bool = False,
     whole_words: bool = False,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     """Scan markdown for occurrences of ``query`` and return per-hit context.
 
     Each hit carries the section title, section index (matching what
@@ -300,9 +301,13 @@ def find_in_markdown(
 
     Hit offsets align with ``get_paper_section``'s stripped section text
     because both apply the same ``"\\n".join(lines[s:e]).strip()`` recipe.
+
+    Returns ``(hits, truncated)`` where ``truncated`` is ``True`` when the
+    scan stopped at ``max_results`` with more matches still in the document,
+    so callers can signal "more exist" instead of silently capping.
     """
     if not query:
-        return []
+        return [], False
 
     lines = markdown.split("\n")
     boundaries: list[tuple[str, int, int]] = []
@@ -333,7 +338,7 @@ def find_in_markdown(
         section_text = "\n".join(lines[start:end]).strip()
         for match in regex.finditer(section_text):
             if len(hits) >= max_results:
-                return hits
+                return hits, True
             pos = match.start()
             matched = match.group()
             ws = max(0, pos - _FIND_SNIPPET_WINDOW)
@@ -348,7 +353,7 @@ def find_in_markdown(
                 "match": matched,
                 "snippet": snippet,
             })
-    return hits
+    return hits, False
 
 
 def get_section_content(
@@ -548,6 +553,9 @@ async def convert_pdf(
             "canonical": canonical,
             "started_at": time.monotonic(),
         }
+        # Bound before the try so the finally can always clean it up, even if
+        # subprocess setup throws before the assignment below.
+        extract_dir: Path | None = None
         try:
             # Run PDF converter in a subprocess
             extract_dir = Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
@@ -665,14 +673,15 @@ async def convert_pdf(
             }
             cache.put(namespace, "sections", _sections_key(canonical), sections_data)
 
-            # Clean up temp directory
-            import shutil
-            shutil.rmtree(extract_dir, ignore_errors=True)
-
             return {
                 "markdown_path": str(md_path),
                 "sections": sections,
                 "cached": False,
             }
         finally:
+            # Clean up the temp extraction dir on every exit — success *and*
+            # all four failure paths (spawn error, timeout, non-zero exit,
+            # no-markdown) — so failed conversions don't leak /tmp dirs.
+            if extract_dir is not None:
+                shutil.rmtree(extract_dir, ignore_errors=True)
             _current_conversion = None

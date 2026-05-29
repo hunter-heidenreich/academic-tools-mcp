@@ -285,9 +285,14 @@ def import_markdown(file_path: str, identifier: str) -> dict[str, Any]:
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(markdown)
 
-    # Parse and cache the section index
+    # Parse and cache the section index. Store the markdown checksum the same
+    # way convert_pdf does so a later convert_paper trusts this cache instead
+    # of re-parsing on every call.
     sections = papers.parse_sections(markdown)
-    sections_data = {"sections": sections}
+    sections_data = {
+        "sections": sections,
+        "markdown_checksum": papers._markdown_checksum(md_path),
+    }
     cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
 
     return {

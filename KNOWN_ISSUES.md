@@ -32,11 +32,11 @@ The findings are grouped by severity-of-action, not by subsystem:
 | # | Finding | Where | Class | Severity |
 |---|---------|-------|-------|----------|
 | 1 | ~~`force_refresh` deletes cached PDF *before* re-download; failed refetch loses the only copy~~ **(RESOLVED)** | `arxiv.py:393`, `biorxiv.py:321`, `acl_anthology.py:170` | Bug | Medium |
-| 2 | Temp extraction dir leaks on every conversion *failure* path | `papers.py:553`, early returns vs. `:669` | Bug | Low |
+| 2 | ~~Temp extraction dir leaks on every conversion *failure* path~~ **(RESOLVED)** | `papers.py:553`, early returns vs. `:669` | Bug | Low |
 | 3 | `get_with_retry` clamps `Retry-After` to 30s; docstring claims 5-min waits are respected | `_http.py:190`, `:209` vs. `:174` | Bug (doc/code mismatch) | Low |
 | 4 | ACL old-style IDs are case-sensitive in the URL; no normalization | `acl_anthology.py:111`, `:128` | Fragility | Medium |
-| 5 | `find_in_paper` truncates silently at `max_results` with no "more exist" flag | `papers.py:335` | Fragility | Low |
-| 6 | `import_markdown` caches sections without a checksum (inconsistent with `convert_pdf`) | `manual.py:290` | Fragility | Low |
+| 5 | ~~`find_in_paper` truncates silently at `max_results` with no "more exist" flag~~ **(RESOLVED)** | `papers.py:335` | Fragility | Low |
+| 6 | ~~`import_markdown` caches sections without a checksum (inconsistent with `convert_pdf`)~~ **(RESOLVED)** | `manual.py:290` | Fragility | Low |
 | 7 | Section-lock eviction can spin O(N) over a full held map | `papers.py:210` | Fragility | Very low |
 | 8 | `download_pdf` supports only 3 providers — the dominant operator friction | `server.py:920` | Intentional | (enhancement) |
 | 9 | Single global conversion lock + coarse 30-min timeout serializes batches | `papers.py:45`, `:37` | Intentional | (enhancement) |
@@ -99,7 +99,17 @@ The first is cleaner and removes three duplicated unlink sites.
 
 ---
 
-### 1.2 Temp extraction directory leaks on conversion failure
+### 1.2 Temp extraction directory leaks on conversion failure — **RESOLVED**
+
+**Resolution.** `extract_dir` is now bound (to `None`) before `convert_pdf`'s
+`try` and cleaned up in the existing `finally` that already resets
+`_current_conversion`, so `shutil.rmtree(extract_dir, ignore_errors=True)` runs on
+*every* exit path — success and all four failure paths (spawn error, timeout,
+non-zero exit, no-markdown). The success-path-only `rmtree` was removed and the
+inline `import shutil` lifted to module scope. The deterministic-name `rm -rf`
+self-heal in the bash wrapper stays as harmless belt-and-suspenders. Regression
+coverage in `tests/test_papers.py::TestConvertPdfTempDirCleanup`. Original
+analysis retained below.
 
 **Where.** `papers.py:553` builds a deterministic extraction dir:
 
@@ -216,7 +226,15 @@ lowercase. Normalize in `doi_to_anthology_id`: if the suffix matches the
 old-format regex, uppercase the leading venue letter(s). Keep new-format
 untouched. Add a test with `10.18653/v1/p16-1160` → URL `.../P16-1160.pdf`.
 
-### 2.2 `find_in_paper` truncates silently at `max_results`
+### 2.2 `find_in_paper` truncates silently at `max_results` — **RESOLVED**
+
+**Resolution.** `find_in_markdown` now returns `(hits, truncated)`, setting
+`truncated=True` at the `max_results` early-return (a genuine extra match exists
+at that point) and `False` otherwise — no full-document rescan. The `find_in_paper`
+tool surfaces the flag as a `truncated` field in its response and documents it.
+An agent gathering every mention of X now knows when the result set was capped.
+Regression coverage in `tests/test_audit_features.py`. Original analysis retained
+below.
 
 **Where.** `papers.py:335` (inside `find_in_markdown`):
 
@@ -239,7 +257,14 @@ match loop hit the cap before exhausting the section list), or return a
 `total_matches` count by finishing the scan but only materializing snippets for
 the first N. The first is cheaper and sufficient as a correctness signal.
 
-### 2.3 `import_markdown` caches sections without a checksum
+### 2.3 `import_markdown` caches sections without a checksum — **RESOLVED**
+
+**Resolution.** `import_markdown` now stores
+`{"sections": ..., "markdown_checksum": papers._markdown_checksum(md_path)}`,
+mirroring `convert_pdf`. A later `convert_paper` / section read on an imported
+paper now passes the `stored_checksum is not None` guard and trusts the cache
+instead of re-parsing the markdown every call. Regression coverage in
+`tests/test_manual.py::TestImportMarkdown`. Original analysis retained below.
 
 **Where.** `manual.py:290`:
 
@@ -445,10 +470,11 @@ If picking these up, a sensible sequence:
 
 1. ~~**Finding 1.1** (force_refresh data loss) — highest-value correctness fix,
    localized to three call sites plus the shared stream helper.~~ **DONE.**
-2. **Finding 1.2** (temp-dir leak) — one `finally` block in `papers.py`.
+2. ~~**Finding 1.2** (temp-dir leak) — one `finally` block in `papers.py`.~~ **DONE.**
 3. **Finding 2.1** (ACL case normalization) — removes a recurring operator paper
    cut; small, testable.
-4. **Findings 1.3 / 2.2 / 2.3** — cheap correctness/consistency cleanups.
+4. ~~**Findings 2.2 / 2.3** — cheap correctness/consistency cleanups.~~ **DONE.**
+   **Finding 1.3** (`Retry-After` clamp doc/code mismatch) — still open.
 5. **Finding 3.1 or 3.2** (OA-URL download path, or fast-extract fallback) — the
    two enhancements that would most reduce day-to-day friction, if there's
    appetite for new surface area.

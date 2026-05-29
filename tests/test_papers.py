@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -883,6 +884,172 @@ class TestConvertPdfSubprocessFailures:
         assert "error" in result
         assert "exit 1" in result["error"]
         assert result["retryable"] is False
+
+
+class TestConvertPdfTempDirCleanup:
+    """The /tmp extraction dir must be removed on every exit path — success
+    *and* all four failure paths — so failed conversions don't leak it.
+    """
+
+    @pytest.fixture
+    def isolated_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        return tmp_path
+
+    @pytest.fixture
+    def real_pdf(self, tmp_path):
+        pdf = tmp_path / "fake.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        return pdf
+
+    @staticmethod
+    def _extract_dir(canonical: str) -> Path:
+        # Mirror the deterministic name convert_pdf builds at papers.py.
+        return Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
+
+    def _seed_extract_dir(self, canonical: str) -> Path:
+        # Pre-create a populated extraction dir so the assertion proves the
+        # finally removes real content, not just an absent path.
+        d = self._extract_dir(canonical)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "leftover.md").write_text("# extracted")
+        (d / "images").mkdir(exist_ok=True)
+        (d / "images" / "fig.png").write_bytes(b"\x89PNG fake")
+        return d
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_spawn_failure(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        canonical = "tmp-spawn-fail"
+        extract_dir = self._seed_extract_dir(canonical)
+        try:
+            async def _spawn_fail(*args, **kwargs):
+                raise FileNotFoundError("bash: not found")
+
+            monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn_fail)
+            result = await convert_pdf(real_pdf, "test", canonical)
+            assert "error" in result
+            assert not extract_dir.exists()
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_timeout(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        canonical = "tmp-timeout"
+        extract_dir = self._seed_extract_dir(canonical)
+        try:
+            class HangingProc:
+                pid = 525252
+                returncode = None
+
+                async def communicate(self):
+                    await asyncio.sleep(3600)
+
+                async def wait(self):
+                    self.returncode = -9
+                    return -9
+
+            async def _fake_spawn(*args, **kwargs):
+                return HangingProc()
+
+            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+            monkeypatch.setattr(
+                "academic_tools_mcp.papers.os.getpgid", lambda pid: pid
+            )
+            monkeypatch.setattr(
+                "academic_tools_mcp.papers.os.killpg", lambda pgid, sig: None
+            )
+            monkeypatch.setattr(
+                "academic_tools_mcp.papers.config.get",
+                lambda key: "0.05" if key == "PDF_CONVERT_TIMEOUT" else None,
+            )
+            result = await convert_pdf(real_pdf, "test", canonical)
+            assert result.get("timed_out") is True
+            assert not extract_dir.exists()
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_nonzero_exit(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        canonical = "tmp-nonzero"
+        extract_dir = self._seed_extract_dir(canonical)
+        try:
+            class FakeProc:
+                returncode = 1
+
+                async def communicate(self):
+                    return b"converter blew up", b""
+
+            async def _fake_spawn(*args, **kwargs):
+                return FakeProc()
+
+            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+            result = await convert_pdf(real_pdf, "test", canonical)
+            assert "exit 1" in result["error"]
+            assert not extract_dir.exists()
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_no_markdown(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        canonical = "tmp-no-md"
+        # Empty dir: converter "succeeds" (exit 0) but emits no .md file.
+        extract_dir = self._extract_dir(canonical)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            class FakeProc:
+                returncode = 0
+
+                async def communicate(self):
+                    return b"", b""
+
+            async def _fake_spawn(*args, **kwargs):
+                return FakeProc()
+
+            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+            result = await convert_pdf(real_pdf, "test", canonical)
+            assert "no markdown output" in result["error"]
+            assert not extract_dir.exists()
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_success(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        canonical = "tmp-success"
+        extract_dir = self._extract_dir(canonical)
+        try:
+            # A converter that "produces" markdown: create the dir + a .md
+            # the moment convert_pdf spawns it, mimicking a real run.
+            async def _fake_spawn(*args, **kwargs):
+                extract_dir.mkdir(parents=True, exist_ok=True)
+                (extract_dir / f"{real_pdf.stem}.md").write_text(
+                    "## Intro\n\nHello world."
+                )
+
+                class FakeProc:
+                    returncode = 0
+
+                    async def communicate(self):
+                        return b"", b""
+
+                return FakeProc()
+
+            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+            result = await convert_pdf(real_pdf, "test", canonical)
+            assert result.get("cached") is False
+            assert result["sections"]
+            assert not extract_dir.exists()
+        finally:
+            shutil.rmtree(extract_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

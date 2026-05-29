@@ -1615,11 +1615,14 @@ async def find_in_paper(
     (search_cached_papers) — that one tells you which paper mentions X,
     this one tells you where in the paper.
 
-    Returns ``{query, paper_identifier, result_count, results: [...]}``
-    where each hit has ``{section_index, section, char_offset, match,
-    snippet}``. Chain into get_paper_section(identifier, section_index,
-    offset=char_offset) to read the surrounding context — offsets are
-    aligned with that tool's stripped section text.
+    Returns ``{query, paper_identifier, result_count, truncated, results:
+    [...]}`` where each hit has ``{section_index, section, char_offset,
+    match, snippet}``. Chain into get_paper_section(identifier,
+    section_index, offset=char_offset) to read the surrounding context —
+    offsets are aligned with that tool's stripped section text.
+
+    ``truncated`` is ``True`` when more matches exist than ``max_results``
+    returned — raise ``max_results`` (or refine the query) to see the rest.
 
     Errors: paper not converted yet → ``{error}`` with guidance to run
     convert_paper. No matches → ``{result_count: 0, results: []}`` (an
@@ -1639,7 +1642,7 @@ async def find_in_paper(
 
     # Wrap the synchronous regex pass in to_thread so a paper with
     # thousands of matches doesn't pin the event loop.
-    hits = await asyncio.to_thread(
+    hits, truncated = await asyncio.to_thread(
         papers.find_in_markdown,
         markdown,
         query,
@@ -1651,6 +1654,7 @@ async def find_in_paper(
         "query": query,
         "paper_identifier": identifier,
         "result_count": len(hits),
+        "truncated": truncated,
         "results": hits,
     }
 
