@@ -264,6 +264,13 @@ server.py (21 MCP tools; FastMCP lifespan closes pooled clients on shutdown)
 - **Pre-computed aggregates.** List responses include counts (`author_count`, `topic_count`, `total_sections`, etc.) so agents don't need follow-up calls to check sizes.
 - **Structured error hints.** Error responses include a `suggestion` field with recovery guidance (e.g. which search tool to try).
 
+## Versioning
+
+This project uses **calendar versioning**: each release is named for the day it
+was cut — `YYYY.MM.DD`, tagged `vYYYY.MM.DD` in git (a rare same-day re-release
+takes a `.postN` suffix). See [CHANGELOG.md](CHANGELOG.md) for the release
+history.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

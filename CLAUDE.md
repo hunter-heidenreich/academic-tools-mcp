@@ -17,6 +17,14 @@ uv run pytest -k "test_particle" -v                      # Run tests matching a 
 uv run python -m academic_tools_mcp.server               # Run the MCP server
 ```
 
+## Changelog & versioning
+
+This project keeps a [`CHANGELOG.md`](./CHANGELOG.md) in [Keep a Changelog](https://keepachangelog.com/) format and uses calendar versioning (`YYYY.MM.DD`, git tag `vYYYY.MM.DD`).
+
+**Before opening a PR, add a bullet to the `## [Unreleased]` section of `CHANGELOG.md`** describing the user-facing change, under the appropriate `Added` / `Changed` / `Fixed` / `Removed` heading. Reference the PR number (e.g. `([#12])`) and add the matching link definition at the bottom of the file. Skip this only for changes with no user-facing effect (pure refactors, internal docs, test-only edits).
+
+Releases are cut deliberately — not on every merge — by renaming `[Unreleased]` to the ship-date version (`## [YYYY.MM.DD] — YYYY-MM-DD`), bumping `version` in `pyproject.toml` to match (PEP 440 form drops leading zeros: tag `v2026.05.29` ↔ version `2026.5.29`), and tagging the release commit.
+
 ## Architecture
 
 **Layered design — tools never hit the API directly. Every API client uses every shared module.**
