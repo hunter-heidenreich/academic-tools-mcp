@@ -17,6 +17,17 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- `convert_paper(identifier, mode="fast")` adds an opt-in lightweight extraction
+  fallback. It shells out to a text-only extractor (`PDF_FAST_CONVERTER`, named
+  backends `pdftotext` — default — and `pymupdf` via the new `[fast]` optional
+  dependency, or any custom command emitting text to stdout) and runs *outside*
+  the global single-conversion lock, so it takes seconds, never returns `busy`,
+  and never serialises behind a heavy MinerU run. The output is deliberately
+  degraded (plain text, no tables/equations/figures/headings) and lands in the
+  same cache slot as a full conversion, so a later `convert_paper(force_refresh=True)`
+  upgrades it. Tunable timeout via `PDF_FAST_CONVERT_TIMEOUT` (default 120s). The
+  full-mode timeout error now suggests retrying with `mode="fast"`, and every
+  successful `convert_paper` response carries a `conversion_mode` field. ([#12])
 - `download_pdf(identifier, allow_oa_url=True)` opts into downloading a generic
   publisher DOI from the open-access PDF URL OpenAlex reports for it
   (`best_oa_location.pdf_url` → `primary_location.pdf_url` → `open_access.oa_url`).
@@ -159,3 +170,4 @@ grouped by milestone rather than per commit.
 [#9]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/9
 [#10]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/10
 [#11]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/11
+[#12]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/12

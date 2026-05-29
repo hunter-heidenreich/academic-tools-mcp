@@ -39,7 +39,7 @@ The findings are grouped by severity-of-action, not by subsystem:
 | 6 | ~~`import_markdown` caches sections without a checksum (inconsistent with `convert_pdf`)~~ **(RESOLVED)** | `manual.py:290` | Fragility | Low |
 | 7 | Section-lock eviction can spin O(N) over a full held map | `papers.py:210` | Fragility | Very low |
 | 8 | ~~`download_pdf` supports only 3 providers — the dominant operator friction~~ **(RESOLVED via opt-in OA-URL path)** | `server.py:920` | Intentional | (enhancement) |
-| 9 | Single global conversion lock + coarse 30-min timeout serializes batches | `papers.py:45`, `:37` | Intentional | (enhancement) |
+| 9 | ~~Single global conversion lock + coarse 30-min timeout serializes batches~~ **(RESOLVED via opt-in `mode="fast"`)** | `papers.py:45`, `:37` | Intentional | (enhancement) |
 | 10 | No provider fallback when OpenAlex 404s a valid DOI | `manual.py:74` | Intentional | (enhancement) |
 | 11 | Literal/ASCII-boundary search misses diacritics & non-Latin scripts | `papers.py:324`, `cache_search.py:137` | Intentional | (limitation) |
 | 12 | BM25 rescans the whole corpus on every call (O(N)) | `cache_search.py:258` | Intentional | (scaling limit) |
@@ -373,7 +373,28 @@ that fetches *only* a publisher/repository OA URL returned by the metadata layer
 PDFs on publisher domains (e.g. `nature.com/articles/<doi>.pdf`) often fetch
 cleanly. Keep it opt-in and keep the refusal as the default.
 
-### 3.2 Single global conversion lock + coarse 30-minute timeout
+### 3.2 Single global conversion lock + coarse 30-minute timeout — **RESOLVED (opt-in `mode="fast"`)**
+
+**Resolution.** Implemented the "lightweight extraction fallback" from the enhancement
+sketch below. `convert_paper(identifier, mode="fast")` shells out to a text-only extractor
+(`PDF_FAST_CONVERTER`; named backends `pdftotext` default / `pymupdf` via the new `[fast]`
+optional dependency, or any custom command that emits text to stdout) and runs **outside**
+`_global_convert_lock` via the new `papers._convert_fast()` — so it takes seconds, never
+serialises behind a heavy MinerU run, and never returns a `busy` error. It is serialised
+per-paper through the existing `_sections_lock` (re-checks the markdown cache before spawning).
+Output is deliberately degraded (plain text, no tables/equations/figures/headings) and lands in
+the **same** markdown cache slot as a full conversion, so a later `mode="full"` +
+`force_refresh` upgrades it. The `pymupdf` backend routes through a bundled `_fast_extract.py`
+runner invoked with `sys.executable`. Timeout is `PDF_FAST_CONVERT_TIMEOUT` (default 120s, same
+`none/off/disabled/0` semantics as the full timeout, killing the process group on expiry). Both
+modes share `_finalize_markdown()`, the sections cache now records `conversion_mode`, and every
+successful `convert_paper` response echoes it. The full-mode **timeout** error now suggests
+retrying with `mode="fast"`, and the **busy** error mentions it too. The heavy converter and its
+global lock are unchanged — fast is purely additive and opt-in, so quality is never silently
+downgraded. Coverage in `tests/test_papers.py::TestConvertPdfFastMode` (plus
+`TestBuildFastConverterCommand` / `TestResolveFastConvertTimeout`). Original analysis retained
+below. (The `pdftotext -layout` manual bypass operators adopted is now a supported tool path; the
+fast extractor uses the same `pdftotext` by default.)
 
 **Where.** `papers.py:45` (`_global_convert_lock`), `:541` (check-then-acquire),
 `:37` (`_DEFAULT_PDF_CONVERT_TIMEOUT = 1800.0`).
@@ -510,5 +531,8 @@ If picking these up, a sensible sequence:
 4. ~~**Findings 2.2 / 2.3** — cheap correctness/consistency cleanups.~~ **DONE.**
    ~~**Finding 1.3** (`Retry-After` clamp doc/code mismatch).~~ **DONE.**
 5. ~~**Finding 3.1** (OA-URL download path) — the enhancement that most reduces
-   day-to-day friction.~~ **DONE (opt-in `allow_oa_url=True`).** **Finding 3.2**
-   (fast-extract fallback) — still open if there's appetite for more surface area.
+   day-to-day friction.~~ **DONE (opt-in `allow_oa_url=True`).**
+6. ~~**Finding 3.2** (fast-extract fallback) — supported degraded path for the
+   timeout/serialisation case.~~ **DONE (opt-in `mode="fast"`).** Remaining open
+   items: **3.3** (Crossref fallback on OpenAlex 404), **3.4** (diacritic-aware
+   search), **3.5** (BM25 index scaling) — all still open if there's appetite.

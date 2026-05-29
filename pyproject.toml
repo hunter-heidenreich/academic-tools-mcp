@@ -11,6 +11,11 @@ dependencies = [
     "python-dotenv>=1.2.2",
 ]
 
+[project.optional-dependencies]
+# Bundled backend for convert_paper(mode="fast") when PDF_FAST_CONVERTER=pymupdf.
+# The default fast backend ("pdftotext") needs the system poppler-utils instead.
+fast = ["pymupdf>=1.24"]
+
 [project.scripts]
 academic-tools-mcp = "academic_tools_mcp.server:mcp.run"
 
