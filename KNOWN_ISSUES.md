@@ -33,12 +33,12 @@ The findings are grouped by severity-of-action, not by subsystem:
 |---|---------|-------|-------|----------|
 | 1 | ~~`force_refresh` deletes cached PDF *before* re-download; failed refetch loses the only copy~~ **(RESOLVED)** | `arxiv.py:393`, `biorxiv.py:321`, `acl_anthology.py:170` | Bug | Medium |
 | 2 | ~~Temp extraction dir leaks on every conversion *failure* path~~ **(RESOLVED)** | `papers.py:553`, early returns vs. `:669` | Bug | Low |
-| 3 | `get_with_retry` clamps `Retry-After` to 30s; docstring claims 5-min waits are respected | `_http.py:190`, `:209` vs. `:174` | Bug (doc/code mismatch) | Low |
+| 3 | ~~`get_with_retry` clamps `Retry-After` to 30s; docstring claims 5-min waits are respected~~ **(RESOLVED)** | `_http.py:156`, `:215` | Bug (doc/code mismatch) | Low |
 | 4 | ~~ACL old-style IDs are case-sensitive in the URL; no normalization~~ **(RESOLVED)** | `acl_anthology.py:111`, `:128` | Fragility | Medium |
 | 5 | ~~`find_in_paper` truncates silently at `max_results` with no "more exist" flag~~ **(RESOLVED)** | `papers.py:335` | Fragility | Low |
 | 6 | ~~`import_markdown` caches sections without a checksum (inconsistent with `convert_pdf`)~~ **(RESOLVED)** | `manual.py:290` | Fragility | Low |
 | 7 | Section-lock eviction can spin O(N) over a full held map | `papers.py:210` | Fragility | Very low |
-| 8 | `download_pdf` supports only 3 providers — the dominant operator friction | `server.py:920` | Intentional | (enhancement) |
+| 8 | ~~`download_pdf` supports only 3 providers — the dominant operator friction~~ **(RESOLVED via opt-in OA-URL path)** | `server.py:920` | Intentional | (enhancement) |
 | 9 | Single global conversion lock + coarse 30-min timeout serializes batches | `papers.py:45`, `:37` | Intentional | (enhancement) |
 | 10 | No provider fallback when OpenAlex 404s a valid DOI | `manual.py:74` | Intentional | (enhancement) |
 | 11 | Literal/ASCII-boundary search misses diacritics & non-Latin scripts | `papers.py:324`, `cache_search.py:137` | Intentional | (limitation) |
@@ -151,9 +151,16 @@ fresh dir.
 
 ---
 
-### 1.3 `get_with_retry` doc/code mismatch on `Retry-After` clamping
+### 1.3 `get_with_retry` doc/code mismatch on `Retry-After` clamping — **RESOLVED**
 
-**Where.** `_http.py:190` sets the cap and `:209-211` applies it:
+**Resolution.** The arbitrary `backoff_seconds * 30` (~30s) cap was replaced with an
+explicit `_MAX_RETRY_AFTER_SECONDS = 600.0` (10-minute) ceiling, and the docstring
+rewritten to match: the sleep is now `min(max(Retry-After, backoff_seconds),
+_MAX_RETRY_AFTER_SECONDS)`, so a genuine multi-minute server cooldown is honoured while a
+misconfigured huge `Retry-After` still can't pin the throttle. Code and docs now agree.
+Original analysis retained below.
+
+**Where.** `_http.py:190` set the cap and `:209-211` applied it:
 
 ```python
 cap = backoff_seconds * 30           # = 30.0 at the default backoff_seconds=1.0
@@ -319,9 +326,24 @@ They are listed here because they are where operators spend the most effort
 working *around* the tool, so they are the highest-value targets if the goal is
 to reduce friction rather than fix correctness.
 
-### 3.1 `download_pdf` supports only arXiv, bioRxiv/medRxiv, and ACL
+### 3.1 `download_pdf` supports only arXiv, bioRxiv/medRxiv, and ACL — **RESOLVED (opt-in)**
 
-**Where.** `server.py:920-934` returns a hard refusal for anything else:
+**Resolution.** Implemented the "middle path" from the enhancement sketch below.
+`download_pdf(identifier, allow_oa_url=True)` now fetches a generic publisher DOI from
+the open-access PDF URL OpenAlex already surfaces (`best_oa_location.pdf_url` →
+`primary_location.pdf_url` → `open_access.oa_url`, via the new `openalex.best_pdf_url`).
+Only the OpenAlex-surfaced URL is fetched — never a caller-supplied one — so the server
+stays metadata-gated rather than a general scraper. The fetch goes through a new
+provider-shaped `oa_download.py` module (own pooled client + `_request_slot`, conservative
+`_MAX_CONCURRENT=2`) and validates the response is a real PDF via an opt-in
+`stream_to_file(require_pdf=True)` guard (`%PDF-` magic bytes + advisory Content-Type),
+rejecting HTML landing/paywall pages. The PDF lands in the `manual` namespace so
+`convert_paper` and the `force_refresh` cascade treat it like any imported paper.
+`allow_oa_url` defaults to `False`, so the hard refusal (now also hinting at the opt-in)
+is unchanged by default. `get_paper_metadata` additionally surfaces a `pdf_url` field.
+Coverage in `tests/test_oa_download.py`. Original analysis retained below.
+
+**Where.** `server.py:920-934` returned a hard refusal for anything else:
 
 ```python
 "error": (
@@ -486,7 +508,7 @@ If picking these up, a sensible sequence:
 3. ~~**Finding 2.1** (ACL case normalization) — removes a recurring operator paper
    cut; small, testable.~~ **DONE.**
 4. ~~**Findings 2.2 / 2.3** — cheap correctness/consistency cleanups.~~ **DONE.**
-   **Finding 1.3** (`Retry-After` clamp doc/code mismatch) — still open.
-5. **Finding 3.1 or 3.2** (OA-URL download path, or fast-extract fallback) — the
-   two enhancements that would most reduce day-to-day friction, if there's
-   appetite for new surface area.
+   ~~**Finding 1.3** (`Retry-After` clamp doc/code mismatch).~~ **DONE.**
+5. ~~**Finding 3.1** (OA-URL download path) — the enhancement that most reduces
+   day-to-day friction.~~ **DONE (opt-in `allow_oa_url=True`).** **Finding 3.2**
+   (fast-extract fallback) — still open if there's appetite for more surface area.

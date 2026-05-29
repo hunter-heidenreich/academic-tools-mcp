@@ -57,6 +57,27 @@ def _canonical_doi(doi: str) -> str:
     return _normalize_doi(doi).lower()
 
 
+def best_pdf_url(work: dict[str, Any]) -> str | None:
+    """Pick the best open-access *PDF* URL from a raw OpenAlex work.
+
+    Prefers a direct PDF link over a landing page, in order:
+      1. ``best_oa_location.pdf_url`` — OpenAlex's chosen best OA copy
+      2. ``primary_location.pdf_url`` — the version of record, if OA
+      3. ``open_access.oa_url`` — last resort; frequently an HTML
+         landing/abstract page rather than a PDF
+
+    Returns ``None`` when no usable URL is present. Each sub-object is
+    guarded with ``or {}`` because OpenAlex returns these keys as explicit
+    ``null`` for closed-access works.
+    """
+    for loc_key in ("best_oa_location", "primary_location"):
+        loc = work.get(loc_key) or {}
+        url = loc.get("pdf_url")
+        if url:
+            return url
+    return (work.get("open_access") or {}).get("oa_url") or None
+
+
 def _build_params() -> dict[str, str]:
     """Build query params from environment config."""
     params: dict[str, str] = {}

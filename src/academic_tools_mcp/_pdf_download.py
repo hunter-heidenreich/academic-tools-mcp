@@ -67,6 +67,7 @@ async def stream_to_file(
     provider_label: str,
     timeout: float = 60.0,
     not_found_message: str | None = None,
+    require_pdf: bool = False,
 ) -> dict[str, Any]:
     """Stream a GET response to ``dest``, atomically, with a size cap.
 
@@ -82,9 +83,20 @@ async def stream_to_file(
     half-written canonical file. The temp is unlinked on every failure
     path, including the size-cap abort.
 
+    ``require_pdf=True`` validates that the response is actually a PDF
+    before writing — needed for the open-access download path, where the
+    URL may resolve to an HTML landing/paywall page rather than a PDF. An
+    obvious ``text/html`` / ``text/plain`` Content-Type, or a first chunk
+    lacking the ``%PDF-`` magic bytes, is rejected with
+    ``{error, retryable: False}`` and no file is written. Content-Type is
+    only an advisory early-out (publishers mislabel both ways); the magic
+    bytes are authoritative, so a real PDF served as ``octet-stream`` or
+    with no Content-Type still passes. Default ``False`` skips the check
+    entirely (the native providers fetch known-PDF CDN URLs).
+
     Returns ``{path, size_bytes, cached: False}`` on success or a
     structured error dict on failure (transport error, 404, size cap
-    exceeded). 404 → ``{error}``. Cap exceeded →
+    exceeded, not-a-PDF). 404 → ``{error}``. Cap exceeded →
     ``{error, retryable: False, max_bytes}``.
     """
     max_bytes = resolve_max_pdf_bytes()
@@ -111,9 +123,38 @@ async def stream_to_file(
                         )
                     }
                 response.raise_for_status()
+                if require_pdf:
+                    content_type = response.headers.get("content-type", "")
+                    if content_type.lower().lstrip().startswith(
+                        ("text/html", "text/plain")
+                    ):
+                        return {
+                            "error": (
+                                f"{provider_label}: {url} returned an HTML "
+                                f"page (Content-Type: {content_type}), not a "
+                                "PDF — likely a landing or paywall page."
+                            ),
+                            "retryable": False,
+                        }
+                checked_pdf = not require_pdf
                 with os.fdopen(fd, "wb") as f:
                     fd_handed_off = True
                     async for chunk in response.aiter_bytes(_CHUNK_SIZE):
+                        if not checked_pdf:
+                            # Authoritative content check: the first bytes of
+                            # a PDF are the "%PDF-" magic number. Reject a
+                            # mislabeled HTML page that slipped past the
+                            # Content-Type guard before anything is written.
+                            if not chunk.startswith(b"%PDF-"):
+                                return {
+                                    "error": (
+                                        f"{provider_label}: {url} did not "
+                                        "return a PDF (missing %PDF- header) "
+                                        "— likely a landing or paywall page."
+                                    ),
+                                    "retryable": False,
+                                }
+                            checked_pdf = True
                         if (
                             max_bytes is not None
                             and written + len(chunk) > max_bytes

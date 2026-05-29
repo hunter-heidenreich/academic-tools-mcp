@@ -15,8 +15,24 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Added
+
+- `download_pdf(identifier, allow_oa_url=True)` opts into downloading a generic
+  publisher DOI from the open-access PDF URL OpenAlex reports for it
+  (`best_oa_location.pdf_url` → `primary_location.pdf_url` → `open_access.oa_url`).
+  Only the OpenAlex-surfaced URL is fetched — never a caller-supplied one — so the
+  server stays metadata-gated rather than a general scraper. The fetch validates the
+  response is actually a PDF (`%PDF-` magic bytes, rejecting HTML landing/paywall
+  pages) and caches it in the `manual` namespace so `convert_paper` and the rest of
+  the pipeline find it. Default stays `False`: the strict refusal (with an
+  `import_paper` fallback hint) is unchanged for non-arXiv/bioRxiv/ACL identifiers.
+  ([#11])
+
 ### Changed
 
+- `get_paper_metadata` now surfaces a `pdf_url` field on OpenAlex-sourced responses,
+  carrying the best open-access PDF link OpenAlex knows (preferring a direct PDF over
+  a landing page). ([#11])
 - `find_in_paper` now returns a `truncated` boolean in its response. It is
   `true` when more matches exist than `max_results` returned, so an agent doing
   exhaustive evidence-gathering knows the result set was capped rather than
@@ -142,3 +158,4 @@ grouped by milestone rather than per commit.
 [#8]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/8
 [#9]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/9
 [#10]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/10
+[#11]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/11
