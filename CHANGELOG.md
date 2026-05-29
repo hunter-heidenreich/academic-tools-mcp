@@ -17,6 +17,18 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- `find_in_paper(identifier, query, normalize=True)` and
+  `search_cached_papers(query, normalize=True)` opt into diacritic-insensitive
+  search: both NFKD-fold the query (and the document text) and strip combining
+  marks before matching, so `cafe` matches `café` and `Gutierrez` matches
+  `Gutiérrez` (and vice versa). For `find_in_paper`, the reported `char_offset`,
+  `match`, and `snippet` are still sliced from the original (un-folded) text — a
+  fold-with-position-map translates each match back to original offsets — so
+  chaining into `get_paper_section(identifier, section_index, offset=char_offset)`
+  still lands on the match. Folding turns diacritic Latin words into ASCII, so
+  `whole_words` boundaries work for them; non-Latin scripts (CJK, Arabic) remain
+  ASCII-word-boundary-limited and are documented as such. Default stays `False`,
+  so literal-match behaviour is unchanged. ([#14])
 - `get_paper_metadata(doi, fallback_crossref=True)` opts into a Crossref fallback
   when OpenAlex returns a definitive "not found" (HTTP 404) for a DOI — Crossref's
   indexing of new and niche-venue DOIs is often ahead of OpenAlex's. The fallback
@@ -180,3 +192,4 @@ grouped by milestone rather than per commit.
 [#11]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/11
 [#12]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/12
 [#13]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/13
+[#14]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/14

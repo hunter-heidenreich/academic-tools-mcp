@@ -80,6 +80,15 @@ class TestTokenize:
         assert "y" not in toks
         assert "x86" in toks
 
+    def test_normalize_folds_diacritics(self):
+        # Without normalize the diacritic splits the token (the regex
+        # only keeps [a-z0-9-.] runs), so "Gutiérrez" → ["guti", "rrez"].
+        assert cache_search._tokenize("Gutiérrez") == ["guti", "rrez"]
+        # With normalize it folds to a single ASCII token.
+        assert cache_search._tokenize("Gutiérrez", normalize=True) == [
+            "gutierrez",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Title extraction
@@ -179,6 +188,16 @@ class TestExtractSnippet:
         # No word-boundary match → fallback to head, offset is None.
         assert offset is None
 
+    def test_normalize_locates_accented_term_at_original_offset(self):
+        # The folded query term "gutierrez" must locate the accented
+        # occurrence and report an offset into the ORIGINAL markdown.
+        body = "padding " * 20 + "Work by Gutiérrez here " + "padding " * 20
+        snippet, offset = cache_search._extract_snippet(
+            body, {"gutierrez"}, normalize=True
+        )
+        assert offset is not None
+        assert body[offset:offset + len("Gutiérrez")] == "Gutiérrez"
+
 
 # ---------------------------------------------------------------------------
 # Filename → canonical inversion
@@ -271,6 +290,20 @@ class TestSearch:
         assert len(hits) >= 1
         assert hits[0]["canonical_id"] == "1706.03762"
         assert hits[0]["title"] == "Attention Is All You Need"
+
+    def test_normalize_retrieves_accented_doc(self, isolated_cache):
+        # A doc whose only relevant term is accented ("Gutiérrez") is
+        # invisible to an unaccented query by default, but surfaces with
+        # normalize=True (query and doc both fold to "gutierrez").
+        _seed_markdown(
+            isolated_cache, "arxiv", "2301.00002",
+            "# Survey\n\n## Refs\n\nMethod introduced by Gutiérrez et al.\n",
+        )
+        assert cache_search.search("gutierrez") == []
+        hits = cache_search.search("gutierrez", normalize=True)
+        assert len(hits) == 1
+        assert hits[0]["canonical_id"] == "2301.00002"
+        assert hits[0]["score"] > 0
 
     def test_response_shape(self, isolated_cache):
         # Lock in the contract documented in the tool description so

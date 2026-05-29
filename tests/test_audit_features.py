@@ -465,6 +465,82 @@ class TestFindInMarkdown:
         assert papers.find_in_markdown(_FIND_DOC, "") == ([], False)
 
 
+_FIND_DOC_ACCENTS = """\
+## References
+
+Work by Gutiérrez on the café method (a naïve baseline).
+
+## Notes
+
+The ﬁnal café result is reported here.
+"""
+
+
+class TestFindInMarkdownNormalize:
+    def test_default_does_not_fold(self):
+        # Opt-in: without normalize, an unaccented query misses the
+        # accented occurrence entirely.
+        hits, truncated = papers.find_in_markdown(_FIND_DOC_ACCENTS, "cafe")
+        assert hits == []
+        assert truncated is False
+
+    def test_unaccented_query_matches_accented_text(self):
+        hits, _ = papers.find_in_markdown(
+            _FIND_DOC_ACCENTS, "cafe", normalize=True
+        )
+        assert len(hits) >= 1
+        # The reported match is the ORIGINAL accented substring.
+        assert hits[0]["match"] == "café"
+
+    def test_accented_query_matches_unaccented_query_direction(self):
+        # Reverse direction: an accented query also matches the plain form.
+        doc = "## S\n\nThe cafe is open.\n"
+        hits, _ = papers.find_in_markdown(doc, "café", normalize=True)
+        assert len(hits) == 1
+        assert hits[0]["match"] == "cafe"
+
+    def test_offsets_align_with_get_section_content(self):
+        # The critical contract: char_offset/match address the ORIGINAL
+        # section text even though matching happened on folded text.
+        hits, _ = papers.find_in_markdown(
+            _FIND_DOC_ACCENTS, "Gutierrez", normalize=True
+        )
+        assert len(hits) == 1
+        h = hits[0]
+        section = papers.get_section_content(
+            _FIND_DOC_ACCENTS, h["section_index"]
+        )
+        off = h["char_offset"]
+        assert section["content"][off:off + len(h["match"])] == h["match"]
+        assert h["match"] == "Gutiérrez"
+
+    def test_ligature_folds(self):
+        # "ﬁ" (U+FB01) folds to "fi" and expands length; the reported
+        # match must still be the original single ligature char.
+        hits, _ = papers.find_in_markdown(
+            _FIND_DOC_ACCENTS, "final", normalize=True
+        )
+        assert len(hits) == 1
+        assert hits[0]["match"] == "ﬁnal"
+
+    def test_whole_words_with_normalize(self):
+        doc = "## S\n\nThe café and the cafeteria differ.\n"
+        hits, _ = papers.find_in_markdown(
+            doc, "cafe", normalize=True, whole_words=True
+        )
+        # Matches the whole word "café" (folds to ASCII "cafe"), not the
+        # "cafe" inside "cafeteria".
+        assert len(hits) == 1
+        assert hits[0]["match"] == "café"
+
+    def test_all_combining_query_returns_empty(self):
+        # A query that folds to nothing (a lone combining acute accent)
+        # must not match everywhere.
+        assert papers.find_in_markdown(
+            _FIND_DOC_ACCENTS, "́", normalize=True
+        ) == ([], False)
+
+
 class TestFindInPaperTool:
     @pytest.mark.asyncio
     async def test_unconverted_paper_returns_error(self):
@@ -504,5 +580,28 @@ class TestFindInPaperTool:
             )
             assert capped["result_count"] == 2
             assert capped["truncated"] is True
+        finally:
+            md_path.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_normalize_matches_accented_text(self):
+        identifier = "2301.55556"
+        canonical = server.arxiv._canonical_arxiv_id(identifier)
+        md_path = papers._markdown_path("arxiv", canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(_FIND_DOC_ACCENTS)
+
+        try:
+            # Without normalize the unaccented query misses.
+            plain = await server.find_in_paper(
+                identifier=identifier, query="Gutierrez"
+            )
+            assert plain["result_count"] == 0
+
+            folded = await server.find_in_paper(
+                identifier=identifier, query="Gutierrez", normalize=True
+            )
+            assert folded["result_count"] == 1
+            assert folded["results"][0]["match"] == "Gutiérrez"
         finally:
             md_path.unlink(missing_ok=True)

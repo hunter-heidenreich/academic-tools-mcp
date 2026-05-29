@@ -1774,6 +1774,24 @@ async def find_in_paper(
             ),
         ),
     ] = False,
+    normalize: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, fold diacritics before matching (NFKD + strip "
+                "combining marks) so 'cafe' matches 'café' and "
+                "'Gutierrez' matches 'Gutiérrez' (and vice versa). "
+                "Default False (literal match). char_offset, match, and "
+                "snippet are still reported against the original "
+                "(un-folded) text, so chaining into get_paper_section "
+                "still lands on the match. Caveat: word boundaries are "
+                "ASCII-oriented — folding makes diacritic Latin words "
+                "work with whole_words, but non-Latin scripts (CJK, "
+                "Arabic) stay unreliable for whole_words and are largely "
+                "unaffected by folding."
+            ),
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """Find every occurrence of a query inside one converted paper.
 
@@ -1791,6 +1809,10 @@ async def find_in_paper(
 
     ``truncated`` is ``True`` when more matches exist than ``max_results``
     returned — raise ``max_results`` (or refine the query) to see the rest.
+
+    ``normalize=True`` folds diacritics (NFKD + strip combining marks) so
+    'cafe' matches 'café' (and vice versa); offsets/match/snippet stay
+    aligned to the original text. Word boundaries remain ASCII-oriented.
 
     Errors: paper not converted yet → ``{error}`` with guidance to run
     convert_paper. No matches → ``{result_count: 0, results: []}`` (an
@@ -1817,6 +1839,7 @@ async def find_in_paper(
         max_results=max_results,
         case_sensitive=case_sensitive,
         whole_words=whole_words,
+        normalize=normalize,
     )
     return {
         "query": query,
@@ -1873,6 +1896,18 @@ async def search_cached_papers(
     ],
     top_k: _CACHE_SEARCH_TOP_K = 10,
     namespace: _CACHE_SEARCH_NAMESPACE = None,
+    normalize: Annotated[
+        bool,
+        Field(
+            description=(
+                "If True, fold diacritics (NFKD + strip combining marks) "
+                "on both the query and the documents before BM25 "
+                "tokenisation, so 'cafe' and 'café' rank identically. "
+                "Default False. Snippet offsets stay aligned to the "
+                "original markdown."
+            ),
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """BM25 full-text search across every paper you've already converted.
 
@@ -1898,6 +1933,11 @@ async def search_cached_papers(
     search failed. Searches the cache live on every call; for a
     personal-MCP corpus this runs in well under 100ms.
 
+    ``normalize=True`` folds diacritics on both query and documents
+    before tokenising, so 'cafe' and 'café' rank identically (useful for
+    diacritic-heavy author names and terms); pure keyword matching still
+    applies.
+
     Limits: pure keyword match (BM25 doesn't know synonyms — "self-
     attention" won't surface a paper that only says "scaled dot-
     product attention"). Only converted papers are searchable; PDFs
@@ -1909,7 +1949,11 @@ async def search_cached_papers(
     # tens of milliseconds, but agents may run searches concurrently
     # with HTTP fetches and we shouldn't starve those.
     results = await asyncio.to_thread(
-        cache_search.search, query, top_k=top_k, namespace=namespace
+        cache_search.search,
+        query,
+        top_k=top_k,
+        namespace=namespace,
+        normalize=normalize,
     )
     return {
         "query": query,
