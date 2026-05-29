@@ -8,15 +8,12 @@ it was cut — `YYYY.MM.DD`, tagged `vYYYY.MM.DD` in git. The PEP 440 form in
 `pyproject.toml` drops leading zeros (tag `v2026.05.29` ↔ version `2026.5.29`).
 A rare second release on the same day takes a `.postN` suffix.
 
-Entries dated before `2026.05.29` are **reconstructed from git history** — the
-project carried no tags until then, so each date marks the day that batch of work
-landed on `main`, grouped by milestone rather than per commit.
+Releases from `2026.04.30` onward are tagged in git. Entries are **reconstructed
+from git history** up to that first tag — the project carried no tags before
+then, so each earlier date marks the day that batch of work landed on `main`,
+grouped by milestone rather than per commit.
 
 ## [Unreleased]
-
-_Nothing yet._
-
-## [2026.05.29] — 2026-05-29
 
 ### Fixed
 
@@ -108,8 +105,7 @@ _Nothing yet._
 - Configurable external PDF converter, env-based API configuration
   (mailto / keys), MIT license, and a public-facing README.
 
-[Unreleased]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.05.29...HEAD
-[2026.05.29]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.30...v2026.05.29
+[Unreleased]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.30...HEAD
 [2026.04.30]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.22...v2026.04.30
 [2026.04.22]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.16...v2026.04.22
 [2026.04.16]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.05...v2026.04.16
