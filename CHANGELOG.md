@@ -65,6 +65,16 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- `get_paper_references(source="auto")` now biases its source pick toward
+  Crossref. Selection previously chose whichever provider returned more
+  references, so a one-or-two-entry margin could flip to OpenCitations' bare
+  DOI links over Crossref's structured author/title/year metadata; OpenCitations
+  now wins only when it has materially more references (>1.2×). `source="auto"`
+  also no longer resolves past page 1 — re-surveying mid-walk could pick a
+  different source if the cached counts drifted (a `force_refresh` on a later
+  page, or a TTL lapse) and silently shift the pagination offsets, so paging
+  past page 1 now returns an actionable error directing the agent to pin the
+  `_source` returned on page 1. ([#36])
 - `search_cached_papers` results are now deterministically ordered: equal-scoring
   hits break ties by `(namespace, canonical_id)` instead of the index's internal
   entry order, so the same query returns the same ordering across sessions even as
@@ -82,6 +92,18 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- The reference/citation graph tools no longer drop the structured error signal
+  when surfacing an upstream failure. `get_paper_references_count` and the
+  combined-error response from `get_paper_references(source="auto")` previously
+  copied out only the error *message*, discarding the `retryable` flag — so an
+  agent couldn't tell a transient failure (worth a retry) from a definitive one.
+  Both now forward `error` + `retryable` (+ `suggestion` when present). In
+  addition, when `source="auto"` and exactly one provider errors, the served
+  page now carries a `partial_failure` field naming the failed source, so an
+  empty result from the surviving source isn't mistaken for a confident
+  "no references" when the other source merely had a transient blip.
+  `get_paper_citations_count` also reads the count defensively (`data.get`),
+  returning `0` rather than raising on a success response that lacks the key. ([#36])
 - Wikipedia tools (`search_wikipedia` / `get_wikipedia_summary`) are now hardened
   to match the rest of the providers. Four issues are fixed: (1) a 200 with a
   garbled/truncated body — or, for the summary, a non-dict JSON payload —
@@ -483,3 +505,4 @@ grouped by milestone rather than per commit.
 [#33]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/33
 [#34]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/34
 [#35]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/35
+[#36]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/36
