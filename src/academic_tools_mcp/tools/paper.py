@@ -70,6 +70,41 @@ _OPENALEX_METADATA_HINT = (
     "Check the DOI format or use search_crossref_by_title to find the correct DOI."
 )
 
+_METADATA_HINT_BY_SOURCE = {
+    "arxiv": _ARXIV_METADATA_HINT,
+    "biorxiv": _BIORXIV_METADATA_HINT,
+    "openalex": _OPENALEX_METADATA_HINT,
+}
+
+
+async def _fetch_source(
+    identifier: str, *, force_refresh: bool = False
+) -> tuple[str | None, str | None, dict[str, Any]]:
+    """Resolve an identifier and fetch its raw provider object.
+
+    Centralizes the dispatch ritual the unified paper tools share: resolve the
+    source, compute the canonical id, fetch the raw upstream object. Returns
+    ``(source, canonical_id, obj)`` where ``obj`` is the provider's raw object
+    on success or its raw (un-enriched) error dict on failure. When no provider
+    matches, ``source`` is ``None`` and ``obj`` is the unknown-identifier error.
+
+    The error is left un-enriched so a caller that must branch on a
+    provider-specific error flag before attaching a suggestion can do so —
+    get_paper_metadata inspects OpenAlex's ``not_found`` for the Crossref
+    fallback. Simple callers enrich via ``_METADATA_HINT_BY_SOURCE[source]``.
+    """
+    source = manual._resolve_metadata_source(identifier)
+    canonical_id = _canonical_for_source(source, identifier)
+    if source == "arxiv":
+        obj = await arxiv.get_paper(identifier, force_refresh=force_refresh)
+    elif source == "biorxiv":
+        obj = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
+    elif source == "openalex":
+        obj = await _fetch_work(identifier, force_refresh=force_refresh)
+    else:
+        return None, None, _unknown_identifier_error(identifier)
+    return source, canonical_id, obj
+
 
 def _format_arxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
     return {
@@ -206,6 +241,23 @@ def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) ->
     }
 
 
+def _format_metadata_by_source(
+    source: str, obj: dict[str, Any], canonical_id: str | None
+) -> dict[str, Any]:
+    """Dispatch a raw provider object to its per-source metadata formatter.
+
+    The plain (non-special-case) success path for both get_paper_metadata and
+    the get_papers_metadata batch closures, so the field mapping lives in one
+    place. ``source`` must be one of the three known providers — callers gate on
+    a successful ``_fetch_source`` before calling.
+    """
+    if source == "arxiv":
+        return _format_arxiv_metadata(obj, canonical_id)
+    if source == "biorxiv":
+        return _format_biorxiv_metadata(obj, canonical_id)
+    return _format_openalex_metadata(obj, canonical_id)
+
+
 @mcp.tool
 async def get_paper_metadata(
     identifier: PAPER_ID,
@@ -253,20 +305,13 @@ async def get_paper_metadata(
     OpenAlex DOIs into one HTTP call and fans out arXiv / bioRxiv
     fetches concurrently.
     """
-    source = manual._resolve_metadata_source(identifier)
-    canonical_id = _canonical_for_source(source, identifier)
+    source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
+    if source is None:
+        return obj  # unknown-identifier error
 
-    if source == "arxiv":
-        paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
-        if "error" in paper:
-            return _enrich_error(paper, _ARXIV_METADATA_HINT)
-        return _format_arxiv_metadata(paper, canonical_id)
-
-    if source == "biorxiv":
-        paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
-        if "error" in paper:
-            return _enrich_error(paper, _BIORXIV_METADATA_HINT)
-        published_doi = paper.get("published_doi")
+    # bioRxiv → journal chaining (special case on a successful preprint record).
+    if source == "biorxiv" and "error" not in obj:
+        published_doi = obj.get("published_doi")
         if follow_published and published_doi:
             # Chain to OpenAlex for the journal version. If OpenAlex
             # doesn't have it (paper too new to index, etc.) we fall
@@ -277,7 +322,7 @@ async def get_paper_metadata(
             if "error" not in work:
                 return _format_openalex_via_biorxiv(
                     work,
-                    paper.get("doi"),
+                    obj.get("doi"),
                     openalex._canonical_doi(published_doi),
                 )
             # OpenAlex didn't return the journal version — fall back to the
@@ -288,29 +333,25 @@ async def get_paper_metadata(
             # (5xx / timeout, no not_found) means a retry might surface the
             # record, so tag it so the agent can distinguish the two rather
             # than treating a flaky lookup as a permanent miss.
-            result = _format_biorxiv_metadata(paper, canonical_id, followed_published=False)
+            result = _format_biorxiv_metadata(obj, canonical_id, followed_published=False)
             if not work.get("not_found"):
                 result["published_lookup_retryable"] = True
             return result
-        return _format_biorxiv_metadata(paper, canonical_id)
 
-    if source == "openalex":
-        work = await _fetch_work(identifier, force_refresh=force_refresh)
-        if work.get("not_found") and fallback_crossref:
-            # OpenAlex definitively 404'd this DOI (not a transient error).
-            # Crossref often indexes new/niche DOIs ahead of OpenAlex, so
-            # try it as a narrow, opt-in fallback. Crossref has its own
-            # cache and no force_refresh knob — force_refresh applied to
-            # the OpenAlex lookup above. If Crossref also misses, fall
-            # through to the OpenAlex error below.
-            cr = await _app._fetch_crossref_work(identifier)
-            if "error" not in cr:
-                return _format_crossref_metadata(cr, crossref._canonical_doi(identifier))
-        if "error" in work:
-            return _enrich_error(work, _OPENALEX_METADATA_HINT)
-        return _format_openalex_metadata(work, canonical_id)
+    # OpenAlex definitive 404 + opt-in Crossref fallback (Crossref often indexes
+    # new/niche DOIs ahead of OpenAlex). Inspect the raw, un-enriched error here
+    # — that's why _fetch_source doesn't attach the suggestion itself. Crossref
+    # has its own cache and no force_refresh knob; force_refresh applied to the
+    # OpenAlex lookup above. If Crossref also misses, fall through to the
+    # OpenAlex error below.
+    if source == "openalex" and obj.get("not_found") and fallback_crossref:
+        cr = await _app._fetch_crossref_work(identifier)
+        if "error" not in cr:
+            return _format_crossref_metadata(cr, crossref._canonical_doi(identifier))
 
-    return _unknown_identifier_error(identifier)
+    if "error" in obj:
+        return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
+    return _format_metadata_by_source(source, obj, canonical_id)
 
 
 @mcp.tool
@@ -355,42 +396,29 @@ async def get_papers_metadata(
     n = len(identifiers)
     results: list[dict[str, Any] | None] = [None] * n
 
-    arxiv_tasks: list[asyncio.Task] = []
-    biorxiv_tasks: list[asyncio.Task] = []
+    singleton_tasks: list[asyncio.Task] = []
     openalex_indices: list[tuple[int, str]] = []  # (slot, original input)
 
-    async def _arxiv_one(slot: int, ident: str) -> None:
-        canonical = arxiv._canonical_arxiv_id(ident)
-        paper = await arxiv.get_paper(ident, force_refresh=force_refresh)
-        if "error" in paper:
+    async def _singleton_one(slot: int, ident: str) -> None:
+        # arXiv / bioRxiv fetch as concurrent singletons. The dispatch loop
+        # routes OpenAlex to the batch and unknown ids never reach here, so
+        # _fetch_source resolves to a real provider (assert documents that).
+        source, canonical, obj = await _fetch_source(ident, force_refresh=force_refresh)
+        assert source is not None
+        if "error" in obj:
             results[slot] = {
                 "_input": ident,
-                **_enrich_error(paper, _ARXIV_METADATA_HINT),
+                **_enrich_error(obj, _METADATA_HINT_BY_SOURCE[source]),
             }
             return
-        formatted = _format_arxiv_metadata(paper, canonical)
-        formatted["_input"] = ident
-        results[slot] = formatted
-
-    async def _biorxiv_one(slot: int, ident: str) -> None:
-        canonical = biorxiv._canonical_key(ident)
-        paper = await biorxiv.get_paper(ident, force_refresh=force_refresh)
-        if "error" in paper:
-            results[slot] = {
-                "_input": ident,
-                **_enrich_error(paper, _BIORXIV_METADATA_HINT),
-            }
-            return
-        formatted = _format_biorxiv_metadata(paper, canonical)
+        formatted = _format_metadata_by_source(source, obj, canonical)
         formatted["_input"] = ident
         results[slot] = formatted
 
     for i, ident in enumerate(identifiers):
         source = manual._resolve_metadata_source(ident)
-        if source == "arxiv":
-            arxiv_tasks.append(asyncio.create_task(_arxiv_one(i, ident)))
-        elif source == "biorxiv":
-            biorxiv_tasks.append(asyncio.create_task(_biorxiv_one(i, ident)))
+        if source in ("arxiv", "biorxiv"):
+            singleton_tasks.append(asyncio.create_task(_singleton_one(i, ident)))
         elif source == "openalex":
             openalex_indices.append((i, ident))
         else:
@@ -416,7 +444,7 @@ async def get_papers_metadata(
             formatted["_input"] = ident
             results[slot] = formatted
 
-    await asyncio.gather(*arxiv_tasks, *biorxiv_tasks, _openalex_batch())
+    await asyncio.gather(*singleton_tasks, _openalex_batch())
 
     # Defensive: every slot should be filled. Anything still None is a
     # bug — surface as an error rather than crashing the caller.
@@ -499,71 +527,44 @@ async def get_paper_authors(
 
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
-    source = manual._resolve_metadata_source(identifier)
-    canonical_id = _canonical_for_source(source, identifier)
+    source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
+    if source is None:
+        return obj  # unknown-identifier error
+    if "error" in obj:
+        return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
+
     start = (page - 1) * page_size
     end = start + page_size
 
-    if source == "arxiv":
-        paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
-        if "error" in paper:
-            return _enrich_error(paper, _ARXIV_METADATA_HINT)
-        authors = paper.get("authors", [])
-        total = len(authors)
-        return {
-            "_source": "arxiv",
-            "_canonical_id": canonical_id,
-            "author_count": total,
-            "page": page,
-            "page_size": page_size,
-            "has_more": end < total,
-            "authors": authors[start:end],
-            # arXiv author entries don't carry institution data — emit
-            # empty so the response shape matches the OpenAlex branch.
-            # Agents that branch on _source still get a stable schema.
-            "page_institutions": [],
-            "page_institution_count": 0,
-        }
-
-    if source == "biorxiv":
-        paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
-        if "error" in paper:
-            return _enrich_error(paper, _BIORXIV_METADATA_HINT)
-        authors = paper.get("authors", [])
-        total = len(authors)
-        return {
-            "_source": "biorxiv",
-            "_canonical_id": canonical_id,
-            "author_count": total,
-            "page": page,
-            "page_size": page_size,
-            "has_more": end < total,
-            "authors": authors[start:end],
-            "author_corresponding": paper.get("author_corresponding"),
-            "author_corresponding_institution": paper.get("author_corresponding_institution"),
-            # bioRxiv only exposes the corresponding-author institution
-            # (already returned above), not a per-author roll-up. Empty
-            # here keeps the shape symmetric with arxiv / openalex.
-            "page_institutions": [],
-            "page_institution_count": 0,
-        }
-
     if source == "openalex":
-        work = await _fetch_work(identifier, force_refresh=force_refresh)
-        if "error" in work:
-            return _enrich_error(work, _OPENALEX_METADATA_HINT)
-        page_slice = _format_openalex_authors(work, start, end)
-        total = page_slice["author_count"]
-        return {
-            "_source": "openalex",
-            "_canonical_id": canonical_id,
-            "page": page,
-            "page_size": page_size,
-            "has_more": end < total,
-            **page_slice,
+        page_slice = _format_openalex_authors(obj, start, end)
+    else:
+        # arXiv / bioRxiv carry a flat author list with no per-author
+        # institution roll-up — emit empty institution fields so the response
+        # shape stays symmetric with the OpenAlex branch and paginating agents
+        # don't have to feature-detect.
+        authors = obj.get("authors", [])
+        page_slice = {
+            "author_count": len(authors),
+            "authors": authors[start:end],
+            "page_institutions": [],
+            "page_institution_count": 0,
         }
 
-    return _unknown_identifier_error(identifier)
+    total = page_slice["author_count"]
+    result = {
+        "_source": source,
+        "_canonical_id": canonical_id,
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < total,
+        **page_slice,
+    }
+    if source == "biorxiv":
+        # bioRxiv additionally exposes the corresponding-author fields.
+        result["author_corresponding"] = obj.get("author_corresponding")
+        result["author_corresponding_institution"] = obj.get("author_corresponding_institution")
+    return result
 
 
 @mcp.tool
@@ -579,43 +580,25 @@ async def get_paper_abstract(
 
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
-    source = manual._resolve_metadata_source(identifier)
-    canonical_id = _canonical_for_source(source, identifier)
+    source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
+    if source is None:
+        return obj  # unknown-identifier error
+    if "error" in obj:
+        return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
 
     if source == "arxiv":
-        paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
-        if "error" in paper:
-            return _enrich_error(paper, _ARXIV_METADATA_HINT)
-        return {
-            "_source": "arxiv",
-            "_canonical_id": canonical_id,
-            "title": paper.get("title"),
-            "abstract": paper.get("summary"),
-        }
+        abstract = obj.get("summary")
+    elif source == "biorxiv":
+        abstract = obj.get("abstract")
+    else:
+        abstract = openalex.reconstruct_abstract(obj.get("abstract_inverted_index")) or None
 
-    if source == "biorxiv":
-        paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
-        if "error" in paper:
-            return _enrich_error(paper, _BIORXIV_METADATA_HINT)
-        return {
-            "_source": "biorxiv",
-            "_canonical_id": canonical_id,
-            "title": paper.get("title"),
-            "abstract": paper.get("abstract"),
-        }
-
-    if source == "openalex":
-        work = await _fetch_work(identifier, force_refresh=force_refresh)
-        if "error" in work:
-            return _enrich_error(work, _OPENALEX_METADATA_HINT)
-        return {
-            "_source": "openalex",
-            "_canonical_id": canonical_id,
-            "title": work.get("title"),
-            "abstract": openalex.reconstruct_abstract(work.get("abstract_inverted_index")) or None,
-        }
-
-    return _unknown_identifier_error(identifier)
+    return {
+        "_source": source,
+        "_canonical_id": canonical_id,
+        "title": obj.get("title"),
+        "abstract": abstract,
+    }
 
 
 @mcp.tool
@@ -635,40 +618,24 @@ async def get_paper_bibtex(
 
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
-    source = manual._resolve_metadata_source(identifier)
-    canonical_id = _canonical_for_source(source, identifier)
+    source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
+    if source is None:
+        return obj  # unknown-identifier error
+    if "error" in obj:
+        return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
 
     if source == "arxiv":
-        paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
-        if "error" in paper:
-            return _enrich_error(paper, _ARXIV_METADATA_HINT)
-        return {
-            "_source": "arxiv",
-            "_canonical_id": canonical_id,
-            "bibtex": generate_arxiv_bibtex(paper),
-        }
+        bibtex = generate_arxiv_bibtex(obj)
+    elif source == "biorxiv":
+        bibtex = generate_biorxiv_bibtex(obj)
+    else:
+        bibtex = generate_bibtex(obj)
 
-    if source == "biorxiv":
-        paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
-        if "error" in paper:
-            return _enrich_error(paper, _BIORXIV_METADATA_HINT)
-        return {
-            "_source": "biorxiv",
-            "_canonical_id": canonical_id,
-            "bibtex": generate_biorxiv_bibtex(paper),
-        }
-
-    if source == "openalex":
-        work = await _fetch_work(identifier, force_refresh=force_refresh)
-        if "error" in work:
-            return _enrich_error(work, _OPENALEX_METADATA_HINT)
-        return {
-            "_source": "openalex",
-            "_canonical_id": canonical_id,
-            "bibtex": generate_bibtex(work),
-        }
-
-    return _unknown_identifier_error(identifier)
+    return {
+        "_source": source,
+        "_canonical_id": canonical_id,
+        "bibtex": bibtex,
+    }
 
 
 @mcp.tool

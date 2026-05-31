@@ -1008,6 +1008,60 @@ class TestGetAuthorForceRefresh:
 # ---------------------------------------------------------------------------
 
 
+class TestFetchSourceDispatch:
+    """_fetch_source resolves identifier → (source, canonical_id, raw_obj),
+    returning the raw (un-enriched) provider object so get_paper_metadata can
+    inspect provider-specific error flags before a suggestion is attached."""
+
+    @pytest.mark.asyncio
+    async def test_arxiv_success_returns_canonical_and_raw(self, monkeypatch):
+        async def fake(arxiv_id, **kwargs):
+            return {"id": "http://arxiv.org/abs/2301.00001v1", "title": "T"}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake)
+        source, cid, obj = await paper._fetch_source("2301.00001v1")
+        assert source == "arxiv"
+        assert cid == "2301.00001"
+        assert obj["title"] == "T"
+
+    @pytest.mark.asyncio
+    async def test_error_is_left_unenriched(self, monkeypatch):
+        async def fake(doi, **kwargs):
+            return {"error": "boom"}
+
+        monkeypatch.setattr(openalex, "get_work", fake)
+        source, cid, obj = await paper._fetch_source("10.1234/x")
+        assert source == "openalex"
+        assert obj == {"error": "boom"}  # no suggestion attached by _fetch_source
+
+    @pytest.mark.asyncio
+    async def test_unknown_identifier_yields_source_none(self):
+        source, cid, obj = await paper._fetch_source("not-an-identifier-at-all")
+        assert source is None
+        assert cid is None
+        assert "error" in obj
+
+
+class TestFormatMetadataBySource:
+    """_format_metadata_by_source routes a raw object to the right per-source
+    formatter so get_paper_metadata and the batch path share one mapping."""
+
+    def test_dispatches_each_source(self):
+        arxiv_obj = {"id": "http://arxiv.org/abs/2301.00001v1", "title": "A"}
+        assert (
+            paper._format_metadata_by_source("arxiv", arxiv_obj, "2301.00001")["_source"] == "arxiv"
+        )
+        bio_obj = {"doi": "10.1101/x", "title": "B"}
+        assert (
+            paper._format_metadata_by_source("biorxiv", bio_obj, "10.1101/x")["_source"]
+            == "biorxiv"
+        )
+        oa_obj = {"title": "C"}
+        assert (
+            paper._format_metadata_by_source("openalex", oa_obj, "10.1/c")["_source"] == "openalex"
+        )
+
+
 class TestMetadataHintsCentralized:
     """All four unified paper tools surface the same per-source error
     suggestion. The text lives once in the _*_METADATA_HINT constants;
