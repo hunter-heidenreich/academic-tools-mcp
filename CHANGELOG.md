@@ -107,6 +107,22 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- `get_paper_sections` and `get_paper_section` now read cached markdown as UTF-8
+  explicitly. Under a non-UTF-8 host locale (e.g. an `LC_ALL=C` container/cron
+  job) the previous encoding-less read mis-decoded or raised `UnicodeDecodeError`
+  on any paper with non-ASCII content (accented author names, math, CJK), even
+  though the markdown is always written UTF-8 — matching the explicit-UTF-8 reads
+  the rest of the pipeline already does. ([#39])
+- `get_paper_sections` no longer raises an uncaught `FileNotFoundError` when a
+  concurrent `download_pdf(force_refresh=True)` cascade unlinks the cached
+  markdown in the window between its existence check and its read. It now
+  degrades to the tool's `{error}` "not converted" contract — the same defence
+  `convert_paper` already applies. `get_paper_section` gained the matching guard.
+  Both also read the markdown off the event loop so a large paper's disk read
+  doesn't stall concurrent fetches. ([#39])
+- `convert_paper` now strips cache filesystem paths from its *error* responses,
+  not just its success responses, so the pipeline's path-free boundary holds on
+  every code path. ([#39])
 - `search_crossref_by_title` no longer crashes on malformed Crossref date
   metadata. A record whose `date-parts` was `null` or `[]` (both occur in the
   wild) raised an unhandled `TypeError`/`IndexError` instead of returning the
@@ -545,3 +561,4 @@ grouped by milestone rather than per commit.
 [#36]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/36
 [#37]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/37
 [#38]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/38
+[#39]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/39
