@@ -100,6 +100,8 @@ The PDF pipeline tools (`download_pdf`, `convert_paper`, `import_paper`) deliber
 
 Single tool that auto-detects `.pdf` vs `.md`/`.markdown` by extension. PDFs are validated by their `%PDF-` magic bytes (rejects mis-extension files before they reach the converter); markdown is read as UTF-8 with a clean error on decode failure. The MCP-layer response slims the markdown branch to `section_count` only — the agent calls `get_paper_sections` if it wants the full index.
 
+`force_refresh: bool = False` (`IMPORT_FORCE_REFRESH` in `_app.py`) re-imports a file even when one is already cached under the identifier, replacing the cached copy and — for a PDF — cascading the markdown + section-index invalidation (response gains `cascaded_invalidated: ["markdown", "sections"]`). It's the supported way to swap in a corrected PDF or a better manual conversion; default `False` returns the existing cached copy as `cached: True` untouched. Writes are atomic (temp + `os.replace`) at the `manual.py` layer, and a 0-byte / non-`%PDF-` leftover at the canonical PDF path is treated as a miss rather than served as cached.
+
 ### Reference / citation graph tools
 
 - `get_paper_references_count` — surveys both Crossref and OpenCitations in parallel, returns per-source counts.

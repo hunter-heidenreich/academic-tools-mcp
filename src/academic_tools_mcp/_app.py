@@ -201,9 +201,23 @@ PDF_FORCE_REFRESH = Annotated[
             "from the upstream provider. Use this when the cached PDF is "
             "corrupt or the provider quietly replaced the file (e.g. a "
             "v2 arXiv upload under the same canonical key). Has no "
-            "effect on identifiers that import_paper handled — manage "
-            "those by re-running import_paper. Default False reads from "
-            "the cached PDF if present."
+            "effect on identifiers that import_paper handled — replace "
+            "those with import_paper(..., force_refresh=True). Default "
+            "False reads from the cached PDF if present."
+        ),
+    ),
+]
+
+IMPORT_FORCE_REFRESH = Annotated[
+    bool,
+    Field(
+        description=(
+            "If True, re-import this file even if a PDF/markdown is already "
+            "cached under this identifier, replacing the cached copy. For a "
+            "PDF this also drops any cached markdown + section index so the "
+            "next convert_paper re-runs on the new bytes. Use this to swap in "
+            "a corrected PDF or a higher-quality manual conversion. Default "
+            "False returns the existing cached copy untouched."
         ),
     ),
 ]

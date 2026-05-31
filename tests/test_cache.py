@@ -448,3 +448,68 @@ def test_resolve_cache_root_honors_env(tmp_path, monkeypatch):
 
     monkeypatch.delenv("CACHE_DIR", raising=False)
     assert cache._resolve_cache_root().name == ".cache"
+
+
+# ---------------------------------------------------------------------------
+# Atomic primitives: _atomic_write_text / _atomic_copy
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_text_roundtrips_utf8(tmp_path):
+    """_atomic_write_text writes UTF-8 regardless of host locale and lands
+    the file in place."""
+    path = tmp_path / "nested" / "note.md"
+    payload = "## Café\n\nMüller, François-René — 数据\n"
+    cache._atomic_write_text(path, payload)
+    assert path.read_text(encoding="utf-8") == payload
+
+
+def test_atomic_write_text_no_torn_file_on_failure(tmp_path, monkeypatch):
+    """If the rename fails, the canonical path is never created and the
+    sibling temp is cleaned up — a reader can't see a half-written file."""
+    path = tmp_path / "note.md"
+
+    def boom(*_a, **_kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cache.os, "replace", boom)
+
+    import pytest
+
+    with pytest.raises(OSError):
+        cache._atomic_write_text(path, "some content")
+
+    assert not path.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_atomic_copy_roundtrips_bytes_and_metadata(tmp_path):
+    """_atomic_copy reproduces the source bytes and lands the file in place."""
+    src = tmp_path / "src.bin"
+    body = b"%PDF-1.4 binary \x00\x01\x02 payload"
+    src.write_bytes(body)
+    dst = tmp_path / "sub" / "dst.bin"
+
+    cache._atomic_copy(src, dst)
+    assert dst.read_bytes() == body
+
+
+def test_atomic_copy_no_torn_file_on_failure(tmp_path, monkeypatch):
+    """A copy that blows up mid-stream leaves no canonical file (the failure
+    mode a plain shutil.copy to dst would torn-write) and no leftover temp."""
+    src = tmp_path / "src.pdf"
+    src.write_bytes(b"%PDF-1.4 source bytes")
+    dst = tmp_path / "dst.pdf"
+
+    def boom(*_a, **_kw):
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(cache.shutil, "copyfileobj", boom)
+
+    import pytest
+
+    with pytest.raises(OSError):
+        cache._atomic_copy(src, dst)
+
+    assert not dst.exists()
+    assert list(tmp_path.glob("*.tmp")) == []

@@ -544,8 +544,9 @@ def _finalize_markdown(
     # When there is a caption, keep the caption text and drop the path.
     markdown = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"![\1]()", markdown)
 
-    md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(markdown)
+    # Atomic UTF-8 write: a crash mid-write can't leave a torn markdown file,
+    # and non-ASCII content survives a non-UTF-8 host locale.
+    cache._atomic_write_text(md_path, markdown)
 
     sections = parse_sections(markdown)
     cache.put(
@@ -587,7 +588,7 @@ async def _convert_fast(
         # A racing fast caller may have written the markdown between the outer
         # cached-check and our acquiring this lock — re-check before spawning.
         if md_path.exists():
-            markdown = md_path.read_text()
+            markdown = md_path.read_text(encoding="utf-8")
             sections = parse_sections(markdown)
             cache.put(
                 namespace,
@@ -735,7 +736,7 @@ async def convert_pdf(
     # block per paper so two concurrent callers don't both re-parse.
     if md_path.exists():
         async with _sections_lock(namespace, canonical):
-            markdown = md_path.read_text()
+            markdown = md_path.read_text(encoding="utf-8")
             current_checksum = _markdown_checksum(md_path)
             cached_sections = cache.get(namespace, "sections", _sections_key(canonical))
 
@@ -898,7 +899,9 @@ async def convert_pdf(
                 }
 
             source_md = candidates[0]
-            return _finalize_markdown(namespace, canonical, md_path, source_md.read_text(), "full")
+            return _finalize_markdown(
+                namespace, canonical, md_path, source_md.read_text(encoding="utf-8"), "full"
+            )
         finally:
             # Clean up the temp extraction dir on every exit — success *and*
             # all four failure paths (spawn error, timeout, non-zero exit,
