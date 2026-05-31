@@ -29,7 +29,9 @@ Singleton endpoints (`/works/{id}`, `/authors/{id}`). ID normalization for DOI f
 
 ## arxiv.py
 
-arXiv Atom API (`export.arxiv.org/api/query`). ID normalization (bare IDs, URLs, version suffixes), XML→dict parsing. Rate limit: 1 req/3s, single connection (per arXiv policy). Cache namespace: `arxiv/papers`. No API key or env vars. `get_paper`'s 404 path covers BOTH HTTP 404 and arXiv's 200-with-`api/errors` shape — both negative-cached.
+arXiv Atom API (`export.arxiv.org/api/query`). ID normalization (bare IDs, URLs, version suffixes; URL query strings / fragments are stripped before keying), XML→dict parsing. Rate limit: 1 req/3s, single connection (per arXiv policy). Cache namespace: `arxiv/papers`. No API key or env vars. `get_paper`'s "not found" path covers THREE definitive shapes — a 200 with no entries, arXiv's 200-with-`api/errors` entry, and a genuine HTTP 404 — all negative-cached. Transient failures (5xx / timeout / 429 / backpressure) are returned as retryable errors and **not** cached.
+
+**XML is parsed with `defusedxml`** (`fromstring`), so an entity-expansion ("billion laughs") payload is refused rather than expanded. A parse failure — malformed/truncated body or a refused entity payload — is caught alongside the HTTP errors (`_PARSE_ERRORS = (ET.ParseError, DefusedXmlException)`) and surfaced as a retryable `{error, retryable: True}` dict; it is treated as transient (not "not found"), so it is **not** negative-cached. Both `get_paper` and `search_papers` share this contract.
 
 Search supported with `max_results` capped at 50 in the tool layer.
 

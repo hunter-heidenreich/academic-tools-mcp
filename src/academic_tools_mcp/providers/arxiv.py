@@ -7,8 +7,29 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from defusedxml.common import DefusedXmlException
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from .. import _clients, _http, _pdf_download, _singleflight, _stats, cache
+
+# Parsing the arXiv Atom feed can fail two ways: a malformed/truncated body
+# (``ET.ParseError``) or a hostile entity-expansion payload that defusedxml
+# refuses to expand (``DefusedXmlException``). Both are handled alongside the
+# HTTP errors so the tool always returns the uniform ``{error}`` contract.
+_PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
+
+
+def _parse_error_dict() -> dict[str, Any]:
+    """Fresh structured error for an unparseable arXiv response.
+
+    A new dict each call (like ``_http.error_dict``) so a caller — or a
+    single-flight follower sharing the result — can't mutate a shared object.
+    """
+    return {
+        "error": "arXiv returned a response that could not be parsed as XML.",
+        "retryable": True,
+    }
+
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 NAMESPACE = "arxiv"
@@ -119,7 +140,10 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
 # ID normalization
 # ---------------------------------------------------------------------------
 
-_ARXIV_URL_RE = re.compile(r"https?://arxiv\.org/(?:abs|pdf)/(.+?)(?:\.pdf)?$")
+# The ID stops at the first ``?`` or ``#`` so a query string / fragment
+# (e.g. ``/abs/2301.00001?context=cs``) doesn't end up baked into the
+# canonical cache key.
+_ARXIV_URL_RE = re.compile(r"https?://arxiv\.org/(?:abs|pdf)/([^?#]+?)(?:\.pdf)?(?:[?#].*)?$")
 
 
 def _normalize_arxiv_id(arxiv_id: str) -> str:
@@ -271,9 +295,25 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
 
             response.raise_for_status()
 
-            root = ET.fromstring(response.text)
+            root = _safe_fromstring(response.text)
+        except _PARSE_ERRORS:
+            # A 200 body we couldn't parse: a truncated/garbled response,
+            # or a hostile entity-expansion payload defusedxml refused.
+            # Transient (or adversarial), not a definitive "not found" —
+            # surface a retryable error and do NOT negative-cache it, so a
+            # retry re-fetches rather than serving a poisoned entry.
+            return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
-            return _http.error_dict("arXiv", e)
+            err = _http.error_dict("arXiv", e)
+            # A genuine HTTP 404 is a definitive "not found" — negative-cache
+            # it (same as arXiv's 200-with-error-entry shape) so a retrying
+            # agent doesn't re-hit the network every call. Transient failures
+            # (5xx / timeout / 429 / backpressure) must NOT be cached.
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
+                cache.put_negative(
+                    NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS
+                )
+            return err
 
         entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
@@ -325,23 +365,34 @@ async def search_papers(
 
         response.raise_for_status()
 
-        root = ET.fromstring(response.text)
+        # Parse and extract inside the guarded block: a truncated/garbled
+        # 200 body (ParseError), a hostile entity payload (defusedxml), or a
+        # non-numeric totalResults must surface a structured error, not raise.
+        root = _safe_fromstring(response.text)
+        total_el = root.find(f"{{{_OPENSEARCH_NS}}}totalResults")
+        total_text = total_el.text.strip() if total_el is not None and total_el.text else ""
+        total_results = int(total_text) if total_text.isdigit() else 0
+        entries = root.findall(f"{{{_ATOM_NS}}}entry")
+        papers = [_parse_entry(e) for e in entries]
+    except _PARSE_ERRORS:
+        return _parse_error_dict()
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("arXiv", e)
 
-    total_el = root.find(f"{{{_OPENSEARCH_NS}}}totalResults")
-    total_results = int(total_el.text) if total_el is not None and total_el.text else 0
-
-    entries = root.findall(f"{{{_ATOM_NS}}}entry")
-    papers = [_parse_entry(e) for e in entries]
-
-    # Opportunistically cache individual papers
+    # Opportunistically cache individual papers. Refresh stale entries too:
+    # cache.has ignores the TTL, so a TTL-aware get() ensures fresher search
+    # data replaces an entry that's already past the positive TTL.
     for paper in papers:
         raw_id = paper.get("id", "")
         if "/abs/" in raw_id:
             paper_id = raw_id.split("/abs/")[-1]
             paper_canonical = _canonical_arxiv_id(paper_id)
-            if not cache.has(NAMESPACE, "papers", paper_canonical):
+            if (
+                cache.get(
+                    NAMESPACE, "papers", paper_canonical, max_age_seconds=_POSITIVE_TTL_SECONDS
+                )
+                is None
+            ):
                 cache.put(NAMESPACE, "papers", paper_canonical, paper)
 
     return {

@@ -17,6 +17,11 @@ grouped by milestone rather than per commit.
 
 ### Security
 
+- arXiv API responses are now parsed with `defusedxml` instead of the stdlib
+  XML parser, so a hostile entity-expansion ("billion laughs") payload is
+  refused rather than expanded. arXiv is a trusted source, but this closes a
+  denial-of-service vector if a response is ever spoofed or corrupted in
+  transit. ([#30])
 - The PDF converter subprocess is now hardened against shell injection via a
   paper identifier. The built-in converter command templates hand-quoted
   `"{input}"` with double quotes, which do not neutralise `$`, backticks, or an
@@ -68,6 +73,17 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- `get_paper_metadata` / `search_arxiv` for arXiv no longer crash on a
+  malformed or truncated XML response. A 200 with an unparseable body (e.g. a
+  connection that dropped mid-stream) previously raised an uncaught
+  `ParseError` out of the tool; both paths now return the uniform
+  `{error, retryable: True}` dict like every other failure, and the transient
+  parse failure is not negative-cached so a retry re-fetches. A genuine HTTP 404
+  is now negative-cached (matching arXiv's 200-with-error-entry shape), while
+  transient 5xx/timeout failures remain uncached. ([#30])
+- arXiv abstract/PDF URLs with a trailing query string or fragment (e.g.
+  `https://arxiv.org/abs/2301.00001?context=cs`) now normalize to the bare ID
+  instead of baking the query into the cache key. ([#30])
 - ACL Anthology DOIs are now detected case-insensitively. The `10.18653/v1/`
   prefix was matched case-sensitively, so a DOI handed in with an uppercased
   `V1` (DOIs are officially case-insensitive) was rejected — misrouting it to
@@ -376,3 +392,4 @@ grouped by milestone rather than per commit.
 [#27]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/27
 [#28]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/28
 [#29]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/29
+[#30]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/30
