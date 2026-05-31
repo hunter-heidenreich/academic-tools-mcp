@@ -12,6 +12,7 @@ from .._app import (
     _FIND_MAX_RESULTS,
     PAPER_ID,
     _arxiv_id_from_entry,
+    _crossref_date,
     _enrich_error,
     mcp,
 )
@@ -29,25 +30,6 @@ def _published_year(paper: dict[str, Any]) -> int | None:
     published = paper.get("published") or ""
     if len(published) >= 4 and published[:4].isdigit():
         return int(published[:4])
-    return None
-
-
-def _crossref_year(item: dict[str, Any]) -> int | None:
-    """Extract a publication year from a Crossref work item.
-
-    Crossref date fields are irregular: a record may carry its date under
-    ``published-print`` / ``published-online`` / ``published`` (journal
-    articles), ``posted`` (preprints — including every bioRxiv DOI), or
-    ``issued``. Each holds a ``date-parts`` nested list, but that list can
-    be ``null`` or ``[]`` on malformed records (and ``[[null]]`` when only a
-    partial date was deposited), so naive indexing crashes. Walk the
-    fallback chain and return the first integer year, else ``None``.
-    """
-    for key in ("published-print", "published-online", "published", "posted", "issued"):
-        parts = (item.get(key) or {}).get("date-parts") or [[]]
-        first = parts[0] if parts else []
-        if first and isinstance(first[0], int):
-            return first[0]
     return None
 
 
@@ -168,7 +150,7 @@ async def search_crossref_by_title(
                 "title": (item.get("title") or [None])[0],
                 "first_author": first_author,
                 "author_count": len(authors),
-                "year": _crossref_year(item),
+                "year": _crossref_date(item)[0],
             }
         )
 
