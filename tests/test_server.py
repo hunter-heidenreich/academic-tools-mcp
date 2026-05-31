@@ -9,6 +9,7 @@ import pytest
 
 from academic_tools_mcp import _app, server
 from academic_tools_mcp.providers import arxiv, biorxiv, crossref, openalex, opencitations
+from academic_tools_mcp.tools import paper
 
 # ---------------------------------------------------------------------------
 # get_paper_metadata: follow_published auto-chain to OpenAlex
@@ -125,7 +126,8 @@ class TestFollowPublished:
     @pytest.mark.asyncio
     async def test_follow_published_falls_back_when_openalex_misses(self, monkeypatch):
         # Journal version exists but isn't in OpenAlex yet (paper too
-        # new to index, etc.). We must fall back to the preprint record
+        # new to index, etc.). OpenAlex returns a *definitive* 404
+        # (not_found=True). We must fall back to the preprint record
         # so the agent gets *something* — silently failing or erroring
         # would surprise the agent and force a retry path.
         async def fake_biorxiv_get_paper(doi, **kwargs):
@@ -137,7 +139,7 @@ class TestFollowPublished:
             }
 
         async def fake_openalex_get_work(doi, **kwargs):
-            return {"error": "No work found for DOI: 10.1038/not-yet-indexed"}
+            return {"error": "No work found for DOI: 10.1038/not-yet-indexed", "not_found": True}
 
         monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv_get_paper)
         monkeypatch.setattr(openalex, "get_work", fake_openalex_get_work)
@@ -150,6 +152,41 @@ class TestFollowPublished:
         # to tell this is preprint-era metadata for a *published* paper, not
         # one that simply has no journal version yet.
         assert result["followed_published"] is False
+        # A definitive 404 ("not indexed yet") must NOT be tagged as
+        # retryable — retrying won't conjure a record that isn't there.
+        assert "published_lookup_retryable" not in result
+
+    @pytest.mark.asyncio
+    async def test_follow_published_transient_openalex_error_is_flagged(self, monkeypatch):
+        # The journal version may well be in OpenAlex, but the lookup hit a
+        # transient failure (5xx / timeout / garbled body) — error dict has
+        # no not_found. We still fall back to the preprint so the agent gets
+        # *something*, but tag published_lookup_retryable so it can tell this
+        # apart from a definitive "not indexed yet" miss and retry.
+        async def fake_biorxiv_get_paper(doi, **kwargs):
+            return {
+                "doi": "10.1101/2024.transient",
+                "title": "Transient preprint",
+                "published_doi": "10.1038/maybe-indexed",
+                "pdf_url": "https://example/pdf",
+            }
+
+        async def fake_openalex_get_work(doi, **kwargs):
+            # Shape of a transient error from _http — retryable, no not_found.
+            return {
+                "error": "OpenAlex server error (HTTP 503). Transient — retry.",
+                "retryable": True,
+            }
+
+        monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv_get_paper)
+        monkeypatch.setattr(openalex, "get_work", fake_openalex_get_work)
+
+        result = await server.get_paper_metadata("10.1101/2024.transient", follow_published=True)
+        assert result["_source"] == "biorxiv"
+        assert result["title"] == "Transient preprint"
+        assert result["followed_published"] is False
+        # The distinguishing signal: a retry might surface the journal record.
+        assert result["published_lookup_retryable"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -709,3 +746,71 @@ class TestDebugToolsGating:
             "ENABLE_DEBUG_TOOLS is unset — agents would see it"
         )
         assert server._DEBUG_TOOLS_ENABLED is False
+
+
+# ---------------------------------------------------------------------------
+# get_author threads force_refresh through to the provider
+# ---------------------------------------------------------------------------
+
+
+class TestGetAuthorForceRefresh:
+    """get_author should expose force_refresh like its sibling metadata
+    tools — author stats (h_index, cited_by_count) drift on the same
+    30-day TTL as works, so an agent must be able to bust the cache.
+    """
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_passthrough(self, monkeypatch):
+        seen: list[bool] = []
+
+        async def fake_get_author(author_id, **kwargs):
+            seen.append(kwargs.get("force_refresh"))
+            return {"display_name": "Ada Lovelace", "id": "https://openalex.org/A123"}
+
+        monkeypatch.setattr(openalex, "get_author", fake_get_author)
+
+        await server.get_author("A123")
+        await server.get_author("A123", force_refresh=True)
+
+        assert seen == [False, True], (
+            "get_author must thread force_refresh through to openalex.get_author"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Error-suggestion hints are centralized in the module constants
+# ---------------------------------------------------------------------------
+
+
+class TestMetadataHintsCentralized:
+    """All four unified paper tools surface the same per-source error
+    suggestion. The text lives once in the _*_METADATA_HINT constants;
+    every tool must route through them rather than re-inlining the
+    literal, so a future edit to a constant propagates everywhere.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sibling_tools_emit_the_canonical_hint(self, monkeypatch):
+        async def fake_error(identifier, **kwargs):
+            return {"error": "boom"}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_error)
+        monkeypatch.setattr(biorxiv, "get_paper", fake_error)
+        monkeypatch.setattr(openalex, "get_work", fake_error)
+
+        cases = [
+            ("2301.00001", paper._ARXIV_METADATA_HINT),
+            ("10.1101/2024.01.01.123", paper._BIORXIV_METADATA_HINT),
+            ("10.1038/s41586-024-07000-0", paper._OPENALEX_METADATA_HINT),
+        ]
+        sibling_tools = (
+            server.get_paper_authors,
+            server.get_paper_abstract,
+            server.get_paper_bibtex,
+        )
+        for tool in sibling_tools:
+            for identifier, expected_hint in cases:
+                result = await tool(identifier)
+                assert result["suggestion"] == expected_hint, (
+                    f"{tool.__name__}({identifier!r}) must use the shared hint constant"
+                )
