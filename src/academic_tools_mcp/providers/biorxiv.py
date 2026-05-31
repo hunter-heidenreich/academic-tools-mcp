@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import re
 import time
 from pathlib import Path
@@ -11,6 +12,25 @@ from .. import _clients, _http, _pdf_download, _singleflight, _stats, cache
 
 NAMESPACE = "biorxiv"
 _BASE_URL = "https://api.biorxiv.org"
+
+# The bioRxiv details API returns JSON; a malformed/truncated 200 body raises
+# ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
+# errors so the tool always returns the uniform ``{error}`` contract rather
+# than crashing on a garbled response.
+_PARSE_ERRORS = (json.JSONDecodeError,)
+
+
+def _parse_error_dict() -> dict[str, Any]:
+    """Fresh structured error for an unparseable bioRxiv response.
+
+    A new dict each call (like ``_http.error_dict``) so a caller — or a
+    single-flight follower sharing the result — can't mutate a shared object.
+    """
+    return {
+        "error": "bioRxiv returned a response that could not be parsed.",
+        "retryable": True,
+    }
+
 
 # All bioRxiv/medRxiv DOIs use this prefix
 _DOI_PREFIX = "10.1101/"
@@ -99,10 +119,13 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
 # DOI normalization
 # ---------------------------------------------------------------------------
 
-_DOI_URL_RE = re.compile(r"https?://(?:dx\.)?doi\.org/(10\.\d{4,}/\S+)$")
+# A trailing query string / fragment is consumed by the optional ``(?:[?#].*)?``
+# group rather than captured into the DOI, so it doesn't get baked into the
+# canonical cache key (mirrors arxiv._ARXIV_URL_RE).
+_DOI_URL_RE = re.compile(r"https?://(?:dx\.)?doi\.org/(10\.\d{4,}/[^\s?#]+)(?:[?#].*)?$")
 
 _BIORXIV_URL_RE = re.compile(
-    r"https?://(?:www\.)?(bio|med)rxiv\.org/content/(10\.\d{4,}/\S+?)(?:v\d+)?(?:\.full(?:\.pdf)?)?$"
+    r"https?://(?:www\.)?(bio|med)rxiv\.org/content/(10\.\d{4,}/[^\s?#]+?)(?:v\d+)?(?:\.full(?:\.pdf)?)?(?:[?#].*)?$"
 )
 
 
@@ -151,7 +174,7 @@ def _parse_authors(author_str: str) -> list[dict[str, str]]:
 
     bioRxiv format: "Last, First; Last, First; ..."
     """
-    authors: list[dict[str, Any]] = []
+    authors: list[dict[str, str]] = []
     if not author_str:
         return authors
 
@@ -171,12 +194,25 @@ def _parse_authors(author_str: str) -> list[dict[str, str]]:
     return authors
 
 
+def _safe_version(entry: dict[str, Any]) -> int:
+    """Parse a collection entry's version as int, treating junk as 0.
+
+    bioRxiv versions are numeric strings, but a malformed entry must not crash
+    ``_pick_latest_version`` (and thus the whole ``get_paper`` call) — an
+    unparseable version just sorts to the bottom.
+    """
+    try:
+        return int(entry.get("version", "0"))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _pick_latest_version(collection: list[dict[str, Any]]) -> dict[str, Any]:
     """Select the latest version from a bioRxiv API collection array."""
     if len(collection) == 1:
         return collection[0]
     # Sort by version number (string -> int) and take the highest
-    return max(collection, key=lambda e: int(e.get("version", "0")))
+    return max(collection, key=_safe_version)
 
 
 def _parse_paper(raw: dict[str, Any]) -> dict[str, Any]:
@@ -189,6 +225,12 @@ def _parse_paper(raw: dict[str, Any]) -> dict[str, Any]:
 
     version = raw.get("version", "1")
     doi = raw.get("doi", "")
+
+    # bioRxiv uses the literal "NA" for an unpublished preprint, but an empty
+    # string can also appear — treat both (and a missing field) as "no journal
+    # DOI yet" so a falsy-but-present "" doesn't leak out as published_doi.
+    published = (raw.get("published") or "").strip()
+    published_doi = published if published and published != "NA" else None
 
     # Build PDF URL from DOI and version
     domain = "medrxiv.org" if server == "medrxiv" else "biorxiv.org"
@@ -207,7 +249,7 @@ def _parse_paper(raw: dict[str, Any]) -> dict[str, Any]:
         "license": raw.get("license"),
         "category": raw.get("category"),
         "server": server,
-        "published_doi": raw.get("published") if raw.get("published") != "NA" else None,
+        "published_doi": published_doi,
         "jatsxml": raw.get("jatsxml"),
         "pdf_url": pdf_url,
     }
@@ -260,22 +302,33 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             collection = data.get("collection", [])
 
             if not collection:
-                # Try medRxiv
+                # The details API returns 200 with an empty collection (not a
+                # 404) for an unknown DOI, so the medRxiv fallback always gets
+                # a chance — nothing in the shared 10.1101/ prefix distinguishes
+                # bioRxiv from medRxiv.
                 url = f"{_BASE_URL}/details/medrxiv/{bare}/na/json"
                 response = await _throttled_get(client, url)
                 response.raise_for_status()
                 data = response.json()
                 collection = data.get("collection", [])
+
+            if not collection:
+                err = {"error": f"No paper found for DOI: {doi}"}
+                cache.put_negative(
+                    NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS
+                )
+                return err
+
+            raw = _pick_latest_version(collection)
+            paper = _parse_paper(raw)
+        except _PARSE_ERRORS:
+            # A 200 body we couldn't parse (garbled / truncated) is transient,
+            # not "not found": surface a retryable error and do NOT
+            # negative-cache it, so a retry re-fetches.
+            return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("bioRxiv", e)
 
-        if not collection:
-            err = {"error": f"No paper found for DOI: {doi}"}
-            cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
-            return err
-
-        raw = _pick_latest_version(collection)
-        paper = _parse_paper(raw)
         cache.put(NAMESPACE, "papers", canonical, paper)
         return paper
 

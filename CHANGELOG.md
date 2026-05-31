@@ -73,6 +73,20 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- bioRxiv/medRxiv paper tools no longer crash on a malformed response. A 200
+  with a garbled/truncated JSON body previously raised an uncaught
+  `JSONDecodeError`, and a non-numeric `version` in a multi-version record
+  raised an uncaught `ValueError` out of `get_paper`; both now return the
+  uniform `{error, retryable: True}` dict (the parse failure is not
+  negative-cached, so a retry re-fetches), matching the arXiv hardening in
+  ([#30]). ([#31])
+- bioRxiv/medRxiv DOI URLs with a trailing query string or fragment (e.g.
+  `https://doi.org/10.1101/2024.01.01.573838?ref=x` or a
+  `biorxiv.org/content/...v1?download=1` link) now normalize to the bare DOI
+  instead of baking the query into the canonical cache key. ([#31])
+- `published_doi` is now `None` for an unpublished preprint whose `published`
+  field is an empty string (not just the literal `"NA"`), so a falsy-but-present
+  `""` no longer leaks out through `get_paper_metadata`. ([#31])
 - `get_paper_metadata` / `search_arxiv` for arXiv no longer crash on a
   malformed or truncated XML response. A 200 with an unparseable body (e.g. a
   connection that dropped mid-stream) previously raised an uncaught
@@ -393,3 +407,4 @@ grouped by milestone rather than per commit.
 [#28]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/28
 [#29]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/29
 [#30]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/30
+[#31]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/31
