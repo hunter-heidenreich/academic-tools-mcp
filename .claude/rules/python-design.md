@@ -36,7 +36,7 @@ it.
 - **One paper tool per job, not per provider.** The four unified tools
   (`get_paper_metadata` / `_authors` / `_abstract` / `_bibtex`) take any
   identifier and dispatch internally via
-  `manual._resolve_metadata_source()` (`manual.py:74`). Don't branch on provider
+  `manual.resolve_metadata_source()` (`manual.py:74`). Don't branch on provider
   *inside* a tool, and don't add a fifth `get_<provider>_metadata` variant —
   extend the dispatcher instead. Responses tag `_source` / `_canonical_id` so
   callers branch on provider-specific fields downstream.

@@ -45,7 +45,7 @@ Per-source metadata formatting is factored into helpers (`_format_arxiv_metadata
 
 ### Unified paper family
 
-`get_paper_metadata` / `get_paper_authors` / `get_paper_abstract` / `get_paper_bibtex` accept any `PAPER_ID` and dispatch via `manual._resolve_metadata_source()` to arXiv, bioRxiv, or OpenAlex. Every successful response carries:
+`get_paper_metadata` / `get_paper_authors` / `get_paper_abstract` / `get_paper_bibtex` accept any `PAPER_ID` and dispatch via `manual.resolve_metadata_source()` to arXiv, bioRxiv, or OpenAlex. Every successful response carries:
 
 - `_source` — which provider served it (`"arxiv"` / `"biorxiv"` / `"openalex"`)
 - `_canonical_id` — the provider's normalized form of the input (version-stripped lowercased arXiv ID, lowercased bare DOI, etc.)
@@ -72,7 +72,7 @@ The OpenAlex-shaped `get_paper_authors` response includes `openalex_id` per auth
 
 ### Unified PDF pipeline
 
-`download_pdf` → `convert_paper` → `get_paper_sections` → `get_paper_section`. Auto-detects provider via `manual._resolve_target()` and routes to the correct cache namespace — works for arXiv IDs, ACL DOIs, bioRxiv DOIs, and manually imported papers.
+`download_pdf` → `convert_paper` → `get_paper_sections` → `get_paper_section`. Auto-detects provider via `manual.resolve_target()` and routes to the correct cache namespace — works for arXiv IDs, ACL DOIs, bioRxiv DOIs, and manually imported papers.
 
 `force_refresh: bool = False` on the first three with stage-specific semantics:
 
