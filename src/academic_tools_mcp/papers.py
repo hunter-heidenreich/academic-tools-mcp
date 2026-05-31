@@ -26,6 +26,7 @@ import shlex
 import shutil
 import signal
 import sys
+import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -35,12 +36,13 @@ from . import _textnorm, cache, config
 
 # Default subprocess timeout for PDF→markdown conversion. Big PDFs on
 # CPU-only MinerU runs can legitimately take 20+ minutes, so we err
-# generous. Tunable via PDF_CONVERT_TIMEOUT (seconds); 0/empty disables.
+# generous. Tunable via PDF_CONVERT_TIMEOUT (seconds); "0"/"none"/"off"/
+# "disabled"/any value <= 0 disables it (empty/garbage falls back here).
 _DEFAULT_PDF_CONVERT_TIMEOUT = 1800.0
 
 # Default timeout for the lightweight "fast" extraction path. Text-only
 # extraction is seconds, not minutes, so the ceiling is tight. Tunable via
-# PDF_FAST_CONVERT_TIMEOUT (seconds); 0/empty disables.
+# PDF_FAST_CONVERT_TIMEOUT (seconds); same disable rules as the full timeout.
 _DEFAULT_FAST_CONVERT_TIMEOUT = 120.0
 
 # Global cap: at most one PDF→markdown conversion runs across the whole
@@ -63,9 +65,11 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 
 # Built-in converter command templates.
 # {input} = PDF path, {output_dir} = temp extraction directory.
+# {input} / {output_dir} are substituted with shlex-quoted values, so the
+# templates use BARE placeholders — do NOT wrap them in quotes yourself.
 _CONVERTERS: dict[str, str] = {
-    "mineru": 'mineru -p "{input}" -o "{output_dir}"',
-    "marker": 'marker_single "{input}" --output_dir "{output_dir}"',
+    "mineru": "mineru -p {input} -o {output_dir}",
+    "marker": "marker_single {input} --output_dir {output_dir}",
 }
 
 # Built-in lightweight ("fast") extractor command templates. Unlike the heavy
@@ -74,9 +78,11 @@ _CONVERTERS: dict[str, str] = {
 # fallback. {input} = PDF path, {python} = the server's own interpreter (so the
 # bundled pymupdf runner resolves against the env where the optional `[fast]`
 # extra is installed).
+# Like _CONVERTERS, {input} / {python} are substituted shlex-quoted — bare
+# placeholders only.
 _FAST_CONVERTERS: dict[str, str] = {
-    "pdftotext": 'pdftotext -layout "{input}" -',
-    "pymupdf": '{python} -m academic_tools_mcp._fast_extract "{input}"',
+    "pdftotext": "pdftotext -layout {input} -",
+    "pymupdf": "{python} -m academic_tools_mcp._fast_extract {input}",
 }
 
 
@@ -120,9 +126,11 @@ def _busy_error(pdf_size_mb: float) -> dict[str, Any]:
 def _resolve_timeout(env_var: str, default: float) -> float | None:
     """Resolve a subprocess timeout from an env var.
 
-    Returns the timeout in seconds, or None to disable the timeout.
-    Unset / empty / "0" / negative / non-numeric values are treated as
-    "use the default"; an explicit "none" / "off" / "disabled" disables.
+    Returns the timeout in seconds, or None to disable the timeout entirely:
+
+    - unset / empty / non-numeric ("not-a-number") -> the default;
+    - "none" / "off" / "disabled" / "0" / any value <= 0 -> disabled (None);
+    - a positive number -> that many seconds.
     """
     raw = config.get(env_var)
     if raw is None:
@@ -154,20 +162,25 @@ def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
 
     Reads PDF_CONVERTER and PDF_CONVERTER_VENV from environment.
     PDF_CONVERTER can be a named backend ("mineru", "marker") or a custom
-    command template containing {input} and {output_dir} placeholders.
+    command template containing {input} and {output_dir} placeholders. Those
+    placeholders are substituted with **shell-quoted** values, so a custom
+    template MUST use bare ``{input}`` / ``{output_dir}`` (not ``"{input}"``) —
+    wrapping them yourself double-quotes the already-quoted value and breaks
+    paths. This keeps a path with shell metacharacters from being interpreted
+    by ``bash -c``.
     PDF_CONVERTER_VENV is an optional path to a virtualenv to activate first.
     """
     converter = config.get("PDF_CONVERTER") or "mineru"
 
     # Named backend or custom command template
     template = _CONVERTERS.get(converter, converter)
-    cmd = template.format(input=pdf_path, output_dir=output_dir)
+    cmd = template.format(input=shlex.quote(str(pdf_path)), output_dir=shlex.quote(str(output_dir)))
 
     # Optionally activate a venv before running
     venv = config.get("PDF_CONVERTER_VENV")
     if venv:
         activate = Path(venv).expanduser() / "bin" / "activate"
-        cmd = f'source "{activate}" && {cmd}'
+        cmd = f"source {shlex.quote(str(activate))} && {cmd}"
 
     return cmd
 
@@ -177,16 +190,42 @@ def _build_fast_converter_command(pdf_path: Path) -> str:
 
     Reads PDF_FAST_CONVERTER from environment. It can be a named backend
     ("pdftotext" — the default — or "pymupdf") or a custom command template
-    containing an {input} placeholder. The command MUST emit the extracted
-    text to stdout. {python} expands to the server's own interpreter so the
-    bundled pymupdf runner resolves against the env where the optional
-    `[fast]` extra is installed.
+    containing an {input} placeholder (use it BARE — the value is substituted
+    shell-quoted, so wrapping it in quotes yourself breaks paths). The command
+    MUST emit the extracted text to stdout. {python} expands to the server's
+    own interpreter so the bundled pymupdf runner resolves against the env
+    where the optional `[fast]` extra is installed.
     """
     converter = config.get("PDF_FAST_CONVERTER") or "pdftotext"
     template = _FAST_CONVERTERS.get(converter, converter)
     # str.format ignores the unused {python} key for templates (e.g. pdftotext)
     # that don't reference it.
-    return template.format(input=pdf_path, python=shlex.quote(sys.executable))
+    return template.format(input=shlex.quote(str(pdf_path)), python=shlex.quote(sys.executable))
+
+
+# A canonical id can contain characters that are unsafe in a filename or, if
+# they ever reach a shell unquoted, dangerous (``$``, backtick, quotes, ...).
+# Map anything outside a conservative safe set to ``_`` before using a
+# canonical as a path component. ``.``/``-`` are kept so dotted DOIs and
+# arXiv-style ids round-trip unchanged.
+_SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_stem(canonical: str) -> str:
+    """Map a canonical id to a filesystem/shell-safe path component."""
+    return _SAFE_STEM_RE.sub("_", canonical)
+
+
+def _make_extraction_dir(canonical: str) -> Path:
+    """Create a fresh, private temp dir for converter output.
+
+    Uses ``tempfile.mkdtemp`` (mode 0700, unguessable suffix) rather than a
+    predictable ``/tmp/pdf-convert-<canonical>`` path so a hostile actor can't
+    pre-create/symlink the target and multiple server instances on one host
+    can't collide. The caller is responsible for removing it (``convert_pdf``
+    does so in a ``finally``).
+    """
+    return Path(tempfile.mkdtemp(prefix=f"pdf-convert-{_safe_stem(canonical)}-"))
 
 
 def _markdown_checksum(md_path: Path) -> str:
@@ -587,9 +626,22 @@ async def _convert_fast(
     async with _sections_lock(namespace, canonical):
         # A racing fast caller may have written the markdown between the outer
         # cached-check and our acquiring this lock — re-check before spawning.
+        # Guard the read: a concurrent force_refresh / download cascade may have
+        # unlinked it after exists() returned True (see convert_pdf), in which
+        # case we fall through and (re-)extract rather than crashing.
+        cached_markdown: str | None = None
         if md_path.exists():
-            markdown = md_path.read_text(encoding="utf-8")
-            sections = parse_sections(markdown)
+            try:
+                cached_markdown = md_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                cached_markdown = None
+        if cached_markdown is not None:
+            sections = parse_sections(cached_markdown)
+            # Preserve a recorded "full" mode: re-reading a full-quality
+            # conversion through mode="fast" must not relabel it as degraded.
+            existing = cache.get(namespace, "sections", _sections_key(canonical))
+            recorded_mode = existing.get("conversion_mode") if existing is not None else None
+            mode_tag = recorded_mode or "fast"
             cache.put(
                 namespace,
                 "sections",
@@ -597,14 +649,14 @@ async def _convert_fast(
                 {
                     "sections": sections,
                     "markdown_checksum": _markdown_checksum(md_path),
-                    "conversion_mode": "fast",
+                    "conversion_mode": mode_tag,
                 },
             )
             return {
                 "markdown_path": str(md_path),
                 "sections": sections,
                 "cached": True,
-                "conversion_mode": "fast",
+                "conversion_mode": mode_tag,
             }
 
         cmd = _build_fast_converter_command(pdf_path)
@@ -736,48 +788,59 @@ async def convert_pdf(
     # block per paper so two concurrent callers don't both re-parse.
     if md_path.exists():
         async with _sections_lock(namespace, canonical):
-            markdown = md_path.read_text(encoding="utf-8")
-            current_checksum = _markdown_checksum(md_path)
-            cached_sections = cache.get(namespace, "sections", _sections_key(canonical))
+            # The exists() check above raced the lock: a concurrent
+            # force_refresh (here) or the download_pdf force-refresh cascade
+            # may have unlinked the markdown after we saw it. Read under the
+            # lock and treat a vanished file as a cache miss — fall through to
+            # (re-)conversion below instead of raising FileNotFoundError.
+            markdown: str | None = None
+            try:
+                markdown = md_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                markdown = None
+            if markdown is not None:
+                current_checksum = _markdown_checksum(md_path)
+                cached_sections = cache.get(namespace, "sections", _sections_key(canonical))
 
-            if cached_sections is not None:
-                stored_checksum = cached_sections.get("markdown_checksum")
-                if stored_checksum is not None and stored_checksum == current_checksum:
-                    # Don't use dict.get's default arg — it evaluates eagerly
-                    # and would call parse_sections on every cache hit.
-                    sections = cached_sections.get("sections")
-                    if sections is None:
-                        sections = parse_sections(markdown)
-                    return {
-                        "markdown_path": str(md_path),
+                if cached_sections is not None:
+                    stored_checksum = cached_sections.get("markdown_checksum")
+                    if stored_checksum is not None and stored_checksum == current_checksum:
+                        # Don't use dict.get's default arg — it evaluates eagerly
+                        # and would call parse_sections on every cache hit.
+                        sections = cached_sections.get("sections")
+                        if sections is None:
+                            sections = parse_sections(markdown)
+                        return {
+                            "markdown_path": str(md_path),
+                            "sections": sections,
+                            "cached": True,
+                            "conversion_mode": cached_sections.get("conversion_mode"),
+                        }
+
+                # Sections cache missing or stale — re-parse the existing
+                # markdown and refresh the sections cache. No subprocess needed.
+                # Preserve the recorded conversion_mode if a (stale-checksum)
+                # entry carried one.
+                recorded_mode = (
+                    cached_sections.get("conversion_mode") if cached_sections is not None else None
+                )
+                sections = parse_sections(markdown)
+                cache.put(
+                    namespace,
+                    "sections",
+                    _sections_key(canonical),
+                    {
                         "sections": sections,
-                        "cached": True,
-                        "conversion_mode": cached_sections.get("conversion_mode"),
-                    }
-
-            # Sections cache missing or stale — re-parse the existing markdown
-            # and refresh the sections cache. No subprocess needed. Preserve the
-            # recorded conversion_mode if a (stale-checksum) entry carried one.
-            recorded_mode = (
-                cached_sections.get("conversion_mode") if cached_sections is not None else None
-            )
-            sections = parse_sections(markdown)
-            cache.put(
-                namespace,
-                "sections",
-                _sections_key(canonical),
-                {
+                        "markdown_checksum": current_checksum,
+                        "conversion_mode": recorded_mode,
+                    },
+                )
+                return {
+                    "markdown_path": str(md_path),
                     "sections": sections,
-                    "markdown_checksum": current_checksum,
+                    "cached": True,
                     "conversion_mode": recorded_mode,
-                },
-            )
-            return {
-                "markdown_path": str(md_path),
-                "sections": sections,
-                "cached": True,
-                "conversion_mode": recorded_mode,
-            }
+                }
 
     if not pdf_path.exists():
         return {"error": f"PDF not found at: {pdf_path}"}
@@ -809,29 +872,30 @@ async def convert_pdf(
         # subprocess setup throws before the assignment below.
         extract_dir: Path | None = None
         try:
-            # Run PDF converter in a subprocess
-            extract_dir = Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
-            converter_cmd = _build_converter_command(pdf_path, extract_dir)
-            quoted_extract = shlex.quote(str(extract_dir))
-
             timeout = _resolve_convert_timeout()
 
             try:
-                # start_new_session=True puts the converter (and any children
-                # it spawns) into a fresh process group so we can SIGKILL the
-                # whole tree on timeout. Without it, killing `proc` only kills
-                # bash and orphans the converter, which keeps eating CPU/GPU.
+                # Fresh private temp dir (mkdtemp, 0700) — no predictable path
+                # to pre-create/symlink, no cross-instance collision, so no
+                # `rm -rf` pre-step is needed. start_new_session=True puts the
+                # converter (and any children it spawns) into a fresh process
+                # group so we can SIGKILL the whole tree on timeout. Without it,
+                # killing `proc` only kills bash and orphans the converter,
+                # which keeps eating CPU/GPU.
+                extract_dir = _make_extraction_dir(canonical)
+                converter_cmd = _build_converter_command(pdf_path, extract_dir)
                 proc = await asyncio.create_subprocess_exec(
                     "bash",
                     "-c",
-                    f"rm -rf {quoted_extract} 2>/dev/null; {converter_cmd} 2>&1",
+                    f"{converter_cmd} 2>&1",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
                 )
             except OSError as e:
-                # Process spawn failed (bash missing, fork EAGAIN, perms).
-                # Different from a converter that ran and failed.
+                # Setup failed: temp-dir creation or process spawn (bash
+                # missing, fork EAGAIN, perms). Different from a converter that
+                # ran and failed.
                 return {
                     "error": (
                         f"Could not start PDF converter subprocess: {e}. "

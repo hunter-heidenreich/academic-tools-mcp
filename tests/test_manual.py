@@ -81,6 +81,14 @@ class TestPdfFilename:
     def test_freeform(self):
         assert manual._pdf_filename("my-paper") == "my-paper.pdf"
 
+    def test_strips_shell_metacharacters(self):
+        # The filename is fed to the converter subprocess, so an exotic
+        # identifier must not carry shell metacharacters into the name.
+        name = manual._pdf_filename('x"$(touch pwned)`id`;rm /|y')
+        assert name.endswith(".pdf")
+        for bad in ('"', "$", "(", ")", "`", ";", "|", " ", "/"):
+            assert bad not in name
+
 
 # ---------------------------------------------------------------------------
 # Provider routing

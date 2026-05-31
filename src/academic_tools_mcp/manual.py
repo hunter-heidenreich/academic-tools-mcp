@@ -152,8 +152,16 @@ def _resolve_target(identifier: str) -> dict[str, Any]:
 
 
 def _pdf_filename(canonical: str) -> str:
-    """Build a safe PDF filename from a canonical identifier."""
-    return canonical.replace("/", "_").replace(":", "_") + ".pdf"
+    """Build a safe PDF filename from a canonical identifier.
+
+    The filename is fed to the converter subprocess (``convert_pdf`` shells out
+    via ``bash -c``), so strip anything outside a conservative safe charset —
+    not just ``/`` and ``:`` — to keep shell metacharacters (``$``, backtick,
+    quotes, spaces, ...) in an exotic identifier from ever reaching the shell.
+    Dotted/hyphenated DOIs and arXiv ids are unaffected (``.``/``-`` are kept),
+    so normal identifiers map to the same name as before.
+    """
+    return papers._safe_stem(canonical) + ".pdf"
 
 
 def _manual_pdf_path(canonical: str) -> Path:

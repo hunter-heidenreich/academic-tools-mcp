@@ -15,6 +15,27 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Security
+
+- The PDF converter subprocess is now hardened against shell injection via a
+  paper identifier. The built-in converter command templates hand-quoted
+  `"{input}"` with double quotes, which do not neutralise `$`, backticks, or an
+  embedded `"`; combined with manual-namespace filenames that only stripped `/`
+  and `:`, an exotic identifier could smuggle shell metacharacters into the
+  `bash -c` conversion command. Two layers now defend this: `{input}` /
+  `{output_dir}` / `{python}` and the venv-activate path are substituted
+  **shell-quoted** (`shlex.quote`), and canonical→filename mapping
+  (`manual._pdf_filename`) restricts to a safe charset (`[A-Za-z0-9._-]`).
+  **Breaking for custom converters:** a custom `PDF_CONVERTER` /
+  `PDF_FAST_CONVERTER` template must now use **bare** `{input}` / `{output_dir}`
+  placeholders (the value arrives already quoted) — drop any quotes you wrapped
+  around them. ([#28])
+- The PDF→markdown extraction directory is now a private `tempfile.mkdtemp`
+  (mode 0700, unguessable suffix) instead of a predictable
+  `/tmp/pdf-convert-<canonical>` path that was `rm -rf`'d before each run. The
+  old fixed path invited symlink/pre-creation interference on a shared host and
+  could collide across multiple server instances. ([#28])
+
 ### Added
 
 - `import_paper(..., force_refresh=True)` re-imports a file even when one is
@@ -47,6 +68,22 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- `convert_paper` no longer crashes with an unhandled `FileNotFoundError` when a
+  concurrent refresh deletes a paper's cached markdown mid-read. `convert_pdf`
+  checked `markdown.exists()` *before* taking the per-paper lock, then read the
+  file inside it — so a `convert_paper(force_refresh=True)` or the `download_pdf`
+  force-refresh cascade (which now also holds the lock) could unlink the file in
+  that window. The read is now guarded and a vanished file is treated as a cache
+  miss (re-converting cleanly). ([#28])
+- `convert_paper(mode="fast")` no longer relabels a previously full-converted
+  paper's markdown as degraded `conversion_mode: "fast"` in the rare race where
+  the fast path's cached re-check fires; the recorded `"full"` mode is preserved.
+  ([#28])
+- Corrected the `_resolve_*_timeout` documentation: `PDF_CONVERT_TIMEOUT` /
+  `PDF_FAST_CONVERT_TIMEOUT` set to `"0"`, a negative number, or
+  `none`/`off`/`disabled` **disable** the timeout (the code always did this); the
+  prior docstring/comments wrongly said `"0"`/negative fell back to the default.
+  ([#28])
 - `download_pdf(doi, allow_oa_url=True)` for a generic publisher DOI is now
   hardened on its failure paths. A *transient* OpenAlex lookup error (timeout /
   5xx, `retryable: True`) is surfaced as-is so the agent retries, instead of
@@ -331,3 +368,4 @@ grouped by milestone rather than per commit.
 [#25]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/25
 [#26]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/26
 [#27]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/27
+[#28]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/28

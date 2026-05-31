@@ -106,10 +106,15 @@ The first is cleaner and removes three duplicated unlink sites.
 `_current_conversion`, so `shutil.rmtree(extract_dir, ignore_errors=True)` runs on
 *every* exit path — success and all four failure paths (spawn error, timeout,
 non-zero exit, no-markdown). The success-path-only `rmtree` was removed and the
-inline `import shutil` lifted to module scope. The deterministic-name `rm -rf`
-self-heal in the bash wrapper stays as harmless belt-and-suspenders. Regression
-coverage in `tests/test_papers.py::TestConvertPdfTempDirCleanup`. Original
-analysis retained below.
+inline `import shutil` lifted to module scope. Regression coverage in
+`tests/test_papers.py::TestConvertPdfTempDirCleanup`. Original analysis retained
+below.
+
+**Update ([#28]).** The deterministic `/tmp/pdf-convert-<canonical>` path and its
+`rm -rf` self-heal are gone — `convert_pdf` now uses a fresh private
+`tempfile.mkdtemp` dir (`_make_extraction_dir`, mode 0700), as the fix sketch
+below anticipated. This also closes the symlink/pre-creation and cross-instance
+collision concerns (see §below on the deterministic-dir race).
 
 **Where.** `papers.py:553` builds a deterministic extraction dir:
 
@@ -585,10 +590,11 @@ against the source. Recorded so they aren't re-investigated:
   `papers.py:669` runs `shutil.rmtree(...)`. The leak is real but is confined to
   the *failure* paths only (see finding 1.2) — not "never cleaned."
 - **Same-process, same-paper conversion races cannot happen.** The global
-  conversion lock (`papers.py:45`) serializes all conversions server-wide, so the
-  deterministic `/tmp/pdf-convert-<canonical>` dir cannot be raced by two
-  conversions within one process. (Two *separate* server processes pointed at the
-  same `/tmp` could still collide — but that is not the typical deployment.)
+  conversion lock (`papers.py:45`) serializes all conversions server-wide. The
+  cross-process collision caveat (two separate server processes sharing `/tmp`)
+  is now also moot as of [#28]: the extraction dir is a per-run
+  `tempfile.mkdtemp` with an unguessable suffix, not the deterministic
+  `/tmp/pdf-convert-<canonical>` path.
 - **Section pagination is properly bounded.** `get_paper_section`'s `max_chars`
   has a hard cap enforced both by a Pydantic `le=_SECTION_HARNESS_CAP`
   (`server.py:123`) and the `anthropic/maxResultSizeChars` meta on the tool

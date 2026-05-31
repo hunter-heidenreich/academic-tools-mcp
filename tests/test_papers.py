@@ -1,5 +1,6 @@
 import asyncio
-import shutil
+import re
+import shlex
 from pathlib import Path
 from unittest.mock import patch
 
@@ -640,6 +641,40 @@ class TestConvertPdfCachePaths:
             f"expected exactly one re-parse under the per-paper lock, got {parse_calls}"
         )
 
+    @pytest.mark.asyncio
+    async def test_markdown_unlinked_between_exists_and_lock_is_a_miss(
+        self, isolated_cache, monkeypatch
+    ):
+        # TOCTOU regression: convert_pdf checks md_path.exists() *before*
+        # acquiring the per-paper lock, then reads inside it. A concurrent
+        # unlink (force_refresh, or the download_pdf cascade which doesn't take
+        # the lock) in that gap must NOT raise FileNotFoundError — it must be
+        # treated as a cache miss and fall through cleanly.
+        ns, canonical = "test", "toctou-1"
+        md_path = self._seed_markdown(ns, canonical, "## A\n\nbody\n")
+
+        from collections import OrderedDict
+
+        monkeypatch.setattr(papers, "_section_locks", OrderedDict())
+
+        # Hold the paper's lock so the convert_pdf task blocks after its outer
+        # exists() check (which sees the file) and before its read.
+        lock = papers._sections_lock(ns, canonical)
+        await lock.acquire()
+
+        task = asyncio.create_task(convert_pdf(Path("/nonexistent.pdf"), ns, canonical))
+        # Let the task run up to the lock acquisition.
+        await asyncio.sleep(0)
+
+        # Simulate the unsynchronised cascade delete, then release the lock.
+        md_path.unlink()
+        lock.release()
+
+        # Pre-fix this raised FileNotFoundError; post-fix it's a clean miss.
+        result = await task
+        assert "error" in result
+        assert "PDF not found" in result["error"]
+
 
 class TestSectionLocksLRU:
     """The per-paper section lock dict is bounded so a long-running
@@ -917,8 +952,11 @@ class TestConvertPdfSubprocessFailures:
 
 
 class TestConvertPdfTempDirCleanup:
-    """The /tmp extraction dir must be removed on every exit path — success
-    *and* all four failure paths — so failed conversions don't leak it.
+    """The extraction dir must be removed on every exit path — success *and*
+    all four failure paths — so failed conversions don't leak it. The dir is
+    a private ``tempfile.mkdtemp`` created by ``papers._make_extraction_dir``;
+    these tests monkeypatch that helper to a known path so the fake subprocess
+    can populate it and the assertions can check it was cleaned up.
     """
 
     @pytest.fixture
@@ -932,99 +970,103 @@ class TestConvertPdfTempDirCleanup:
         pdf.write_bytes(b"%PDF-1.4 stub")
         return pdf
 
-    @staticmethod
-    def _extract_dir(canonical: str) -> Path:
-        # Mirror the deterministic name convert_pdf builds at papers.py.
-        return Path(f"/tmp/pdf-convert-{canonical.replace('/', '_')}")
+    @pytest.fixture
+    def extract_dir(self, tmp_path, monkeypatch):
+        # Replace the mkdtemp-based helper with a deterministic dir, populated
+        # with a non-.md leftover so the assertion proves the finally removes
+        # real content rather than just an absent path.
+        d = tmp_path / "extract"
 
-    def _seed_extract_dir(self, canonical: str) -> Path:
-        # Pre-create a populated extraction dir so the assertion proves the
-        # finally removes real content, not just an absent path.
-        d = self._extract_dir(canonical)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "leftover.md").write_text("# extracted")
-        (d / "images").mkdir(exist_ok=True)
-        (d / "images" / "fig.png").write_bytes(b"\x89PNG fake")
+        def _make(canonical):
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "images").mkdir(exist_ok=True)
+            (d / "images" / "fig.png").write_bytes(b"\x89PNG fake")
+            return d
+
+        monkeypatch.setattr(papers, "_make_extraction_dir", _make)
         return d
 
     @pytest.mark.asyncio
-    async def test_cleanup_on_spawn_failure(self, isolated_cache, real_pdf, monkeypatch):
-        canonical = "tmp-spawn-fail"
-        extract_dir = self._seed_extract_dir(canonical)
-        try:
+    async def test_cleanup_on_spawn_failure(
+        self, isolated_cache, real_pdf, extract_dir, monkeypatch
+    ):
+        async def _spawn_fail(*args, **kwargs):
+            raise FileNotFoundError("bash: not found")
 
-            async def _spawn_fail(*args, **kwargs):
-                raise FileNotFoundError("bash: not found")
-
-            monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn_fail)
-            result = await convert_pdf(real_pdf, "test", canonical)
-            assert "error" in result
-            assert not extract_dir.exists()
-        finally:
-            shutil.rmtree(extract_dir, ignore_errors=True)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn_fail)
+        result = await convert_pdf(real_pdf, "test", "tmp-spawn-fail")
+        assert "error" in result
+        assert not extract_dir.exists()
 
     @pytest.mark.asyncio
-    async def test_cleanup_on_timeout(self, isolated_cache, real_pdf, monkeypatch):
-        canonical = "tmp-timeout"
-        extract_dir = self._seed_extract_dir(canonical)
-        try:
+    async def test_cleanup_on_timeout(self, isolated_cache, real_pdf, extract_dir, monkeypatch):
+        class HangingProc:
+            pid = 525252
+            returncode = None
 
-            class HangingProc:
-                pid = 525252
-                returncode = None
+            async def communicate(self):
+                await asyncio.sleep(3600)
 
-                async def communicate(self):
-                    await asyncio.sleep(3600)
+            async def wait(self):
+                self.returncode = -9
+                return -9
 
-                async def wait(self):
-                    self.returncode = -9
-                    return -9
+        async def _fake_spawn(*args, **kwargs):
+            return HangingProc()
 
-            async def _fake_spawn(*args, **kwargs):
-                return HangingProc()
-
-            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
-            monkeypatch.setattr("academic_tools_mcp.papers.os.getpgid", lambda pid: pid)
-            monkeypatch.setattr("academic_tools_mcp.papers.os.killpg", lambda pgid, sig: None)
-            monkeypatch.setattr(
-                "academic_tools_mcp.papers.config.get",
-                lambda key: "0.05" if key == "PDF_CONVERT_TIMEOUT" else None,
-            )
-            result = await convert_pdf(real_pdf, "test", canonical)
-            assert result.get("timed_out") is True
-            assert not extract_dir.exists()
-        finally:
-            shutil.rmtree(extract_dir, ignore_errors=True)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        monkeypatch.setattr("academic_tools_mcp.papers.os.getpgid", lambda pid: pid)
+        monkeypatch.setattr("academic_tools_mcp.papers.os.killpg", lambda pgid, sig: None)
+        monkeypatch.setattr(
+            "academic_tools_mcp.papers.config.get",
+            lambda key: "0.05" if key == "PDF_CONVERT_TIMEOUT" else None,
+        )
+        result = await convert_pdf(real_pdf, "test", "tmp-timeout")
+        assert result.get("timed_out") is True
+        assert not extract_dir.exists()
 
     @pytest.mark.asyncio
-    async def test_cleanup_on_nonzero_exit(self, isolated_cache, real_pdf, monkeypatch):
-        canonical = "tmp-nonzero"
-        extract_dir = self._seed_extract_dir(canonical)
-        try:
+    async def test_cleanup_on_nonzero_exit(
+        self, isolated_cache, real_pdf, extract_dir, monkeypatch
+    ):
+        class FakeProc:
+            returncode = 1
 
-            class FakeProc:
-                returncode = 1
+            async def communicate(self):
+                return b"converter blew up", b""
 
-                async def communicate(self):
-                    return b"converter blew up", b""
+        async def _fake_spawn(*args, **kwargs):
+            return FakeProc()
 
-            async def _fake_spawn(*args, **kwargs):
-                return FakeProc()
-
-            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
-            result = await convert_pdf(real_pdf, "test", canonical)
-            assert "exit 1" in result["error"]
-            assert not extract_dir.exists()
-        finally:
-            shutil.rmtree(extract_dir, ignore_errors=True)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        result = await convert_pdf(real_pdf, "test", "tmp-nonzero")
+        assert "exit 1" in result["error"]
+        assert not extract_dir.exists()
 
     @pytest.mark.asyncio
-    async def test_cleanup_on_no_markdown(self, isolated_cache, real_pdf, monkeypatch):
-        canonical = "tmp-no-md"
-        # Empty dir: converter "succeeds" (exit 0) but emits no .md file.
-        extract_dir = self._extract_dir(canonical)
-        extract_dir.mkdir(parents=True, exist_ok=True)
-        try:
+    async def test_cleanup_on_no_markdown(self, isolated_cache, real_pdf, extract_dir, monkeypatch):
+        # Converter "succeeds" (exit 0) but emits no .md file (only the
+        # leftover the fixture seeded), so the glob finds nothing.
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def _fake_spawn(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        result = await convert_pdf(real_pdf, "test", "tmp-no-md")
+        assert "no markdown output" in result["error"]
+        assert not extract_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_on_success(self, isolated_cache, real_pdf, extract_dir, monkeypatch):
+        # A converter that "produces" markdown: write a .md into the extraction
+        # dir the moment convert_pdf spawns it, mimicking a real run.
+        async def _fake_spawn(*args, **kwargs):
+            (extract_dir / f"{real_pdf.stem}.md").write_text("## Intro\n\nHello world.")
 
             class FakeProc:
                 returncode = 0
@@ -1032,42 +1074,13 @@ class TestConvertPdfTempDirCleanup:
                 async def communicate(self):
                     return b"", b""
 
-            async def _fake_spawn(*args, **kwargs):
-                return FakeProc()
+            return FakeProc()
 
-            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
-            result = await convert_pdf(real_pdf, "test", canonical)
-            assert "no markdown output" in result["error"]
-            assert not extract_dir.exists()
-        finally:
-            shutil.rmtree(extract_dir, ignore_errors=True)
-
-    @pytest.mark.asyncio
-    async def test_cleanup_on_success(self, isolated_cache, real_pdf, monkeypatch):
-        canonical = "tmp-success"
-        extract_dir = self._extract_dir(canonical)
-        try:
-            # A converter that "produces" markdown: create the dir + a .md
-            # the moment convert_pdf spawns it, mimicking a real run.
-            async def _fake_spawn(*args, **kwargs):
-                extract_dir.mkdir(parents=True, exist_ok=True)
-                (extract_dir / f"{real_pdf.stem}.md").write_text("## Intro\n\nHello world.")
-
-                class FakeProc:
-                    returncode = 0
-
-                    async def communicate(self):
-                        return b"", b""
-
-                return FakeProc()
-
-            monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
-            result = await convert_pdf(real_pdf, "test", canonical)
-            assert result.get("cached") is False
-            assert result["sections"]
-            assert not extract_dir.exists()
-        finally:
-            shutil.rmtree(extract_dir, ignore_errors=True)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+        result = await convert_pdf(real_pdf, "test", "tmp-success")
+        assert result.get("cached") is False
+        assert result["sections"]
+        assert not extract_dir.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1089,31 +1102,101 @@ class TestBuildConverterCommand:
     def test_default_is_mineru(self):
         with self._env():
             cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
-        assert cmd == 'mineru -p "/a/b.pdf" -o "/tmp/out"'
+        # Paths with no shell-special chars shlex.quote to themselves (no quotes).
+        assert cmd == "mineru -p /a/b.pdf -o /tmp/out"
 
     def test_named_marker_backend(self):
         with self._env(PDF_CONVERTER="marker"):
             cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
-        assert cmd == 'marker_single "/a/b.pdf" --output_dir "/tmp/out"'
+        assert cmd == "marker_single /a/b.pdf --output_dir /tmp/out"
 
     def test_custom_command_template(self):
-        custom = 'my-tool convert --src "{input}" --dst "{output_dir}"'
+        # Custom templates use BARE placeholders (values arrive shell-quoted).
+        custom = "my-tool convert --src {input} --dst {output_dir}"
         with self._env(PDF_CONVERTER=custom):
             cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
-        assert cmd == 'my-tool convert --src "/a/b.pdf" --dst "/tmp/out"'
+        assert cmd == "my-tool convert --src /a/b.pdf --dst /tmp/out"
 
     def test_venv_activation(self):
         with self._env(PDF_CONVERTER="mineru", PDF_CONVERTER_VENV="~/.venvs/mineru"):
             cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
         assert "source" in cmd
         assert ".venvs/mineru/bin/activate" in cmd
-        assert cmd.endswith('mineru -p "/a/b.pdf" -o "/tmp/out"')
+        assert cmd.endswith("mineru -p /a/b.pdf -o /tmp/out")
 
     def test_no_venv_by_default(self):
         with self._env(PDF_CONVERTER="marker"):
             cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
         assert "source" not in cmd
         assert "activate" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# Shell-quoting safety (command injection hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestConverterCommandQuoting:
+    """A canonical-derived path containing shell metacharacters must be
+    shell-quoted before it reaches ``bash -c``, so it can't be interpreted
+    as a command. Manual double-quoting around ``{input}`` did not protect
+    against ``$()`` / backticks / embedded quotes.
+    """
+
+    def _env(self, **overrides):
+        def _get(key):
+            return overrides.get(key)
+
+        return patch("academic_tools_mcp.papers.config.get", side_effect=_get)
+
+    # A path that, unquoted (or merely double-quoted), would run a command
+    # and break out of the surrounding quotes.
+    HOSTILE = Path('/cache/pdfs/x"$(touch pwned)`id`.pdf')
+
+    def test_full_command_quotes_hostile_input(self):
+        with self._env():
+            cmd = _build_converter_command(self.HOSTILE, Path("/tmp/out"))
+        # The path survives as exactly one shell token — so bash treats it as a
+        # single literal argument and never command-substitutes the $()/`id`.
+        assert str(self.HOSTILE) in shlex.split(cmd)
+        # The quoted form is what's embedded (the $() is inert inside it).
+        assert shlex.quote(str(self.HOSTILE)) in cmd
+
+    def test_full_command_quotes_output_dir(self):
+        with self._env():
+            cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/o$(x)"))
+        assert "/tmp/o$(x)" in shlex.split(cmd)
+        assert shlex.quote("/tmp/o$(x)") in cmd
+
+    def test_venv_path_is_quoted(self):
+        with self._env(PDF_CONVERTER="mineru", PDF_CONVERTER_VENV="/opt/v env"):
+            cmd = _build_converter_command(Path("/a/b.pdf"), Path("/tmp/out"))
+        # The space-containing venv path is quoted so `source` gets one arg.
+        assert shlex.quote("/opt/v env/bin/activate") in cmd
+
+    def test_fast_command_quotes_hostile_input(self):
+        with self._env():
+            cmd = _build_fast_converter_command(self.HOSTILE)
+        assert str(self.HOSTILE) in shlex.split(cmd)
+        assert shlex.quote(str(self.HOSTILE)) in cmd
+
+
+class TestSafeStem:
+    """``_safe_stem`` maps a canonical id to a filesystem/shell-safe stem."""
+
+    def test_strips_shell_metacharacters(self):
+        stem = papers._safe_stem('x"$(touch pwned)`id`;rm -rf /|y')
+        # Only [A-Za-z0-9._-] survive; everything else becomes "_".
+        assert re.fullmatch(r"[A-Za-z0-9._-]+", stem)
+        for bad in ('"', "$", "(", ")", "`", ";", "|", " ", "/"):
+            assert bad not in stem
+
+    def test_keeps_normal_doi_and_arxiv_ids(self):
+        # Normal identifiers are unchanged except for the legacy / -> _ map,
+        # so existing cache filenames don't churn.
+        assert papers._safe_stem("10.1101/2021.01.01.123") == "10.1101_2021.01.01.123"
+        assert papers._safe_stem("2301.00001v2") == "2301.00001v2"
+        assert papers._safe_stem("hep-th/9901001") == "hep-th_9901001"
 
 
 # ---------------------------------------------------------------------------
@@ -1179,7 +1262,7 @@ class TestBuildFastConverterCommand:
     def test_default_is_pdftotext(self):
         with self._env():
             cmd = _build_fast_converter_command(Path("/a/b.pdf"))
-        assert cmd == 'pdftotext -layout "/a/b.pdf" -'
+        assert cmd == "pdftotext -layout /a/b.pdf -"
 
     def test_named_pymupdf_uses_server_interpreter(self):
         import shlex
@@ -1188,14 +1271,15 @@ class TestBuildFastConverterCommand:
         with self._env(PDF_FAST_CONVERTER="pymupdf"):
             cmd = _build_fast_converter_command(Path("/a/b.pdf"))
         assert cmd == (
-            f'{shlex.quote(sys.executable)} -m academic_tools_mcp._fast_extract "/a/b.pdf"'
+            f"{shlex.quote(sys.executable)} -m academic_tools_mcp._fast_extract /a/b.pdf"
         )
 
     def test_custom_command_template(self):
-        custom = 'my-extractor --src "{input}"'
+        # Bare placeholder per the shell-quoted-substitution contract.
+        custom = "my-extractor --src {input}"
         with self._env(PDF_FAST_CONVERTER=custom):
             cmd = _build_fast_converter_command(Path("/a/b.pdf"))
-        assert cmd == 'my-extractor --src "/a/b.pdf"'
+        assert cmd == "my-extractor --src /a/b.pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -1329,6 +1413,40 @@ class TestConvertPdfFastMode:
         result = await convert_pdf(real_pdf, "test", "fast-cached", mode="fast")
         assert result["cached"] is True
         assert result["sections"]
+
+    @pytest.mark.asyncio
+    async def test_fast_convert_cached_preserves_full_conversion_mode(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        # _convert_fast's cached re-check fires when a racing writer creates
+        # the markdown after convert_pdf's top-level cache miss. In that window
+        # it must NOT relabel a previously FULL-converted paper as degraded
+        # "fast". Call _convert_fast directly to exercise exactly that branch.
+        ns, canonical = "test", "fast-preserve-full"
+        md_path = papers._markdown_path(ns, canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("## Intro\n\nFull-quality body.")
+        cache.put(
+            ns,
+            "sections",
+            papers._sections_key(canonical),
+            {
+                "sections": papers.parse_sections(md_path.read_text()),
+                "markdown_checksum": papers._markdown_checksum(md_path),
+                "conversion_mode": "full",
+            },
+        )
+
+        async def _fail(*args, **kwargs):
+            raise AssertionError("must not spawn when markdown is cached")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
+        result = await papers._convert_fast(real_pdf, ns, canonical, 0.1)
+        assert result["cached"] is True
+        assert result["conversion_mode"] == "full"
+        # And the recorded mode in the sections cache stays "full".
+        cached = cache.get(ns, "sections", papers._sections_key(canonical))
+        assert cached["conversion_mode"] == "full"
 
     @pytest.mark.asyncio
     async def test_fast_mode_nonzero_exit_returns_error(
