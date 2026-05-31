@@ -1,3 +1,4 @@
+import contextlib
 import json
 
 from academic_tools_mcp import cache
@@ -327,3 +328,123 @@ def test_concurrent_writers_dont_corrupt_file(tmp_path, monkeypatch):
     # No stray temp files survived.
     leftover_tmps = list((tmp_path / "ns" / "ent").glob("*.tmp"))
     assert leftover_tmps == [], leftover_tmps
+
+
+# ---------------------------------------------------------------------------
+# Encoding: reads must be UTF-8 regardless of the host locale
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _c_ctype_locale():
+    """Pin LC_CTYPE to C for the body, so the process default text encoding
+    (what an encoding-less open() picks up) becomes ASCII — the situation in
+    an LC_ALL=C container/cron job. Restored on exit."""
+    import locale
+
+    saved = locale.setlocale(locale.LC_CTYPE)
+    locale.setlocale(locale.LC_CTYPE, "C")
+    try:
+        yield
+    finally:
+        locale.setlocale(locale.LC_CTYPE, saved)
+
+
+def test_get_decodes_utf8_under_c_locale(tmp_path, monkeypatch):
+    """Cache files are always written UTF-8 (ensure_ascii=False), so reads
+    must decode UTF-8 too — not the locale default. Under LC_ALL=C the
+    preferred encoding is ASCII; a locale-default read of an accented author
+    name raises UnicodeDecodeError, and the self-heal path would silently
+    delete a perfectly good entry."""
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    data = {"author": "Müller, François-René"}
+    cache.put("openalex", "works", "loc-test", data)  # write is explicit UTF-8
+    path = tmp_path / "openalex" / "works" / f"{cache._cache_key('loc-test')}.json"
+    assert path.exists()
+
+    with _c_ctype_locale():
+        result = cache.get("openalex", "works", "loc-test")
+
+    assert result == data
+    assert path.exists(), "a readable entry must not be deleted as 'corrupt'"
+
+
+def test_get_negative_decodes_utf8_under_c_locale(tmp_path, monkeypatch):
+    """Same UTF-8 contract for the negative cache: a 404 payload carrying a
+    non-ASCII identifier must survive a read under a non-UTF-8 locale."""
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    err = {"error": "No paper found for: Müller (François-René)"}
+    cache.put_negative("crossref", "works", "müller-2020", err)
+    path = cache._neg_path("crossref", "works", "müller-2020")
+    assert path.exists()
+
+    with _c_ctype_locale():
+        cached = cache.get_negative("crossref", "works", "müller-2020")
+
+    assert cached == err
+    assert path.exists(), "a readable negative entry must not be deleted"
+
+
+# ---------------------------------------------------------------------------
+# Reads must reject non-dict JSON (type-contract guard)
+# ---------------------------------------------------------------------------
+
+
+def test_get_non_dict_json_self_heals(tmp_path, monkeypatch):
+    """get() is typed dict|None. A file holding a JSON list/scalar (external
+    tampering, or a foreign writer) must be treated like corruption — None
+    and unlinked — not passed through as a malformed 'hit'."""
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    directory = tmp_path / "openalex" / "works"
+    directory.mkdir(parents=True)
+    bad_path = directory / f"{cache._cache_key('listy')}.json"
+    bad_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+    assert cache.get("openalex", "works", "listy") is None
+    assert not bad_path.exists(), "non-dict entry should be unlinked on read"
+
+
+def test_get_negative_non_dict_json_self_heals(tmp_path, monkeypatch):
+    """A non-dict negative entry must self-heal rather than crash on the
+    _expires_at lookup (entry.get(...) would AttributeError on a list)."""
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    neg_path = cache._neg_path("arxiv", "papers", "listy-neg")
+    neg_path.parent.mkdir(parents=True, exist_ok=True)
+    neg_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+    assert cache.get_negative("arxiv", "papers", "listy-neg") is None
+    assert not neg_path.exists()
+
+
+def test_get_negative_preserves_underscore_payload_keys(tmp_path, monkeypatch):
+    """Only the internal _expires_at bookkeeping key is stripped on read —
+    caller payload keys that happen to start with '_' (e.g. _canonical_id,
+    used elsewhere in the codebase) must round-trip untouched."""
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    err = {"error": "not found", "_canonical_id": "10.1/y", "not_found": True}
+    cache.put_negative("openalex", "works", "u-keys", err)
+
+    cached = cache.get_negative("openalex", "works", "u-keys")
+    assert cached == err
+    assert "_expires_at" not in cached
+
+
+# ---------------------------------------------------------------------------
+# Configurable cache root
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_cache_root_honors_env(tmp_path, monkeypatch):
+    """CACHE_DIR relocates the on-disk cache root (e.g. for an installed
+    wheel); unset falls back to the project-local .cache."""
+    custom = tmp_path / "custom-cache"
+    monkeypatch.setenv("CACHE_DIR", str(custom))
+    assert cache._resolve_cache_root() == custom
+
+    monkeypatch.delenv("CACHE_DIR", raising=False)
+    assert cache._resolve_cache_root().name == ".cache"

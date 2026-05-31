@@ -6,10 +6,30 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import _stats
+from . import _stats, config
 
-# Default cache root lives next to the project
-_CACHE_ROOT = Path(__file__).resolve().parent.parent.parent / ".cache"
+
+def _resolve_cache_root() -> Path:
+    """Resolve the on-disk cache root.
+
+    Honours the ``CACHE_DIR`` env var (so an installed wheel, where the
+    project tree isn't writable, can point the cache somewhere sensible);
+    otherwise defaults to ``.cache`` next to the project.
+    """
+    configured = config.get("CACHE_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path(__file__).resolve().parent.parent.parent / ".cache"
+
+
+# Default cache root lives next to the project unless CACHE_DIR overrides it.
+#
+# Growth: the cache has NO global size or count bound. Bounding happens two
+# ways only — on-read TTL eviction (``get(..., max_age_seconds=N)`` unlinks
+# over-age entries) and the orphan ``.tmp`` sweep below. Entries that are
+# never re-read with a ``max_age_seconds`` therefore persist indefinitely;
+# operators prune ``.cache/`` manually if it grows too large.
+_CACHE_ROOT = _resolve_cache_root()
 
 # Default TTL for negative-cache entries. 24 hours is long enough to absorb
 # burst retries on a known-bad identifier (and the agent's likely "let me
@@ -75,8 +95,18 @@ def get(
             _stats.incr(namespace, "cache_misses")
             return None
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        _stats.incr(namespace, "cache_misses")
+        return None
+    # Entries are always dicts (see put()'s signature). Anything else is a
+    # tampered or foreign file — treat it like corruption rather than handing
+    # back a value that violates this function's return contract.
+    if not isinstance(data, dict):
         try:
             path.unlink()
         except OSError:
@@ -144,13 +174,19 @@ def invalidate(namespace: str, entity: str, identifier: str) -> None:
 
 
 def _atomic_write_json(path: Path, payload: str) -> None:
-    """Write ``payload`` to ``path`` atomically.
+    """Write ``payload`` to ``path`` with no torn/partial canonical writes.
 
     Lands in a sibling temp file and is moved into place with os.replace,
-    which is atomic on POSIX/Windows. Best-effort cleanup of the temp
-    file on any failure path, including KeyboardInterrupt mid-write.
-    mkstemp lands in the same directory so the rename stays on one
+    which is atomic on POSIX/Windows — a concurrent or interrupted writer
+    can never expose a half-written canonical file to a reader. Best-effort
+    cleanup of the temp file on any failure path, including KeyboardInterrupt
+    mid-write. mkstemp lands in the same directory so the rename stays on one
     filesystem (cross-fs rename is not atomic and would raise EXDEV).
+
+    This is NOT a crash-durability guarantee: os.replace orders the rename,
+    not the data flush, so a power loss could leave the rename durable while
+    the file contents are not. We deliberately skip fsync — the cost on every
+    write isn't worth it for a cache whose reads self-heal on corruption.
     """
     directory = path.parent
     directory.mkdir(parents=True, exist_ok=True)
@@ -213,8 +249,16 @@ def get_negative(namespace: str, entity: str, identifier: str) -> dict[str, Any]
     if not path.exists():
         return None
     try:
-        entry = json.loads(path.read_text())
+        entry = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+    # A non-dict entry (tampering / foreign writer) would crash the
+    # _expires_at lookup below — self-heal instead.
+    if not isinstance(entry, dict):
         try:
             path.unlink()
         except OSError:
@@ -228,7 +272,10 @@ def get_negative(namespace: str, entity: str, identifier: str) -> dict[str, Any]
             pass
         return None
     _stats.incr(namespace, "negative_hits")
-    return {k: v for k, v in entry.items() if not k.startswith("_")}
+    # Strip only our own bookkeeping key — caller payload keys that happen to
+    # start with '_' (e.g. _canonical_id) must round-trip untouched.
+    entry.pop("_expires_at", None)
+    return entry
 
 
 def put_negative(
