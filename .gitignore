@@ -12,6 +12,12 @@ wheels/
 # Cache
 .cache/
 
+# Coverage (pytest-cov / coverage.py)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # Claude Code (personal config local; project-shared rules + hooks tracked)
 .claude/*
 !.claude/rules/

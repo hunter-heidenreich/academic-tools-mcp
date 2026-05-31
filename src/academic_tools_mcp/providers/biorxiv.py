@@ -308,7 +308,8 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     download aborts mid-stream if it would exceed ``MAX_PDF_BYTES`` so a
     misrouted URL can't fill the disk.
 
-    Returns a dict with the file path and size, or an error.
+    Returns a dict with the file path and size, or an error. Concurrent
+    callers for the same DOI share one download via single-flight.
     """
     canonical = _canonical_key(doi)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
@@ -320,22 +321,39 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             "cached": True,
         }
 
-    # Need paper metadata to get the PDF URL
-    paper = await get_paper(doi)
-    if "error" in paper:
-        return paper
+    async def _fetch() -> dict[str, Any]:
+        # Re-check after winning the slot — a concurrent leader may have
+        # just written the file. Skip the short-circuit under force_refresh:
+        # the caller wants fresh bytes, and stream_to_file replaces dest
+        # atomically on success.
+        if not force_refresh and dest.exists():
+            return {
+                "path": str(dest),
+                "size_bytes": dest.stat().st_size,
+                "cached": True,
+            }
 
-    pdf_url = paper.get("pdf_url")
-    if not pdf_url:
-        return {"error": f"No PDF URL found for DOI: {doi}"}
+        # Need paper metadata to get the PDF URL
+        paper = await get_paper(doi)
+        if "error" in paper:
+            return paper
 
-    client = _clients.get_client(NAMESPACE, timeout=30.0)
-    return await _pdf_download.stream_to_file(
-        client,
-        pdf_url,
-        dest,
-        slot_factory=lambda: _request_slot(pdf_url),
-        provider_label="bioRxiv",
-        timeout=60.0,
-        not_found_message=f"PDF not found for DOI: {doi}",
-    )
+        pdf_url = paper.get("pdf_url")
+        if not pdf_url:
+            return {"error": f"No PDF URL found for DOI: {doi}"}
+
+        client = _clients.get_client(NAMESPACE, timeout=30.0)
+        return await _pdf_download.stream_to_file(
+            client,
+            pdf_url,
+            dest,
+            slot_factory=lambda: _request_slot(pdf_url),
+            provider_label="bioRxiv",
+            timeout=60.0,
+            not_found_message=f"PDF not found for DOI: {doi}",
+        )
+
+    # Tuple-keyed so this slot is distinct from get_paper's (keyed on the
+    # bare canonical id): _fetch calls get_paper, which would otherwise
+    # await this very slot's future and deadlock.
+    return await _single_flight.do(("pdf", canonical), _fetch)

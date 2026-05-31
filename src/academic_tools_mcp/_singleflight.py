@@ -55,6 +55,13 @@ class SingleFlight:
             # Surface the failure to every waiter, not just the leader.
             if not future.done():
                 future.set_exception(exc)
+            # If no follower ever awaited this future, its exception would be
+            # garbage-collected unretrieved and asyncio would log a spurious
+            # "Future exception was never retrieved" warning. Read it here to
+            # mark it retrieved — followers already suspended on the future
+            # still receive it when they resume.
+            if future.done() and not future.cancelled():
+                future.exception()
             raise
         finally:
             # Clear before any waiter resumes so the next call (post-resolve)
