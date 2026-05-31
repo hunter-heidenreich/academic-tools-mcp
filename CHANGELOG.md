@@ -73,6 +73,26 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- OpenAlex paper/author tools (`get_paper_metadata` / `_authors` / `_abstract`
+  / `_bibtex`, and the batch `get_papers_metadata`) no longer crash on a
+  malformed response. A 200 with a garbled/truncated JSON body previously
+  raised an uncaught `JSONDecodeError` out of `get_work` / `get_author` /
+  `get_works_batch`; all now return the uniform `{error, retryable: True}` dict
+  (the parse failure is not negative-cached, so a retry re-fetches), and an
+  anomalous 200 that is non-dict or missing the entity `id` key is treated the
+  same instead of positive-caching garbage for the 30-day TTL. Completes the
+  parse-hardening sweep across arXiv ([#30]), bioRxiv ([#31]), and Crossref
+  ([#32]). ([#33])
+- OpenAlex DOIs are now percent-encoded into the `/works/doi:{doi}` request
+  path (a `#`/`?` previously truncated the request to the wrong record), and
+  `_normalize_doi` strips surrounding whitespace and an `http://doi.org/`
+  prefix (not just `https://`). The normalization fix also stops
+  `get_papers_metadata` from reporting an `http://`-form DOI as not-found when
+  the batch response actually contained it (the request and response
+  canonicalizers disagreed on the scheme). A DOI containing OpenAlex filter
+  metacharacters (`|`, `,`) is now resolved via the singleton path instead of
+  corrupting the OR-joined batch filter. `get_author` also gains `force_refresh`
+  and tags its 404 with `not_found: True`, matching `get_work`. ([#33])
 - Crossref paper tools (`get_paper_metadata` / `_bibtex`, reference/citation
   lookups, `search_crossref_by_title`) no longer crash on a malformed response.
   A 200 with a garbled/truncated JSON body previously raised an uncaught
@@ -422,3 +442,4 @@ grouped by milestone rather than per commit.
 [#30]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/30
 [#31]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/31
 [#32]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/32
+[#33]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/33

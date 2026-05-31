@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from academic_tools_mcp import cache
@@ -21,6 +23,14 @@ class TestNormalizeDoi:
     def test_url_doi(self):
         assert _normalize_doi("https://doi.org/10.1234/test") == "10.1234/test"
 
+    def test_http_url_doi(self):
+        # Parity with crossref: the insecure scheme must also be stripped,
+        # otherwise the bare DOI is never recovered and the request 404s.
+        assert _normalize_doi("http://doi.org/10.1234/test") == "10.1234/test"
+
+    def test_strips_whitespace(self):
+        assert _normalize_doi("  10.1234/test  ") == "10.1234/test"
+
 
 class TestCanonicalDoi:
     def test_lowercases(self):
@@ -31,6 +41,9 @@ class TestCanonicalDoi:
 
     def test_strips_url_and_lowercases(self):
         assert _canonical_doi("https://doi.org/10.1234/ABC") == "10.1234/abc"
+
+    def test_strips_http_url_and_lowercases(self):
+        assert _canonical_doi("http://doi.org/10.1234/ABC") == "10.1234/abc"
 
 
 class TestNormalizeAuthorId:
@@ -108,3 +121,261 @@ class TestGetWork404Marker:
         neg = cache.get_negative(openalex.NAMESPACE, "works", "10.9999/does-not-exist")
         assert neg is not None
         assert neg.get("not_found") is True
+
+
+# ---------------------------------------------------------------------------
+# Hardening: parse errors, shape guards, DOI encoding, batch filter safety,
+# get_author contract parity. Mirrors tests/test_crossref.py.
+# ---------------------------------------------------------------------------
+
+# Sentinel: a payload whose .json() raises, simulating a malformed/truncated body.
+_BAD_JSON = object()
+
+
+class _StubResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.headers: dict[str, str] = {}
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        if self._payload is _BAD_JSON:
+            raise json.JSONDecodeError("Expecting value", "", 0)
+        return self._payload
+
+
+class _Recorder:
+    def __init__(self):
+        self.urls: list[str] = []
+        self.kwargs: list[dict] = []
+
+    @property
+    def count(self) -> int:
+        return len(self.urls)
+
+
+def _install_throttled_get(monkeypatch, *payloads, status_code=200):
+    """Replace ``openalex._throttled_get`` with a recorder.
+
+    Successive GETs return ``payloads`` in order (the last payload repeats
+    once exhausted). A payload of ``_BAD_JSON`` makes ``.json()`` raise
+    ``json.JSONDecodeError`` (garbled body). The returned recorder exposes
+    ``.urls`` / ``.kwargs`` (per call) and ``.count``.
+    """
+    recorder = _Recorder()
+    seq = list(payloads)
+
+    async def fake_throttled_get(url, **kwargs):
+        recorder.urls.append(url)
+        recorder.kwargs.append(kwargs)
+        idx = len(recorder.urls) - 1
+        payload = seq[idx] if idx < len(seq) else seq[-1]
+        return _StubResponse(payload, status_code=status_code)
+
+    monkeypatch.setattr(openalex, "_throttled_get", fake_throttled_get)
+    return recorder
+
+
+def _work_response(doi="10.1234/x"):
+    """A minimal valid OpenAlex work object (returned directly, no wrapper)."""
+    return {
+        "id": "https://openalex.org/W1",
+        "doi": f"https://doi.org/{doi}",
+        "title": "A Great Work",
+    }
+
+
+def _author_response(author_id="A1"):
+    """A minimal valid OpenAlex author object."""
+    return {"id": f"https://openalex.org/{author_id}", "display_name": "Jane Doe"}
+
+
+class TestGetWorkParseErrors:
+    @pytest.mark.asyncio
+    async def test_malformed_json_returns_retryable_error(self, tmp_path, monkeypatch):
+        # A 200 with a garbled body must NOT crash — it should surface the
+        # uniform {error, retryable} contract like every other failure.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        _install_throttled_get(monkeypatch, _BAD_JSON)
+
+        result = await openalex.get_work("10.1234/x")
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert result.get("retryable") is True
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_not_negative_cached(self, tmp_path, monkeypatch):
+        # A parse failure is transient — a retry must re-fetch and succeed,
+        # not be served a poisoned negative-cache entry.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        recorder = _install_throttled_get(monkeypatch, _BAD_JSON, _work_response())
+
+        first = await openalex.get_work("10.1234/x")
+        assert "error" in first
+        assert cache.get_negative(openalex.NAMESPACE, "works", "10.1234/x") is None
+
+        second = await openalex.get_work("10.1234/x")
+        assert second.get("id") == "https://openalex.org/W1"
+        assert recorder.count == 2  # re-fetched, not cached
+
+    @pytest.mark.asyncio
+    async def test_missing_id_not_cached(self, tmp_path, monkeypatch):
+        # An anomalous 200 without an `id` must not positive-cache; it should
+        # error and a retry re-fetches.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        recorder = _install_throttled_get(monkeypatch, {"status": "ok"}, _work_response())
+
+        first = await openalex.get_work("10.1234/x")
+        assert "error" in first
+
+        second = await openalex.get_work("10.1234/x")
+        assert second.get("id") == "https://openalex.org/W1"
+        assert recorder.count == 2
+
+    @pytest.mark.asyncio
+    async def test_non_dict_json_returns_error(self, tmp_path, monkeypatch):
+        # A JSON list body must not raise AttributeError downstream.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        _install_throttled_get(monkeypatch, [])
+
+        result = await openalex.get_work("10.1234/x")
+
+        assert isinstance(result, dict)
+        assert "error" in result
+
+
+class TestGetAuthorParseErrors:
+    @pytest.mark.asyncio
+    async def test_malformed_json_returns_retryable_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        _install_throttled_get(monkeypatch, _BAD_JSON)
+
+        result = await openalex.get_author("A123")
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert result.get("retryable") is True
+
+    @pytest.mark.asyncio
+    async def test_missing_id_not_cached(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        recorder = _install_throttled_get(monkeypatch, {"status": "ok"}, _author_response())
+
+        first = await openalex.get_author("A123")
+        assert "error" in first
+
+        second = await openalex.get_author("A123")
+        assert second.get("id") == "https://openalex.org/A1"
+        assert recorder.count == 2
+
+
+class TestGetWorkDoiEncoding:
+    @pytest.mark.asyncio
+    async def test_encodes_special_chars_in_doi(self, tmp_path, monkeypatch):
+        # A DOI containing '#' must be percent-encoded in the path; otherwise
+        # httpx treats '#bar' as a fragment and requests the wrong record.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        recorder = _install_throttled_get(monkeypatch, _work_response("10.1234/foo#bar"))
+
+        await openalex.get_work("10.1234/foo#bar")
+
+        url = recorder.urls[0]
+        assert "%23" in url
+        assert "#" not in url
+
+    @pytest.mark.asyncio
+    async def test_preserves_slash_in_doi(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        recorder = _install_throttled_get(monkeypatch, _work_response("10.1038/nature12373"))
+
+        await openalex.get_work("10.1038/nature12373")
+
+        assert recorder.urls[0].endswith("/works/doi:10.1038/nature12373")
+
+
+class TestGetWorksBatch:
+    @pytest.mark.asyncio
+    async def test_malformed_json_chunk_not_negative_cached(self, tmp_path, monkeypatch):
+        # A parse failure on the batch GET maps every DOI in the chunk to a
+        # retryable error and must NOT be negative-cached.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        _install_throttled_get(monkeypatch, _BAD_JSON)
+
+        result = await openalex.get_works_batch(["10.1234/x"])
+
+        assert "error" in result["10.1234/x"]
+        assert result["10.1234/x"].get("retryable") is True
+        assert cache.get_negative(openalex.NAMESPACE, "works", "10.1234/x") is None
+
+    @pytest.mark.asyncio
+    async def test_http_doi_is_matched_not_negative_cached(self, tmp_path, monkeypatch):
+        # An http:// input must canonicalize the same way the response DOI
+        # does, so a returned work is matched rather than reported missing.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        _install_throttled_get(monkeypatch, {"results": [_work_response("10.1234/x")]})
+
+        result = await openalex.get_works_batch(["http://doi.org/10.1234/x"])
+
+        vals = list(result.values())
+        assert len(vals) == 1
+        assert "error" not in vals[0]
+        assert vals[0].get("id") == "https://openalex.org/W1"
+
+    @pytest.mark.asyncio
+    async def test_doi_with_pipe_resolved_individually(self, tmp_path, monkeypatch):
+        # A DOI containing '|' (OpenAlex OR) corrupts the filter query; it must
+        # be resolved via the singleton path endpoint instead.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        recorder = _Recorder()
+
+        async def fake_throttled_get(url, **kwargs):
+            recorder.urls.append(url)
+            recorder.kwargs.append(kwargs)
+            if url.endswith("/works"):
+                return _StubResponse({"results": [_work_response("10.1234/normal")]})
+            return _StubResponse(_work_response("10.1234/a|b"))
+
+        monkeypatch.setattr(openalex, "_throttled_get", fake_throttled_get)
+
+        result = await openalex.get_works_batch(["10.1234/normal", "10.1234/a|b"])
+
+        assert "error" not in result["10.1234/normal"]
+        assert "error" not in result["10.1234/a|b"]
+        joined = " ".join(recorder.urls)
+        # The pipe DOI went through the encoded singleton path...
+        assert "%7C" in joined
+        # ...and was kept out of the OR-joined filter.
+        filters = [kw.get("params", {}).get("filter", "") for kw in recorder.kwargs]
+        assert all("a|b" not in f for f in filters)
+
+
+class TestGetAuthorContract:
+    @pytest.mark.asyncio
+    async def test_404_carries_not_found_and_negative_caches(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        _install_throttled_get(monkeypatch, None, status_code=404)
+
+        result = await openalex.get_author("A123")
+        assert result.get("not_found") is True
+        assert "No author found" in result["error"]
+
+        neg = cache.get_negative(openalex.NAMESPACE, "authors", "a123")
+        assert neg is not None
+        assert neg.get("not_found") is True
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_refetches(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        recorder = _install_throttled_get(monkeypatch, _author_response(), _author_response())
+
+        first = await openalex.get_author("A123")
+        assert first.get("id") == "https://openalex.org/A1"
+        assert recorder.count == 1
+
+        second = await openalex.get_author("A123", force_refresh=True)
+        assert second.get("id") == "https://openalex.org/A1"
+        assert recorder.count == 2, "force_refresh must drop the cache and re-fetch"

@@ -1,11 +1,32 @@
 import asyncio
+import json
 import time
 from typing import Any
+from urllib.parse import quote
 
 from .. import _clients, _http, _singleflight, _stats, cache, config
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
+
+# The OpenAlex API returns JSON; a malformed/truncated 200 body raises
+# ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
+# errors so the tool always returns the uniform ``{error}`` contract rather
+# than crashing on a garbled response. Mirrors crossref/biorxiv.
+_PARSE_ERRORS = (json.JSONDecodeError,)
+
+
+def _parse_error_dict() -> dict[str, Any]:
+    """Fresh structured error for an unparseable / malformed OpenAlex response.
+
+    A new dict each call (like ``_http.error_dict``) so a caller — or a
+    single-flight follower sharing the result — can't mutate a shared object.
+    """
+    return {
+        "error": "OpenAlex returned a response that could not be parsed.",
+        "retryable": True,
+    }
+
 
 # Rate limiting. OpenAlex's polite-pool soft cap is 10 req/sec; we set
 # the gap conservatively at 100ms (10 req/sec) so a fan-out can't burn
@@ -42,11 +63,15 @@ def _normalize_doi(doi: str) -> str:
     Accepts:
       - bare DOI: 10.1234/example
       - prefixed: doi:10.1234/example
-      - full URL: https://doi.org/10.1234/example
-    Returns the doi: prefixed form for the API path.
+      - full URL: https://doi.org/10.1234/example or http://doi.org/...
+    Surrounding whitespace is stripped. Returns the bare DOI (the caller
+    adds the ``doi:`` path prefix).
     """
+    doi = doi.strip()
     if doi.startswith("https://doi.org/"):
         doi = doi[len("https://doi.org/") :]
+    elif doi.startswith("http://doi.org/"):
+        doi = doi[len("http://doi.org/") :]
     elif doi.startswith("doi:"):
         doi = doi[len("doi:") :]
     return doi
@@ -167,20 +192,27 @@ def _canonical_author_id(author_id: str) -> str:
     return _normalize_author_id(author_id).lower()
 
 
-async def get_author(author_id: str) -> dict[str, Any]:
+async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch an author by OpenAlex ID or ORCID, using cache when available.
 
     Concurrent callers for the same author ID share one fetch via
     single-flight.
+
+    ``force_refresh=True`` drops both positive and negative cache entries
+    before fetching — author metadata (h_index, works_count) drifts on the
+    same 30-day timescale as works, so a caller may want a fresh read.
     """
     canonical = _canonical_author_id(author_id)
 
-    cached = cache.get(NAMESPACE, "authors", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-    if cached is not None:
-        return cached
-    neg = cache.get_negative(NAMESPACE, "authors", canonical)
-    if neg is not None:
-        return neg
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "authors", canonical)
+    else:
+        cached = cache.get(NAMESPACE, "authors", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "authors", canonical)
+        if neg is not None:
+            return neg
 
     async def _fetch() -> dict[str, Any]:
         cached = cache.get(NAMESPACE, "authors", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
@@ -200,14 +232,21 @@ async def get_author(author_id: str) -> dict[str, Any]:
             )
 
             if response.status_code == 404:
-                err = {"error": f"No author found for ID: {author_id}"}
+                err = {"error": f"No author found for ID: {author_id}", "not_found": True}
                 cache.put_negative(NAMESPACE, "authors", canonical, err)
                 return err
 
             response.raise_for_status()
             data = response.json()
+        except _PARSE_ERRORS:
+            return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("OpenAlex", e)
+
+        if not isinstance(data, dict) or "id" not in data:
+            # Anomalous 200 (non-dict, or missing the entity id) — treat like
+            # a parse failure rather than positive-caching garbage for the TTL.
+            return _parse_error_dict()
 
         cache.put(NAMESPACE, "authors", canonical, data)
         return data
@@ -244,7 +283,11 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         if neg is not None:
             return neg
 
-        api_doi = f"doi:{_normalize_doi(doi)}"
+        # Percent-encode the DOI so reserved characters (#, ?, …) aren't
+        # misread as a URL fragment/query and silently truncate the request
+        # to the wrong record. The prefix/suffix slash stays literal
+        # (safe="/"); the "doi:" path prefix is added outside the encode.
+        api_doi = f"doi:{quote(_normalize_doi(doi), safe='/')}"
         params = _build_params()
 
         try:
@@ -260,8 +303,13 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
             response.raise_for_status()
             data = response.json()
+        except _PARSE_ERRORS:
+            return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("OpenAlex", e)
+
+        if not isinstance(data, dict) or "id" not in data:
+            return _parse_error_dict()
 
         cache.put(NAMESPACE, "works", canonical, data)
         return data
@@ -345,8 +393,19 @@ async def get_works_batch(
             continue
         misses.append(canonical)
 
-    for start in range(0, len(misses), _BATCH_CHUNK_SIZE):
-        chunk = misses[start : start + _BATCH_CHUNK_SIZE]
+    # DOIs containing OpenAlex filter metacharacters ('|' = OR, ',' = AND)
+    # can't be safely OR-joined into the batch filter — they'd corrupt the
+    # query and silently shift which records resolve. Resolve them one at a
+    # time via the singleton path endpoint (properly percent-encoded by
+    # get_work) and batch the rest.
+    safe_misses = [c for c in misses if "|" not in c and "," not in c]
+    unsafe_misses = [c for c in misses if "|" in c or "," in c]
+
+    for canonical in unsafe_misses:
+        out[canonical] = await get_work(canonical, force_refresh=force_refresh)
+
+    for start in range(0, len(safe_misses), _BATCH_CHUNK_SIZE):
+        chunk = safe_misses[start : start + _BATCH_CHUNK_SIZE]
         params = _build_params()
         # OpenAlex's filter syntax: pipe-separated values are OR'd. The
         # bare DOI (no doi.org prefix) is what the filter expects.
@@ -360,15 +419,31 @@ async def get_works_batch(
             )
             response.raise_for_status()
             data = response.json()
+        except _PARSE_ERRORS:
+            # A garbled 200 body — transient. Surface a retryable error for
+            # every DOI in the chunk and do NOT negative-cache (a retry must
+            # re-fetch); we can't tell which DOI the upstream meant to error.
+            parse_err = _parse_error_dict()
+            for canonical in chunk:
+                out[canonical] = parse_err
+            continue
         except _http.HTTPX_ERRORS as e:
             err = _http.error_dict("OpenAlex", e)
             for canonical in chunk:
                 out[canonical] = err
             continue
 
+        if not isinstance(data, dict):
+            parse_err = _parse_error_dict()
+            for canonical in chunk:
+                out[canonical] = parse_err
+            continue
+
         chunk_set = set(chunk)
         seen_in_chunk: set[str] = set()
         for work in data.get("results", []) or []:
+            if not isinstance(work, dict):
+                continue
             work_canonical = _canonical_from_response_doi(work.get("doi"))
             if work_canonical is None or work_canonical not in chunk_set:
                 continue
