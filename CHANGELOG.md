@@ -73,6 +73,19 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- Crossref paper tools (`get_paper_metadata` / `_bibtex`, reference/citation
+  lookups, `search_crossref_by_title`) no longer crash on a malformed response.
+  A 200 with a garbled/truncated JSON body previously raised an uncaught
+  `JSONDecodeError` out of `get_work` / `search_works`; both now return the
+  uniform `{error, retryable: True}` dict (the parse failure is not
+  negative-cached, so a retry re-fetches), and an anomalous 200 missing the
+  `message` payload is treated the same way instead of positive-caching an empty
+  record. Matches the arXiv ([#30]) and bioRxiv ([#31]) hardening. ([#32])
+- Crossref DOIs containing reserved URL characters (e.g. a `#` or `?`) are now
+  percent-encoded in the request path. Previously the raw DOI was interpolated
+  into `/works/{doi}`, so `httpx` read everything after a `#` as a fragment and
+  silently fetched the wrong record; the prefix/suffix slash stays literal.
+  ([#32])
 - bioRxiv/medRxiv paper tools no longer crash on a malformed response. A 200
   with a garbled/truncated JSON body previously raised an uncaught
   `JSONDecodeError`, and a non-numeric `version` in a multi-version record
@@ -408,3 +421,4 @@ grouped by milestone rather than per commit.
 [#29]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/29
 [#30]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/30
 [#31]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/31
+[#32]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/32

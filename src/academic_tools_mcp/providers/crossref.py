@@ -1,6 +1,8 @@
 import asyncio
+import json
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -8,6 +10,25 @@ from .. import _clients, _http, _singleflight, _stats, cache, config
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
+
+# The Crossref REST API returns JSON; a malformed/truncated 200 body raises
+# ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
+# errors so the tool always returns the uniform ``{error}`` contract rather
+# than crashing on a garbled response.
+_PARSE_ERRORS = (json.JSONDecodeError,)
+
+
+def _parse_error_dict() -> dict[str, Any]:
+    """Fresh structured error for an unparseable Crossref response.
+
+    A new dict each call (like ``_http.error_dict``) so a caller — or a
+    single-flight follower sharing the result — can't mutate a shared object.
+    """
+    return {
+        "error": "Crossref returned a response that could not be parsed.",
+        "retryable": True,
+    }
+
 
 # Rate limiting for the polite pool: max 10 req/sec, 3 concurrent.
 # Concurrency cap of 3 matches the polite-pool concurrency budget; gap
@@ -130,7 +151,6 @@ async def search_works(
     Returns ``{"items": [...]}`` on success or ``{"error": ...}`` on
     transport / HTTP failure. Results are not cached (ad-hoc queries).
     """
-    headers = _build_headers()
     params: dict[str, str] = {
         "query.bibliographic": bibliographic,
         "rows": str(min(max(rows, 1), 20)),
@@ -143,16 +163,20 @@ async def search_works(
         response = await _throttled_get(
             client,
             f"{CROSSREF_BASE_URL}/works",
-            headers=headers,
             params=params,
         )
 
         response.raise_for_status()
         data = response.json()
+    except _PARSE_ERRORS:
+        return _parse_error_dict()
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("Crossref", e)
 
-    items = data.get("message", {}).get("items", [])
+    if "message" not in data:
+        return _parse_error_dict()
+
+    items = data["message"].get("items", [])
 
     # Opportunistically warm the works cache. Each search hit is the
     # same shape as a /works/{doi} response, so a follow-up get_work
@@ -164,7 +188,9 @@ async def search_works(
         if not doi:
             continue
         canonical = _canonical_doi(doi)
-        if not cache.has(NAMESPACE, "works", canonical):
+        # TTL-aware (not cache.has) so a stale-but-present entry is refreshed
+        # by fresher search data; mirrors arxiv.search_papers.
+        if cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS) is None:
             cache.put(NAMESPACE, "works", canonical, item)
 
     return {"items": items}
@@ -194,14 +220,17 @@ async def get_work(doi: str) -> dict[str, Any]:
             return neg
 
         bare_doi = _normalize_doi(doi)
-        headers = _build_headers()
 
         try:
             client = _get_client()
             response = await _throttled_get(
                 client,
-                f"{CROSSREF_BASE_URL}/works/{bare_doi}",
-                headers=headers,
+                # Percent-encode the DOI so reserved characters (#, ?, …)
+                # aren't misread as a URL fragment/query and silently
+                # truncate the request to the wrong record. The
+                # prefix/suffix slash stays literal (safe="/") — Crossref's
+                # proven-working form.
+                f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}",
             )
 
             if response.status_code == 404:
@@ -211,10 +240,21 @@ async def get_work(doi: str) -> dict[str, Any]:
 
             response.raise_for_status()
             data = response.json()
+        except _PARSE_ERRORS:
+            # A 200 body we couldn't parse — truncated/garbled. Transient,
+            # not "not found": surface a retryable error and do NOT
+            # negative-cache it so a retry re-fetches rather than serving a
+            # poisoned entry.
+            return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("Crossref", e)
 
-        work = data.get("message", {})
+        if "message" not in data:
+            # Anomalous 200 with no work payload — treat like a parse
+            # failure rather than positive-caching an empty {} for the TTL.
+            return _parse_error_dict()
+
+        work = data["message"]
         cache.put(NAMESPACE, "works", canonical, work)
         return work
 
