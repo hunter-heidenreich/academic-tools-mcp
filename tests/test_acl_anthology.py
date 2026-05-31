@@ -1,3 +1,5 @@
+import pytest
+
 from academic_tools_mcp.providers import acl_anthology
 
 # ---------------------------------------------------------------------------
@@ -20,6 +22,13 @@ class TestIsAclDoi:
 
     def test_arxiv_doi(self):
         assert acl_anthology.is_acl_doi("10.48550/arXiv.2301.00001") is False
+
+    def test_uppercase_prefix(self):
+        # DOIs are case-insensitive; an uppercased 'V1' prefix is still ACL.
+        assert acl_anthology.is_acl_doi("10.18653/V1/2023.acl-long.1") is True
+
+    def test_uppercase_prefix_url(self):
+        assert acl_anthology.is_acl_doi("https://doi.org/10.18653/V1/P16-1160") is True
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +93,14 @@ class TestDoiToAnthologyId:
     def test_new_format_stays_lowercase(self):
         # New-format IDs carry lowercase venue letters that must be preserved.
         assert acl_anthology.doi_to_anthology_id("10.18653/v1/2023.acl-long.1") == "2023.acl-long.1"
+
+    def test_uppercase_prefix_new_format(self):
+        # DOIs are case-insensitive: an uppercased 'V1' prefix still resolves.
+        assert acl_anthology.doi_to_anthology_id("10.18653/V1/2023.acl-long.1") == "2023.acl-long.1"
+
+    def test_uppercase_prefix_old_format(self):
+        # Case-insensitive prefix match AND old-format suffix uppercasing.
+        assert acl_anthology.doi_to_anthology_id("10.18653/V1/p16-1160") == "P16-1160"
 
 
 # ---------------------------------------------------------------------------
@@ -160,3 +177,45 @@ class TestNormalizeDoi:
             acl_anthology._normalize_doi("doi:10.18653/v1/2023.acl-long.1")
             == "10.18653/v1/2023.acl-long.1"
         )
+
+
+# ---------------------------------------------------------------------------
+# PDF cache path
+# ---------------------------------------------------------------------------
+
+
+class TestPdfPath:
+    def test_acl_doi(self):
+        path = acl_anthology.pdf_path("10.18653/v1/2023.acl-long.1")
+        assert path.parent.name == "pdfs"
+        assert path.parent.parent.name == "acl_anthology"
+        assert path.name == "2023.acl-long.1.pdf"
+
+    def test_old_format_uppercased(self):
+        # Round-trips the case-sensitive CDN filename, not the lowercased DOI.
+        assert acl_anthology.pdf_path("10.18653/v1/p16-1160").name == "P16-1160.pdf"
+
+    def test_non_acl_doi_raises(self):
+        # Must not return a sentinel path (e.g. /dev/null) whose .exists() is
+        # True — that would let a non-PDF slip past the convert guard.
+        with pytest.raises(ValueError):
+            acl_anthology.pdf_path("10.1038/s41586-021-03819-2")
+
+
+# ---------------------------------------------------------------------------
+# PDF filename sanitization
+# ---------------------------------------------------------------------------
+
+
+class TestPdfFilename:
+    def test_new_format_unchanged(self):
+        # Regression: real ACL IDs must map to the same filename as before
+        # (no cache migration) — all chars are in the safe set.
+        assert acl_anthology._pdf_filename("2023.acl-long.1") == "2023.acl-long.1.pdf"
+
+    def test_old_format_unchanged(self):
+        assert acl_anthology._pdf_filename("P16-1160") == "P16-1160.pdf"
+
+    def test_metacharacters_neutralized(self):
+        # Defense-in-depth: shell/path metacharacters never reach the filename.
+        assert acl_anthology._pdf_filename("foo;bar") == "foo_bar.pdf"

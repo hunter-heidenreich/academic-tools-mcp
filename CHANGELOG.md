@@ -68,6 +68,12 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- ACL Anthology DOIs are now detected case-insensitively. The `10.18653/v1/`
+  prefix was matched case-sensitively, so a DOI handed in with an uppercased
+  `V1` (DOIs are officially case-insensitive) was rejected — misrouting it to
+  OpenAlex for metadata and failing `download_pdf` with "Not an ACL Anthology
+  DOI". ACL was the only provider exposed (every other prefix is all-digit). The
+  anthology-id suffix handling is unchanged. ([#29])
 - `convert_paper` no longer crashes with an unhandled `FileNotFoundError` when a
   concurrent refresh deletes a paper's cached markdown mid-read. `convert_pdf`
   checked `markdown.exists()` *before* taking the per-paper lock, then read the
@@ -369,3 +375,4 @@ grouped by milestone rather than per commit.
 [#26]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/26
 [#27]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/27
 [#28]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/28
+[#29]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/29
