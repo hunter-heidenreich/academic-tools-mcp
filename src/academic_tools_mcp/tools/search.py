@@ -14,6 +14,7 @@ from .._app import (
     _arxiv_id_from_entry,
     _crossref_date,
     _enrich_error,
+    _first,
     mcp,
 )
 from ..providers import arxiv, crossref, wikipedia
@@ -147,7 +148,7 @@ async def search_crossref_by_title(
         results.append(
             {
                 "doi": item.get("DOI"),
-                "title": (item.get("title") or [None])[0],
+                "title": _first(item.get("title")),
                 "first_author": first_author,
                 "author_count": len(authors),
                 "year": _crossref_date(item)[0],

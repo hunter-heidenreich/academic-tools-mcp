@@ -144,6 +144,18 @@ def _arxiv_id_from_entry(paper: dict[str, Any]) -> str:
     return raw_id
 
 
+def _first(value: Any) -> Any:
+    """First element of a list, else the value itself (or None for empties).
+
+    Crossref returns several scalar-ish fields (title, container-title) as
+    single-element lists, so unwrap them to match the OpenAlex shape. Shared by
+    paper.py (metadata formatting) and search.py (Crossref triage hits).
+    """
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
 # Canonical fallback order for a Crossref work's publication date. Prefers the
 # formally-issued/published dates; `posted` (preprint date, present on every
 # bioRxiv DOI and other preprint-only records) is the last resort so a record

@@ -199,6 +199,26 @@ class TestFormatCrossrefMetadata:
         assert result["publication_date"] == "2024-06"
 
 
+class TestFirstHelper:
+    """Unit coverage for the shared _app._first list-unwrap helper."""
+
+    def test_unwraps_list(self):
+        from academic_tools_mcp._app import _first
+
+        assert _first(["a", "b"]) == "a"
+
+    def test_empty_list_is_none(self):
+        from academic_tools_mcp._app import _first
+
+        assert _first([]) is None
+
+    def test_passes_through_scalar(self):
+        from academic_tools_mcp._app import _first
+
+        assert _first("plain") == "plain"
+        assert _first(None) is None
+
+
 class TestCrossrefDateHelper:
     """Unit coverage for the shared _app._crossref_date helper (used by both
     paper.py metadata formatting and search.py year extraction, so the two
