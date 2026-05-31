@@ -259,58 +259,14 @@ async def get_paper_sections(
     Next step: get_paper_section(identifier, index_or_title).
     """
     target = manual._resolve_target(identifier)
-    namespace = target["namespace"]
-    canonical = target["canonical"]
-
-    md_path = papers._markdown_path(namespace, canonical)
-    if not md_path.exists():
+    sections_data = await papers.get_or_parse_sections(
+        target["namespace"], target["canonical"], force_refresh=force_refresh
+    )
+    if sections_data is None:
         return {
             "error": f"Paper not converted yet for: {identifier}. "
             "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
         }
-
-    # Check cache with checksum validation. Lock serialises concurrent
-    # readers of the same paper so they don't both re-parse and race
-    # to write the sections cache.
-    async with papers._sections_lock(namespace, canonical):
-        if force_refresh:
-            cache.invalidate(namespace, "sections", papers._sections_key(canonical))
-
-        # The outer exists() check raced the lock: a concurrent force_refresh
-        # cascade (download_pdf / convert_paper) may have unlinked the markdown
-        # after we saw it but before we won the lock. _markdown_checksum returns
-        # "" for a missing file, so treat that as "not converted" rather than
-        # letting the read below raise FileNotFoundError. Every unlinker holds
-        # this same lock, so once we have a real checksum the file is stable.
-        current_checksum = papers._markdown_checksum(md_path)
-        if not current_checksum:
-            return {
-                "error": f"Paper not converted yet for: {identifier}. "
-                "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
-            }
-
-        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
-        stored_checksum = cached.get("markdown_checksum") if cached is not None else None
-        if (
-            cached is not None
-            and stored_checksum is not None
-            and stored_checksum == current_checksum
-        ):
-            # Cache valid — return stored sections.
-            sections_data = cached
-        else:
-            # No/stale sections cache — re-parse the markdown off the event loop
-            # (like find_in_paper) and refresh the cache. Read UTF-8 explicitly
-            # so a non-UTF-8 host locale can't mis-decode the cached markdown.
-            def _read_and_parse() -> list[dict[str, Any]]:
-                return papers.parse_sections(md_path.read_text(encoding="utf-8"))
-
-            sections = await asyncio.to_thread(_read_and_parse)
-            sections_data = {
-                "sections": sections,
-                "markdown_checksum": current_checksum,
-            }
-            cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
 
     sections_list = sections_data.get("sections", [])
     return {
