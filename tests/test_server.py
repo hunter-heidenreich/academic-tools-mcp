@@ -7,7 +7,8 @@ across providers and the auto-source picker.
 
 import pytest
 
-from academic_tools_mcp import arxiv, biorxiv, crossref, openalex, opencitations, server
+from academic_tools_mcp import _app, server
+from academic_tools_mcp.providers import arxiv, biorxiv, crossref, openalex, opencitations
 
 # ---------------------------------------------------------------------------
 # get_paper_metadata: follow_published auto-chain to OpenAlex
@@ -178,7 +179,7 @@ class TestReferencesAutoSource:
                 "count": 4,
             }
 
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -200,7 +201,7 @@ class TestReferencesAutoSource:
                 "count": 2,
             }
 
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -217,7 +218,7 @@ class TestReferencesAutoSource:
         async def fake_oc(doi):
             return {"references": [{"doi": "10.2/a"}], "count": 1}
 
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -232,7 +233,7 @@ class TestReferencesAutoSource:
         async def fake_oc(doi):
             return {"error": "OpenCitations says no"}
 
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -254,7 +255,7 @@ class TestReferencesAutoSource:
             cr_called = True
             return {"reference": []}
 
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references(

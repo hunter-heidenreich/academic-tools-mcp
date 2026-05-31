@@ -1,0 +1,390 @@
+"""PDF pipeline tools: download / convert / sections / section / import."""
+
+from pathlib import Path
+from typing import Annotated, Any
+
+from pydantic import Field
+
+from .. import cache, manual, oa_download, papers
+from .._app import (
+    _SECTION_HARNESS_CAP,
+    ALLOW_OA_URL,
+    CONVERT_FORCE_REFRESH,
+    CONVERT_MODE,
+    PAPER_ID,
+    PDF_FORCE_REFRESH,
+    SECTION_MAX_CHARS,
+    SECTION_OFFSET,
+    SECTIONS_FORCE_REFRESH,
+    _enrich_error,
+    mcp,
+)
+from ..providers import acl_anthology, arxiv, biorxiv
+
+_INTERNAL_PATH_KEYS = ("path", "markdown_path")
+
+
+def _strip_internal_paths(result: dict[str, Any]) -> dict[str, Any]:
+    """Drop cache filesystem paths before returning to the agent.
+
+    The agent should drive the pipeline by identifier; exposing on-disk
+    paths tempts it to read files directly instead of using the tools.
+    """
+    if not isinstance(result, dict):
+        return result
+    return {k: v for k, v in result.items() if k not in _INTERNAL_PATH_KEYS}
+
+
+async def _download_pdf_by_provider(
+    identifier: str, *, force_refresh: bool = False, allow_oa_url: bool = False
+) -> dict[str, Any]:
+    """Dispatch PDF download to the correct provider based on identifier type.
+
+    When ``force_refresh=True`` causes a real re-download (``cached``
+    comes back ``False``), the cached markdown + section index for this
+    paper become stale relative to the new bytes on disk. Drop them
+    here so the next ``convert_paper`` picks up the replacement file
+    instead of returning previously-converted text — without this
+    cascade an agent that re-downloads has to remember to also
+    ``convert_paper(force_refresh=True)`` or quietly read stale text.
+    """
+    target = manual._resolve_target(identifier)
+    ns = target["namespace"]
+
+    if ns == "arxiv":
+        result = await arxiv.download_pdf(identifier, force_refresh=force_refresh)
+    elif ns == "acl_anthology":
+        result = await acl_anthology.download_pdf(identifier, force_refresh=force_refresh)
+    elif ns == "biorxiv":
+        result = await biorxiv.download_pdf(identifier, force_refresh=force_refresh)
+    elif allow_oa_url:
+        # Generic publisher DOI + opt-in: fetch the open-access PDF URL
+        # OpenAlex reports for this DOI (never an arbitrary URL). Lands in
+        # the manual namespace, so the force_refresh cascade below and the
+        # rest of the pipeline treat it like any other manual-namespace PDF.
+        result = await oa_download.download_pdf(identifier, force_refresh=force_refresh)
+    else:
+        return {
+            "error": (
+                f"Cannot auto-download PDF for identifier: {identifier!r}. "
+                "Direct download is only supported for arXiv IDs, "
+                "bioRxiv/medRxiv DOIs (10.1101/...), and ACL Anthology DOIs "
+                "(10.18653/v1/...)."
+            ),
+            "suggestion": (
+                "For a generic publisher DOI, retry with allow_oa_url=True to "
+                "fetch the open-access PDF URL OpenAlex reports (if any). "
+                "Otherwise obtain the PDF yourself (publisher site, "
+                "institutional access, browser, curl, etc.), then call "
+                "import_paper(file_path, identifier) with the SAME identifier "
+                "— it will be cached in the correct namespace so convert_paper "
+                "→ get_paper_sections → get_paper_section find it. import_paper "
+                "also accepts pre-converted .md/.markdown files, which skip the "
+                "convert_paper step entirely."
+            ),
+        }
+
+    if force_refresh and "error" not in result and result.get("cached") is False:
+        canonical = target["canonical"]
+        md_path = papers._markdown_path(ns, canonical)
+        try:
+            md_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        cache.invalidate(ns, "sections", papers._sections_key(canonical))
+        result["cascaded_invalidated"] = ["markdown", "sections"]
+
+    return result
+
+
+@mcp.tool
+async def download_pdf(
+    identifier: PAPER_ID,
+    force_refresh: PDF_FORCE_REFRESH = False,
+    allow_oa_url: ALLOW_OA_URL = False,
+) -> dict[str, Any]:
+    """Download and cache the PDF for a paper, auto-detecting the source.
+
+    Direct download is supported for three providers:
+      - arXiv IDs (e.g. 2301.00001)
+      - bioRxiv/medRxiv DOIs (10.1101/...)
+      - ACL Anthology DOIs (10.18653/v1/...)
+
+    Any other identifier (generic publisher DOI, freeform label, etc.)
+    returns an error by default — this tool will NOT fetch arbitrary URLs.
+    For a generic publisher DOI you can opt in with ``allow_oa_url=True``:
+    the tool then fetches ONLY the open-access PDF URL that OpenAlex
+    reports for that DOI (gold/hybrid/green OA). It still never fetches a
+    caller-supplied URL, and it errors cleanly if the paper is
+    closed-access, isn't in OpenAlex, or the URL turns out to be a landing
+    page rather than a PDF — fall back to import_paper in those cases.
+    Obtaining the file yourself and passing it to
+    import_paper(file_path, identifier) with the same identifier always
+    works and deduplicates with the rest of the pipeline.
+
+    Skips download if already cached unless ``force_refresh=True``. Note
+    that re-downloading the PDF does NOT invalidate any already-converted
+    markdown — pass ``force_refresh=True`` to convert_paper too if you
+    want the next conversion to pick up the new file.
+
+    Next step: convert_paper → get_paper_sections → get_paper_section.
+    """
+    return _strip_internal_paths(
+        await _download_pdf_by_provider(
+            identifier, force_refresh=force_refresh, allow_oa_url=allow_oa_url
+        )
+    )
+
+
+@mcp.tool
+async def convert_paper(
+    identifier: PAPER_ID,
+    force_refresh: CONVERT_FORCE_REFRESH = False,
+    mode: CONVERT_MODE = "full",
+) -> dict[str, Any]:
+    """Convert a downloaded PDF to markdown and parse into sections.
+
+    Step 2 of the PDF pipeline (download_pdf → convert_paper →
+    get_paper_sections → get_paper_section). Skips the subprocess if the
+    markdown is already cached — re-parses from the cached markdown if the
+    sections index is missing or stale. ``force_refresh=True`` drops both the
+    cached markdown and the section index so the converter re-runs.
+
+    ``mode="full"`` (default): heavy converter (MinerU/Marker), high quality
+    (tables/equations), but slow (up to 10 minutes, hard timeout) and
+    serialised — only one full conversion runs server-wide at a time.
+    ``mode="fast"``: lightweight text extractor (pdftotext/pymupdf), runs
+    *outside* that lock — seconds, never ``busy`` — but DEGRADED (plain text,
+    no tables/equations/figures/headings). Reach for it when ``full`` times
+    out, the heavy converter isn't installed, or you just need searchable
+    text. Both modes write the same cache slot; a later ``force_refresh``
+    full conversion upgrades a fast one.
+
+    Returns ``{sections, cached, conversion_mode}`` on success. ``cached`` is
+    true when the expensive conversion was skipped (re-parses also count as
+    cached). ``conversion_mode`` echoes which backend produced the markdown
+    (may be null for papers converted before this field existed). Each section
+    entry has ``{index, title, h3s, approx_tokens}``.
+
+    Errors: ``{error, retryable, pdf_size_mb?, suggestion}``.
+      - PDF not cached → suggestion points at download_pdf / import_paper.
+      - Server already running another conversion (full mode only) →
+        ``{busy: True, retryable: True, in_progress: {...}}``. Retry shortly,
+        or call again with ``mode="fast"`` (it doesn't take the lock).
+      - Conversion failure (subprocess error, timeout, no output) →
+        non-retryable. On a full-mode timeout the suggestion points at
+        ``mode="fast"``.
+    """
+    target = manual._resolve_target(identifier)
+    pdf = target["pdf_path"]
+
+    if not pdf.exists():
+        return {
+            "error": f"PDF not cached for: {identifier}. "
+            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section. "
+            "For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself and "
+            "hand it to import_paper (accepts .pdf or .md/.markdown)."
+        }
+
+    result = await papers.convert_pdf(
+        pdf,
+        target["namespace"],
+        target["canonical"],
+        force_refresh=force_refresh,
+        mode=mode,
+    )
+    if "error" in result:
+        if result.get("busy"):
+            return _enrich_error(
+                result,
+                "Another PDF is being converted right now. Wait and retry; "
+                "in the meantime you can still read sections of papers that "
+                "are already converted, retry this one with mode='fast' (a "
+                "quick degraded text-only extraction that skips the lock), or "
+                "work on non-PDF tools.",
+            )
+        if result.get("timed_out") and mode == "full":
+            return _enrich_error(
+                result,
+                "Full conversion exceeded the timeout. For a quick degraded "
+                "fallback, retry with mode='fast' (plain-text extraction, no "
+                "tables/equations) — or raise PDF_CONVERT_TIMEOUT if you need "
+                "the full-quality markdown.",
+            )
+        return _enrich_error(
+            result,
+            "Conversion failed permanently — do not retry. "
+            "The PDF may be too large, corrupted, or in an unsupported format. "
+            "Try importing a different version or pre-converted markdown via import_paper.",
+        )
+    return _strip_internal_paths(result)
+
+
+@mcp.tool
+async def get_paper_sections(
+    identifier: PAPER_ID,
+    force_refresh: SECTIONS_FORCE_REFRESH = False,
+) -> dict[str, Any]:
+    """Get the section index for a converted paper.
+
+    Step 3 of the PDF pipeline. Cheap to call (no network, no conversion).
+    Auto re-parses if the cached markdown's checksum changed;
+    ``force_refresh=True`` drops the section index unconditionally so
+    the next read re-parses the markdown.
+
+    Returns ``{total_sections, total_approx_tokens, sections}`` where each
+    section entry has ``{index, title, preview, approx_tokens}``.
+
+    Errors: not yet converted → guidance to run convert_paper.
+    Next step: get_paper_section(identifier, index_or_title).
+    """
+    target = manual._resolve_target(identifier)
+    namespace = target["namespace"]
+    canonical = target["canonical"]
+
+    md_path = papers._markdown_path(namespace, canonical)
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet for: {identifier}. "
+            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
+        }
+
+    # Check cache with checksum validation. Lock serialises concurrent
+    # readers of the same paper so they don't both re-parse and race
+    # to write the sections cache.
+    async with papers._sections_lock(namespace, canonical):
+        if force_refresh:
+            cache.invalidate(namespace, "sections", papers._sections_key(canonical))
+        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
+        if cached is not None:
+            stored_checksum = cached.get("markdown_checksum", None)
+            current_checksum = papers._markdown_checksum(md_path)
+            if stored_checksum is not None and stored_checksum == current_checksum:
+                # Cache valid — return stored sections
+                sections_data = cached
+            else:
+                # Missing or mismatched checksum — re-parse and update cache
+                markdown = md_path.read_text()
+                sections = papers.parse_sections(markdown)
+                sections_data = {
+                    "sections": sections,
+                    "markdown_checksum": current_checksum,
+                }
+                cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
+        else:
+            # No cache — parse and create
+            markdown = md_path.read_text()
+            sections = papers.parse_sections(markdown)
+            sections_data = {
+                "sections": sections,
+                "markdown_checksum": papers._markdown_checksum(md_path),
+            }
+            cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
+
+    sections_list = sections_data.get("sections", [])
+    return {
+        "total_sections": len(sections_list),
+        "total_approx_tokens": sum(s.get("approx_tokens", 0) for s in sections_list),
+        "sections": sections_list,
+    }
+
+
+@mcp.tool(meta={"anthropic/maxResultSizeChars": _SECTION_HARNESS_CAP})
+async def get_paper_section(
+    identifier: PAPER_ID,
+    section: Annotated[
+        str,
+        Field(
+            description="Integer index (e.g. '0') or case-insensitive title "
+            "substring (e.g. 'Introduction'). "
+            "Call get_paper_sections to see the available sections."
+        ),
+    ],
+    offset: SECTION_OFFSET = 0,
+    max_chars: SECTION_MAX_CHARS = 16000,
+) -> dict[str, Any]:
+    """Read a slice of a section's body. Final step of the PDF pipeline.
+
+    Returns: ``{index, title, content, offset, chars_returned, total_chars,
+    approx_tokens, has_more, next_offset}``. ``total_chars`` and
+    ``approx_tokens`` describe the full section, not the slice. When
+    ``has_more`` is true, call again with ``offset=next_offset`` to continue.
+
+    Errors: not yet converted → guidance to run convert_paper. Unknown or
+    ambiguous section title → error listing the available titles.
+    """
+    target = manual._resolve_target(identifier)
+    md_path = papers._markdown_path(target["namespace"], target["canonical"])
+
+    if not md_path.exists():
+        return {
+            "error": f"Paper not converted yet for: {identifier}. "
+            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
+        }
+
+    markdown = md_path.read_text()
+
+    try:
+        section_key: int | str = int(section)
+    except ValueError:
+        section_key = section
+
+    return papers.get_section_content(markdown, section_key, offset=offset, max_chars=max_chars)
+
+
+_MARKDOWN_EXTS = {".md", ".markdown"}
+
+
+@mcp.tool
+async def import_paper(
+    file_path: Annotated[
+        str,
+        Field(
+            description="Path to a local .pdf or .md/.markdown file. "
+            "Absolute or ~/-prefixed paths recommended. "
+            "PDF is routed through the conversion pipeline; markdown is "
+            "imported directly and skips conversion."
+        ),
+    ],
+    identifier: PAPER_ID,
+) -> dict[str, Any]:
+    """Import a local PDF or pre-converted markdown into the cache.
+
+    For papers outside arXiv/bioRxiv/ACL: fetch the file yourself, then
+    call this with the paper's DOI / arXiv ID as the identifier. The same
+    identifier deduplicates with the rest of the pipeline so a later
+    download_pdf or convert_paper finds it without re-fetching. Unrecognised
+    identifiers still work — the file lands in a ``manual`` namespace and
+    the rest of the pipeline keys off the same identifier.
+
+    File type is detected by extension:
+      - .pdf → validated via %PDF- header, then cached for convert_paper →
+        get_paper_sections → get_paper_section.
+      - .md / .markdown → read as UTF-8, cached, and parsed into sections
+        immediately; skip convert_paper.
+
+    Returns ``{identifier, namespace, size_bytes, cached}`` for PDFs, or
+    ``{identifier, namespace, section_count, cached}`` for markdown — call
+    get_paper_sections for the full section index with previews.
+
+    Errors: file not found, not a valid PDF, non-UTF-8 markdown, or
+    unsupported extension → ``{error}``.
+    """
+    ext = Path(file_path).suffix.lower()
+    if ext == ".pdf":
+        return _strip_internal_paths(manual.import_local_pdf(file_path, identifier))
+    if ext in _MARKDOWN_EXTS:
+        result = _strip_internal_paths(manual.import_markdown(file_path, identifier))
+        if "sections" in result:
+            sections = result.pop("sections")
+            result["section_count"] = len(sections)
+        return result
+    return {
+        "error": (
+            f"Unsupported file extension {ext!r}. "
+            "Expected .pdf (for the PDF pipeline) or .md/.markdown (for "
+            "pre-converted text)."
+        ),
+    }

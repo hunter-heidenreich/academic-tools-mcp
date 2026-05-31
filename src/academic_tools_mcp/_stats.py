@@ -25,6 +25,7 @@ be flipped without restarting.
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 from collections import defaultdict
@@ -37,13 +38,13 @@ _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 # real-time in-flight reporting. Kept in sync with the modules listed
 # in tests/conftest.py's reset fixture.
 _PROVIDER_MODULES = (
-    "arxiv",
-    "openalex",
-    "biorxiv",
-    "crossref",
-    "opencitations",
-    "wikipedia",
-    "acl_anthology",
+    "providers.arxiv",
+    "providers.openalex",
+    "providers.biorxiv",
+    "providers.crossref",
+    "providers.opencitations",
+    "providers.wikipedia",
+    "providers.acl_anthology",
     "oa_download",
 )
 
@@ -112,15 +113,19 @@ def snapshot() -> dict[str, Any]:
 
     # Sample live in-flight from each provider module. Modules with no
     # _pending attribute (or that haven't been imported yet) are skipped.
-    for module_name in _PROVIDER_MODULES:
+    for module_path in _PROVIDER_MODULES:
+        # Snapshot key is the short module name (``arxiv``, ``oa_download``) so
+        # in-flight stats line up with the cache-namespace-keyed counters even
+        # though providers now live under the ``providers`` subpackage.
+        key = module_path.rsplit(".", 1)[-1]
         try:
-            mod = __import__(f"academic_tools_mcp.{module_name}", fromlist=[module_name])
+            mod = importlib.import_module(f"academic_tools_mcp.{module_path}")
         except ImportError:
             continue
         pending = getattr(mod, "_pending", None)
         if pending is None:
             continue
-        out.setdefault(module_name, {})["in_flight"] = int(pending)
+        out.setdefault(key, {})["in_flight"] = int(pending)
 
     return {"providers": out}
 

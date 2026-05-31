@@ -21,9 +21,9 @@ from academic_tools_mcp import (
     cache,
     manual,
     oa_download,
-    openalex,
     server,
 )
+from academic_tools_mcp.providers import openalex
 
 _DOI = "10.1162/tacl_a_00001"
 

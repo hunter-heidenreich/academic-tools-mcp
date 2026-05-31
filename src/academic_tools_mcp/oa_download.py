@@ -24,7 +24,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import _clients, _http, _pdf_download, _singleflight, _stats, manual, openalex
+from . import _clients, _http, _pdf_download, _singleflight, _stats, manual
+from .providers import openalex
 
 NAMESPACE = "oa_download"
 

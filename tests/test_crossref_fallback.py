@@ -10,7 +10,8 @@ fields are null on the fallback response.
 
 import pytest
 
-from academic_tools_mcp import openalex, server
+from academic_tools_mcp import _app, server
+from academic_tools_mcp.providers import openalex
 
 
 # A canonical OpenAlex 404 error dict, as get_work now produces it.
@@ -41,7 +42,7 @@ class TestCrossrefFallbackOn404:
             return dict(_CROSSREF_WORK)
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
 
         result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert result["_source"] == "crossref"
@@ -72,7 +73,7 @@ class TestCrossrefFallbackOn404:
             return dict(_CROSSREF_WORK)
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
 
         result = await server.get_paper_metadata("10.1162/tacl_a_99999")
         assert "error" in result
@@ -98,7 +99,7 @@ class TestCrossrefFallbackOn404:
             return dict(_CROSSREF_WORK)
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
 
         result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert "error" in result
@@ -117,7 +118,7 @@ class TestCrossrefFallbackOn404:
             return {"error": f"No work found on Crossref for DOI: {doi}"}
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(server, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
 
         result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert "error" in result

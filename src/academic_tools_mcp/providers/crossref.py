@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from . import _clients, _http, _singleflight, _stats, cache, config
+from .. import _clients, _http, _singleflight, _stats, cache, config
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"

@@ -1,14 +1,45 @@
 ---
 paths:
   - "src/academic_tools_mcp/server.py"
+  - "src/academic_tools_mcp/_app.py"
+  - "src/academic_tools_mcp/tools/*.py"
   - "src/academic_tools_mcp/bibtex.py"
 ---
 
-# server.py and BibTeX
+# server, tools, and BibTeX
 
-## server.py
+## Layout: `_app.py` + `tools/` + thin `server.py`
 
-FastMCP tool definitions (21 live tools) plus `_lifespan` async context manager that closes pooled clients via `_clients.aclose_all()` on shutdown. Each tool fetches the full cached object then returns only the relevant slice. Tools use `Annotated` types (`DOI`, `AUTHOR_ID`, `PAPER_ID`) for parameter descriptions.
+The 21 MCP tools are split across four `tools/` modules, registered against one
+shared FastMCP instance:
+
+- **`_app.py`** — the shared core: the `mcp = FastMCP(...)` instance, the
+  `_lifespan` context manager (closes pooled clients via `_clients.aclose_all()`
+  on shutdown), the full `Annotated` parameter-type vocabulary (`DOI`,
+  `AUTHOR_ID`, `PAPER_ID`, the `*_FORCE_REFRESH` flags, …), and the helpers used
+  by more than one tool group (`_enrich_error`, `_arxiv_id_from_entry`,
+  `_fetch_crossref_work`). It imports infra / providers / content **only** —
+  never `tools` — so tool modules import from it without a cycle.
+- **`tools/paper.py`** — `get_paper_metadata` / `get_papers_metadata` /
+  `get_paper_authors` / `get_paper_abstract` / `get_paper_bibtex` / `get_author`
+  plus the `_format_*_metadata` helpers.
+- **`tools/pipeline.py`** — `download_pdf` / `convert_paper` /
+  `get_paper_sections` / `get_paper_section` / `import_paper` plus
+  `_download_pdf_by_provider`, `_strip_internal_paths`.
+- **`tools/graph.py`** — `get_paper_references[_count]` / `get_paper_citations[_count]`
+  plus the Crossref/OpenCitations page formatters.
+- **`tools/search.py`** — `search_arxiv` / `search_crossref_by_title` /
+  `find_in_paper` / `search_cached_papers` / `search_wikipedia` /
+  `get_wikipedia_summary`.
+- **`server.py`** — thin entry point: imports `mcp` from `_app`, imports the four
+  tool modules (which registers their `@mcp.tool` decorators), re-exports the tool
+  callables + providers + a few helpers under `server.<name>` for callers/tests,
+  and registers the optional operator-only `get_server_stats` debug tool. The
+  console entry point stays `academic_tools_mcp.server:mcp.run`.
+
+Each tool fetches the full cached object then returns only the relevant slice.
+`_fetch_crossref_work` is monkeypatched by tests at `_app`, so its call sites in
+`paper.py`/`graph.py` go through the module (`_app._fetch_crossref_work(...)`).
 
 Per-source metadata formatting is factored into helpers (`_format_arxiv_metadata` / `_format_biorxiv_metadata` / `_format_openalex_metadata` / `_format_openalex_via_biorxiv`) so `get_paper_metadata` and `get_papers_metadata` produce identical per-paper payloads without duplicating the field mapping.
 

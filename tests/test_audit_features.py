@@ -19,7 +19,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from academic_tools_mcp import cache, openalex, papers, server
+from academic_tools_mcp import cache, papers, server
+from academic_tools_mcp.providers import openalex
 
 # ---------------------------------------------------------------------------
 # Cascade: re-downloading a PDF should drop cached markdown + sections

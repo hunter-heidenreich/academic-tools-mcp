@@ -65,7 +65,7 @@ _DOI_RE = re.compile(r"^10\.\d{4,}/\S+$")
 
 def _is_arxiv_identifier(normalized: str) -> bool:
     """Return True if *normalized* matches an arXiv ID shape."""
-    from . import arxiv
+    from .providers import arxiv
 
     candidate = arxiv._normalize_arxiv_id(normalized)
     return bool(_ARXIV_NEW_RE.match(candidate) or _ARXIV_OLD_RE.match(candidate))
@@ -82,7 +82,7 @@ def _resolve_metadata_source(identifier: str) -> str | None:
     any other DOI shape route to OpenAlex — ACL Anthology has no metadata
     API of its own, and OpenAlex handles arbitrary publisher DOIs.
     """
-    from . import biorxiv
+    from .providers import biorxiv
 
     normalized = _normalize_identifier(identifier)
 
@@ -106,7 +106,7 @@ def _resolve_target(identifier: str) -> dict[str, Any]:
       - canonical: canonical cache key for that provider
       - pdf_path: Path where the provider expects its PDF
     """
-    from . import acl_anthology, arxiv, biorxiv
+    from .providers import acl_anthology, arxiv, biorxiv
 
     normalized = _normalize_identifier(identifier)
 
