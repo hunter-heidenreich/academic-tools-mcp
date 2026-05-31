@@ -375,7 +375,8 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     download aborts mid-stream if it would exceed ``MAX_PDF_BYTES`` so a
     misrouted URL can't fill the disk.
 
-    Returns a dict with the file path and size, or an error.
+    Returns a dict with the file path and size, or an error. Concurrent
+    callers for the same ID share one download via single-flight.
     """
     canonical = _canonical_arxiv_id(arxiv_id)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
@@ -387,27 +388,44 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
             "cached": True,
         }
 
-    # Need the paper metadata to find the PDF URL
-    paper = await get_paper(arxiv_id)
-    if "error" in paper:
-        return paper
+    async def _fetch() -> dict[str, Any]:
+        # Re-check after winning the slot — a concurrent leader may have
+        # just written the file. Skip the short-circuit under force_refresh:
+        # the caller wants fresh bytes, and stream_to_file replaces dest
+        # atomically on success.
+        if not force_refresh and dest.exists():
+            return {
+                "path": str(dest),
+                "size_bytes": dest.stat().st_size,
+                "cached": True,
+            }
 
-    pdf_url = None
-    for link in paper.get("links", []):
-        if link.get("title") == "pdf":
-            pdf_url = link["href"]
-            break
+        # Need the paper metadata to find the PDF URL
+        paper = await get_paper(arxiv_id)
+        if "error" in paper:
+            return paper
 
-    if not pdf_url:
-        return {"error": f"No PDF link found for arXiv ID: {arxiv_id}"}
+        pdf_url = None
+        for link in paper.get("links", []):
+            if link.get("title") == "pdf":
+                pdf_url = link["href"]
+                break
 
-    client = _clients.get_client(NAMESPACE, timeout=30.0)
-    return await _pdf_download.stream_to_file(
-        client,
-        pdf_url,
-        dest,
-        slot_factory=lambda: _request_slot(pdf_url),
-        provider_label="arXiv",
-        timeout=60.0,
-        not_found_message=f"No PDF found for arXiv ID: {arxiv_id}",
-    )
+        if not pdf_url:
+            return {"error": f"No PDF link found for arXiv ID: {arxiv_id}"}
+
+        client = _clients.get_client(NAMESPACE, timeout=30.0)
+        return await _pdf_download.stream_to_file(
+            client,
+            pdf_url,
+            dest,
+            slot_factory=lambda: _request_slot(pdf_url),
+            provider_label="arXiv",
+            timeout=60.0,
+            not_found_message=f"No PDF found for arXiv ID: {arxiv_id}",
+        )
+
+    # Tuple-keyed so this slot is distinct from get_paper's (keyed on the
+    # bare canonical id): _fetch calls get_paper, which would otherwise
+    # await this very slot's future and deadlock.
+    return await _single_flight.do(("pdf", canonical), _fetch)

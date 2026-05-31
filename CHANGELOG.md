@@ -15,6 +15,24 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Changed
+
+- `download_pdf` for arXiv and bioRxiv now coalesces concurrent calls for the
+  same identifier into a single streaming download via single-flight (ACL
+  Anthology already did). Previously two parallel calls for one id could both
+  miss the `dest.exists()` guard and stream the file twice — the atomic rename
+  kept the result correct, but doubled bandwidth and throttle cost. The slot is
+  keyed `("pdf", canonical)` so the inner metadata lookup doesn't deadlock on
+  the download's own slot. ([#22])
+
+### Fixed
+
+- Single-flight no longer logs a spurious `Future exception was never
+  retrieved` warning to stderr when a coalesced fetch with no concurrent
+  followers raises. The leader now marks its own future's exception retrieved
+  before re-raising; failure propagation to waiters and the "failure is not
+  cached" semantics are unchanged. ([#22])
+
 ## [2026.05.29] — 2026-05-29
 
 ### Added
@@ -228,3 +246,4 @@ grouped by milestone rather than per commit.
 [#15]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/15
 [#16]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/16
 [#17]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/17
+[#22]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/22
