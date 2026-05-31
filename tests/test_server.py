@@ -705,6 +705,51 @@ class TestFindInPaper:
 # ---------------------------------------------------------------------------
 
 
+class TestFormatOpenalexAuthors:
+    """Unit coverage for the extracted _format_openalex_authors slice helper."""
+
+    def test_slices_page_and_dedupes_institutions(self):
+        work = {
+            "authorships": [
+                {
+                    "author": {"display_name": "Dan", "id": "A1"},
+                    "author_position": "first",
+                    "is_corresponding": True,
+                    "institutions": [{"display_name": "MIT"}, {"display_name": "CSAIL"}],
+                },
+                {
+                    "author": {"display_name": "Eve", "id": "A2"},
+                    "author_position": "last",
+                    "is_corresponding": False,
+                    "institutions": [{"display_name": "MIT"}],
+                },
+                {
+                    "author": {"display_name": "Frank", "id": "A3"},
+                    "author_position": "middle",
+                    "is_corresponding": False,
+                    "institutions": [{"display_name": "Stanford"}],
+                },
+            ]
+        }
+        # author_count is the global total; the returned page is just [0, 2).
+        out = paper._format_openalex_authors(work, 0, 2)
+        assert out["author_count"] == 3
+        assert [a["name"] for a in out["authors"]] == ["Dan", "Eve"]
+        assert out["authors"][0]["openalex_id"] == "A1"
+        assert out["authors"][0]["position"] == "first"
+        assert out["authors"][0]["is_corresponding"] is True
+        # MIT appears on both page authors but is deduped in the roll-up.
+        assert out["page_institutions"] == ["MIT", "CSAIL"]
+        assert out["page_institution_count"] == 2
+
+    def test_empty_authorships(self):
+        out = paper._format_openalex_authors({}, 0, 25)
+        assert out["author_count"] == 0
+        assert out["authors"] == []
+        assert out["page_institutions"] == []
+        assert out["page_institution_count"] == 0
+
+
 class TestAuthorsShapeSymmetry:
     """Agents that paginate get_paper_authors expect the same keys
     regardless of which provider serves the paper. Earlier the

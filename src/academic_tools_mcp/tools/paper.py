@@ -430,6 +430,47 @@ async def get_papers_metadata(
     return {"count": n, "papers": results}
 
 
+def _format_openalex_authors(work: dict[str, Any], start: int, end: int) -> dict[str, Any]:
+    """Build the OpenAlex-specific author/institution slice for one page.
+
+    Returns ``{author_count, authors, page_institutions,
+    page_institution_count}``; the caller wraps it with the shared envelope
+    (_source, _canonical_id, page, page_size, has_more). ``page_institutions``
+    is the deduped roll-up across the current page only — agents needing a
+    global list dedupe across pages. Mirrors the ``_format_*_metadata``
+    factoring so the tool body stays thin and per-source shaping lives in one
+    place.
+    """
+    all_authorships = work.get("authorships", [])
+    page_authors: list[dict[str, Any]] = []
+    page_institutions: list[str] = []
+    for a in all_authorships[start:end]:
+        author_info = a.get("author", {})
+        inst_names = [
+            inst.get("display_name")
+            for inst in a.get("institutions", [])
+            if inst.get("display_name")
+        ]
+        for name in inst_names:
+            if name not in page_institutions:
+                page_institutions.append(name)
+        page_authors.append(
+            {
+                "name": author_info.get("display_name"),
+                "openalex_id": author_info.get("id"),
+                "position": a.get("author_position"),
+                "is_corresponding": a.get("is_corresponding"),
+                "institutions": inst_names,
+            }
+        )
+    return {
+        "author_count": len(all_authorships),
+        "authors": page_authors,
+        "page_institution_count": len(page_institutions),
+        "page_institutions": page_institutions,
+    }
+
+
 @mcp.tool
 async def get_paper_authors(
     identifier: PAPER_ID,
@@ -511,40 +552,15 @@ async def get_paper_authors(
         work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
             return _enrich_error(work, _OPENALEX_METADATA_HINT)
-        all_authorships = work.get("authorships", [])
-        total = len(all_authorships)
-        page_authorships = all_authorships[start:end]
-        page_authors: list[dict[str, Any]] = []
-        page_institutions: list[str] = []
-        for a in page_authorships:
-            author_info = a.get("author", {})
-            inst_names = [
-                inst.get("display_name")
-                for inst in a.get("institutions", [])
-                if inst.get("display_name")
-            ]
-            for name in inst_names:
-                if name not in page_institutions:
-                    page_institutions.append(name)
-            page_authors.append(
-                {
-                    "name": author_info.get("display_name"),
-                    "openalex_id": author_info.get("id"),
-                    "position": a.get("author_position"),
-                    "is_corresponding": a.get("is_corresponding"),
-                    "institutions": inst_names,
-                }
-            )
+        page_slice = _format_openalex_authors(work, start, end)
+        total = page_slice["author_count"]
         return {
             "_source": "openalex",
             "_canonical_id": canonical_id,
-            "author_count": total,
             "page": page,
             "page_size": page_size,
             "has_more": end < total,
-            "authors": page_authors,
-            "page_institution_count": len(page_institutions),
-            "page_institutions": page_institutions,
+            **page_slice,
         }
 
     return _unknown_identifier_error(identifier)
