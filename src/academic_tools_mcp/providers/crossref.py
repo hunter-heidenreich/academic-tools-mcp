@@ -196,20 +196,27 @@ async def search_works(
     return {"items": items}
 
 
-async def get_work(doi: str) -> dict[str, Any]:
+async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a work by DOI from Crossref, using cache when available.
 
     Concurrent callers for the same DOI share one fetch via single-flight.
     Returns the Crossref work object (the 'message' from the API response).
+
+    ``force_refresh=True`` drops both positive and negative cache entries
+    before fetching — useful when the reference list may have grown since the
+    cached fetch, or to retry an identifier that previously 404'd.
     """
     canonical = _canonical_doi(doi)
 
-    cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-    if cached is not None:
-        return cached
-    neg = cache.get_negative(NAMESPACE, "works", canonical)
-    if neg is not None:
-        return neg
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "works", canonical)
+    else:
+        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "works", canonical)
+        if neg is not None:
+            return neg
 
     async def _fetch() -> dict[str, Any]:
         cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)

@@ -43,6 +43,15 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- The reference/citation graph tools (`get_paper_references[_count]` /
+  `get_paper_citations[_count]`) now accept `force_refresh=True`, dropping the
+  cached entry and re-fetching from the upstream source(s). The citation graph
+  grows continuously (the reason for the 7-day OpenCitations TTL), so this lets
+  an agent pull fresher coverage on demand instead of waiting out the TTL. For
+  `get_paper_references` the refresh applies to **both** OpenCitations and
+  Crossref (`crossref.get_work` gained `force_refresh` to match
+  `openalex.get_work`); pass it on the first page and omit it when paginating so
+  page 2..N reuse the warmed cache. ([#34])
 - `import_paper(..., force_refresh=True)` re-imports a file even when one is
   already cached under the same identifier, replacing the cached copy. For a PDF
   it also drops the cached markdown + section index (cascade), so the next
@@ -73,6 +82,17 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- OpenCitations reference/citation lookups (`get_paper_references[_count]` /
+  `get_paper_citations[_count]`, `source="opencitations"`) no longer crash on a
+  malformed response. A 200 with a garbled/truncated JSON body previously raised
+  an uncaught `JSONDecodeError` out of `get_references` / `get_citations`, and an
+  anomalous 200 that wasn't the expected list of records (a dict / null / string)
+  crashed the record comprehension with an `AttributeError`; both now return the
+  uniform `{error, retryable: True}` dict (not negative-cached, so a retry
+  re-fetches). DOIs are also percent-encoded into the `.../doi:{doi}` request
+  path — a `#`/`?` previously truncated the request and silently fetched
+  references for the wrong record. Completes the parse-hardening sweep across
+  arXiv ([#30]), bioRxiv ([#31]), Crossref ([#32]), and OpenAlex ([#33]). ([#34])
 - OpenAlex paper/author tools (`get_paper_metadata` / `_authors` / `_abstract`
   / `_bibtex`, and the batch `get_papers_metadata`) no longer crash on a
   malformed response. A 200 with a garbled/truncated JSON body previously
@@ -443,3 +463,4 @@ grouped by milestone rather than per commit.
 [#31]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/31
 [#32]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/32
 [#33]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/33
+[#34]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/34
