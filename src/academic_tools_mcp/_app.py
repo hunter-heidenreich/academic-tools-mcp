@@ -156,7 +156,9 @@ FOLLOW_PUBLISHED = Annotated[
             "followed_published=True. If OpenAlex hasn't indexed the journal "
             "version yet, falls back to the preprint record with "
             "_source='biorxiv' and followed_published=False so the lag is "
-            "explicit. Has no effect for other identifier shapes or "
+            "explicit; a *transient* lookup failure (5xx/timeout) adds "
+            "published_lookup_retryable=True so the chain can be retried. "
+            "Has no effect for other identifier shapes or "
             "unpublished preprints (no published_doi → field absent)."
         ),
     ),

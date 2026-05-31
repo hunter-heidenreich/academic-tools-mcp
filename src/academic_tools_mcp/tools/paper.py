@@ -225,10 +225,14 @@ async def get_paper_metadata(
         categories, pdf_url, doi, journal_ref, comment.
       - biorxiv: doi, title, date, version, type, category, license, server,
         published_doi (chain to OpenAlex for the journal version), pdf_url.
-        When ``follow_published=True`` was requested but OpenAlex hasn't
-        indexed the journal version yet, also carries
+        When ``follow_published=True`` was requested but the OpenAlex lookup
+        on the journal version didn't return it, also carries
         ``followed_published=False`` (preprint-era metadata for a paper that
-        *is* published). The field is absent when no chain was attempted
+        *is* published). If that lookup failed *transiently* (5xx/timeout,
+        not a definitive 404), the fallback additionally carries
+        ``published_lookup_retryable=True`` so the agent can retry the chain
+        rather than assume the journal version is unindexed. The
+        ``followed_published`` field is absent when no chain was attempted
         (``follow_published=False`` or no ``published_doi``).
       - openalex: title, doi, publication_year, publication_date, type,
         language, venue, is_oa, oa_status, oa_url.
@@ -269,18 +273,25 @@ async def get_paper_metadata(
             # back to the preprint metadata rather than erroring — the
             # agent asked for "the best version", not "fail if no
             # journal record".
-            work = await openalex.get_work(published_doi, force_refresh=force_refresh)
+            work = await _fetch_work(published_doi, force_refresh=force_refresh)
             if "error" not in work:
                 return _format_openalex_via_biorxiv(
                     work,
                     paper.get("doi"),
                     openalex._canonical_doi(published_doi),
                 )
-            # OpenAlex hasn't indexed the journal version yet — fall back to
-            # the preprint record but signal followed_published=False so the
-            # agent knows it's looking at preprint-era metadata for a paper
-            # that *is* published (vs. one that simply isn't published yet).
-            return _format_biorxiv_metadata(paper, canonical_id, followed_published=False)
+            # OpenAlex didn't return the journal version — fall back to the
+            # preprint record but signal followed_published=False so the agent
+            # knows it's looking at preprint-era metadata for a paper that *is*
+            # published (vs. one that simply isn't published yet). A definitive
+            # 404 (not_found) means "not indexed yet"; a transient failure
+            # (5xx / timeout, no not_found) means a retry might surface the
+            # record, so tag it so the agent can distinguish the two rather
+            # than treating a flaky lookup as a permanent miss.
+            result = _format_biorxiv_metadata(paper, canonical_id, followed_published=False)
+            if not work.get("not_found"):
+                result["published_lookup_retryable"] = True
+            return result
         return _format_biorxiv_metadata(paper, canonical_id)
 
     if source == "openalex":
@@ -455,9 +466,7 @@ async def get_paper_authors(
     if source == "arxiv":
         paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(
-                paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv."
-            )
+            return _enrich_error(paper, _ARXIV_METADATA_HINT)
         authors = paper.get("authors", [])
         total = len(authors)
         return {
@@ -478,9 +487,7 @@ async def get_paper_authors(
     if source == "biorxiv":
         paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(
-                paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title."
-            )
+            return _enrich_error(paper, _BIORXIV_METADATA_HINT)
         authors = paper.get("authors", [])
         total = len(authors)
         return {
@@ -503,10 +510,7 @@ async def get_paper_authors(
     if source == "openalex":
         work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
-            return _enrich_error(
-                work,
-                "Check the DOI format or use search_crossref_by_title to find the correct DOI.",
-            )
+            return _enrich_error(work, _OPENALEX_METADATA_HINT)
         all_authorships = work.get("authorships", [])
         total = len(all_authorships)
         page_authorships = all_authorships[start:end]
@@ -565,9 +569,7 @@ async def get_paper_abstract(
     if source == "arxiv":
         paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(
-                paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv."
-            )
+            return _enrich_error(paper, _ARXIV_METADATA_HINT)
         return {
             "_source": "arxiv",
             "_canonical_id": canonical_id,
@@ -578,9 +580,7 @@ async def get_paper_abstract(
     if source == "biorxiv":
         paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(
-                paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title."
-            )
+            return _enrich_error(paper, _BIORXIV_METADATA_HINT)
         return {
             "_source": "biorxiv",
             "_canonical_id": canonical_id,
@@ -591,10 +591,7 @@ async def get_paper_abstract(
     if source == "openalex":
         work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
-            return _enrich_error(
-                work,
-                "Check the DOI format or use search_crossref_by_title to find the correct DOI.",
-            )
+            return _enrich_error(work, _OPENALEX_METADATA_HINT)
         return {
             "_source": "openalex",
             "_canonical_id": canonical_id,
@@ -628,9 +625,7 @@ async def get_paper_bibtex(
     if source == "arxiv":
         paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(
-                paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv."
-            )
+            return _enrich_error(paper, _ARXIV_METADATA_HINT)
         return {
             "_source": "arxiv",
             "_canonical_id": canonical_id,
@@ -640,9 +635,7 @@ async def get_paper_bibtex(
     if source == "biorxiv":
         paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(
-                paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title."
-            )
+            return _enrich_error(paper, _BIORXIV_METADATA_HINT)
         return {
             "_source": "biorxiv",
             "_canonical_id": canonical_id,
@@ -652,10 +645,7 @@ async def get_paper_bibtex(
     if source == "openalex":
         work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
-            return _enrich_error(
-                work,
-                "Check the DOI format or use search_crossref_by_title to find the correct DOI.",
-            )
+            return _enrich_error(work, _OPENALEX_METADATA_HINT)
         return {
             "_source": "openalex",
             "_canonical_id": canonical_id,
@@ -666,7 +656,10 @@ async def get_paper_bibtex(
 
 
 @mcp.tool
-async def get_author(author_id: AUTHOR_ID) -> dict[str, Any]:
+async def get_author(
+    author_id: AUTHOR_ID,
+    force_refresh: FORCE_REFRESH = False,
+) -> dict[str, Any]:
     """Fetch an author's OpenAlex profile (chain from get_paper_authors).
 
     Returns ``{name, openalex_id, orcid, works_count, cited_by_count,
@@ -674,10 +667,14 @@ async def get_author(author_id: AUTHOR_ID) -> dict[str, Any]:
     ``top_topics`` is capped at 5; ``affiliations`` is the full history
     (each entry: institution, country_code, sorted years).
 
+    ``force_refresh=True`` drops the cached profile and re-fetches — use it
+    when the drifting stats (h_index, cited_by_count, works_count) may be
+    stale, the same way the unified paper tools refresh works.
+
     Errors: not found / bad ID → ``{error, suggestion}`` pointing at
     get_paper_authors (for OpenAlex IDs) or ORCID URLs.
     """
-    author = await openalex.get_author(author_id)
+    author = await openalex.get_author(author_id, force_refresh=force_refresh)
     if "error" in author:
         return _enrich_error(
             author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL."

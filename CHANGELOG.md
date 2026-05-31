@@ -43,6 +43,11 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- `get_author` now accepts `force_refresh=True`, dropping the cached OpenAlex
+  profile and re-fetching — bringing it in line with the unified paper tools.
+  Author stats (`h_index`, `cited_by_count`, `works_count`) drift on the same
+  30-day TTL as works, so an agent can now bust the cache for a fresh profile
+  instead of waiting out the TTL. ([#37])
 - The reference/citation graph tools (`get_paper_references[_count]` /
   `get_paper_citations[_count]`) now accept `force_refresh=True`, dropping the
   cached entry and re-fetching from the upstream source(s). The citation graph
@@ -92,6 +97,13 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- `get_paper_metadata(follow_published=True)` no longer mislabels a *transient*
+  OpenAlex failure on the journal-version lookup as "not indexed yet". When the
+  bioRxiv→journal chain hits a 5xx/timeout (a retryable error, not a definitive
+  404), the preprint fallback now carries `published_lookup_retryable=True` so
+  the agent can retry the chain rather than assuming the journal version is
+  unindexed. A genuine 404 still falls back silently (`followed_published=False`
+  only), since retrying won't surface a record that isn't there. ([#37])
 - The reference/citation graph tools no longer drop the structured error signal
   when surfacing an upstream failure. `get_paper_references_count` and the
   combined-error response from `get_paper_references(source="auto")` previously
@@ -506,3 +518,4 @@ grouped by milestone rather than per commit.
 [#34]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/34
 [#35]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/35
 [#36]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/36
+[#37]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/37
