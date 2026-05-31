@@ -88,13 +88,17 @@ async def _download_pdf_by_provider(
     if force_refresh and "error" not in result and result.get("cached") is False:
         canonical = target["canonical"]
         md_path = papers._markdown_path(ns, canonical)
-        try:
-            md_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
-        cache.invalidate(ns, "sections", papers._sections_key(canonical))
+        # Hold the per-paper sections lock while dropping both halves so a
+        # concurrent convert_pdf can't read a half-cleared state (and so its
+        # cached-markdown read can't race this unlink into a FileNotFoundError).
+        async with papers._sections_lock(ns, canonical):
+            try:
+                md_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+            cache.invalidate(ns, "sections", papers._sections_key(canonical))
         result["cascaded_invalidated"] = ["markdown", "sections"]
 
     return result
