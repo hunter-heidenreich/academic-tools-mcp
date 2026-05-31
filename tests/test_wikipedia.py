@@ -1,10 +1,36 @@
 import asyncio
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from academic_tools_mcp.providers import wikipedia
+
+
+def _mock_client_factory(mock_response, *, urls=None):
+    """Build a monkeypatch replacement for ``httpx.AsyncClient``.
+
+    The persistent client comes from ``_clients.get_client`` (which the
+    autouse conftest fixture clears each test), so patching
+    ``httpx.AsyncClient`` is enough. When ``urls`` is provided every
+    requested URL is appended to it so a test can assert on path encoding.
+    """
+
+    class MockClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url, **kwargs):
+            if urls is not None:
+                urls.append(url)
+            return mock_response
+
+    return lambda **kw: MockClient()
+
 
 # ---------------------------------------------------------------------------
 # Rate limiter
@@ -299,7 +325,184 @@ class TestPageExists:
         """Nonexistent page should return exists=False."""
 
         async def mock_summary(title):
-            return {"error": "Wikipedia page not found: xyzzy"}
+            return {"error": "Wikipedia page not found: xyzzy", "not_found": True}
+
+        monkeypatch.setattr(wikipedia, "get_summary", mock_summary)
+
+        result = await wikipedia.page_exists("xyzzy")
+        assert result["exists"] is False
+        assert result["url"] is None
+
+
+# ---------------------------------------------------------------------------
+# Parse hardening (parity with crossref/openalex/opencitations)
+# ---------------------------------------------------------------------------
+
+
+class TestParseHardening:
+    @pytest.mark.asyncio
+    async def test_search_garbled_body_returns_retryable_error(self, monkeypatch):
+        """A 200 with an unparseable body must not crash search()."""
+        import httpx
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(side_effect=json.JSONDecodeError("bad", "", 0))
+
+        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
+        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(httpx, "AsyncClient", _mock_client_factory(mock_response))
+
+        result = await wikipedia.search("anything")
+        assert "error" in result
+        assert result.get("retryable") is True
+
+    @pytest.mark.asyncio
+    async def test_summary_garbled_body_returns_retryable_error(self, monkeypatch):
+        """A 200 with an unparseable body must not crash get_summary()."""
+        import httpx
+
+        from academic_tools_mcp import cache
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(side_effect=json.JSONDecodeError("bad", "", 0))
+
+        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
+        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
+        monkeypatch.setattr(cache, "get_negative", lambda *a, **kw: None)
+        stored = []
+        monkeypatch.setattr(cache, "put", lambda *a: stored.append(a))
+        monkeypatch.setattr(httpx, "AsyncClient", _mock_client_factory(mock_response))
+
+        result = await wikipedia.get_summary("Some Title")
+        assert "error" in result
+        assert result.get("retryable") is True
+        assert stored == []  # a parse failure is never positive-cached
+
+    @pytest.mark.asyncio
+    async def test_summary_non_dict_body_returns_error(self, monkeypatch):
+        """A 200 whose JSON is a list (not a dict) must not raise AttributeError."""
+        import httpx
+
+        from academic_tools_mcp import cache
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = ["unexpected", "shape"]
+
+        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
+        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
+        monkeypatch.setattr(cache, "get_negative", lambda *a, **kw: None)
+        monkeypatch.setattr(cache, "put", lambda *a: None)
+        monkeypatch.setattr(httpx, "AsyncClient", _mock_client_factory(mock_response))
+
+        result = await wikipedia.get_summary("Some Title")
+        assert "error" in result
+        assert result.get("retryable") is True
+
+
+# ---------------------------------------------------------------------------
+# Title encoding + cache-key case sensitivity
+# ---------------------------------------------------------------------------
+
+
+class TestTitleEncoding:
+    @pytest.mark.asyncio
+    async def test_slash_in_title_is_percent_encoded(self, monkeypatch):
+        """A title like 'AC/DC' must encode the slash, not split the path."""
+        import httpx
+
+        from academic_tools_mcp import cache
+
+        mock_data = {
+            "type": "standard",
+            "title": "AC/DC",
+            "extract": "...",
+            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/AC/DC"}},
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = mock_data
+
+        urls: list[str] = []
+        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
+        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
+        monkeypatch.setattr(cache, "get_negative", lambda *a, **kw: None)
+        monkeypatch.setattr(cache, "put", lambda *a: None)
+        monkeypatch.setattr(httpx, "AsyncClient", _mock_client_factory(mock_response, urls=urls))
+
+        await wikipedia.get_summary("AC/DC")
+        assert len(urls) == 1
+        assert "AC%2FDC" in urls[0]
+        assert not urls[0].endswith("/AC/DC")
+
+
+class TestCacheKeyCaseSensitivity:
+    @pytest.mark.asyncio
+    async def test_case_distinct_titles_use_distinct_cache_keys(self, monkeypatch):
+        """'PET' and 'Pet' are different articles — they must not collide.
+
+        Lowercasing the whole title (the bug) maps both to 'pet', so the
+        second fetch's cache key equals the first and the wrong summary is
+        served. The canonical key must differ beyond the first character.
+        """
+        import httpx
+
+        from academic_tools_mcp import cache
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"type": "standard", "title": "x", "extract": "x"}
+
+        put_keys: list[str] = []
+        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
+        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
+        monkeypatch.setattr(cache, "get_negative", lambda *a, **kw: None)
+        monkeypatch.setattr(cache, "put", lambda ns, entity, ident, data: put_keys.append(ident))
+        monkeypatch.setattr(httpx, "AsyncClient", _mock_client_factory(mock_response))
+
+        await wikipedia.get_summary("PET")
+        await wikipedia.get_summary("Pet")
+
+        assert len(put_keys) == 2
+        assert put_keys[0] != put_keys[1]
+
+
+# ---------------------------------------------------------------------------
+# page_exists: transient errors must not be reported as "doesn't exist"
+# ---------------------------------------------------------------------------
+
+
+class TestPageExistsErrorSemantics:
+    @pytest.mark.asyncio
+    async def test_transient_error_not_reported_as_missing(self, monkeypatch):
+        """A transient failure must not be reported as a confident non-existence."""
+
+        async def mock_summary(title):
+            return {"error": "Wikipedia request timed out. Transient — retry.", "retryable": True}
+
+        monkeypatch.setattr(wikipedia, "get_summary", mock_summary)
+
+        result = await wikipedia.page_exists("Cytochrome P450")
+        assert result.get("exists") is not False  # not a false negative
+        assert "error" in result  # transient error is propagated
+
+    @pytest.mark.asyncio
+    async def test_definitive_404_reports_missing(self, monkeypatch):
+        """A genuine 404 (not_found) is the only thing that means 'doesn't exist'."""
+
+        async def mock_summary(title):
+            return {"error": "Wikipedia page not found: xyzzy", "not_found": True}
 
         monkeypatch.setattr(wikipedia, "get_summary", mock_summary)
 

@@ -82,6 +82,24 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- Wikipedia tools (`search_wikipedia` / `get_wikipedia_summary`) are now hardened
+  to match the rest of the providers. Four issues are fixed: (1) a 200 with a
+  garbled/truncated body — or, for the summary, a non-dict JSON payload —
+  previously raised an uncaught `JSONDecodeError`/`AttributeError` out of
+  `search` / `get_summary`; both now return the uniform `{error, retryable: True}`
+  dict (not negative-cached, so a retry re-fetches). (2) Page titles are now
+  percent-encoded into the summary request path, so a title containing `/`, `#`,
+  or `?` (e.g. `AC/DC`) no longer splits the path or truncates the request to the
+  wrong record. (3) The summary cache key is now case-sensitive beyond the first
+  letter (matching MediaWiki's own title normalization) — previously the whole
+  title was lowercased, so case-distinct articles like `PET` and `Pet` collided
+  and one's summary was served for the other. (4) `page_exists` no longer reports
+  a transient failure (timeout / 5xx / backpressure) as a confident "doesn't
+  exist"; only a definitive 404 (now tagged `not_found: True`, mirroring
+  `openalex.get_work`) yields `exists: False`, while transient errors are
+  propagated so the caller can retry. Completes the parse-hardening sweep across
+  arXiv ([#30]), bioRxiv ([#31]), Crossref ([#32]), OpenAlex ([#33]), and
+  OpenCitations ([#34]). ([#35])
 - OpenCitations reference/citation lookups (`get_paper_references[_count]` /
   `get_paper_citations[_count]`, `source="opencitations"`) no longer crash on a
   malformed response. A 200 with a garbled/truncated JSON body previously raised
@@ -464,3 +482,4 @@ grouped by milestone rather than per commit.
 [#32]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/32
 [#33]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/33
 [#34]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/34
+[#35]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/35

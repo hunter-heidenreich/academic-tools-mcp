@@ -8,8 +8,10 @@ No authentication required. Rate-limited to ~1 req/sec as a courtesy.
 """
 
 import asyncio
+import json
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -19,6 +21,26 @@ NAMESPACE = "wikipedia"
 
 _OPENSEARCH_URL = "https://en.wikipedia.org/w/api.php"
 _SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary"
+
+# Both Wikipedia endpoints return JSON; a malformed/truncated 200 body raises
+# ``json.JSONDecodeError`` on ``.json()``. Handled alongside the HTTP errors so
+# the tools always return the uniform ``{error}`` contract rather than crashing
+# on a garbled response. Mirrors crossref/openalex/opencitations.
+_PARSE_ERRORS = (json.JSONDecodeError,)
+
+
+def _parse_error_dict() -> dict[str, Any]:
+    """Fresh structured error for an unparseable Wikipedia response.
+
+    A new dict each call (like ``_http.error_dict``) so a caller — or a
+    single-flight follower sharing the result — can't mutate a shared object.
+    Marked ``retryable`` and deliberately not negative-cached: a garbled body
+    is transient, so a retry should re-fetch rather than serve a poisoned entry.
+    """
+    return {
+        "error": "Wikipedia returned a response that could not be parsed.",
+        "retryable": True,
+    }
 
 
 def _build_user_agent() -> str:
@@ -126,6 +148,8 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
 
         response.raise_for_status()
         data = response.json()
+    except _PARSE_ERRORS:
+        return _parse_error_dict()
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("Wikipedia", e)
 
@@ -154,8 +178,12 @@ async def get_summary(title: str) -> dict[str, Any]:
     # Normalize: spaces to underscores for the URL path
     url_title = title.strip().replace(" ", "_")
 
-    # Check cache first
-    canonical = url_title.lower()
+    # Cache key. Wikipedia titles are case-SENSITIVE beyond the first
+    # character (only the leading letter is auto-capitalized), so "PET" and
+    # "Pet" are distinct articles — lowercasing the whole title would collide
+    # them and serve one's summary for the other. Fold only the first letter
+    # (matching MediaWiki's own title normalization) and preserve the rest.
+    canonical = url_title[:1].upper() + url_title[1:]
     cached = cache.get(NAMESPACE, "summaries", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
     if cached is not None:
         return cached
@@ -175,18 +203,32 @@ async def get_summary(title: str) -> dict[str, Any]:
             client = _get_client()
             response = await _throttled_get(
                 client,
-                f"{_SUMMARY_URL}/{url_title}",
+                # Percent-encode the whole title segment (safe="" — a slash in
+                # a title like "AC/DC" is part of the title, not a path
+                # separator) so reserved chars (#, ?, /) can't truncate the
+                # request or split the path to the wrong record.
+                f"{_SUMMARY_URL}/{quote(url_title, safe='')}",
             )
 
             if response.status_code == 404:
-                err = {"error": f"Wikipedia page not found: {title}"}
+                # ``not_found: True`` distinguishes a definitive 404 from a
+                # transient error so page_exists can tell "doesn't exist" from
+                # "couldn't check". Mirrors openalex.get_work / get_author.
+                err = {"error": f"Wikipedia page not found: {title}", "not_found": True}
                 cache.put_negative(NAMESPACE, "summaries", canonical, err)
                 return err
 
             response.raise_for_status()
             data = response.json()
+        except _PARSE_ERRORS:
+            return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("Wikipedia", e)
+
+        if not isinstance(data, dict):
+            # Anomalous 200 whose body isn't a JSON object — treat like a parse
+            # failure rather than crashing the data.get(...) calls below.
+            return _parse_error_dict()
 
         result = {
             "title": data.get("title", ""),
@@ -211,13 +253,19 @@ async def page_exists(title: str) -> dict[str, Any]:
     """
     summary = await get_summary(title)
 
-    if "error" in summary:
+    if summary.get("not_found"):
+        # Definitive 404 — the page genuinely doesn't exist.
         return {
             "exists": False,
             "is_disambiguation": False,
             "title": title,
             "url": None,
         }
+    if "error" in summary:
+        # Transient failure (timeout / 5xx / backpressure / parse). We can't
+        # conclude the page is missing — propagate the error as-is so the
+        # caller retries rather than dropping a valid link on a network blip.
+        return summary
 
     return {
         "exists": True,
