@@ -33,7 +33,45 @@ dev = [
     "mcp[cli]>=1.27.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/academic_tools_mcp"]
+
+# --- Lint / format / type-check ------------------------------------------------
+# Style is enforced by tooling, not by rules prose: ruff formats + lints, mypy
+# type-checks. The .claude/rules/ files carry *design* judgment (layering,
+# single-responsibility contracts) that a linter can't express. See
+# .claude/rules/python-design.md.
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Conservative, high-signal set: pyflakes (F), pycodestyle (E/W), isort (I),
+# pyupgrade (UP), flake8-bugbear (B), flake8-comprehensions (C4), flake8-simplify
+# (SIM). E501 is off — the formatter wraps code; long docstrings/URLs are fine.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
+# E501: formatter wraps code; long docstrings/URLs are fine.
+# SIM105 (contextlib.suppress) / SIM108 (force ternary): readability-subjective
+# and fight this codebase's deliberate try/except/pass + explicit if/else style.
+ignore = ["E501", "SIM105", "SIM108"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests lean on fixtures and broad asserts; relax bugbear there.
+"tests/**" = ["B011"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/academic_tools_mcp"]
+# Pragmatic, not strict: this is an existing untyped-in-places codebase, so we
+# check what's annotated and ignore third-party stubs rather than gate the whole
+# tree. Tighten incrementally.
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true

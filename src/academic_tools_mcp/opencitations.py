@@ -32,9 +32,7 @@ _single_flight = _singleflight.SingleFlight()
 _POSITIVE_TTL_SECONDS = 7 * 86400.0
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
+async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
     """Execute a GET request respecting OpenCitations' rate limit.
 
     Refuses past ``_MAX_PENDING`` queued callers via
@@ -61,7 +59,8 @@ async def _throttled_get(
             _stats.log_request(NAMESPACE, url, wait_seconds)
             _stats.incr(NAMESPACE, "http_calls")
             return await _http.get_with_retry(
-                client, url,
+                client,
+                url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
                 provider=NAMESPACE,
                 **kwargs,
@@ -85,11 +84,11 @@ def _normalize_doi(doi: str) -> str:
     """
     doi = doi.strip()
     if doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/"):]
+        doi = doi[len("https://doi.org/") :]
     elif doi.startswith("http://doi.org/"):
-        doi = doi[len("http://doi.org/"):]
+        doi = doi[len("http://doi.org/") :]
     elif doi.startswith("doi:"):
-        doi = doi[len("doi:"):]
+        doi = doi[len("doi:") :]
     return doi
 
 
@@ -151,7 +150,9 @@ async def get_references(doi: str) -> dict[str, Any]:
         return neg
 
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "references", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        cached = cache.get(
+            NAMESPACE, "references", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS
+        )
         if cached is not None:
             return cached
         neg = cache.get_negative(NAMESPACE, "references", canonical)

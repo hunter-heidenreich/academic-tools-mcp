@@ -51,9 +51,7 @@ class LocalBackpressureError(Exception):
         self.pending = pending
         self.max_pending = max_pending
         self.min_gap_seconds = min_gap_seconds
-        super().__init__(
-            f"{provider}: {pending} requests already queued (cap {max_pending})"
-        )
+        super().__init__(f"{provider}: {pending} requests already queued (cap {max_pending})")
 
 
 # Families a well-behaved client should catch around its HTTP block.
@@ -121,7 +119,7 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         if status == 429:
-            result: dict[str, Any] = {
+            result = {
                 "error": f"{provider} rate limit (HTTP 429). Transient — wait and retry.",
             }
             retry_after = _retry_after_seconds(exc.response)

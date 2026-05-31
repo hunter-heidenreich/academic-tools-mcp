@@ -30,7 +30,6 @@ import sys
 from collections import defaultdict
 from typing import Any
 
-
 _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
 
@@ -77,8 +76,7 @@ def log_request(provider: str, url: str, wait_seconds: float) -> None:
     if not debug_requests_enabled():
         return
     print(
-        f"[academic-tools] {provider} GET {url} "
-        f"(throttle wait {wait_seconds:.3f}s)",
+        f"[academic-tools] {provider} GET {url} (throttle wait {wait_seconds:.3f}s)",
         file=sys.stderr,
         flush=True,
     )
@@ -116,9 +114,7 @@ def snapshot() -> dict[str, Any]:
     # _pending attribute (or that haven't been imported yet) are skipped.
     for module_name in _PROVIDER_MODULES:
         try:
-            mod = __import__(
-                f"academic_tools_mcp.{module_name}", fromlist=[module_name]
-            )
+            mod = __import__(f"academic_tools_mcp.{module_name}", fromlist=[module_name])
         except ImportError:
             continue
         pending = getattr(mod, "_pending", None)

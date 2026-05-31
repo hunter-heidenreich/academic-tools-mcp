@@ -1,6 +1,5 @@
 from academic_tools_mcp import manual
 
-
 # ---------------------------------------------------------------------------
 # Identifier normalization
 # ---------------------------------------------------------------------------
@@ -8,25 +7,43 @@ from academic_tools_mcp import manual
 
 class TestNormalizeIdentifier:
     def test_bare_doi(self):
-        assert manual._normalize_identifier("10.1038/s41586-024-00001-1") == "10.1038/s41586-024-00001-1"
+        assert (
+            manual._normalize_identifier("10.1038/s41586-024-00001-1")
+            == "10.1038/s41586-024-00001-1"
+        )
 
     def test_doi_prefix(self):
-        assert manual._normalize_identifier("doi:10.1038/s41586-024-00001-1") == "10.1038/s41586-024-00001-1"
+        assert (
+            manual._normalize_identifier("doi:10.1038/s41586-024-00001-1")
+            == "10.1038/s41586-024-00001-1"
+        )
 
     def test_doi_prefix_uppercase(self):
-        assert manual._normalize_identifier("DOI:10.1038/s41586-024-00001-1") == "10.1038/s41586-024-00001-1"
+        assert (
+            manual._normalize_identifier("DOI:10.1038/s41586-024-00001-1")
+            == "10.1038/s41586-024-00001-1"
+        )
 
     def test_https_doi_url(self):
-        assert manual._normalize_identifier("https://doi.org/10.1038/s41586-024-00001-1") == "10.1038/s41586-024-00001-1"
+        assert (
+            manual._normalize_identifier("https://doi.org/10.1038/s41586-024-00001-1")
+            == "10.1038/s41586-024-00001-1"
+        )
 
     def test_dx_doi_url(self):
-        assert manual._normalize_identifier("https://dx.doi.org/10.1038/s41586-024-00001-1") == "10.1038/s41586-024-00001-1"
+        assert (
+            manual._normalize_identifier("https://dx.doi.org/10.1038/s41586-024-00001-1")
+            == "10.1038/s41586-024-00001-1"
+        )
 
     def test_freeform_label(self):
         assert manual._normalize_identifier("my-paper-2024") == "my-paper-2024"
 
     def test_strips_whitespace(self):
-        assert manual._normalize_identifier("  10.1038/s41586-024-00001-1  ") == "10.1038/s41586-024-00001-1"
+        assert (
+            manual._normalize_identifier("  10.1038/s41586-024-00001-1  ")
+            == "10.1038/s41586-024-00001-1"
+        )
 
 
 class TestCanonicalKey:
@@ -37,7 +54,10 @@ class TestCanonicalKey:
         assert manual._canonical_key("My-Paper-2024") == "my-paper-2024"
 
     def test_normalizes_url(self):
-        assert manual._canonical_key("https://doi.org/10.1038/S41586-024-00001-1") == "10.1038/s41586-024-00001-1"
+        assert (
+            manual._canonical_key("https://doi.org/10.1038/S41586-024-00001-1")
+            == "10.1038/s41586-024-00001-1"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +67,9 @@ class TestCanonicalKey:
 
 class TestPdfFilename:
     def test_doi_slashes_replaced(self):
-        assert manual._pdf_filename("10.1038/s41586-024-00001-1") == "10.1038_s41586-024-00001-1.pdf"
+        assert (
+            manual._pdf_filename("10.1038/s41586-024-00001-1") == "10.1038_s41586-024-00001-1.pdf"
+        )
 
     def test_colons_replaced(self):
         assert manual._pdf_filename("some:label") == "some_label.pdf"
@@ -125,7 +147,10 @@ class TestResolveMetadataSource:
         assert manual._resolve_metadata_source("10.1101/2024.01.01.573838") == "biorxiv"
 
     def test_biorxiv_url(self):
-        assert manual._resolve_metadata_source("https://doi.org/10.1101/2024.01.01.573838") == "biorxiv"
+        assert (
+            manual._resolve_metadata_source("https://doi.org/10.1101/2024.01.01.573838")
+            == "biorxiv"
+        )
 
     def test_acl_doi_routes_to_openalex(self):
         # ACL Anthology has no metadata API — its DOIs route to OpenAlex
@@ -135,7 +160,10 @@ class TestResolveMetadataSource:
         assert manual._resolve_metadata_source("10.1038/s41586-024-00001-1") == "openalex"
 
     def test_doi_url_routes_to_openalex(self):
-        assert manual._resolve_metadata_source("https://doi.org/10.1038/s41586-024-00001-1") == "openalex"
+        assert (
+            manual._resolve_metadata_source("https://doi.org/10.1038/s41586-024-00001-1")
+            == "openalex"
+        )
 
     def test_doi_prefix_routes_to_openalex(self):
         assert manual._resolve_metadata_source("doi:10.1038/s41586-024-00001-1") == "openalex"
@@ -170,6 +198,7 @@ class TestImportLocalPdf:
 
         # Use a unique identifier each run to avoid cross-test cache hits
         import uuid
+
         ident = f"10.1038/test-import-{uuid.uuid4().hex[:8]}"
         result = manual.import_local_pdf(str(pdf), ident)
         assert "error" not in result
@@ -183,6 +212,7 @@ class TestImportLocalPdf:
         pdf.write_bytes(b"%PDF-1.4 fake content")
 
         import uuid
+
         ident = f"10.1038/test-cached-{uuid.uuid4().hex[:8]}"
         manual.import_local_pdf(str(pdf), ident)
         result = manual.import_local_pdf(str(pdf), ident)
@@ -198,6 +228,7 @@ class TestImportLocalPdf:
         pdf.write_bytes(b"%PDF-1.4 fake content")
 
         import uuid
+
         ident = f"2301.{uuid.uuid4().int % 100000:05d}"
         result = manual.import_local_pdf(str(pdf), ident)
         assert "error" not in result
@@ -209,6 +240,7 @@ class TestImportLocalPdf:
         pdf.write_bytes(b"%PDF-1.4 fake content")
 
         import uuid
+
         ident = f"10.1101/2024.01.01.{uuid.uuid4().hex[:6]}"
         result = manual.import_local_pdf(str(pdf), ident)
         assert "error" not in result
@@ -221,6 +253,7 @@ class TestImportLocalPdf:
         bogus.write_bytes(b"\xff\xd8\xff\xe0 some jpeg bytes")
 
         import uuid
+
         ident = f"10.1038/test-bogus-{uuid.uuid4().hex[:8]}"
         result = manual.import_local_pdf(str(bogus), ident)
         assert "error" in result
@@ -231,6 +264,7 @@ class TestImportLocalPdf:
         empty.write_bytes(b"")
 
         import uuid
+
         ident = f"10.1038/test-empty-{uuid.uuid4().hex[:8]}"
         result = manual.import_local_pdf(str(empty), ident)
         assert "error" in result
@@ -258,6 +292,7 @@ class TestImportMarkdown:
         md.write_text("## Introduction\n\nSome text.\n\n## Methods\n\nMore text.")
 
         import uuid
+
         ident = f"10.1038/test-md-{uuid.uuid4().hex[:8]}"
         result = manual.import_markdown(str(md), ident)
         assert "error" not in result
@@ -273,6 +308,7 @@ class TestImportMarkdown:
         md.write_text("## Results\n\nFindings here.")
 
         import uuid
+
         ident = f"10.1038/test-md-cached-{uuid.uuid4().hex[:8]}"
         manual.import_markdown(str(md), ident)
         result = manual.import_markdown(str(md), ident)
@@ -284,7 +320,9 @@ class TestImportMarkdown:
         md.write_text("## Intro\n\nHello.\n\n## Discussion\n\nBye.")
 
         import uuid
+
         from academic_tools_mcp import cache, papers
+
         ident = f"10.1038/test-md-sections-{uuid.uuid4().hex[:8]}"
         result = manual.import_markdown(str(md), ident)
 
@@ -302,7 +340,9 @@ class TestImportMarkdown:
         md.write_text("## Intro\n\nHello.\n\n## Methods\n\nBody.")
 
         import uuid
+
         from academic_tools_mcp import cache, papers
+
         ident = f"10.1038/test-md-checksum-{uuid.uuid4().hex[:8]}"
         result = manual.import_markdown(str(md), ident)
 
@@ -319,6 +359,7 @@ class TestImportMarkdown:
         md.write_text("## Abstract\n\nText.\n\n## Introduction\n\nMore text.")
 
         import uuid
+
         ident = f"2301.{uuid.uuid4().int % 100000:05d}"
         result = manual.import_markdown(str(md), ident)
         assert "error" not in result
@@ -331,6 +372,7 @@ class TestImportMarkdown:
         bad.write_bytes(b"## Title\n\nCaf\xe9 \xff bytes\n")
 
         import uuid
+
         ident = f"10.1038/test-utf8-{uuid.uuid4().hex[:8]}"
         result = manual.import_markdown(str(bad), ident)
         assert "error" in result

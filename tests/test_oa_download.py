@@ -13,7 +13,6 @@ import contextlib
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import httpx
 import pytest
 
 from academic_tools_mcp import (
@@ -68,11 +67,7 @@ def _mock_stream_response(
 def _install_stream(monkeypatch, stream_cm_or_obj) -> None:
     class StubClient:
         def stream(self, *_args, **_kwargs):
-            return (
-                stream_cm_or_obj()
-                if callable(stream_cm_or_obj)
-                else stream_cm_or_obj
-            )
+            return stream_cm_or_obj() if callable(stream_cm_or_obj) else stream_cm_or_obj
 
     monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
 
@@ -161,9 +156,7 @@ class TestMetadataPdfUrl:
 class TestOaDownload:
     @pytest.mark.asyncio
     async def test_success_writes_pdf_to_manual_namespace(self, monkeypatch):
-        _stub_get_work(
-            monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}}
-        )
+        _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
         monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
         fresh = [b"%PDF-1.4 ", b"OA ", b"BODY"]
         _install_stream(monkeypatch, _mock_stream_response(chunks=fresh))
@@ -232,8 +225,11 @@ class TestRequirePdfGuard:
             )
         )
         result = await _pdf_download.stream_to_file(
-            client, "http://x/landing", dest,
-            slot_factory=_passthrough_slot, provider_label="OA download",
+            client,
+            "http://x/landing",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="OA download",
             require_pdf=True,
         )
         assert "error" in result and result["retryable"] is False
@@ -249,8 +245,11 @@ class TestRequirePdfGuard:
             )
         )
         result = await _pdf_download.stream_to_file(
-            client, "http://x/x", dest,
-            slot_factory=_passthrough_slot, provider_label="OA download",
+            client,
+            "http://x/x",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="OA download",
             require_pdf=True,
         )
         assert "error" in result and result["retryable"] is False
@@ -266,8 +265,11 @@ class TestRequirePdfGuard:
             )
         )
         result = await _pdf_download.stream_to_file(
-            client, "http://x/x", dest,
-            slot_factory=_passthrough_slot, provider_label="OA download",
+            client,
+            "http://x/x",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="OA download",
             require_pdf=True,
         )
         assert "error" not in result
@@ -280,8 +282,11 @@ class TestRequirePdfGuard:
             _mock_stream_response(chunks=[b"%PDF-1.5 body"], content_type="")
         )
         result = await _pdf_download.stream_to_file(
-            client, "http://x/x", dest,
-            slot_factory=_passthrough_slot, provider_label="OA download",
+            client,
+            "http://x/x",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="OA download",
             require_pdf=True,
         )
         assert "error" not in result
@@ -329,12 +334,8 @@ class TestServerDispatch:
 
         monkeypatch.setattr(oa_download, "download_pdf", fake_oa_download)
 
-        result = await server._download_pdf_by_provider(
-            _DOI, force_refresh=True, allow_oa_url=True
-        )
+        result = await server._download_pdf_by_provider(_DOI, force_refresh=True, allow_oa_url=True)
 
         assert result["cascaded_invalidated"] == ["markdown", "sections"]
         assert not md_path.exists()
-        assert (
-            cache.get(ns, "sections", papers._sections_key(canonical)) is None
-        )
+        assert cache.get(ns, "sections", papers._sections_key(canonical)) is None

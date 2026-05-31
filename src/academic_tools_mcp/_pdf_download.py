@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 
 from . import _http, config
-
 
 # Default cap. 200 MB is large enough for legitimate physics surveys and
 # image-heavy biology preprints while still short-circuiting "10 GB book
@@ -113,64 +113,53 @@ async def stream_to_file(
     fd_handed_off = False
 
     try:
-        async with slot_factory():
-            async with client.stream("GET", url, timeout=timeout) as response:
-                if response.status_code == 404:
+        async with slot_factory(), client.stream("GET", url, timeout=timeout) as response:
+            if response.status_code == 404:
+                return {"error": (not_found_message or f"{provider_label}: PDF not found at {url}")}
+            response.raise_for_status()
+            if require_pdf:
+                content_type = response.headers.get("content-type", "")
+                if content_type.lower().lstrip().startswith(("text/html", "text/plain")):
                     return {
                         "error": (
-                            not_found_message
-                            or f"{provider_label}: PDF not found at {url}"
-                        )
+                            f"{provider_label}: {url} returned an HTML "
+                            f"page (Content-Type: {content_type}), not a "
+                            "PDF — likely a landing or paywall page."
+                        ),
+                        "retryable": False,
                     }
-                response.raise_for_status()
-                if require_pdf:
-                    content_type = response.headers.get("content-type", "")
-                    if content_type.lower().lstrip().startswith(
-                        ("text/html", "text/plain")
-                    ):
-                        return {
-                            "error": (
-                                f"{provider_label}: {url} returned an HTML "
-                                f"page (Content-Type: {content_type}), not a "
-                                "PDF — likely a landing or paywall page."
-                            ),
-                            "retryable": False,
-                        }
-                checked_pdf = not require_pdf
-                with os.fdopen(fd, "wb") as f:
-                    fd_handed_off = True
-                    async for chunk in response.aiter_bytes(_CHUNK_SIZE):
-                        if not checked_pdf:
-                            # Authoritative content check: the first bytes of
-                            # a PDF are the "%PDF-" magic number. Reject a
-                            # mislabeled HTML page that slipped past the
-                            # Content-Type guard before anything is written.
-                            if not chunk.startswith(b"%PDF-"):
-                                return {
-                                    "error": (
-                                        f"{provider_label}: {url} did not "
-                                        "return a PDF (missing %PDF- header) "
-                                        "— likely a landing or paywall page."
-                                    ),
-                                    "retryable": False,
-                                }
-                            checked_pdf = True
-                        if (
-                            max_bytes is not None
-                            and written + len(chunk) > max_bytes
-                        ):
+            checked_pdf = not require_pdf
+            with os.fdopen(fd, "wb") as f:
+                fd_handed_off = True
+                async for chunk in response.aiter_bytes(_CHUNK_SIZE):
+                    if not checked_pdf:
+                        # Authoritative content check: the first bytes of
+                        # a PDF are the "%PDF-" magic number. Reject a
+                        # mislabeled HTML page that slipped past the
+                        # Content-Type guard before anything is written.
+                        if not chunk.startswith(b"%PDF-"):
                             return {
                                 "error": (
-                                    f"{provider_label}: PDF exceeds "
-                                    f"MAX_PDF_BYTES ({max_bytes} bytes). "
-                                    "Increase MAX_PDF_BYTES or set it to "
-                                    "'none' to disable the cap."
+                                    f"{provider_label}: {url} did not "
+                                    "return a PDF (missing %PDF- header) "
+                                    "— likely a landing or paywall page."
                                 ),
                                 "retryable": False,
-                                "max_bytes": max_bytes,
                             }
-                        f.write(chunk)
-                        written += len(chunk)
+                        checked_pdf = True
+                    if max_bytes is not None and written + len(chunk) > max_bytes:
+                        return {
+                            "error": (
+                                f"{provider_label}: PDF exceeds "
+                                f"MAX_PDF_BYTES ({max_bytes} bytes). "
+                                "Increase MAX_PDF_BYTES or set it to "
+                                "'none' to disable the cap."
+                            ),
+                            "retryable": False,
+                            "max_bytes": max_bytes,
+                        }
+                    f.write(chunk)
+                    written += len(chunk)
         os.replace(tmp_path, dest)
         return {"path": str(dest), "size_bytes": written, "cached": False}
     except _http.HTTPX_ERRORS as e:

@@ -24,8 +24,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from . import _clients, _http, _pdf_download, _singleflight, _stats, manual, openalex
 
 NAMESPACE = "oa_download"
@@ -62,9 +60,7 @@ async def _request_slot(url: str):
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
         _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError(
-            "OA download", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
-        )
+        raise _http.LocalBackpressureError("OA download", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
     _pending += 1
     try:
         async with _request_sem:
@@ -83,9 +79,7 @@ async def _request_slot(url: str):
         _pending -= 1
 
 
-async def download_pdf(
-    identifier: str, *, force_refresh: bool = False
-) -> dict[str, Any]:
+async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Download a generic-DOI PDF via its OpenAlex open-access URL.
 
     Resolves the paper's metadata through OpenAlex, picks the best
@@ -160,9 +154,7 @@ async def download_pdf(
             provider_label="OA download",
             timeout=_PDF_TIMEOUT_SECONDS,
             require_pdf=True,
-            not_found_message=(
-                f"Open-access PDF not found at {url} for {identifier}"
-            ),
+            not_found_message=(f"Open-access PDF not found at {url} for {identifier}"),
         )
 
     return await _single_flight.do(canonical, _fetch)

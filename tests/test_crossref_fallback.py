@@ -33,6 +33,7 @@ class TestCrossrefFallbackOn404:
     @pytest.mark.asyncio
     async def test_falls_back_to_crossref_on_404(self, monkeypatch):
         """OpenAlex 404 + fallback_crossref=True → Crossref-sourced record."""
+
         async def fake_openalex(doi, **kwargs):
             return _openalex_404(doi)
 
@@ -42,9 +43,7 @@ class TestCrossrefFallbackOn404:
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
         monkeypatch.setattr(server, "_fetch_crossref_work", fake_crossref)
 
-        result = await server.get_paper_metadata(
-            "10.1162/tacl_a_99999", fallback_crossref=True
-        )
+        result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert result["_source"] == "crossref"
         assert result["title"] == "A Brand New Paper Not Yet In OpenAlex"
         assert result["venue"] == "Transactions of the ACL"
@@ -101,9 +100,7 @@ class TestCrossrefFallbackOn404:
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
         monkeypatch.setattr(server, "_fetch_crossref_work", fake_crossref)
 
-        result = await server.get_paper_metadata(
-            "10.1162/tacl_a_99999", fallback_crossref=True
-        )
+        result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert "error" in result
         assert "Transient" in result["error"]
         assert called is False, "transient errors must NOT trigger the fallback"
@@ -112,6 +109,7 @@ class TestCrossrefFallbackOn404:
     async def test_crossref_also_misses_returns_openalex_error(self, monkeypatch):
         """OpenAlex 404 + Crossref also errors → fall through to the
         OpenAlex error (not the Crossref one)."""
+
         async def fake_openalex(doi, **kwargs):
             return _openalex_404(doi)
 
@@ -121,9 +119,7 @@ class TestCrossrefFallbackOn404:
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
         monkeypatch.setattr(server, "_fetch_crossref_work", fake_crossref)
 
-        result = await server.get_paper_metadata(
-            "10.1162/tacl_a_99999", fallback_crossref=True
-        )
+        result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert "error" in result
         assert result.get("_source") != "crossref"
         assert "No work found for DOI" in result["error"]

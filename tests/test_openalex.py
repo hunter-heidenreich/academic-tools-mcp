@@ -52,7 +52,10 @@ class TestCanonicalAuthorId:
         assert _canonical_author_id("https://openalex.org/A5023888391") == "a5023888391"
 
     def test_orcid_lowercased(self):
-        assert _canonical_author_id("https://orcid.org/0000-0001-6187-6610") == "https://orcid.org/0000-0001-6187-6610"
+        assert (
+            _canonical_author_id("https://orcid.org/0000-0001-6187-6610")
+            == "https://orcid.org/0000-0001-6187-6610"
+        )
 
 
 class TestReconstructAbstract:
@@ -81,9 +84,7 @@ class TestGetWork404Marker:
     miss (eligible for the Crossref fallback) from a transient error."""
 
     @pytest.mark.asyncio
-    async def test_404_error_carries_not_found_and_negative_caches(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_404_error_carries_not_found_and_negative_caches(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
 
         class StubResponse:

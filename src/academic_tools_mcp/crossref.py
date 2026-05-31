@@ -37,8 +37,7 @@ def _build_headers() -> dict[str, str]:
     mailto = config.get("CROSSREF_MAILTO")
     if mailto:
         headers["User-Agent"] = (
-            f"academic-tools-mcp/1.0 "
-            f"(https://github.com/academic-tools-mcp; mailto:{mailto})"
+            f"academic-tools-mcp/1.0 (https://github.com/academic-tools-mcp; mailto:{mailto})"
         )
     return headers
 
@@ -50,14 +49,10 @@ def _get_client():
     construction so every call automatically opts into the higher rate
     limits.
     """
-    return _clients.get_client(
-        NAMESPACE, headers=_build_headers(), timeout=30.0
-    )
+    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
+async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
     """Execute a GET request respecting Crossref's rate limit.
 
     Refuses past ``_MAX_PENDING`` queued callers via
@@ -67,9 +62,7 @@ async def _throttled_get(
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
         _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError(
-            "Crossref", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
-        )
+        raise _http.LocalBackpressureError("Crossref", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
     _pending += 1
     try:
         async with _request_sem:
@@ -84,7 +77,8 @@ async def _throttled_get(
             _stats.log_request(NAMESPACE, url, wait_seconds)
             _stats.incr(NAMESPACE, "http_calls")
             return await _http.get_with_retry(
-                client, url,
+                client,
+                url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
                 provider=NAMESPACE,
                 **kwargs,
@@ -108,11 +102,11 @@ def _normalize_doi(doi: str) -> str:
     """
     doi = doi.strip()
     if doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/"):]
+        doi = doi[len("https://doi.org/") :]
     elif doi.startswith("http://doi.org/"):
-        doi = doi[len("http://doi.org/"):]
+        doi = doi[len("http://doi.org/") :]
     elif doi.startswith("doi:"):
-        doi = doi[len("doi:"):]
+        doi = doi[len("doi:") :]
     return doi
 
 

@@ -1,7 +1,4 @@
-import pytest
-
 from academic_tools_mcp import acl_anthology
-
 
 # ---------------------------------------------------------------------------
 # DOI detection
@@ -35,25 +32,43 @@ class TestDoiToAnthologyId:
         assert acl_anthology.doi_to_anthology_id("10.18653/v1/2023.acl-long.1") == "2023.acl-long.1"
 
     def test_url_doi(self):
-        assert acl_anthology.doi_to_anthology_id("https://doi.org/10.18653/v1/2023.acl-long.1") == "2023.acl-long.1"
+        assert (
+            acl_anthology.doi_to_anthology_id("https://doi.org/10.18653/v1/2023.acl-long.1")
+            == "2023.acl-long.1"
+        )
 
     def test_prefixed_doi(self):
-        assert acl_anthology.doi_to_anthology_id("doi:10.18653/v1/2023.acl-long.1") == "2023.acl-long.1"
+        assert (
+            acl_anthology.doi_to_anthology_id("doi:10.18653/v1/2023.acl-long.1")
+            == "2023.acl-long.1"
+        )
 
     def test_emnlp(self):
-        assert acl_anthology.doi_to_anthology_id("10.18653/v1/2022.emnlp-main.100") == "2022.emnlp-main.100"
+        assert (
+            acl_anthology.doi_to_anthology_id("10.18653/v1/2022.emnlp-main.100")
+            == "2022.emnlp-main.100"
+        )
 
     def test_naacl(self):
-        assert acl_anthology.doi_to_anthology_id("10.18653/v1/2022.naacl-main.50") == "2022.naacl-main.50"
+        assert (
+            acl_anthology.doi_to_anthology_id("10.18653/v1/2022.naacl-main.50")
+            == "2022.naacl-main.50"
+        )
 
     def test_findings(self):
-        assert acl_anthology.doi_to_anthology_id("10.18653/v1/2023.findings-acl.42") == "2023.findings-acl.42"
+        assert (
+            acl_anthology.doi_to_anthology_id("10.18653/v1/2023.findings-acl.42")
+            == "2023.findings-acl.42"
+        )
 
     def test_non_acl_returns_none(self):
         assert acl_anthology.doi_to_anthology_id("10.1038/s41586-021-03819-2") is None
 
     def test_whitespace_stripped(self):
-        assert acl_anthology.doi_to_anthology_id("  10.18653/v1/2023.acl-long.1  ") == "2023.acl-long.1"
+        assert (
+            acl_anthology.doi_to_anthology_id("  10.18653/v1/2023.acl-long.1  ")
+            == "2023.acl-long.1"
+        )
 
     def test_old_format_lowercased_uppercased(self):
         # Crossref hands old-format DOIs back lowercased; the CDN path is
@@ -78,10 +93,16 @@ class TestDoiToAnthologyId:
 
 class TestPdfUrl:
     def test_basic(self):
-        assert acl_anthology.pdf_url("2023.acl-long.1") == "https://aclanthology.org/2023.acl-long.1.pdf"
+        assert (
+            acl_anthology.pdf_url("2023.acl-long.1")
+            == "https://aclanthology.org/2023.acl-long.1.pdf"
+        )
 
     def test_emnlp(self):
-        assert acl_anthology.pdf_url("2022.emnlp-main.100") == "https://aclanthology.org/2022.emnlp-main.100.pdf"
+        assert (
+            acl_anthology.pdf_url("2022.emnlp-main.100")
+            == "https://aclanthology.org/2022.emnlp-main.100.pdf"
+        )
 
     def test_old_format_lowercased_doi_round_trip(self):
         # A Crossref-lowercased old-format DOI must produce the case-sensitive
@@ -117,13 +138,25 @@ class TestNormalizeAnthologyId:
 
 class TestNormalizeDoi:
     def test_bare(self):
-        assert acl_anthology._normalize_doi("10.18653/v1/2023.acl-long.1") == "10.18653/v1/2023.acl-long.1"
+        assert (
+            acl_anthology._normalize_doi("10.18653/v1/2023.acl-long.1")
+            == "10.18653/v1/2023.acl-long.1"
+        )
 
     def test_https_url(self):
-        assert acl_anthology._normalize_doi("https://doi.org/10.18653/v1/2023.acl-long.1") == "10.18653/v1/2023.acl-long.1"
+        assert (
+            acl_anthology._normalize_doi("https://doi.org/10.18653/v1/2023.acl-long.1")
+            == "10.18653/v1/2023.acl-long.1"
+        )
 
     def test_http_url(self):
-        assert acl_anthology._normalize_doi("http://doi.org/10.18653/v1/2023.acl-long.1") == "10.18653/v1/2023.acl-long.1"
+        assert (
+            acl_anthology._normalize_doi("http://doi.org/10.18653/v1/2023.acl-long.1")
+            == "10.18653/v1/2023.acl-long.1"
+        )
 
     def test_doi_prefix(self):
-        assert acl_anthology._normalize_doi("doi:10.18653/v1/2023.acl-long.1") == "10.18653/v1/2023.acl-long.1"
+        assert (
+            acl_anthology._normalize_doi("doi:10.18653/v1/2023.acl-long.1")
+            == "10.18653/v1/2023.acl-long.1"
+        )

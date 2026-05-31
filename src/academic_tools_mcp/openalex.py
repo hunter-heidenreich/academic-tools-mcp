@@ -46,9 +46,9 @@ def _normalize_doi(doi: str) -> str:
     Returns the doi: prefixed form for the API path.
     """
     if doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/"):]
+        doi = doi[len("https://doi.org/") :]
     elif doi.startswith("doi:"):
-        doi = doi[len("doi:"):]
+        doi = doi[len("doi:") :]
     return doi
 
 
@@ -104,9 +104,7 @@ def _build_headers() -> dict[str, str]:
 
 def _get_client():
     """Return the persistent AsyncClient for OpenAlex calls."""
-    return _clients.get_client(
-        NAMESPACE, headers=_build_headers(), timeout=30.0
-    )
+    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
 async def _throttled_get(url: str, **kwargs: Any):
@@ -125,9 +123,7 @@ async def _throttled_get(url: str, **kwargs: Any):
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
         _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError(
-            "OpenAlex", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
-        )
+        raise _http.LocalBackpressureError("OpenAlex", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
     _pending += 1
     try:
         async with _request_sem:
@@ -143,7 +139,8 @@ async def _throttled_get(url: str, **kwargs: Any):
             _stats.incr(NAMESPACE, "http_calls")
             client = _get_client()
             return await _http.get_with_retry(
-                client, url,
+                client,
+                url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
                 provider=NAMESPACE,
                 **kwargs,
@@ -161,7 +158,7 @@ def _normalize_author_id(author_id: str) -> str:
       - ORCID URL: https://orcid.org/0000-0001-6187-6610
     """
     if author_id.startswith("https://openalex.org/"):
-        author_id = author_id[len("https://openalex.org/"):]
+        author_id = author_id[len("https://openalex.org/") :]
     return author_id
 
 
@@ -290,9 +287,9 @@ def _canonical_from_response_doi(work_doi: str | None) -> str | None:
     if not work_doi:
         return None
     if work_doi.startswith("https://doi.org/"):
-        return work_doi[len("https://doi.org/"):].lower()
+        return work_doi[len("https://doi.org/") :].lower()
     if work_doi.startswith("http://doi.org/"):
-        return work_doi[len("http://doi.org/"):].lower()
+        return work_doi[len("http://doi.org/") :].lower()
     return work_doi.lower()
 
 
@@ -338,9 +335,7 @@ async def get_works_batch(
             cache.invalidate(NAMESPACE, "works", canonical)
             misses.append(canonical)
             continue
-        cached = cache.get(
-            NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS
-        )
+        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
         if cached is not None:
             out[canonical] = cached
             continue
@@ -374,12 +369,12 @@ async def get_works_batch(
         chunk_set = set(chunk)
         seen_in_chunk: set[str] = set()
         for work in data.get("results", []) or []:
-            canonical = _canonical_from_response_doi(work.get("doi"))
-            if canonical is None or canonical not in chunk_set:
+            work_canonical = _canonical_from_response_doi(work.get("doi"))
+            if work_canonical is None or work_canonical not in chunk_set:
                 continue
-            cache.put(NAMESPACE, "works", canonical, work)
-            out[canonical] = work
-            seen_in_chunk.add(canonical)
+            cache.put(NAMESPACE, "works", work_canonical, work)
+            out[work_canonical] = work
+            seen_in_chunk.add(work_canonical)
 
         # Anything we asked for and didn't get back is a definitive
         # miss — cache it negatively so a re-batch in the same session

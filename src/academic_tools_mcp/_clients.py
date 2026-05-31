@@ -93,10 +93,8 @@ async def aclose_all() -> None:
     _clients.clear()
     for client in clients:
         try:
-            await asyncio.wait_for(
-                client.aclose(), timeout=_ACLOSE_TIMEOUT_SECONDS
-            )
-        except (asyncio.TimeoutError, Exception):
+            await asyncio.wait_for(client.aclose(), timeout=_ACLOSE_TIMEOUT_SECONDS)
+        except (TimeoutError, Exception):
             # Shutdown is best-effort; do not let one stuck client
             # block the others from closing.
             pass

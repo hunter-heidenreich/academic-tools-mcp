@@ -127,9 +127,7 @@ def test_get_negative_returns_none_when_absent(tmp_path, monkeypatch):
     assert cache.get_negative("openalex", "works", "missing") is None
 
 
-def test_put_then_get_negative_returns_payload_without_internals(
-    tmp_path, monkeypatch
-):
+def test_put_then_get_negative_returns_payload_without_internals(tmp_path, monkeypatch):
     # The agent should see the same {error: ...} shape it would have
     # gotten from a fresh 404 — _expires_at is bookkeeping and must not
     # leak through.
@@ -164,7 +162,9 @@ def test_expired_negative_entry_self_heals(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
 
     cache.put_negative(
-        "openalex", "works", "expired-1",
+        "openalex",
+        "works",
+        "expired-1",
         {"error": "stale"},
         ttl_seconds=-1.0,  # already expired the moment it was written
     )
@@ -227,9 +227,7 @@ def test_max_age_seconds_keeps_fresh_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put("openalex", "works", "fresh", {"title": "Fresh"})
     # Generous TTL → entry survives.
-    assert cache.get("openalex", "works", "fresh", max_age_seconds=3600) == {
-        "title": "Fresh"
-    }
+    assert cache.get("openalex", "works", "fresh", max_age_seconds=3600) == {"title": "Fresh"}
 
 
 def test_invalidate_drops_positive_and_negative(tmp_path, monkeypatch):

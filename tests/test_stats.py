@@ -34,9 +34,7 @@ def test_stale_eviction_counts_as_miss(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put("biorxiv", "papers", "k", {"x": 1})
-    path = (
-        tmp_path / "biorxiv" / "papers" / f"{cache._cache_key('k')}.json"
-    )
+    path = tmp_path / "biorxiv" / "papers" / f"{cache._cache_key('k')}.json"
     old = path.stat().st_mtime - 9999
     os.utime(path, (old, old))
 
@@ -74,15 +72,18 @@ def test_reset_clears_counters(tmp_path, monkeypatch):
     )
 
 
-@pytest.mark.parametrize("flag,expected", [
-    ("1", True),
-    ("true", True),
-    ("YES", True),
-    ("on", True),
-    ("0", False),
-    ("", False),
-    ("nope", False),
-])
+@pytest.mark.parametrize(
+    "flag,expected",
+    [
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("on", True),
+        ("0", False),
+        ("", False),
+        ("nope", False),
+    ],
+)
 def test_debug_requests_flag(monkeypatch, flag, expected):
     monkeypatch.setenv("DEBUG_REQUESTS", flag)
     assert _stats.debug_requests_enabled() is expected

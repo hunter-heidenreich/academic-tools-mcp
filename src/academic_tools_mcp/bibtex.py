@@ -2,7 +2,6 @@ import re
 import unicodedata
 from typing import Any
 
-
 # OpenAlex type -> BibTeX entry type
 _TYPE_MAP: dict[str, str] = {
     "article": "article",
@@ -126,7 +125,7 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     year = work.get("publication_year", "")
     doi = work.get("doi", "")
     if doi and doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/"):]
+        doi = doi[len("https://doi.org/") :]
 
     biblio = work.get("biblio", {}) or {}
     primary_location = work.get("primary_location", {}) or {}
@@ -143,9 +142,9 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     # Type-specific venue field
     if entry_type == "article" and venue_name:
         fields.append(("journal", f"{{{_escape_bibtex(venue_name)}}}"))
-    elif entry_type == "inproceedings" and venue_name:
-        fields.append(("booktitle", f"{{{_escape_bibtex(venue_name)}}}"))
-    elif entry_type == "incollection" and venue_name:
+    elif (
+        entry_type == "inproceedings" and venue_name or entry_type == "incollection" and venue_name
+    ):
         fields.append(("booktitle", f"{{{_escape_bibtex(venue_name)}}}"))
     elif entry_type == "phdthesis":
         # For dissertations, venue is typically the university
@@ -184,7 +183,7 @@ def generate_bibtex(work: dict[str, Any]) -> str:
             # Extract the numeric arXiv ID: "10.48550/arXiv.1706.03762" -> "1706.03762"
             arxiv_id = doi.split("/")[-1]
             if arxiv_id.lower().startswith("arxiv."):
-                arxiv_id = arxiv_id[len("arxiv."):]
+                arxiv_id = arxiv_id[len("arxiv.") :]
             fields.append(("eprint", f"{{{arxiv_id}}}"))
             fields.append(("archiveprefix", "{arXiv}"))
         elif "openalex" in (ids.get("openalex", "") or ""):

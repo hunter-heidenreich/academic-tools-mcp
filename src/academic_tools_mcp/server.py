@@ -6,7 +6,23 @@ from typing import Annotated, Any, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import _clients, _stats, acl_anthology, arxiv, biorxiv, cache, cache_search, config, crossref, manual, oa_download, opencitations, openalex, papers, wikipedia
+from . import (
+    _clients,
+    _stats,
+    acl_anthology,
+    arxiv,
+    biorxiv,
+    cache,
+    cache_search,
+    config,
+    crossref,
+    manual,
+    oa_download,
+    openalex,
+    opencitations,
+    papers,
+    wikipedia,
+)
 from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 
 
@@ -336,7 +352,9 @@ SECTIONS_FORCE_REFRESH = Annotated[
 
 _ARXIV_METADATA_HINT = "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv."
 _BIORXIV_METADATA_HINT = "Check the DOI format (10.1101/...) or use search_crossref_by_title."
-_OPENALEX_METADATA_HINT = "Check the DOI format or use search_crossref_by_title to find the correct DOI."
+_OPENALEX_METADATA_HINT = (
+    "Check the DOI format or use search_crossref_by_title to find the correct DOI."
+)
 
 
 def _format_arxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
@@ -436,7 +454,7 @@ def _crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
     (and optionally day) are present, a zero-padded ISO string.
     """
     for key in ("issued", "published-print", "published-online", "published"):
-        parts = ((work.get(key) or {}).get("date-parts") or [[]])
+        parts = (work.get(key) or {}).get("date-parts") or [[]]
         first = parts[0] if parts else []
         if first and isinstance(first[0], int):
             year = first[0]
@@ -548,9 +566,7 @@ async def get_paper_metadata(
             # the preprint record but signal followed_published=False so the
             # agent knows it's looking at preprint-era metadata for a paper
             # that *is* published (vs. one that simply isn't published yet).
-            return _format_biorxiv_metadata(
-                paper, canonical_id, followed_published=False
-            )
+            return _format_biorxiv_metadata(paper, canonical_id, followed_published=False)
         return _format_biorxiv_metadata(paper, canonical_id)
 
     if source == "openalex":
@@ -736,7 +752,9 @@ async def get_paper_authors(
     if source == "arxiv":
         paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
+            return _enrich_error(
+                paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv."
+            )
         authors = paper.get("authors", [])
         total = len(authors)
         return {
@@ -757,7 +775,9 @@ async def get_paper_authors(
     if source == "biorxiv":
         paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+            return _enrich_error(
+                paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title."
+            )
         authors = paper.get("authors", [])
         total = len(authors)
         return {
@@ -780,11 +800,14 @@ async def get_paper_authors(
     if source == "openalex":
         work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
-            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+            return _enrich_error(
+                work,
+                "Check the DOI format or use search_crossref_by_title to find the correct DOI.",
+            )
         all_authorships = work.get("authorships", [])
         total = len(all_authorships)
         page_authorships = all_authorships[start:end]
-        authors: list[dict[str, Any]] = []
+        page_authors: list[dict[str, Any]] = []
         page_institutions: list[str] = []
         for a in page_authorships:
             author_info = a.get("author", {})
@@ -796,13 +819,15 @@ async def get_paper_authors(
             for name in inst_names:
                 if name not in page_institutions:
                     page_institutions.append(name)
-            authors.append({
-                "name": author_info.get("display_name"),
-                "openalex_id": author_info.get("id"),
-                "position": a.get("author_position"),
-                "is_corresponding": a.get("is_corresponding"),
-                "institutions": inst_names,
-            })
+            page_authors.append(
+                {
+                    "name": author_info.get("display_name"),
+                    "openalex_id": author_info.get("id"),
+                    "position": a.get("author_position"),
+                    "is_corresponding": a.get("is_corresponding"),
+                    "institutions": inst_names,
+                }
+            )
         return {
             "_source": "openalex",
             "_canonical_id": canonical_id,
@@ -810,7 +835,7 @@ async def get_paper_authors(
             "page": page,
             "page_size": page_size,
             "has_more": end < total,
-            "authors": authors,
+            "authors": page_authors,
             "page_institution_count": len(page_institutions),
             "page_institutions": page_institutions,
         }
@@ -837,7 +862,9 @@ async def get_paper_abstract(
     if source == "arxiv":
         paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
+            return _enrich_error(
+                paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv."
+            )
         return {
             "_source": "arxiv",
             "_canonical_id": canonical_id,
@@ -848,7 +875,9 @@ async def get_paper_abstract(
     if source == "biorxiv":
         paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+            return _enrich_error(
+                paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title."
+            )
         return {
             "_source": "biorxiv",
             "_canonical_id": canonical_id,
@@ -859,7 +888,10 @@ async def get_paper_abstract(
     if source == "openalex":
         work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
-            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+            return _enrich_error(
+                work,
+                "Check the DOI format or use search_crossref_by_title to find the correct DOI.",
+            )
         return {
             "_source": "openalex",
             "_canonical_id": canonical_id,
@@ -893,7 +925,9 @@ async def get_paper_bibtex(
     if source == "arxiv":
         paper = await arxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv.")
+            return _enrich_error(
+                paper, "Check the arXiv ID format (e.g. 2301.00001) or use search_arxiv."
+            )
         return {
             "_source": "arxiv",
             "_canonical_id": canonical_id,
@@ -903,7 +937,9 @@ async def get_paper_bibtex(
     if source == "biorxiv":
         paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
         if "error" in paper:
-            return _enrich_error(paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title.")
+            return _enrich_error(
+                paper, "Check the DOI format (10.1101/...) or use search_crossref_by_title."
+            )
         return {
             "_source": "biorxiv",
             "_canonical_id": canonical_id,
@@ -913,7 +949,10 @@ async def get_paper_bibtex(
     if source == "openalex":
         work = await _fetch_work(identifier, force_refresh=force_refresh)
         if "error" in work:
-            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+            return _enrich_error(
+                work,
+                "Check the DOI format or use search_crossref_by_title to find the correct DOI.",
+            )
         return {
             "_source": "openalex",
             "_canonical_id": canonical_id,
@@ -937,7 +976,9 @@ async def get_author(author_id: AUTHOR_ID) -> dict[str, Any]:
     """
     author = await openalex.get_author(author_id)
     if "error" in author:
-        return _enrich_error(author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL.")
+        return _enrich_error(
+            author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL."
+        )
 
     stats = author.get("summary_stats") or {}
     current_institutions = [
@@ -952,11 +993,13 @@ async def get_author(author_id: AUTHOR_ID) -> dict[str, Any]:
     affiliations = []
     for aff in author.get("affiliations") or []:
         inst = aff.get("institution") or {}
-        affiliations.append({
-            "institution": inst.get("display_name"),
-            "country_code": inst.get("country_code"),
-            "years": sorted(aff.get("years") or []),
-        })
+        affiliations.append(
+            {
+                "institution": inst.get("display_name"),
+                "country_code": inst.get("country_code"),
+                "years": sorted(aff.get("years") or []),
+            }
+        )
 
     return {
         "name": author.get("display_name"),
@@ -1097,11 +1140,7 @@ async def _download_pdf_by_provider(
             ),
         }
 
-    if (
-        force_refresh
-        and "error" not in result
-        and result.get("cached") is False
-    ):
+    if force_refresh and "error" not in result and result.get("cached") is False:
         canonical = target["canonical"]
         md_path = papers._markdown_path(ns, canonical)
         try:
@@ -1456,7 +1495,9 @@ async def search_crossref_by_title(
     """
     response = await crossref.search_works(title, year=year, rows=5)
     if "error" in response:
-        return _enrich_error(response, "Try a more specific title or use search_arxiv if it's a preprint.")
+        return _enrich_error(
+            response, "Try a more specific title or use search_arxiv if it's a preprint."
+        )
     items = response.get("items", [])
 
     results = []
@@ -1472,13 +1513,15 @@ async def search_crossref_by_title(
         pub_date = item.get("published-print") or item.get("published-online") or {}
         date_parts = pub_date.get("date-parts", [[]])[0]
 
-        results.append({
-            "doi": item.get("DOI"),
-            "title": (item.get("title") or [None])[0],
-            "first_author": first_author,
-            "author_count": len(authors),
-            "year": date_parts[0] if date_parts else None,
-        })
+        results.append(
+            {
+                "doi": item.get("DOI"),
+                "title": (item.get("title") or [None])[0],
+                "first_author": first_author,
+                "author_count": len(authors),
+                "year": date_parts[0] if date_parts else None,
+            }
+        )
 
     return {"total_results": len(results), "results": results}
 
@@ -1563,7 +1606,9 @@ async def get_paper_references_count(doi: DOI) -> dict[str, Any]:
     return {"doi": doi, "sources": sources}
 
 
-def _crossref_refs_page(work: dict[str, Any], doi: str, page: int, page_size: int) -> dict[str, Any]:
+def _crossref_refs_page(
+    work: dict[str, Any], doi: str, page: int, page_size: int
+) -> dict[str, Any]:
     raw_refs = work.get("reference") or []
     total = len(raw_refs)
     start = (page - 1) * page_size
@@ -1579,7 +1624,9 @@ def _crossref_refs_page(work: dict[str, Any], doi: str, page: int, page_size: in
     }
 
 
-def _opencitations_refs_page(data: dict[str, Any], doi: str, page: int, page_size: int) -> dict[str, Any]:
+def _opencitations_refs_page(
+    data: dict[str, Any], doi: str, page: int, page_size: int
+) -> dict[str, Any]:
     refs = data.get("references", [])
     total = len(refs)
     start = (page - 1) * page_size
@@ -1631,7 +1678,10 @@ async def get_paper_references(
     if source == "crossref":
         work = await _fetch_crossref_work(doi)
         if "error" in work:
-            return _enrich_error(work, "Check the DOI format or use search_crossref_by_title to find the correct DOI.")
+            return _enrich_error(
+                work,
+                "Check the DOI format or use search_crossref_by_title to find the correct DOI.",
+            )
         return _crossref_refs_page(work, doi, page, page_size)
 
     if source == "opencitations":
@@ -2030,7 +2080,9 @@ async def search_wikipedia(
     """
     response = await wikipedia.search(query, limit=limit)
     if "error" in response:
-        return _enrich_error(response, "Wikipedia is temporarily unavailable; retry in a few seconds.")
+        return _enrich_error(
+            response, "Wikipedia is temporarily unavailable; retry in a few seconds."
+        )
     results = response.get("results", [])
     return {"query": query, "result_count": len(results), "results": results}
 
@@ -2066,8 +2118,6 @@ async def get_wikipedia_summary(
     return result
 
 
-
-
 # ---------------------------------------------------------------------------
 # Operator-only debug tools (gated behind ENABLE_DEBUG_TOOLS env var)
 # ---------------------------------------------------------------------------
@@ -2078,10 +2128,14 @@ async def get_wikipedia_summary(
 # within Claude Code itself, without dropping into a Python REPL.
 
 _DEBUG_TOOLS_ENABLED = (config.get("ENABLE_DEBUG_TOOLS") or "").lower() in (
-    "1", "true", "yes", "on"
+    "1",
+    "true",
+    "yes",
+    "on",
 )
 
 if _DEBUG_TOOLS_ENABLED:
+
     @mcp.tool
     async def get_server_stats() -> dict[str, Any]:
         """Operator-only: snapshot cumulative cache + HTTP counters.

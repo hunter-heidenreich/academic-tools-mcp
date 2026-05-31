@@ -191,7 +191,7 @@ def _build_fast_converter_command(pdf_path: Path) -> str:
 
 def _markdown_checksum(md_path: Path) -> str:
     """Compute SHA-256 hex digest of a markdown file.
-    
+
     Used for cache invalidation — if the markdown changes, sections must be re-parsed.
     Returns empty string if the file doesn't exist.
     """
@@ -202,9 +202,7 @@ def _markdown_checksum(md_path: Path) -> str:
 
 def _markdown_path(namespace: str, canonical: str) -> Path:
     """Return the cache path for converted markdown."""
-    return cache._cache_dir(namespace, "markdown") / (
-        canonical.replace("/", "_") + ".md"
-    )
+    return cache._cache_dir(namespace, "markdown") / (canonical.replace("/", "_") + ".md")
 
 
 def _sections_key(canonical: str) -> str:
@@ -293,12 +291,14 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
         content = "\n".join(current_lines)
         # Only add if there's meaningful content (not just whitespace)
         if content.strip():
-            sections.append({
-                "index": len(sections),
-                "title": current_title,
-                "h3s": current_h3s[:],
-                "approx_tokens": max(1, len(content) // _CHARS_PER_TOKEN),
-            })
+            sections.append(
+                {
+                    "index": len(sections),
+                    "title": current_title,
+                    "h3s": current_h3s[:],
+                    "approx_tokens": max(1, len(content) // _CHARS_PER_TOKEN),
+                }
+            )
 
     for line in lines:
         m = _HEADING_RE.match(line)
@@ -381,10 +381,7 @@ def find_in_markdown(
             current_start = i + 1
     boundaries.append((current_title, current_start, len(lines)))
     # Drop empty sections so the indexing matches get_section_content.
-    boundaries = [
-        (t, s, e) for t, s, e in boundaries
-        if "\n".join(lines[s:e]).strip()
-    ]
+    boundaries = [(t, s, e) for t, s, e in boundaries if "\n".join(lines[s:e]).strip()]
 
     if normalize:
         folded_query = _textnorm.fold(query)
@@ -420,19 +417,21 @@ def find_in_markdown(
                 matched = match.group()
             else:
                 pos = index_map[match.start()]
-                matched = section_text[pos:index_map[match.end()]]
+                matched = section_text[pos : index_map[match.end()]]
             ws = max(0, pos - _FIND_SNIPPET_WINDOW)
             we = min(len(section_text), pos + len(matched) + _FIND_SNIPPET_WINDOW)
             # Collapse newlines so the snippet renders on one line in
             # the agent's view; the surrounding context stays readable.
             snippet = section_text[ws:we].replace("\n", " ").strip()
-            hits.append({
-                "section_index": section_index,
-                "section": title,
-                "char_offset": pos,
-                "match": matched,
-                "snippet": snippet,
-            })
+            hits.append(
+                {
+                    "section_index": section_index,
+                    "section": title,
+                    "char_offset": pos,
+                    "match": matched,
+                    "snippet": snippet,
+                }
+            )
     return hits, False
 
 
@@ -479,46 +478,32 @@ def get_section_content(
 
     boundaries.append((current_title, current_start, len(lines)))
 
-    boundaries = [
-        (t, s, e) for t, s, e in boundaries
-        if "\n".join(lines[s:e]).strip()
-    ]
+    boundaries = [(t, s, e) for t, s, e in boundaries if "\n".join(lines[s:e]).strip()]
 
     if isinstance(section, int):
         if 0 <= section < len(boundaries):
             resolved_index = section
             title, start, end = boundaries[section]
         else:
-            return {
-                "error": f"Section index {section} out of range (0-{len(boundaries) - 1})"
-            }
+            return {"error": f"Section index {section} out of range (0-{len(boundaries) - 1})"}
     else:
         query = section.lower()
-        matches = [
-            (i, t, s, e) for i, (t, s, e) in enumerate(boundaries)
-            if query in t.lower()
-        ]
+        matches = [(i, t, s, e) for i, (t, s, e) in enumerate(boundaries) if query in t.lower()]
         if len(matches) == 1:
             resolved_index, title, start, end = matches[0]
         elif len(matches) > 1:
             titles = [t for _, t, _, _ in matches]
-            return {
-                "error": f"Ambiguous section title '{section}'. Matches: {titles}"
-            }
+            return {"error": f"Ambiguous section title '{section}'. Matches: {titles}"}
         else:
             titles = [t for t, _, _ in boundaries]
-            return {
-                "error": f"No section matching '{section}'. Available: {titles}"
-            }
+            return {"error": f"No section matching '{section}'. Available: {titles}"}
 
     full_content = "\n".join(lines[start:end]).strip()
     total_chars = len(full_content)
     approx_tokens = max(1, total_chars // _CHARS_PER_TOKEN)
 
     if offset > total_chars:
-        return {
-            "error": f"offset {offset} is beyond section length {total_chars}"
-        }
+        return {"error": f"offset {offset} is beyond section length {total_chars}"}
 
     end_offset = min(offset + max_chars, total_chars)
     slice_content = full_content[offset:end_offset]
@@ -557,7 +542,7 @@ def _finalize_markdown(
     # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
     # When there is no caption, the path is never useful, so drop it.
     # When there is a caption, keep the caption text and drop the path.
-    markdown = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'![\1]()', markdown)
+    markdown = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"![\1]()", markdown)
 
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(markdown)
@@ -628,7 +613,9 @@ async def _convert_fast(
             # start_new_session=True so a timeout can SIGKILL the whole tree.
             # stderr is kept separate (not merged) so stdout is pure text.
             proc = await asyncio.create_subprocess_exec(
-                "bash", "-c", cmd,
+                "bash",
+                "-c",
+                cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -650,17 +637,15 @@ async def _convert_fast(
             if timeout is None:
                 stdout, stderr = await proc.communicate()
             else:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-        except asyncio.TimeoutError:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except TimeoutError:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             return {
                 "error": (
@@ -678,9 +663,9 @@ async def _convert_fast(
         if proc.returncode != 0:
             # Prefer stderr (where extractors write diagnostics); fall back to
             # stdout. Replace undecodable bytes rather than raising.
-            output = (stderr or b"").decode("utf-8", errors="replace") or (
-                stdout or b""
-            ).decode("utf-8", errors="replace")
+            output = (stderr or b"").decode("utf-8", errors="replace") or (stdout or b"").decode(
+                "utf-8", errors="replace"
+            )
             return {
                 "error": f"Fast PDF extraction failed (exit {proc.returncode}): {output[-500:]}",
                 "retryable": False,
@@ -752,16 +737,11 @@ async def convert_pdf(
         async with _sections_lock(namespace, canonical):
             markdown = md_path.read_text()
             current_checksum = _markdown_checksum(md_path)
-            cached_sections = cache.get(
-                namespace, "sections", _sections_key(canonical)
-            )
+            cached_sections = cache.get(namespace, "sections", _sections_key(canonical))
 
             if cached_sections is not None:
                 stored_checksum = cached_sections.get("markdown_checksum")
-                if (
-                    stored_checksum is not None
-                    and stored_checksum == current_checksum
-                ):
+                if stored_checksum is not None and stored_checksum == current_checksum:
                     # Don't use dict.get's default arg — it evaluates eagerly
                     # and would call parse_sections on every cache hit.
                     sections = cached_sections.get("sections")
@@ -778,9 +758,7 @@ async def convert_pdf(
             # and refresh the sections cache. No subprocess needed. Preserve the
             # recorded conversion_mode if a (stale-checksum) entry carried one.
             recorded_mode = (
-                cached_sections.get("conversion_mode")
-                if cached_sections is not None
-                else None
+                cached_sections.get("conversion_mode") if cached_sections is not None else None
             )
             sections = parse_sections(markdown)
             cache.put(
@@ -843,8 +821,9 @@ async def convert_pdf(
                 # whole tree on timeout. Without it, killing `proc` only kills
                 # bash and orphans the converter, which keeps eating CPU/GPU.
                 proc = await asyncio.create_subprocess_exec(
-                    "bash", "-c",
-                    f'rm -rf {quoted_extract} 2>/dev/null; {converter_cmd} 2>&1',
+                    "bash",
+                    "-c",
+                    f"rm -rf {quoted_extract} 2>/dev/null; {converter_cmd} 2>&1",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
@@ -866,10 +845,8 @@ async def convert_pdf(
                 if timeout is None:
                     stdout, stderr = await proc.communicate()
                 else:
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(), timeout=timeout
-                    )
-            except asyncio.TimeoutError:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except TimeoutError:
                 # Take down the whole process group, then give it a moment to
                 # actually exit before we return so we don't leave zombies.
                 try:
@@ -878,7 +855,7 @@ async def convert_pdf(
                     pass
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 return {
                     "error": (
@@ -896,9 +873,8 @@ async def convert_pdf(
                 # Converter output may include binary noise on crashes;
                 # replace undecodable bytes rather than raising
                 # UnicodeDecodeError ourselves.
-                output = (
-                    (stdout or b"").decode("utf-8", errors="replace")
-                    + (stderr or b"").decode("utf-8", errors="replace")
+                output = (stdout or b"").decode("utf-8", errors="replace") + (stderr or b"").decode(
+                    "utf-8", errors="replace"
                 )
                 return {
                     "error": f"PDF conversion failed (exit {proc.returncode}): {output[-500:]}",
@@ -922,9 +898,7 @@ async def convert_pdf(
                 }
 
             source_md = candidates[0]
-            return _finalize_markdown(
-                namespace, canonical, md_path, source_md.read_text(), "full"
-            )
+            return _finalize_markdown(namespace, canonical, md_path, source_md.read_text(), "full")
         finally:
             # Clean up the temp extraction dir on every exit — success *and*
             # all four failure paths (spawn error, timeout, non-zero exit,

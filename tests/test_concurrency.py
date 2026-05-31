@@ -42,15 +42,12 @@ async def test_openalex_throttle_allows_parallel_in_flight(monkeypatch):
 
     mock_client = MagicMock()
     mock_client.get = AsyncMock(side_effect=slow_get)
-    monkeypatch.setattr(
-        openalex, "_get_client", lambda: mock_client
-    )
+    monkeypatch.setattr(openalex, "_get_client", lambda: mock_client)
 
     started = time.monotonic()
-    await asyncio.gather(*[
-        openalex._throttled_get("http://example.com")
-        for _ in range(openalex._MAX_CONCURRENT)
-    ])
+    await asyncio.gather(
+        *[openalex._throttled_get("http://example.com") for _ in range(openalex._MAX_CONCURRENT)]
+    )
     elapsed = time.monotonic() - started
 
     # If concurrency truly = _MAX_CONCURRENT, all calls overlap and
@@ -126,9 +123,7 @@ async def test_openalex_max_concurrency_holds_under_overload(monkeypatch):
     # Fan out fewer than _MAX_PENDING concurrent callers so backpressure
     # doesn't kick in — we want to test the sem cap, not the queue cap.
     callers = min(openalex._MAX_PENDING, 8)
-    await asyncio.gather(*[
-        openalex._throttled_get("http://example.com") for _ in range(callers)
-    ])
+    await asyncio.gather(*[openalex._throttled_get("http://example.com") for _ in range(callers)])
 
     assert peak <= openalex._MAX_CONCURRENT, (
         f"Saw {peak} concurrent GETs; cap is {openalex._MAX_CONCURRENT}"

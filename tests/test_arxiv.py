@@ -7,7 +7,6 @@ import pytest
 
 from academic_tools_mcp import arxiv
 
-
 # ---------------------------------------------------------------------------
 # ID normalization
 # ---------------------------------------------------------------------------
@@ -152,7 +151,7 @@ class TestParseEntry:
     def test_parses_links(self):
         result = self._parse(_SAMPLE_ENTRY_XML)
         assert len(result["links"]) == 2
-        pdf_links = [l for l in result["links"] if l.get("title") == "pdf"]
+        pdf_links = [link for link in result["links"] if link.get("title") == "pdf"]
         assert len(pdf_links) == 1
         assert "1706.03762v7" in pdf_links[0]["href"]
 
@@ -194,7 +193,6 @@ class TestThrottledGet:
         monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
 
         slept = []
-        original_sleep = asyncio.sleep
 
         async def mock_sleep(duration):
             slept.append(duration)
@@ -234,9 +232,7 @@ class TestThrottledGet:
     @pytest.mark.asyncio
     async def test_no_delay_after_gap(self, monkeypatch):
         """No sleep needed when enough time has passed."""
-        monkeypatch.setattr(
-            arxiv, "_last_request_time", time.monotonic() - 5.0
-        )
+        monkeypatch.setattr(arxiv, "_last_request_time", time.monotonic() - 5.0)
         monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
 
         slept = []
@@ -276,9 +272,9 @@ class TestThrottleBackpressure:
         mock_client = MagicMock()
         # An overflow must NOT issue a network request; if it did, the
         # AsyncMock would record the call.
-        mock_client.get = AsyncMock(side_effect=AssertionError(
-            "throttle should refuse before issuing a request"
-        ))
+        mock_client.get = AsyncMock(
+            side_effect=AssertionError("throttle should refuse before issuing a request")
+        )
 
         with pytest.raises(arxiv._http.LocalBackpressureError) as ei:
             await arxiv._throttled_get(mock_client, "http://example.com")
@@ -347,21 +343,18 @@ class TestGetPaperSingleFlight:
     """
 
     @pytest.mark.asyncio
-    async def test_concurrent_same_id_collapses_to_one_fetch(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_concurrent_same_id_collapses_to_one_fetch(self, tmp_path, monkeypatch):
         from academic_tools_mcp import _clients, _singleflight, cache
 
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv, "_pending", 0)
         monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
         monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-        monkeypatch.setattr(
-            arxiv, "_single_flight", _singleflight.SingleFlight()
-        )
+        monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 
         async def mock_sleep(_):
             pass
+
         monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
         atom_xml = """<?xml version="1.0"?>
@@ -394,25 +387,18 @@ class TestGetPaperSingleFlight:
                 await asyncio.sleep(0)
                 return StubResponse()
 
-        monkeypatch.setattr(
-            _clients, "get_client", lambda *a, **kw: StubClient()
-        )
+        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
 
-        results = await asyncio.gather(*[
-            arxiv.get_paper("2301.00001") for _ in range(5)
-        ])
+        results = await asyncio.gather(*[arxiv.get_paper("2301.00001") for _ in range(5)])
 
         assert get_calls == 1, (
-            f"single-flight should have coalesced 5 calls into 1 fetch, "
-            f"got {get_calls}"
+            f"single-flight should have coalesced 5 calls into 1 fetch, got {get_calls}"
         )
         assert all(r["title"] == "Test Title" for r in results)
         assert all(r["authors"][0]["name"] == "Jane Doe" for r in results)
 
     @pytest.mark.asyncio
-    async def test_404_is_negative_cached_no_second_fetch(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_404_is_negative_cached_no_second_fetch(self, tmp_path, monkeypatch):
         # arXiv returns 200 with an "api/errors" entry for invalid IDs.
         # That's a definitive "not found" — the second call for the
         # same bad ID must NOT hit the network. Without negative
@@ -424,12 +410,11 @@ class TestGetPaperSingleFlight:
         monkeypatch.setattr(arxiv, "_pending", 0)
         monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
         monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-        monkeypatch.setattr(
-            arxiv, "_single_flight", _singleflight.SingleFlight()
-        )
+        monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 
         async def mock_sleep(_):
             pass
+
         monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
         not_found_atom = """<?xml version="1.0"?>
@@ -458,9 +443,7 @@ class TestGetPaperSingleFlight:
                 get_calls += 1
                 return StubResponse()
 
-        monkeypatch.setattr(
-            _clients, "get_client", lambda *a, **kw: StubClient()
-        )
+        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
 
         # First call: hits the network, gets the not-found, caches it.
         result1 = await arxiv.get_paper("bogus-id")
@@ -474,12 +457,9 @@ class TestGetPaperSingleFlight:
             "negative cache must return the same error payload as the "
             "original not-found, byte-for-byte"
         )
-        assert "_expires_at" not in result2, (
-            "negative cache bookkeeping must not leak to the agent"
-        )
+        assert "_expires_at" not in result2, "negative cache bookkeeping must not leak to the agent"
         assert get_calls == 1, (
-            f"second call should be served from negative cache, got "
-            f"{get_calls} network calls"
+            f"second call should be served from negative cache, got {get_calls} network calls"
         )
 
         # Different bad ID — separate entry, must hit the network.
@@ -487,9 +467,7 @@ class TestGetPaperSingleFlight:
         assert get_calls == 2
 
     @pytest.mark.asyncio
-    async def test_force_refresh_drops_cache_and_refetches(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_force_refresh_drops_cache_and_refetches(self, tmp_path, monkeypatch):
         """force_refresh must invalidate both positive and negative
         entries before fetching, so an agent can re-pull a paper whose
         cached record might be stale (e.g. a new version uploaded)."""
@@ -499,12 +477,11 @@ class TestGetPaperSingleFlight:
         monkeypatch.setattr(arxiv, "_pending", 0)
         monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
         monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-        monkeypatch.setattr(
-            arxiv, "_single_flight", _singleflight.SingleFlight()
-        )
+        monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 
         async def mock_sleep(_):
             pass
+
         monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
         atom_xml = """<?xml version="1.0"?>
@@ -534,9 +511,7 @@ class TestGetPaperSingleFlight:
                 get_calls += 1
                 return StubResponse()
 
-        monkeypatch.setattr(
-            _clients, "get_client", lambda *a, **kw: StubClient()
-        )
+        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
 
         # Warm the cache.
         await arxiv.get_paper("2301.00001")
@@ -553,18 +528,17 @@ class TestGetPaperSingleFlight:
         # Negative cache also dropped: a previously-404'd identifier
         # can resolve on a forced retry.
         cache.put_negative(
-            arxiv.NAMESPACE, "papers", "2301.99999",
-            {"error": "stale 404"}, ttl_seconds=86400,
+            arxiv.NAMESPACE,
+            "papers",
+            "2301.99999",
+            {"error": "stale 404"},
+            ttl_seconds=86400,
         )
         await arxiv.get_paper("2301.99999", force_refresh=True)
-        assert get_calls == 3, (
-            "force_refresh should drop the negative cache and re-fetch"
-        )
+        assert get_calls == 3, "force_refresh should drop the negative cache and re-fetch"
 
     @pytest.mark.asyncio
-    async def test_different_ids_dont_block_each_other(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_different_ids_dont_block_each_other(self, tmp_path, monkeypatch):
         # Different canonical IDs must NOT share a single-flight slot.
         # Otherwise unrelated papers would serialise on each other,
         # which defeats the point.
@@ -574,12 +548,11 @@ class TestGetPaperSingleFlight:
         monkeypatch.setattr(arxiv, "_pending", 0)
         monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
         monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-        monkeypatch.setattr(
-            arxiv, "_single_flight", _singleflight.SingleFlight()
-        )
+        monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 
         async def mock_sleep(_):
             pass
+
         monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
         get_calls = 0
@@ -603,23 +576,23 @@ class TestGetPaperSingleFlight:
                 get_calls += 1
                 aid = kwargs["params"]["id_list"]
                 await asyncio.sleep(0)
-                return type("R", (), {
-                    "text": _atom(aid),
-                    "status_code": 200,
-                    "raise_for_status": lambda self: None,
-                })()
+                return type(
+                    "R",
+                    (),
+                    {
+                        "text": _atom(aid),
+                        "status_code": 200,
+                        "raise_for_status": lambda self: None,
+                    },
+                )()
 
-        monkeypatch.setattr(
-            _clients, "get_client", lambda *a, **kw: StubClient()
-        )
+        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
 
         results = await asyncio.gather(
             arxiv.get_paper("2301.00001"),
             arxiv.get_paper("2302.00002"),
         )
 
-        assert get_calls == 2, (
-            f"two different IDs should hit the network twice, got {get_calls}"
-        )
+        assert get_calls == 2, f"two different IDs should hit the network twice, got {get_calls}"
         titles = sorted(r["title"] for r in results)
         assert titles == ["Title 2301.00001", "Title 2302.00002"]
