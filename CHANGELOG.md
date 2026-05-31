@@ -47,6 +47,19 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- `download_pdf(doi, allow_oa_url=True)` for a generic publisher DOI is now
+  hardened on its failure paths. A *transient* OpenAlex lookup error (timeout /
+  5xx, `retryable: True`) is surfaced as-is so the agent retries, instead of
+  being wrongly told to go fetch the PDF by hand. A *definitive* failure
+  (closed-access / no OA URL, or an OA URL that resolves to an HTML landing page
+  rather than a PDF) is now negative-cached for 24h, so a retrying agent no
+  longer re-resolves OpenAlex and re-fetches the same non-PDF on every call;
+  `force_refresh=True` clears the entry. The closed-access error now carries
+  `retryable: False` to match the rest of the error contract, and a 0-byte /
+  pre-header leftover at the destination is treated as a miss (via
+  `manual._looks_like_cached_pdf`) instead of served as a cache hit. A
+  `MAX_PDF_BYTES` size-cap abort is deliberately *not* negative-cached, so
+  raising the cap takes effect without `force_refresh`. ([#27])
 - Manual import now writes atomically. `import_paper` copied a local PDF straight
   to its canonical cache path (and wrote imported markdown the same way), so a
   crash / disk-full mid-write could leave a truncated file that was then served as
@@ -317,3 +330,4 @@ grouped by milestone rather than per commit.
 [#24]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/24
 [#25]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/25
 [#26]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/26
+[#27]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/27
