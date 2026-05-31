@@ -15,8 +15,11 @@ paths:
 
 Generic file-based JSON cache under `.cache/<provider>/<entity>/`. Files are SHA-256 hashed by identifier.
 
-- **Atomic writes** via `_atomic_write_json` (mkstemp + `os.replace`). A crashed/killed process can leak a stray `.tmp` file but cannot leave a half-written canonical entry.
-- **Self-healing reads** — corrupt JSON / OS errors / Unicode errors are caught, the bad file is unlinked, `get` returns `None`.
+- **Atomic writes** via `_atomic_write_json` (mkstemp + `os.replace`). A crashed/killed process can leak a stray `.tmp` file but a reader can never see a half-written canonical entry. This is *not* a crash-durability guarantee: `os.replace` orders the rename, not the data flush, and we deliberately skip `fsync` (cost-vs-benefit for a self-healing cache) — a power loss could leave a durable rename pointing at unflushed contents, which a self-healing read then treats as corruption.
+- **Reads/writes are always UTF-8.** Writes use `ensure_ascii=False` + explicit `encoding="utf-8"`; reads pass `encoding="utf-8"` too, so non-ASCII records survive on hosts with a non-UTF-8 locale (e.g. `LC_ALL=C` containers) instead of failing to decode and self-deleting.
+- **Self-healing reads** — corrupt JSON / OS errors / Unicode errors *and non-dict payloads* are caught, the bad file is unlinked, `get`/`get_negative` return `None`.
+- **Cache root** is `.cache/` next to the project by default; the `CACHE_DIR` env var (via `config.get`, resolved in `_resolve_cache_root`) relocates it for installed-wheel / read-only-tree deployments.
+- **No global size bound** — growth is bounded only by on-read TTL eviction (`max_age_seconds`) and the orphan `.tmp` sweep. Entries never re-read with a `max_age_seconds` persist indefinitely; operators prune `.cache/` manually.
 - **Negative cache** (`get_negative` / `put_negative`) lives in a sibling `_neg/` subdirectory under each entity. Default 24h TTL on negatives; arxiv/biorxiv override to 1h via per-module `_NEG_TTL_SECONDS` because preprint identifiers go live mid-session.
 - **Positive TTL eviction** — `cache.get(..., max_age_seconds=N)` unlinks entries older than N seconds (by mtime) and returns `None`.
 - **`cache.invalidate(namespace, entity, identifier)`** drops both halves at once — used by `force_refresh=True`.

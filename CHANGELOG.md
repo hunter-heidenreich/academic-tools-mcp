@@ -15,6 +15,13 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Added
+
+- `CACHE_DIR` env var relocates the on-disk response cache root. It defaults to
+  a `.cache` directory next to the project; set `CACHE_DIR` when running from an
+  installed wheel or anywhere the project tree isn't writable (`~` is expanded).
+  ([#25])
+
 ### Changed
 
 - `search_cached_papers` results are now deterministically ordered: equal-scoring
@@ -34,6 +41,19 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- Cache reads now decode as UTF-8 explicitly (matching the UTF-8 write path),
+  so cached records containing non-ASCII text (accented author names, etc.)
+  survive on hosts with a non-UTF-8 locale. Previously, under `LC_ALL=C`
+  (common in containers/cron) a read defaulted to ASCII, raised
+  `UnicodeDecodeError`, and the self-heal path silently deleted the good entry —
+  so those records were effectively never cached. ([#25])
+- `get` / `get_negative` now treat a non-dict JSON payload (external tampering
+  or a foreign writer) as corruption — unlink and return `None` — instead of
+  returning a value that violates the `dict | None` contract or crashing on the
+  `_expires_at` lookup. ([#25])
+- Negative-cache reads no longer drop caller payload keys that begin with `_`
+  (e.g. `_canonical_id`); only the internal `_expires_at` bookkeeping field is
+  stripped. ([#25])
 - `search_cached_papers` now reports the correct `snippet` and `section` for hits
   in documents containing characters whose lowercase form changes length (e.g.
   U+0130 'İ' → two chars). The match position was located in the lowercased text
@@ -276,3 +296,4 @@ grouped by milestone rather than per commit.
 [#22]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/22
 [#23]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/23
 [#24]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/24
+[#25]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/25
