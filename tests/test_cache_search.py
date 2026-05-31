@@ -214,6 +214,19 @@ class TestFilenameToCanonical:
         # get_paper_metadata still finds them.
         assert cache_search._filename_to_canonical("arxiv", "hep-th_9901001") == "hep-th/9901001"
 
+    def test_arxiv_old_style_non_physics_restores_slash(self):
+        # Old-style IDs are NOT limited to the hyphenated physics archives.
+        # cs/, math/, stat/, etc. take the same archive/NNNNNNN shape and
+        # must round-trip too — a hardcoded prefix list silently dropped them.
+        assert cache_search._filename_to_canonical("arxiv", "cs_0501001") == "cs/0501001"
+        assert cache_search._filename_to_canonical("arxiv", "math_0309136") == "math/0309136"
+
+    def test_arxiv_old_style_with_subject_class_restores_slash(self):
+        # Subject-class form, lowercased by _canonical_arxiv_id:
+        # "math.GT/0309136" → canonical "math.gt/0309136" → stem
+        # "math.gt_0309136" on disk → must invert back.
+        assert cache_search._filename_to_canonical("arxiv", "math.gt_0309136") == "math.gt/0309136"
+
     def test_biorxiv_restores_single_slash(self):
         assert (
             cache_search._filename_to_canonical("biorxiv", "10.1101_2024.01.01.123")
@@ -392,6 +405,29 @@ class TestSearch:
         hits = cache_search.search("attention")
         assert all(h["score"] > 0 for h in hits)
         assert all(h["canonical_id"] != "2301.99999" for h in hits)
+
+    def test_top_k_zero_returns_empty(self, isolated_cache):
+        # top_k=0 means "give me none" — it must not silently return one hit.
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# x\n\nattention.\n")
+        assert cache_search.search("attention", top_k=0) == []
+
+    def test_top_k_negative_returns_empty(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# x\n\nattention.\n")
+        assert cache_search.search("attention", top_k=-5) == []
+
+    def test_tie_break_is_deterministic_by_stem(self, isolated_cache):
+        # Identical content → identical BM25 score. Pre-fix, equal-scored hits
+        # fell back to entry insertion order, which drifts as new files are
+        # appended to the incremental index. Seed b, c first (so the index
+        # holds them in that order), then add a which is appended LAST — the
+        # output must still be sorted by (namespace, stem), not insertion order.
+        content = "# Doc\n\n## Abstract\n\nattention transformer model.\n"
+        _seed_markdown(isolated_cache, "arxiv", "b", content)
+        _seed_markdown(isolated_cache, "arxiv", "c", content)
+        cache_search.search("attention")  # builds index with entries [b, c]
+        _seed_markdown(isolated_cache, "arxiv", "a", content)  # appended at end
+        hits = cache_search.search("attention")
+        assert [h["canonical_id"] for h in hits] == ["a", "b", "c"]
 
     def test_top_k_clamped_to_max(self, isolated_cache):
         # Even an absurd top_k must not leak more than the documented cap.
@@ -734,3 +770,91 @@ class TestIncrementalIndex:
         # The reserved index dir must never be yielded as a corpus file.
         walked = cache_search._iter_markdown_files()
         assert all(ns != cache_search._INDEX_DIRNAME for ns, _ in walked)
+
+
+# ---------------------------------------------------------------------------
+# Snippet/section offsets under length-changing lowercase
+# ---------------------------------------------------------------------------
+
+
+class TestSnippetOffsetUnderLowercaseExpansion:
+    def test_default_path_offset_survives_expanding_lowercase(self, isolated_cache):
+        # U+0130 'İ'.lower() == 'i' + combining dot (2 chars), so markdown.lower()
+        # is LONGER than the original. On the default (normalize=False) path the
+        # match offset is taken in the lowered string but used to slice the
+        # ORIGINAL markdown and to attribute a section — every preceding 'İ'
+        # drifts that offset one char to the right. A big İ block before the
+        # query term pushes the snippet/section off the real match entirely.
+        body = (
+            "# Title\n\n"
+            "## Intro\n\n" + ("İ" * 300) + "\n\n"
+            "## Methods\n\nThe transformer architecture is described here.\n\n"
+            "## Results\n\nUnrelated closing prose about evaluation.\n"
+        )
+        _seed_markdown(isolated_cache, "manual", "p", body)
+        hits = cache_search.search("transformer")
+        assert len(hits) == 1
+        assert hits[0]["section"] == "Methods"
+        assert "transformer" in hits[0]["snippet"].lower()
+
+    def test_normalize_path_offset_aligned(self, isolated_cache):
+        # Regression guard: the same recipe under normalize=True must stay
+        # correct (it routes through the folded index map).
+        body = (
+            "# Title\n\n"
+            "## Intro\n\n" + ("İ" * 300) + "\n\n"
+            "## Methods\n\nThe transformer architecture is described here.\n\n"
+            "## Results\n\nUnrelated closing prose about evaluation.\n"
+        )
+        _seed_markdown(isolated_cache, "manual", "p", body)
+        hits = cache_search.search("transformer", normalize=True)
+        assert len(hits) == 1
+        assert hits[0]["section"] == "Methods"
+        assert "transformer" in hits[0]["snippet"].lower()
+
+
+# ---------------------------------------------------------------------------
+# In-memory index memo (avoid re-parsing index.json when nothing changed)
+# ---------------------------------------------------------------------------
+
+
+class TestIndexMemo:
+    def test_index_not_reparsed_when_unchanged(self, isolated_cache, monkeypatch):
+        # First search warms the in-memory memo (and writes index.json). A
+        # second search over an unchanged corpus must NOT re-parse the index
+        # JSON from disk — it serves the memo, keyed by index.json's stat.
+        _seed_markdown(
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
+            "# Paper\n\n## Abstract\n\n" + "attention " * 30,
+        )
+        cache_search.search("attention")  # warm memo + write index.json
+
+        calls = {"n": 0}
+        original = cache_search._load_index
+
+        def counting():
+            calls["n"] += 1
+            return original()
+
+        monkeypatch.setattr(cache_search, "_load_index", counting)
+        cache_search.search("attention")
+        assert calls["n"] == 0
+
+    def test_memo_invalidated_on_corpus_edit(self, isolated_cache):
+        # The index-file memo must never shortcut the corpus stat-walk: editing
+        # a markdown file leaves index.json untouched (so the memo signature is
+        # still "fresh"), but the changed content must still be picked up.
+        path = _seed_markdown(
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
+            "# Paper\n\n## Abstract\n\nThis paper is about felines.\n",
+        )
+        assert len(cache_search.search("felines")) == 1
+        assert cache_search.search("genomics") == []
+
+        path.write_text("# Paper\n\n## Abstract\n\nThis paper is about genomics.\n")
+        assert len(cache_search.search("genomics")) == 1
+        assert cache_search.search("felines") == []

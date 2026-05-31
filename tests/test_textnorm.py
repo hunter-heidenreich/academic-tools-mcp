@@ -118,3 +118,50 @@ class TestFoldEquivalence:
     @pytest.mark.parametrize("text", _TRICKY)
     def test_folded_strings_agree(self, text):
         assert _textnorm.fold(text) == _textnorm.fold_with_map(text)[0]
+
+
+class TestLowerWithMap:
+    """``lower_with_map`` lowercases (optionally NFKD-folding first) while
+    tracking an index map back to ORIGINAL offsets. The snippet locator in
+    ``cache_search`` searches the lowered/folded text but must slice the
+    ORIGINAL markdown, so length-changing lowercase mappings (U+0130) and
+    folding expansions (ligatures) both have to round-trip."""
+
+    def test_basic_lowercase_round_trip(self):
+        text = "Hello WORLD"
+        lowered, index_map = _textnorm.lower_with_map(text)
+        assert lowered == "hello world"
+        assert len(index_map) == len(lowered) + 1
+        assert index_map[-1] == len(text)
+        start = lowered.index("world")
+        end = start + len("world")
+        assert text[index_map[start] : index_map[end]] == "WORLD"
+
+    def test_expanding_lowercase_keeps_offsets_aligned(self):
+        # U+0130 'İ'.lower() == 'i' + combining dot (2 chars), so the lowered
+        # string is LONGER than the original. The char AFTER it must still map
+        # back to its true original index — this is exactly the drift that
+        # corrupted snippet/section offsets on the default search path.
+        text = "İX"  # 'İ' at original index 0, 'X' at original index 1
+        lowered, index_map = _textnorm.lower_with_map(text)
+        assert len(lowered) == 3  # 'i', combining dot, 'x'
+        assert index_map[lowered.index("x")] == 1
+
+    def test_fold_and_lower_together(self):
+        text = "CafÉ"
+        lowered, index_map = _textnorm.lower_with_map(text, fold=True)
+        assert lowered == "cafe"
+        start = lowered.index("cafe")
+        assert text[index_map[start] : index_map[start + 4]] == "CafÉ"
+
+    def test_empty_input(self):
+        assert _textnorm.lower_with_map("") == ("", [0])
+        assert _textnorm.lower_with_map("", fold=True) == ("", [0])
+
+    @pytest.mark.parametrize("text", _TRICKY)
+    def test_equivalence_with_whole_string_transforms(self, text):
+        # Per-char transform must equal the whole-string transform, or the
+        # tokeniser (fold().lower()) and the snippet locator (lower_with_map)
+        # would disagree on the BM25 vocabulary.
+        assert _textnorm.lower_with_map(text, fold=True)[0] == _textnorm.fold(text).lower()
+        assert _textnorm.lower_with_map(text, fold=False)[0] == text.lower()

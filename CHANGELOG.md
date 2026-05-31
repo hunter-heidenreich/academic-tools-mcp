@@ -17,6 +17,13 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- `search_cached_papers` results are now deterministically ordered: equal-scoring
+  hits break ties by `(namespace, canonical_id)` instead of the index's internal
+  entry order, so the same query returns the same ordering across sessions even as
+  the incremental index grows. `top_k=0` (or negative) now returns `[]` rather than
+  silently yielding one hit. Internally, the parsed search index is memoised by
+  `index.json`'s stat signature, so a repeat search over an unchanged corpus skips
+  the JSON re-parse. ([#24])
 - `download_pdf` for arXiv and bioRxiv now coalesces concurrent calls for the
   same identifier into a single streaming download via single-flight (ACL
   Anthology already did). Previously two parallel calls for one id could both
@@ -27,6 +34,16 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- `search_cached_papers` now reports the correct `snippet` and `section` for hits
+  in documents containing characters whose lowercase form changes length (e.g.
+  U+0130 'İ' → two chars). The match position was located in the lowercased text
+  but applied to the original markdown, drifting the snippet window and section
+  attribution past the real match. Snippet location now maps every offset back to
+  the original text via a position-tracking transform. ([#24])
+- `search_cached_papers` now restores the canonical ID for old-style arXiv hits in
+  every archive (`cs/`, `math/`, `stat/`, `math.GT/…`, …), not just the eight
+  hyphenated physics archives that were previously hardcoded — so the returned
+  `canonical_id` round-trips back through `get_paper_metadata`. ([#24])
 - BibTeX generation now emits valid, compilable entries for inputs that
   previously produced broken output. Citation keys are sanitised to ASCII
   `[a-z0-9]` — non-decomposable characters (`ø`, `ł`, `ß`, …) are transliterated
@@ -258,3 +275,4 @@ grouped by milestone rather than per commit.
 [#17]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/17
 [#22]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/22
 [#23]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/23
+[#24]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/24
