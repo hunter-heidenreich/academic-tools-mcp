@@ -1,3 +1,7 @@
+import contextlib
+
+import pytest
+
 from academic_tools_mcp import manual
 
 # ---------------------------------------------------------------------------
@@ -377,3 +381,208 @@ class TestImportMarkdown:
         result = manual.import_markdown(str(bad), ident)
         assert "error" in result
         assert "UTF-8" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Re-import / force_refresh, atomicity, encoding
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _c_ctype_locale():
+    """Pin LC_CTYPE to C for the body so an encoding-less open() picks ASCII
+    — the situation in an LC_ALL=C container/cron job. Restored on exit."""
+    import locale
+
+    saved = locale.setlocale(locale.LC_CTYPE)
+    locale.setlocale(locale.LC_CTYPE, "C")
+    try:
+        yield
+    finally:
+        locale.setlocale(locale.LC_CTYPE, saved)
+
+
+class TestImportForceRefresh:
+    def test_force_refresh_replaces_pdf_and_cascades(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache, papers
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        v1 = tmp_path / "v1.pdf"
+        v1.write_bytes(b"%PDF-1.4 version ONE")
+        v2 = tmp_path / "v2.pdf"
+        v2.write_bytes(b"%PDF-1.4 version TWO is strictly longer")
+        ident = "10.1234/force-refresh-pdf"
+
+        first = manual.import_local_pdf(str(v1), ident)
+        assert first["cached"] is False
+        # A brand-new import has nothing to cascade.
+        assert "cascaded_invalidated" not in first
+
+        namespace = first["namespace"]
+        canonical = manual._resolve_target(ident)["canonical"]
+
+        # Simulate a prior conversion: markdown + sections cache present.
+        md_path = papers._markdown_path(namespace, canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("## Stale\n\nOld converted text.", encoding="utf-8")
+        cache.put(
+            namespace,
+            "sections",
+            papers._sections_key(canonical),
+            {"sections": [{"title": "Stale", "index": 0}], "markdown_checksum": "x"},
+        )
+
+        # Without force_refresh, re-import is a cache hit and old bytes survive.
+        hit = manual.import_local_pdf(str(v2), ident)
+        assert hit["cached"] is True
+        assert manual.pdf_path(ident).read_bytes() == b"%PDF-1.4 version ONE"
+
+        # With force_refresh, new bytes land and derived state is dropped.
+        refreshed = manual.import_local_pdf(str(v2), ident, force_refresh=True)
+        assert refreshed["cached"] is False
+        assert refreshed["cascaded_invalidated"] == ["markdown", "sections"]
+        assert manual.pdf_path(ident).read_bytes() == b"%PDF-1.4 version TWO is strictly longer"
+        assert not md_path.exists()
+        assert cache.get(namespace, "sections", papers._sections_key(canonical)) is None
+
+    def test_force_refresh_replaces_markdown(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache, papers
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        md1 = tmp_path / "v1.md"
+        md1.write_text("## Alpha\n\nFirst.", encoding="utf-8")
+        md2 = tmp_path / "v2.md"
+        md2.write_text("## Beta\n\nSecond.\n\n## Gamma\n\nThird.", encoding="utf-8")
+        ident = "10.1234/force-refresh-md"
+
+        first = manual.import_markdown(str(md1), ident)
+        assert first["cached"] is False
+        assert [s["title"] for s in first["sections"]] == ["Alpha"]
+
+        # Cache hit keeps v1.
+        hit = manual.import_markdown(str(md2), ident)
+        assert hit["cached"] is True
+        assert [s["title"] for s in hit["sections"]] == ["Alpha"]
+
+        refreshed = manual.import_markdown(str(md2), ident, force_refresh=True)
+        assert refreshed["cached"] is False
+        assert [s["title"] for s in refreshed["sections"]] == ["Beta", "Gamma"]
+
+        namespace = refreshed["namespace"]
+        canonical = manual._resolve_target(ident)["canonical"]
+        md_path = papers._markdown_path(namespace, canonical)
+        assert md_path.read_text(encoding="utf-8") == "## Beta\n\nSecond.\n\n## Gamma\n\nThird."
+        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
+        assert [s["title"] for s in cached["sections"]] == ["Beta", "Gamma"]
+        # Stored checksum matches the new on-disk file.
+        assert cached["markdown_checksum"] == papers._markdown_checksum(md_path)
+
+
+class TestImportAtomicityAndEncoding:
+    def test_zero_byte_cached_pdf_is_not_served(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        pdf = tmp_path / "real.pdf"
+        pdf.write_bytes(b"%PDF-1.4 real content")
+        ident = "10.1234/zero-byte"
+
+        dest = manual.pdf_path(ident)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"")  # truncated/torn leftover from an interrupted import
+
+        result = manual.import_local_pdf(str(pdf), ident)
+        assert result["cached"] is False
+        assert dest.read_bytes() == b"%PDF-1.4 real content"
+
+    def test_import_local_pdf_atomic_copy_no_torn_file(self, tmp_path, monkeypatch):
+        import shutil
+
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        pdf = tmp_path / "p.pdf"
+        pdf.write_bytes(b"%PDF-1.4 content")
+        ident = "10.1234/atomic-copy"
+        dest = manual.pdf_path(ident)
+
+        def boom(*_a, **_kw):
+            raise OSError("copy interrupted")
+
+        monkeypatch.setattr(shutil, "copyfileobj", boom)
+
+        result = manual.import_local_pdf(str(pdf), ident)
+        assert "error" in result
+        assert not dest.exists(), "a failed copy left a torn canonical PDF"
+        assert list(dest.parent.glob("*.tmp")) == []
+
+    def test_markdown_import_survives_non_utf8_locale(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache, papers
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        md = tmp_path / "p.md"
+        content = "## Café\n\nMüller, François-René — 数据 \U0001f600\n"
+        md.write_text(content, encoding="utf-8")
+        ident = "10.1234/non-ascii"
+
+        with _c_ctype_locale():
+            first = manual.import_markdown(str(md), ident)
+            assert "error" not in first
+            assert first["cached"] is False
+            # Cached-branch re-read must also decode UTF-8 under the C locale.
+            second = manual.import_markdown(str(md), ident)
+            assert "error" not in second
+            assert second["cached"] is True
+
+        namespace = first["namespace"]
+        canonical = manual._resolve_target(ident)["canonical"]
+        md_path = papers._markdown_path(namespace, canonical)
+        assert md_path.read_text(encoding="utf-8") == content
+
+
+class TestImportPaperTool:
+    @pytest.mark.asyncio
+    async def test_force_refresh_replaces_and_cascades(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache, server
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        v1 = tmp_path / "v1.pdf"
+        v1.write_bytes(b"%PDF-1.4 ONE")
+        v2 = tmp_path / "v2.pdf"
+        v2.write_bytes(b"%PDF-1.4 TWO is longer")
+        ident = "10.1234/tool-force-refresh"
+
+        first = await server.import_paper(str(v1), ident)
+        assert first["cached"] is False
+        # Tool boundary strips on-disk paths.
+        assert "path" not in first
+
+        refreshed = await server.import_paper(str(v2), ident, force_refresh=True)
+        assert refreshed["cached"] is False
+        assert refreshed["cascaded_invalidated"] == ["markdown", "sections"]
+        assert manual.pdf_path(ident).read_bytes() == b"%PDF-1.4 TWO is longer"
+
+    @pytest.mark.asyncio
+    async def test_markdown_force_refresh_slims_to_section_count(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache, server
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        md1 = tmp_path / "v1.md"
+        md1.write_text("## A\n\nx.", encoding="utf-8")
+        md2 = tmp_path / "v2.md"
+        md2.write_text("## A\n\nx.\n\n## B\n\ny.", encoding="utf-8")
+        ident = "10.1234/tool-md-refresh"
+
+        await server.import_paper(str(md1), ident)
+        result = await server.import_paper(str(md2), ident, force_refresh=True)
+        assert result["cached"] is False
+        assert result["section_count"] == 2
+        assert "sections" not in result
+        assert "markdown_path" not in result

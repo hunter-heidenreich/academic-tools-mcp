@@ -13,7 +13,6 @@ fall back to the ``manual`` namespace.
 """
 
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -167,7 +166,44 @@ def pdf_path(identifier: str) -> Path:
     return _resolve_target(identifier)["pdf_path"]
 
 
-def import_local_pdf(file_path: str, identifier: str) -> dict[str, Any]:
+def _looks_like_cached_pdf(path: Path) -> bool:
+    """Whether an existing cached PDF should be trusted as a hit.
+
+    Guards against a 0-byte / truncated-before-header file left by an
+    interrupted earlier copy: such a file is treated as a miss so the next
+    import overwrites it instead of serving a corrupt PDF as ``cached``
+    forever.
+    """
+    try:
+        if path.stat().st_size == 0:
+            return False
+        with path.open("rb") as f:
+            return f.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
+def _invalidate_derived(namespace: str, canonical: str) -> None:
+    """Drop cached markdown + section index for a paper.
+
+    Mirrors the force_refresh cascade in ``tools/pipeline.py``: once the PDF
+    is replaced, any previously-converted markdown and its section index are
+    stale relative to the new bytes, so the next ``convert_paper`` must re-run
+    rather than return previously-converted text.
+    """
+    md_path = papers._markdown_path(namespace, canonical)
+    try:
+        md_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    cache.invalidate(namespace, "sections", papers._sections_key(canonical))
+
+
+def import_local_pdf(
+    file_path: str, identifier: str, *, force_refresh: bool = False
+) -> dict[str, Any]:
     """Copy a local PDF into the cache.
 
     Routes to the correct provider namespace based on the identifier
@@ -176,6 +212,10 @@ def import_local_pdf(file_path: str, identifier: str) -> dict[str, Any]:
     Args:
         file_path: Absolute or relative path to the PDF file.
         identifier: DOI, arXiv ID, or freeform label to key this paper.
+        force_refresh: Replace an already-cached PDF for this identifier
+            instead of returning it as ``cached``. When a PDF is actually
+            (re)written over a prior one, the cached markdown + section index
+            are dropped so the next ``convert_paper`` picks up the new bytes.
 
     Returns:
         Dict with the cache path and size, or an error.
@@ -206,7 +246,8 @@ def import_local_pdf(file_path: str, identifier: str) -> dict[str, Any]:
     target = _resolve_target(identifier)
     dest = target["pdf_path"]
 
-    if dest.exists():
+    existed = dest.exists()
+    if not force_refresh and existed and _looks_like_cached_pdf(dest):
         return {
             "identifier": _normalize_identifier(identifier),
             "namespace": target["namespace"],
@@ -215,10 +256,14 @@ def import_local_pdf(file_path: str, identifier: str) -> dict[str, Any]:
             "cached": True,
         }
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, dest)
+    # Atomic copy: a crash / disk-full mid-copy can't leave a half-written
+    # canonical PDF (which _looks_like_cached_pdf would then have to reject).
+    try:
+        cache._atomic_copy(source, dest)
+    except OSError as e:
+        return {"error": f"Could not copy {file_path} into the cache: {e}"}
 
-    return {
+    result: dict[str, Any] = {
         "identifier": _normalize_identifier(identifier),
         "namespace": target["namespace"],
         "path": str(dest),
@@ -226,13 +271,23 @@ def import_local_pdf(file_path: str, identifier: str) -> dict[str, Any]:
         "cached": False,
     }
 
+    # Replacing an existing PDF (or a forced refresh) makes any previously
+    # converted markdown + sections stale — cascade-drop them.
+    if existed or force_refresh:
+        _invalidate_derived(target["namespace"], target["canonical"])
+        result["cascaded_invalidated"] = ["markdown", "sections"]
+
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Markdown import
 # ---------------------------------------------------------------------------
 
 
-def import_markdown(file_path: str, identifier: str) -> dict[str, Any]:
+def import_markdown(
+    file_path: str, identifier: str, *, force_refresh: bool = False
+) -> dict[str, Any]:
     """Copy a local markdown file into the cache and parse sections.
 
     This skips the PDF download and conversion steps entirely.
@@ -242,6 +297,9 @@ def import_markdown(file_path: str, identifier: str) -> dict[str, Any]:
     Args:
         file_path: Absolute or relative path to a markdown file.
         identifier: DOI, arXiv ID, or freeform label to key this paper.
+        force_refresh: Replace already-cached markdown for this identifier
+            instead of returning it as ``cached``, re-parsing the section
+            index from the new file.
 
     Returns:
         Dict with the markdown path, section index, or an error.
@@ -259,8 +317,23 @@ def import_markdown(file_path: str, identifier: str) -> dict[str, Any]:
     canonical = target["canonical"]
     md_path = papers._markdown_path(namespace, canonical)
 
-    if md_path.exists():
-        markdown = md_path.read_text()
+    if not force_refresh and md_path.exists():
+        # Cached markdown is written UTF-8 (below), so read it back UTF-8 too
+        # — a locale-default read would mis-decode / raise on non-ASCII under
+        # a non-UTF-8 host locale. Handle decode/IO errors the same way the
+        # fresh read below does instead of letting a raw exception escape.
+        try:
+            markdown = md_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as e:
+            return {
+                "error": (
+                    f"Cached markdown for {identifier!r} is not valid UTF-8 "
+                    f"({e.reason} at byte {e.start}) — the cache entry is "
+                    "corrupt. Re-import with force_refresh=True."
+                )
+            }
+        except OSError as e:
+            return {"error": f"Could not read cached markdown for {identifier!r}: {e}"}
         sections = papers.parse_sections(markdown)
         return {
             "identifier": _normalize_identifier(identifier),
@@ -282,8 +355,10 @@ def import_markdown(file_path: str, identifier: str) -> dict[str, Any]:
     except OSError as e:
         return {"error": f"Could not read file {file_path}: {e}"}
 
-    md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(markdown)
+    # Atomic UTF-8 write so the markdown file and its checksum/section index
+    # can never diverge on a torn write (and so non-ASCII content survives a
+    # non-UTF-8 host locale).
+    cache._atomic_write_text(md_path, markdown)
 
     # Parse and cache the section index. Store the markdown checksum the same
     # way convert_pdf does so a later convert_paper trusts this cache instead

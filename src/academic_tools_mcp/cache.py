@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -173,15 +174,17 @@ def invalidate(namespace: str, entity: str, identifier: str) -> None:
             pass
 
 
-def _atomic_write_json(path: Path, payload: str) -> None:
-    """Write ``payload`` to ``path`` with no torn/partial canonical writes.
+def _atomic_write_text(path: Path, payload: str, *, encoding: str = "utf-8") -> None:
+    """Write text ``payload`` to ``path`` with no torn/partial canonical writes.
 
     Lands in a sibling temp file and is moved into place with os.replace,
     which is atomic on POSIX/Windows — a concurrent or interrupted writer
     can never expose a half-written canonical file to a reader. Best-effort
     cleanup of the temp file on any failure path, including KeyboardInterrupt
     mid-write. mkstemp lands in the same directory so the rename stays on one
-    filesystem (cross-fs rename is not atomic and would raise EXDEV).
+    filesystem (cross-fs rename is not atomic and would raise EXDEV). The
+    encoding is explicit (UTF-8 by default) so a non-UTF-8 host locale
+    (e.g. ``LC_ALL=C``) can't mangle or fail on non-ASCII content.
 
     This is NOT a crash-durability guarantee: os.replace orders the rename,
     not the data flush, so a power loss could leave the rename durable while
@@ -197,9 +200,50 @@ def _atomic_write_json(path: Path, payload: str) -> None:
     )
     tmp_path = Path(tmp_str)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(payload)
         os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_json(path: Path, payload: str) -> None:
+    """Write a JSON ``payload`` to ``path`` atomically. Thin UTF-8 wrapper
+    over :func:`_atomic_write_text` — see it for the torn-write / durability
+    semantics."""
+    _atomic_write_text(path, payload)
+
+
+def _atomic_copy(src: Path, dst: Path) -> None:
+    """Copy ``src`` onto ``dst`` with no torn/partial canonical writes.
+
+    Streams the bytes through a sibling temp file in ``dst``'s directory and
+    os.replaces into place on success — the same atomicity guarantee as
+    :func:`_atomic_write_text`, but for arbitrary (potentially large) binary
+    files like PDFs. A plain ``shutil.copy``/``copy2`` straight to ``dst``
+    truncates and writes the canonical path in place, so a crash / disk-full
+    mid-copy would leave a half-written file that downstream readers treat as
+    complete. Copies file metadata (mtime/mode) like ``copy2``. Best-effort
+    temp cleanup on any failure path. mkstemp lands beside ``dst`` so the
+    rename stays on one filesystem.
+    """
+    directory = dst.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(
+        prefix=dst.name + ".",
+        suffix=".tmp",
+        dir=str(directory),
+    )
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "wb") as out, src.open("rb") as inp:
+            shutil.copyfileobj(inp, out)
+        shutil.copystat(src, tmp_path)
+        os.replace(tmp_path, dst)
     except BaseException:
         try:
             tmp_path.unlink()

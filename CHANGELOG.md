@@ -17,6 +17,12 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- `import_paper(..., force_refresh=True)` re-imports a file even when one is
+  already cached under the same identifier, replacing the cached copy. For a PDF
+  it also drops the cached markdown + section index (cascade), so the next
+  `convert_paper` re-runs on the new bytes — the way to swap in a corrected PDF
+  or a higher-quality manual conversion. Previously a re-import under an existing
+  identifier was a silent no-op that returned the stale cached file. ([#26])
 - `CACHE_DIR` env var relocates the on-disk response cache root. It defaults to
   a `.cache` directory next to the project; set `CACHE_DIR` when running from an
   installed wheel or anywhere the project tree isn't writable (`~` is expanded).
@@ -41,6 +47,19 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- Manual import now writes atomically. `import_paper` copied a local PDF straight
+  to its canonical cache path (and wrote imported markdown the same way), so a
+  crash / disk-full mid-write could leave a truncated file that was then served as
+  a complete cache hit forever. PDFs now copy through a sibling temp + atomic
+  rename (`cache._atomic_copy`) and markdown writes through `cache._atomic_write_text`,
+  so a reader never sees a half-written file. A 0-byte / non-`%PDF-` leftover at the
+  canonical PDF path is now treated as a miss and overwritten instead of returned as
+  cached. ([#26])
+- Imported markdown is now read back as UTF-8 on the cached-hit path (and the
+  full PDF→markdown conversion path reads/writes UTF-8 explicitly), so a
+  pre-converted paper containing non-ASCII text survives a re-import or section
+  read on a non-UTF-8 host locale (`LC_ALL=C`) instead of mis-decoding or raising.
+  Extends the [#25] cache-read fix to the markdown files. ([#26])
 - Cache reads now decode as UTF-8 explicitly (matching the UTF-8 write path),
   so cached records containing non-ASCII text (accented author names, etc.)
   survive on hosts with a non-UTF-8 locale. Previously, under `LC_ALL=C`
@@ -297,3 +316,4 @@ grouped by milestone rather than per commit.
 [#23]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/23
 [#24]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/24
 [#25]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/25
+[#26]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/26

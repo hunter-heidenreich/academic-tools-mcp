@@ -11,6 +11,7 @@ from .._app import (
     ALLOW_OA_URL,
     CONVERT_FORCE_REFRESH,
     CONVERT_MODE,
+    IMPORT_FORCE_REFRESH,
     PAPER_ID,
     PDF_FORCE_REFRESH,
     SECTION_MAX_CHARS,
@@ -349,6 +350,7 @@ async def import_paper(
         ),
     ],
     identifier: PAPER_ID,
+    force_refresh: IMPORT_FORCE_REFRESH = False,
 ) -> dict[str, Any]:
     """Import a local PDF or pre-converted markdown into the cache.
 
@@ -365,6 +367,11 @@ async def import_paper(
       - .md / .markdown → read as UTF-8, cached, and parsed into sections
         immediately; skip convert_paper.
 
+    Already-cached identifiers return ``cached: True`` untouched; pass
+    ``force_refresh=True`` to replace a cached PDF/markdown (e.g. a corrected
+    file or a better manual conversion). Replacing a PDF cascades — the cached
+    markdown + section index are dropped so the next convert_paper re-runs.
+
     Returns ``{identifier, namespace, size_bytes, cached}`` for PDFs, or
     ``{identifier, namespace, section_count, cached}`` for markdown — call
     get_paper_sections for the full section index with previews.
@@ -374,9 +381,13 @@ async def import_paper(
     """
     ext = Path(file_path).suffix.lower()
     if ext == ".pdf":
-        return _strip_internal_paths(manual.import_local_pdf(file_path, identifier))
+        return _strip_internal_paths(
+            manual.import_local_pdf(file_path, identifier, force_refresh=force_refresh)
+        )
     if ext in _MARKDOWN_EXTS:
-        result = _strip_internal_paths(manual.import_markdown(file_path, identifier))
+        result = _strip_internal_paths(
+            manual.import_markdown(file_path, identifier, force_refresh=force_refresh)
+        )
         if "sections" in result:
             sections = result.pop("sections")
             result["section_count"] = len(sections)
