@@ -6,7 +6,6 @@ import pytest
 
 from academic_tools_mcp import opencitations
 
-
 # ---------------------------------------------------------------------------
 # DOI normalization
 # ---------------------------------------------------------------------------
@@ -17,10 +16,16 @@ class TestNormalizeDoi:
         assert opencitations._normalize_doi("10.1038/nature12373") == "10.1038/nature12373"
 
     def test_https_url(self):
-        assert opencitations._normalize_doi("https://doi.org/10.1038/nature12373") == "10.1038/nature12373"
+        assert (
+            opencitations._normalize_doi("https://doi.org/10.1038/nature12373")
+            == "10.1038/nature12373"
+        )
 
     def test_http_url(self):
-        assert opencitations._normalize_doi("http://doi.org/10.1038/nature12373") == "10.1038/nature12373"
+        assert (
+            opencitations._normalize_doi("http://doi.org/10.1038/nature12373")
+            == "10.1038/nature12373"
+        )
 
     def test_doi_prefix(self):
         assert opencitations._normalize_doi("doi:10.1038/nature12373") == "10.1038/nature12373"
@@ -34,7 +39,10 @@ class TestCanonicalDoi:
         assert opencitations._canonical_doi("10.1038/Nature12373") == "10.1038/nature12373"
 
     def test_normalizes_and_lowercases(self):
-        assert opencitations._canonical_doi("https://doi.org/10.1038/Nature12373") == "10.1038/nature12373"
+        assert (
+            opencitations._canonical_doi("https://doi.org/10.1038/Nature12373")
+            == "10.1038/nature12373"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +127,7 @@ class TestThrottledGet:
 
     @pytest.mark.asyncio
     async def test_no_delay_after_gap(self, monkeypatch):
-        monkeypatch.setattr(
-            opencitations, "_last_request_time", time.monotonic() - 1.0
-        )
+        monkeypatch.setattr(opencitations, "_last_request_time", time.monotonic() - 1.0)
         monkeypatch.setattr(opencitations, "_request_lock", asyncio.Lock())
 
         slept = []

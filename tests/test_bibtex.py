@@ -107,9 +107,7 @@ class TestGenerateBibtex:
             "title": "Test Paper",
             "publication_year": 2022,
             "doi": "https://doi.org/10.1234/test",
-            "authorships": [
-                {"author": {"display_name": "John Smith"}, "institutions": []}
-            ],
+            "authorships": [{"author": {"display_name": "John Smith"}, "institutions": []}],
             "biblio": {
                 "volume": "1",
                 "issue": "2",
@@ -177,7 +175,9 @@ class TestGenerateBibtex:
 
     def test_no_pages_when_missing(self):
         bib = generate_bibtex(
-            self._make_work(biblio={"volume": None, "issue": None, "first_page": None, "last_page": None})
+            self._make_work(
+                biblio={"volume": None, "issue": None, "first_page": None, "last_page": None}
+            )
         )
         assert "pages=" not in bib
         assert "volume=" not in bib
@@ -234,7 +234,9 @@ class TestGenerateArxivBibtex:
 
     def test_published_is_article(self):
         bib = generate_arxiv_bibtex(
-            self._make_arxiv_paper(journal_ref="Advances in Neural Information Processing Systems 30 (2017)")
+            self._make_arxiv_paper(
+                journal_ref="Advances in Neural Information Processing Systems 30 (2017)"
+            )
         )
         assert bib.startswith("@article{")
         assert "journal={Advances in Neural Information Processing Systems 30 (2017)}" in bib
@@ -256,9 +258,7 @@ class TestGenerateArxivBibtex:
         assert bib.startswith("@misc{vaswani2017attention,")
 
     def test_doi_included_when_present(self):
-        bib = generate_arxiv_bibtex(
-            self._make_arxiv_paper(doi="10.48550/arXiv.1706.03762")
-        )
+        bib = generate_arxiv_bibtex(self._make_arxiv_paper(doi="10.48550/arXiv.1706.03762"))
         assert "doi={10.48550/arXiv.1706.03762}" in bib
 
     def test_no_doi_when_absent(self):
@@ -358,9 +358,7 @@ class TestGenerateBiorxivBibtex:
         assert "year={2024}" in bib
 
     def test_special_chars_escaped(self):
-        bib = generate_biorxiv_bibtex(
-            self._make_biorxiv_paper(title="Drug & Target: 100% Binding")
-        )
+        bib = generate_biorxiv_bibtex(self._make_biorxiv_paper(title="Drug & Target: 100% Binding"))
         assert r"Drug \& Target: 100\% Binding" in bib
 
     def test_no_authors(self):

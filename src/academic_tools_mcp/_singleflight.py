@@ -18,7 +18,8 @@ sneak in between them.
 """
 
 import asyncio
-from typing import Any, Awaitable, Callable, Hashable
+from collections.abc import Awaitable, Callable, Hashable
+from typing import Any
 
 
 class SingleFlight:
@@ -32,9 +33,7 @@ class SingleFlight:
     def __init__(self) -> None:
         self._inflight: dict[Hashable, asyncio.Future[Any]] = {}
 
-    async def do(
-        self, key: Hashable, factory: Callable[[], Awaitable[Any]]
-    ) -> Any:
+    async def do(self, key: Hashable, factory: Callable[[], Awaitable[Any]]) -> Any:
         """Run ``factory`` if no call for ``key`` is in flight; else share.
 
         If ``factory`` raises or returns an error result, every concurrent

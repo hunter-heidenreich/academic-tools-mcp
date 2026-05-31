@@ -50,9 +50,7 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
         "oa_download",
     ):
         try:
-            module: Any = __import__(
-                f"academic_tools_mcp.{module_name}", fromlist=[module_name]
-            )
+            module: Any = __import__(f"academic_tools_mcp.{module_name}", fromlist=[module_name])
         except ImportError:
             continue
         if hasattr(module, "_pending"):
@@ -61,7 +59,10 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.setattr(module, "_last_request_time", 0.0, raising=False)
         if hasattr(module, "_request_lock"):
             monkeypatch.setattr(
-                module, "_request_lock", asyncio.Lock(), raising=False,
+                module,
+                "_request_lock",
+                asyncio.Lock(),
+                raising=False,
             )
         if hasattr(module, "_request_sem") and hasattr(module, "_MAX_CONCURRENT"):
             monkeypatch.setattr(
@@ -72,6 +73,8 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         if hasattr(module, "_single_flight"):
             monkeypatch.setattr(
-                module, "_single_flight", _singleflight.SingleFlight(),
+                module,
+                "_single_flight",
+                _singleflight.SingleFlight(),
                 raising=False,
             )

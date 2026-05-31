@@ -7,7 +7,6 @@ import pytest
 
 from academic_tools_mcp import cache, cache_search, server
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -43,7 +42,9 @@ class TestTokenize:
         # "is" and "you" are stopwords; "all" is deliberately NOT a
         # stopword (it's content-bearing in academic prose).
         assert cache_search._tokenize("Attention Is All You Need") == [
-            "attention", "all", "need",
+            "attention",
+            "all",
+            "need",
         ]
 
     def test_drops_punctuation(self):
@@ -52,7 +53,10 @@ class TestTokenize:
         # last char of a multi-char token to be alphanumeric — "al"
         # comes back without it.
         assert cache_search._tokenize("Vaswani et al. (2017), [1]") == [
-            "vaswani", "et", "al", "2017",
+            "vaswani",
+            "et",
+            "al",
+            "2017",
         ]
 
     def test_preserves_intra_word_hyphens(self):
@@ -69,9 +73,7 @@ class TestTokenize:
 
     def test_drops_stopwords(self):
         # The classic stopwords are gone but content words survive.
-        toks = cache_search._tokenize(
-            "the model is trained on a corpus of papers"
-        )
+        toks = cache_search._tokenize("the model is trained on a corpus of papers")
         for stop in ("the", "is", "on", "a", "of"):
             assert stop not in toks
         assert "model" in toks and "trained" in toks and "corpus" in toks
@@ -152,9 +154,7 @@ class TestSectionForOffset:
 class TestExtractSnippet:
     def test_centers_on_query_term(self):
         body = "lorem ipsum " * 50 + "variational dropout " + "lorem " * 50
-        snippet, offset = cache_search._extract_snippet(
-            body, {"variational", "dropout"}
-        )
+        snippet, offset = cache_search._extract_snippet(body, {"variational", "dropout"})
         # The phrase must appear in the snippet, not just somewhere in
         # the doc — that's the whole point of centering.
         assert "variational dropout" in snippet
@@ -171,9 +171,7 @@ class TestExtractSnippet:
             + "variational dropout helps inference "
             + "padding " * 100
         )
-        snippet, _ = cache_search._extract_snippet(
-            body, {"variational", "dropout"}
-        )
+        snippet, _ = cache_search._extract_snippet(body, {"variational", "dropout"})
         assert "variational dropout" in snippet
 
     def test_falls_back_to_head_when_no_match(self):
@@ -195,11 +193,9 @@ class TestExtractSnippet:
         # The folded query term "gutierrez" must locate the accented
         # occurrence and report an offset into the ORIGINAL markdown.
         body = "padding " * 20 + "Work by Gutiérrez here " + "padding " * 20
-        snippet, offset = cache_search._extract_snippet(
-            body, {"gutierrez"}, normalize=True
-        )
+        snippet, offset = cache_search._extract_snippet(body, {"gutierrez"}, normalize=True)
         assert offset is not None
-        assert body[offset:offset + len("Gutiérrez")] == "Gutiérrez"
+        assert body[offset : offset + len("Gutiérrez")] == "Gutiérrez"
 
 
 # ---------------------------------------------------------------------------
@@ -210,25 +206,17 @@ class TestExtractSnippet:
 class TestFilenameToCanonical:
     def test_arxiv_new_style_passes_through(self):
         # New-style arXiv IDs have no slashes, so no inversion needed.
-        assert (
-            cache_search._filename_to_canonical("arxiv", "2301.00001")
-            == "2301.00001"
-        )
+        assert cache_search._filename_to_canonical("arxiv", "2301.00001") == "2301.00001"
 
     def test_arxiv_old_style_restores_slash(self):
         # Old-style IDs like hep-th/9901001 are stored with the slash
         # converted to underscore; we must restore the slash so
         # get_paper_metadata still finds them.
-        assert (
-            cache_search._filename_to_canonical("arxiv", "hep-th_9901001")
-            == "hep-th/9901001"
-        )
+        assert cache_search._filename_to_canonical("arxiv", "hep-th_9901001") == "hep-th/9901001"
 
     def test_biorxiv_restores_single_slash(self):
         assert (
-            cache_search._filename_to_canonical(
-                "biorxiv", "10.1101_2024.01.01.123"
-            )
+            cache_search._filename_to_canonical("biorxiv", "10.1101_2024.01.01.123")
             == "10.1101/2024.01.01.123"
         )
 
@@ -236,9 +224,7 @@ class TestFilenameToCanonical:
         # ACL DOIs always start with 10.18653/v1/ — both slashes
         # become underscores on disk and must come back.
         assert (
-            cache_search._filename_to_canonical(
-                "acl_anthology", "10.18653_v1_2023.acl-long.1"
-            )
+            cache_search._filename_to_canonical("acl_anthology", "10.18653_v1_2023.acl-long.1")
             == "10.18653/v1/2023.acl-long.1"
         )
 
@@ -262,7 +248,9 @@ class TestSearch:
 
     def test_no_match_returns_empty(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Paper\n\n## Abstract\n\nThis is about cats and dogs.\n",
         )
         assert cache_search.search("variational dropout") == []
@@ -270,21 +258,27 @@ class TestSearch:
     def test_query_with_only_stopwords_returns_empty(self, isolated_cache):
         # "the and is" all get filtered before BM25 runs.
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Paper\n\nbody with content.\n",
         )
         assert cache_search.search("the and is") == []
 
     def test_ranks_relevant_doc_first(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "1706.03762",
+            isolated_cache,
+            "arxiv",
+            "1706.03762",
             "# Attention Is All You Need\n\n"
             "## Abstract\n\n"
             "We propose the Transformer, a model based solely on attention "
             "mechanisms. Attention attention attention transformer.\n",
         )
         _seed_markdown(
-            isolated_cache, "arxiv", "1409.0473",
+            isolated_cache,
+            "arxiv",
+            "1409.0473",
             "# Translation by Aligning\n\n"
             "## Abstract\n\n"
             "We propose a sequence-to-sequence model.\n",
@@ -299,7 +293,9 @@ class TestSearch:
         # invisible to an unaccented query by default, but surfaces with
         # normalize=True (query and doc both fold to "gutierrez").
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00002",
+            isolated_cache,
+            "arxiv",
+            "2301.00002",
             "# Survey\n\n## Refs\n\nMethod introduced by Gutiérrez et al.\n",
         )
         assert cache_search.search("gutierrez") == []
@@ -316,17 +312,20 @@ class TestSearch:
         body = (
             "# Some Paper\n\n"
             "## Introduction\n\nbackground prose here.\n\n"
-            "## Methods\n\n"
-            + "The transformer applies attention everywhere. " * 5
-            + "\n"
+            "## Methods\n\n" + "The transformer applies attention everywhere. " * 5 + "\n"
         )
         _seed_markdown(isolated_cache, "arxiv", "1706.03762", body)
         hits = cache_search.search("transformer attention")
         assert len(hits) == 1
         h = hits[0]
         assert set(h.keys()) == {
-            "namespace", "canonical_id", "score", "title",
-            "snippet", "section", "char_count",
+            "namespace",
+            "canonical_id",
+            "score",
+            "title",
+            "snippet",
+            "section",
+            "char_count",
         }
         assert h["namespace"] == "arxiv"
         assert h["canonical_id"] == "1706.03762"
@@ -337,7 +336,9 @@ class TestSearch:
     def test_top_k_caps_results(self, isolated_cache):
         for i in range(5):
             _seed_markdown(
-                isolated_cache, "arxiv", f"230{i}.00001",
+                isolated_cache,
+                "arxiv",
+                f"230{i}.00001",
                 f"# Paper {i}\n\n## Abstract\n\nattention is the topic.\n",
             )
         hits = cache_search.search("attention", top_k=2)
@@ -346,11 +347,15 @@ class TestSearch:
     def test_namespace_filter(self, isolated_cache):
         # Only the manual hit should come back when namespace="manual".
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Arxiv paper\n\nattention mechanism here.\n",
         )
         _seed_markdown(
-            isolated_cache, "manual", "my-paper",
+            isolated_cache,
+            "manual",
+            "my-paper",
             "# Manual paper\n\nattention mechanism here.\n",
         )
         hits = cache_search.search("attention", namespace="manual")
@@ -362,7 +367,9 @@ class TestSearch:
         # Filename → canonical inversion must run on the way out so the
         # agent can pass canonical_id back into get_paper_metadata.
         _seed_markdown(
-            isolated_cache, "acl_anthology", "10.18653_v1_2023.acl-long.1",
+            isolated_cache,
+            "acl_anthology",
+            "10.18653_v1_2023.acl-long.1",
             "# Some ACL paper\n\nattention.\n",
         )
         hits = cache_search.search("attention")
@@ -371,10 +378,15 @@ class TestSearch:
     def test_zero_score_hits_dropped(self, isolated_cache):
         # An empty markdown file shouldn't surface as a phantom hit.
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.99999", "",
+            isolated_cache,
+            "arxiv",
+            "2301.99999",
+            "",
         )
         _seed_markdown(
-            isolated_cache, "arxiv", "1706.03762",
+            isolated_cache,
+            "arxiv",
+            "1706.03762",
             "# Real paper\n\nattention everywhere.\n",
         )
         hits = cache_search.search("attention")
@@ -384,7 +396,9 @@ class TestSearch:
     def test_top_k_clamped_to_max(self, isolated_cache):
         # Even an absurd top_k must not leak more than the documented cap.
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# x\n\nattention.\n",
         )
         # Doesn't crash; the clamp on _MAX_TOP_K is internal.
@@ -395,11 +409,16 @@ class TestSearch:
         # A file vanishing mid-walk (concurrent eviction, etc.) must
         # not fail the whole search — skip and continue.
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Real\n\nattention here.\n",
         )
         ghost = _seed_markdown(
-            isolated_cache, "arxiv", "ghost", "doesn't matter\n",
+            isolated_cache,
+            "arxiv",
+            "ghost",
+            "doesn't matter\n",
         )
 
         original_read = type(ghost).read_text
@@ -424,7 +443,9 @@ class TestSearchCachedPapersTool:
     @pytest.mark.asyncio
     async def test_tool_returns_documented_envelope(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "1706.03762",
+            isolated_cache,
+            "arxiv",
+            "1706.03762",
             "# Attention Is All You Need\n\nThe transformer model.\n",
         )
         result = await server.search_cached_papers("transformer")
@@ -442,16 +463,18 @@ class TestSearchCachedPapersTool:
     @pytest.mark.asyncio
     async def test_tool_namespace_filter(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Arxiv\n\ntransformer model.\n",
         )
         _seed_markdown(
-            isolated_cache, "manual", "my-paper",
+            isolated_cache,
+            "manual",
+            "my-paper",
             "# Manual\n\ntransformer model.\n",
         )
-        result = await server.search_cached_papers(
-            "transformer", namespace="manual"
-        )
+        result = await server.search_cached_papers("transformer", namespace="manual")
         assert result["result_count"] == 1
         assert result["results"][0]["namespace"] == "manual"
 
@@ -502,7 +525,9 @@ class TestIncrementalIndex:
 
     def test_staleness_on_content_change(self, isolated_cache, monkeypatch):
         path = _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Paper\n\n## Abstract\n\nThis paper is about felines.\n",
         )
         assert cache_search.search("genomics") == []
@@ -517,13 +542,13 @@ class TestIncrementalIndex:
         assert hits[0]["canonical_id"] == "2301.00001"
         assert new_body in seen  # the changed doc was re-tokenised
 
-    def test_unchanged_sibling_not_retokenized(
-        self, isolated_cache, monkeypatch
-    ):
+    def test_unchanged_sibling_not_retokenized(self, isolated_cache, monkeypatch):
         stable = "# A\n\n## Abstract\n\n" + "attention " * 40
         _seed_markdown(isolated_cache, "arxiv", "1111.00001", stable)
         changing_path = _seed_markdown(
-            isolated_cache, "arxiv", "2222.00002",
+            isolated_cache,
+            "arxiv",
+            "2222.00002",
             "# B\n\n## Abstract\n\nfelines everywhere.\n",
         )
         cache_search.search("attention")  # build the index
@@ -536,11 +561,15 @@ class TestIncrementalIndex:
 
     def test_deletion_pruning(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "1111.00001",
+            isolated_cache,
+            "arxiv",
+            "1111.00001",
             "# A\n\nattention model.\n",
         )
         gone = _seed_markdown(
-            isolated_cache, "arxiv", "2222.00002",
+            isolated_cache,
+            "arxiv",
+            "2222.00002",
             "# B\n\nattention model.\n",
         )
         assert len(cache_search.search("attention")) == 2
@@ -561,11 +590,15 @@ class TestIncrementalIndex:
         # down globally) and one manual doc.
         for i in range(6):
             _seed_markdown(
-                isolated_cache, "arxiv", f"230{i}.00001",
+                isolated_cache,
+                "arxiv",
+                f"230{i}.00001",
                 f"# Arxiv {i}\n\nmodel model model attention.\n",
             )
         _seed_markdown(
-            isolated_cache, "manual", "only-one",
+            isolated_cache,
+            "manual",
+            "only-one",
             "# Manual\n\nmodel attention here.\n",
         )
         manual_hits = cache_search.search("model", namespace="manual")
@@ -582,9 +615,7 @@ class TestIncrementalIndex:
         again = cache_search.search("model", namespace="manual")
         assert again[0]["score"] == manual_score
 
-    def test_normalize_served_from_one_build(
-        self, isolated_cache, monkeypatch
-    ):
+    def test_normalize_served_from_one_build(self, isolated_cache, monkeypatch):
         body = "# Survey\n\n## Refs\n\nMethod introduced by Gutiérrez et al.\n"
         _seed_markdown(isolated_cache, "arxiv", "2301.00002", body)
 
@@ -601,7 +632,9 @@ class TestIncrementalIndex:
 
     def test_corrupt_index_self_heals(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Real\n\nattention everywhere.\n",
         )
         cache_search.search("attention")  # build it
@@ -616,7 +649,9 @@ class TestIncrementalIndex:
 
     def test_version_mismatch_rebuilds(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Real\n\nattention everywhere.\n",
         )
         # Hand-write a stale-version index.
@@ -629,9 +664,7 @@ class TestIncrementalIndex:
         assert index["version"] == cache_search._INDEX_VERSION
         assert len(index["entries"]) == 1
 
-    def test_force_refresh_rebuilds_despite_stale_signal(
-        self, isolated_cache, monkeypatch
-    ):
+    def test_force_refresh_rebuilds_despite_stale_signal(self, isolated_cache, monkeypatch):
         body = "# Paper\n\n## Abstract\n\n" + "attention " * 30
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", body)
         cache_search.search("attention")  # build the index
@@ -651,28 +684,30 @@ class TestIncrementalIndex:
         body = (
             "# Some Paper\n\n"
             "## Introduction\n\nbackground prose here.\n\n"
-            "## Methods\n\n"
-            + "The transformer applies attention everywhere. " * 5
-            + "\n"
+            "## Methods\n\n" + "The transformer applies attention everywhere. " * 5 + "\n"
         )
         _seed_markdown(isolated_cache, "arxiv", "1706.03762", body)
         hits = cache_search.search("transformer attention")
-        assert hits == [{
-            "namespace": "arxiv",
-            "canonical_id": "1706.03762",
-            "score": hits[0]["score"],  # float compared separately below
-            "title": "Some Paper",
-            "snippet": hits[0]["snippet"],
-            "section": "Methods",
-            "char_count": len(body),
-        }]
+        assert hits == [
+            {
+                "namespace": "arxiv",
+                "canonical_id": "1706.03762",
+                "score": hits[0]["score"],  # float compared separately below
+                "title": "Some Paper",
+                "snippet": hits[0]["snippet"],
+                "section": "Methods",
+                "char_count": len(body),
+            }
+        ]
         assert hits[0]["score"] > 0
         assert "transformer applies attention" in hits[0]["snippet"]
 
     def test_concurrent_searches_no_corruption(self, isolated_cache):
         for i in range(8):
             _seed_markdown(
-                isolated_cache, "arxiv", f"230{i}.00001",
+                isolated_cache,
+                "arxiv",
+                f"230{i}.00001",
                 f"# Paper {i}\n\n## Abstract\n\nattention transformer model.\n",
             )
 
@@ -690,12 +725,12 @@ class TestIncrementalIndex:
 
     def test_index_dir_not_walked(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00001",
+            isolated_cache,
+            "arxiv",
+            "2301.00001",
             "# Real\n\nattention.\n",
         )
         cache_search.search("attention")  # creates __search_index__/
         # The reserved index dir must never be yielded as a corpus file.
         walked = cache_search._iter_markdown_files()
-        assert all(
-            ns != cache_search._INDEX_DIRNAME for ns, _ in walked
-        )
+        assert all(ns != cache_search._INDEX_DIRNAME for ns, _ in walked)

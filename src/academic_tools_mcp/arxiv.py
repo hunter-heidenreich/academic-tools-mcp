@@ -3,11 +3,10 @@ import contextlib
 import re
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any
 
 import httpx
-
-from pathlib import Path
 
 from . import _clients, _http, _pdf_download, _singleflight, _stats, cache
 
@@ -79,9 +78,7 @@ async def _request_slot(url: str):
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
         _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError(
-            "arXiv", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
-        )
+        raise _http.LocalBackpressureError("arXiv", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
     _pending += 1
     try:
         async with _request_sem:
@@ -100,9 +97,7 @@ async def _request_slot(url: str):
         _pending -= 1
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
+async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
     """Execute a GET request respecting arXiv's rate limit.
 
     Thin wrapper over ``_request_slot`` — the slot does the gating, this
@@ -110,7 +105,8 @@ async def _throttled_get(
     """
     async with _request_slot(url):
         return await _http.get_with_retry(
-            client, url,
+            client,
+            url,
             # arXiv's 3s gap must apply to the retry too — a 1s
             # retry would violate their "1 req per 3s" policy.
             backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
@@ -123,9 +119,7 @@ async def _throttled_get(
 # ID normalization
 # ---------------------------------------------------------------------------
 
-_ARXIV_URL_RE = re.compile(
-    r"https?://arxiv\.org/(?:abs|pdf)/(.+?)(?:\.pdf)?$"
-)
+_ARXIV_URL_RE = re.compile(r"https?://arxiv\.org/(?:abs|pdf)/(.+?)(?:\.pdf)?$")
 
 
 def _normalize_arxiv_id(arxiv_id: str) -> str:
@@ -174,33 +168,29 @@ def _parse_entry(entry: ET.Element) -> dict[str, Any]:
         name_el = author_el.find(f"{{{_ATOM_NS}}}name")
         name = name_el.text.strip() if name_el is not None and name_el.text else ""
         affiliations = [
-            aff.text.strip()
-            for aff in author_el.findall(f"{{{_ARXIV_NS}}}affiliation")
-            if aff.text
+            aff.text.strip() for aff in author_el.findall(f"{{{_ARXIV_NS}}}affiliation") if aff.text
         ]
         authors.append({"name": name, "affiliations": affiliations})
 
     # Links
     links = []
     for link_el in entry.findall(f"{{{_ATOM_NS}}}link"):
-        links.append({
-            "href": link_el.get("href", ""),
-            "rel": link_el.get("rel", ""),
-            "title": link_el.get("title") or None,
-        })
+        links.append(
+            {
+                "href": link_el.get("href", ""),
+                "rel": link_el.get("rel", ""),
+                "title": link_el.get("title") or None,
+            }
+        )
 
     # Categories
     categories = [
-        cat.get("term", "")
-        for cat in entry.findall(f"{{{_ATOM_NS}}}category")
-        if cat.get("term")
+        cat.get("term", "") for cat in entry.findall(f"{{{_ATOM_NS}}}category") if cat.get("term")
     ]
 
     # Primary category
     primary_cat_el = entry.find(f"{{{_ARXIV_NS}}}primary_category")
-    primary_category = (
-        primary_cat_el.get("term", "") if primary_cat_el is not None else ""
-    )
+    primary_category = primary_cat_el.get("term", "") if primary_cat_el is not None else ""
 
     # ID (URL form: http://arxiv.org/abs/2301.00001v1)
     raw_id = _text("id") or ""
@@ -371,9 +361,7 @@ def pdf_path(arxiv_id: str) -> Path:
     return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
-async def download_pdf(
-    arxiv_id: str, *, force_refresh: bool = False
-) -> dict[str, Any]:
+async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Download the PDF for an arXiv paper and cache it locally.
 
     ``force_refresh=True`` re-downloads and atomically replaces the

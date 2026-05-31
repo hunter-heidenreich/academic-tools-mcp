@@ -60,14 +60,10 @@ def _get_client():
     The User-Agent header (with mailto when configured) is baked in at
     construction so every call meets Wikimedia's identification policy.
     """
-    return _clients.get_client(
-        NAMESPACE, headers=_headers(), timeout=15.0
-    )
+    return _clients.get_client(NAMESPACE, headers=_headers(), timeout=15.0)
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
+async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
     """Execute a GET request with polite rate limiting.
 
     Refuses past ``_MAX_PENDING`` queued callers via
@@ -77,9 +73,7 @@ async def _throttled_get(
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
         _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError(
-            "Wikipedia", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
-        )
+        raise _http.LocalBackpressureError("Wikipedia", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
     _pending += 1
     try:
         async with _request_sem:
@@ -94,7 +88,8 @@ async def _throttled_get(
             _stats.log_request(NAMESPACE, url, wait_seconds)
             _stats.incr(NAMESPACE, "http_calls")
             return await _http.get_with_retry(
-                client, url,
+                client,
+                url,
                 backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
                 provider=NAMESPACE,
                 **kwargs,
@@ -141,12 +136,7 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
     titles = data[1] or []
     urls = data[3] or []
 
-    return {
-        "results": [
-            {"title": t, "url": u}
-            for t, u in zip(titles, urls)
-        ]
-    }
+    return {"results": [{"title": t, "url": u} for t, u in zip(titles, urls, strict=False)]}
 
 
 # ---------------------------------------------------------------------------

@@ -129,11 +129,7 @@ def _install_stream(monkeypatch, stream_cm_or_obj) -> None:
 
     class StubClient:
         def stream(self, *_args, **_kwargs):
-            return (
-                stream_cm_or_obj()
-                if callable(stream_cm_or_obj)
-                else stream_cm_or_obj
-            )
+            return stream_cm_or_obj() if callable(stream_cm_or_obj) else stream_cm_or_obj
 
     monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
 

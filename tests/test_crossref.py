@@ -6,7 +6,6 @@ import pytest
 
 from academic_tools_mcp import crossref
 
-
 # ---------------------------------------------------------------------------
 # DOI normalization
 # ---------------------------------------------------------------------------
@@ -17,10 +16,14 @@ class TestNormalizeDoi:
         assert crossref._normalize_doi("10.1038/nature12373") == "10.1038/nature12373"
 
     def test_https_url(self):
-        assert crossref._normalize_doi("https://doi.org/10.1038/nature12373") == "10.1038/nature12373"
+        assert (
+            crossref._normalize_doi("https://doi.org/10.1038/nature12373") == "10.1038/nature12373"
+        )
 
     def test_http_url(self):
-        assert crossref._normalize_doi("http://doi.org/10.1038/nature12373") == "10.1038/nature12373"
+        assert (
+            crossref._normalize_doi("http://doi.org/10.1038/nature12373") == "10.1038/nature12373"
+        )
 
     def test_doi_prefix(self):
         assert crossref._normalize_doi("doi:10.1038/nature12373") == "10.1038/nature12373"
@@ -34,7 +37,9 @@ class TestCanonicalDoi:
         assert crossref._canonical_doi("10.1038/Nature12373") == "10.1038/nature12373"
 
     def test_normalizes_and_lowercases(self):
-        assert crossref._canonical_doi("https://doi.org/10.1038/Nature12373") == "10.1038/nature12373"
+        assert (
+            crossref._canonical_doi("https://doi.org/10.1038/Nature12373") == "10.1038/nature12373"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +91,7 @@ class TestThrottledGet:
 
     @pytest.mark.asyncio
     async def test_no_delay_after_gap(self, monkeypatch):
-        monkeypatch.setattr(
-            crossref, "_last_request_time", time.monotonic() - 1.0
-        )
+        monkeypatch.setattr(crossref, "_last_request_time", time.monotonic() - 1.0)
         monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
 
         slept = []
@@ -227,9 +230,7 @@ class TestSearchWorksCacheWarming:
         mock_client = MagicMock()
         mock_client.get = mock_get
 
-        monkeypatch.setattr(
-            crossref._clients, "get_client", lambda *a, **kw: mock_client
-        )
+        monkeypatch.setattr(crossref._clients, "get_client", lambda *a, **kw: mock_client)
 
         await crossref.search_works("anything")
 
@@ -264,9 +265,7 @@ class TestSearchWorksCacheWarming:
 
         mock_client = MagicMock()
         mock_client.get = mock_get
-        monkeypatch.setattr(
-            crossref._clients, "get_client", lambda *a, **kw: mock_client
-        )
+        monkeypatch.setattr(crossref._clients, "get_client", lambda *a, **kw: mock_client)
 
         await crossref.search_works("anything")
 

@@ -57,9 +57,7 @@ async def _request_slot(url: str):
     global _last_request_time, _pending
     if _pending >= _MAX_PENDING:
         _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError(
-            "bioRxiv", _pending, _MAX_PENDING, _MIN_REQUEST_GAP
-        )
+        raise _http.LocalBackpressureError("bioRxiv", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
     _pending += 1
     try:
         async with _request_sem:
@@ -78,9 +76,7 @@ async def _request_slot(url: str):
         _pending -= 1
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
+async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
     """Execute a GET request with polite rate limiting.
 
     Thin wrapper over ``_request_slot`` — the slot does the gating, this
@@ -91,7 +87,8 @@ async def _throttled_get(
     """
     async with _request_slot(url):
         return await _http.get_with_retry(
-            client, url,
+            client,
+            url,
             backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
             provider=NAMESPACE,
             **kwargs,
@@ -102,9 +99,7 @@ async def _throttled_get(
 # DOI normalization
 # ---------------------------------------------------------------------------
 
-_DOI_URL_RE = re.compile(
-    r"https?://(?:dx\.)?doi\.org/(10\.\d{4,}/\S+)$"
-)
+_DOI_URL_RE = re.compile(r"https?://(?:dx\.)?doi\.org/(10\.\d{4,}/\S+)$")
 
 _BIORXIV_URL_RE = re.compile(
     r"https?://(?:www\.)?(bio|med)rxiv\.org/content/(10\.\d{4,}/\S+?)(?:v\d+)?(?:\.full(?:\.pdf)?)?$"
@@ -156,7 +151,7 @@ def _parse_authors(author_str: str) -> list[dict[str, str]]:
 
     bioRxiv format: "Last, First; Last, First; ..."
     """
-    authors = []
+    authors: list[dict[str, Any]] = []
     if not author_str:
         return authors
 
@@ -299,9 +294,7 @@ def pdf_path(doi: str) -> Path:
     return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
-async def download_pdf(
-    doi: str, *, force_refresh: bool = False
-) -> dict[str, Any]:
+async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Download the PDF for a bioRxiv/medRxiv paper and cache it locally.
 
     ``force_refresh=True`` re-downloads and atomically replaces the

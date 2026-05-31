@@ -24,7 +24,7 @@ def main(argv: list[str]) -> int:
     pdf_path = argv[1]
 
     try:
-        import pymupdf  # type: ignore
+        import pymupdf
     except ImportError:
         print(
             "pymupdf is not installed. Install the optional extra with "

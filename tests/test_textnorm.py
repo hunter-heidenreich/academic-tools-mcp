@@ -59,7 +59,7 @@ class TestFoldWithMap:
         end = start + len("fi")
         assert index_map[start] == 1
         # The whole original ligature char is recovered, not half of it.
-        assert text[index_map[start]:index_map[end]] == "ﬁ"
+        assert text[index_map[start] : index_map[end]] == "ﬁ"
 
     def test_leading_combining_mark_skipped(self):
         folded, index_map = _textnorm.fold_with_map("́ab")

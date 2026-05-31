@@ -6,7 +6,9 @@ import pytest
 from academic_tools_mcp import _http
 
 
-def _build_status_error(status: int, body: str = "", headers: dict | None = None) -> httpx.HTTPStatusError:
+def _build_status_error(
+    status: int, body: str = "", headers: dict | None = None
+) -> httpx.HTTPStatusError:
     request = httpx.Request("GET", "https://example.com/api")
     response = httpx.Response(status, headers=headers, content=body.encode(), request=request)
     return httpx.HTTPStatusError(f"HTTP {status}", request=request, response=response)
@@ -33,9 +35,7 @@ class TestErrorDict:
     def test_429_ignores_non_numeric_retry_after(self):
         # HTTP-date forms get dropped rather than returned as a string —
         # consistent with get_with_retry's behaviour.
-        exc = _build_status_error(
-            429, headers={"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"}
-        )
+        exc = _build_status_error(429, headers={"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"})
         result = _http.error_dict("Crossref", exc)
         assert "retry_after_seconds" not in result
 
@@ -88,9 +88,7 @@ class TestErrorDict:
         gap) and how many parallel calls are safe (the cap), not just
         say 'backpressure'. Both are exposed as structured fields so
         agents can branch on them without parsing the message string."""
-        exc = _http.LocalBackpressureError(
-            "arXiv", pending=5, max_pending=5, min_gap_seconds=3.0
-        )
+        exc = _http.LocalBackpressureError("arXiv", pending=5, max_pending=5, min_gap_seconds=3.0)
         result = _http.error_dict("arXiv", exc)
 
         # Structured fields the agent can read directly.
@@ -114,8 +112,7 @@ class TestErrorDict:
 
         assert result["max_concurrency"] == 5
         assert "retry_after_seconds" not in result, (
-            "no advertised gap → no retry_after, so agents don't pin "
-            "to a fabricated interval"
+            "no advertised gap → no retry_after, so agents don't pin to a fabricated interval"
         )
 
 
@@ -180,7 +177,7 @@ class TestGetWithRetry:
     @pytest.mark.asyncio
     async def test_returns_2xx_on_first_attempt_no_sleep(self):
         client = _FakeClient([_response(200)])
-        resp = await _http.get_with_retry(client,"u")
+        resp = await _http.get_with_retry(client, "u")
         assert resp.status_code == 200
         assert len(client.calls) == 1
         assert self.slept == []
@@ -190,21 +187,21 @@ class TestGetWithRetry:
         # 404 is the caller's responsibility (real "not found"); we
         # must not waste a retry on it.
         client = _FakeClient([_response(404)])
-        resp = await _http.get_with_retry(client,"u")
+        resp = await _http.get_with_retry(client, "u")
         assert resp.status_code == 404
         assert len(client.calls) == 1
 
     @pytest.mark.asyncio
     async def test_does_not_retry_on_400(self):
         client = _FakeClient([_response(400)])
-        resp = await _http.get_with_retry(client,"u")
+        resp = await _http.get_with_retry(client, "u")
         assert resp.status_code == 400
         assert len(client.calls) == 1
 
     @pytest.mark.asyncio
     async def test_retries_on_429_and_returns_success(self):
         client = _FakeClient([_response(429), _response(200)])
-        resp = await _http.get_with_retry(client,"u")
+        resp = await _http.get_with_retry(client, "u")
         assert resp.status_code == 200
         assert len(client.calls) == 2
         assert self.slept == [1.0]  # default backoff_seconds
@@ -212,7 +209,7 @@ class TestGetWithRetry:
     @pytest.mark.asyncio
     async def test_retries_on_503_and_returns_success(self):
         client = _FakeClient([_response(503), _response(200)])
-        resp = await _http.get_with_retry(client,"u")
+        resp = await _http.get_with_retry(client, "u")
         assert resp.status_code == 200
         assert len(client.calls) == 2
 
@@ -221,27 +218,23 @@ class TestGetWithRetry:
         # Spot-check that the standard 5xx range is all retryable.
         for status in (500, 502, 503, 504):
             client = _FakeClient([_response(status), _response(200)])
-            resp = await _http.get_with_retry(client,"u")
+            resp = await _http.get_with_retry(client, "u")
             assert resp.status_code == 200, status
             assert len(client.calls) == 2, status
 
     @pytest.mark.asyncio
     async def test_retries_on_timeout(self):
-        timeout = httpx.ReadTimeout(
-            "slow", request=httpx.Request("GET", "https://x")
-        )
+        timeout = httpx.ReadTimeout("slow", request=httpx.Request("GET", "https://x"))
         client = _FakeClient([timeout, _response(200)])
-        resp = await _http.get_with_retry(client,"u")
+        resp = await _http.get_with_retry(client, "u")
         assert resp.status_code == 200
         assert len(client.calls) == 2
 
     @pytest.mark.asyncio
     async def test_retries_on_connect_error(self):
-        connect = httpx.ConnectError(
-            "dns", request=httpx.Request("GET", "https://x")
-        )
+        connect = httpx.ConnectError("dns", request=httpx.Request("GET", "https://x"))
         client = _FakeClient([connect, _response(200)])
-        resp = await _http.get_with_retry(client,"u")
+        resp = await _http.get_with_retry(client, "u")
         assert resp.status_code == 200
         assert len(client.calls) == 2
 
@@ -251,51 +244,53 @@ class TestGetWithRetry:
         # so the caller's existing raise_for_status() / status branch
         # surfaces it the same way it always has.
         client = _FakeClient([_response(503), _response(503)])
-        resp = await _http.get_with_retry(client,"u")
+        resp = await _http.get_with_retry(client, "u")
         assert resp.status_code == 503
         assert len(client.calls) == 2
 
     @pytest.mark.asyncio
     async def test_raises_final_exception_after_exhausting_retries(self):
-        timeout = httpx.ReadTimeout(
-            "slow", request=httpx.Request("GET", "https://x")
-        )
+        timeout = httpx.ReadTimeout("slow", request=httpx.Request("GET", "https://x"))
         client = _FakeClient([timeout, timeout])
         with pytest.raises(httpx.ReadTimeout):
-            await _http.get_with_retry(client,"u")
+            await _http.get_with_retry(client, "u")
         assert len(client.calls) == 2
 
     @pytest.mark.asyncio
     async def test_retry_after_header_extends_backoff(self):
         # A larger Retry-After should win over our default backoff.
-        client = _FakeClient([
-            _response(429, headers={"Retry-After": "12"}),
-            _response(200),
-        ])
-        await _http.get_with_retry(client,"u")
+        client = _FakeClient(
+            [
+                _response(429, headers={"Retry-After": "12"}),
+                _response(200),
+            ]
+        )
+        await _http.get_with_retry(client, "u")
         assert self.slept == [12.0]
 
     @pytest.mark.asyncio
     async def test_retry_after_smaller_than_backoff_uses_backoff(self):
         # backoff_seconds is the floor — we never go below the
         # provider's own throttle gap even if the server says it's OK.
-        client = _FakeClient([
-            _response(429, headers={"Retry-After": "0.5"}),
-            _response(200),
-        ])
-        await _http.get_with_retry(
-            client, "u", backoff_seconds=3.0
+        client = _FakeClient(
+            [
+                _response(429, headers={"Retry-After": "0.5"}),
+                _response(200),
+            ]
         )
+        await _http.get_with_retry(client, "u", backoff_seconds=3.0)
         assert self.slept == [3.0]
 
     @pytest.mark.asyncio
     async def test_retry_after_long_cooldown_respected(self):
         # A genuine multi-minute Retry-After is honoured (it sits below the
         # 10-minute absolute ceiling). This used to clamp to 30s.
-        client = _FakeClient([
-            _response(429, headers={"Retry-After": "300"}),
-            _response(200),
-        ])
+        client = _FakeClient(
+            [
+                _response(429, headers={"Retry-After": "300"}),
+                _response(200),
+            ]
+        )
         await _http.get_with_retry(client, "u")
         assert self.slept == [300.0]
 
@@ -303,33 +298,34 @@ class TestGetWithRetry:
     async def test_retry_after_capped_to_avoid_indefinite_pin(self):
         # A misconfigured server returning a huge Retry-After must not
         # pin our throttle for hours; the absolute ceiling is 600s (10 min).
-        client = _FakeClient([
-            _response(503, headers={"Retry-After": "999999"}),
-            _response(200),
-        ])
-        await _http.get_with_retry(
-            client, "u", backoff_seconds=1.0
+        client = _FakeClient(
+            [
+                _response(503, headers={"Retry-After": "999999"}),
+                _response(200),
+            ]
         )
+        await _http.get_with_retry(client, "u", backoff_seconds=1.0)
         assert self.slept == [600.0]
 
     @pytest.mark.asyncio
     async def test_non_numeric_retry_after_falls_back_to_backoff(self):
         # HTTP-date Retry-After is the other RFC form; we just ignore
         # it and use our own backoff. This is documented behaviour.
-        client = _FakeClient([
-            _response(429, headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}),
-            _response(200),
-        ])
-        await _http.get_with_retry(
-            client, "u", backoff_seconds=2.0
+        client = _FakeClient(
+            [
+                _response(429, headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}),
+                _response(200),
+            ]
         )
+        await _http.get_with_retry(client, "u", backoff_seconds=2.0)
         assert self.slept == [2.0]
 
     @pytest.mark.asyncio
     async def test_kwargs_forwarded_to_request(self):
         client = _FakeClient([_response(200)])
         await _http.get_with_retry(
-            client, "u",
+            client,
+            "u",
             params={"q": "hi"},
             headers={"X-Test": "1"},
         )

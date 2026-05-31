@@ -15,12 +15,11 @@ modules (``test_concurrency.py`` and ``test_pdf_download.py``).
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from academic_tools_mcp import cache, openalex, papers, server
-
 
 # ---------------------------------------------------------------------------
 # Cascade: re-downloading a PDF should drop cached markdown + sections
@@ -29,11 +28,10 @@ from academic_tools_mcp import cache, openalex, papers, server
 
 class TestDownloadPdfCascade:
     @pytest.mark.asyncio
-    async def test_force_refresh_drops_markdown_and_sections(
-        self, tmp_path: Path, monkeypatch
-    ):
+    async def test_force_refresh_drops_markdown_and_sections(self, tmp_path: Path, monkeypatch):
         """force_refresh=True with cached=False in the result invalidates
         the converted markdown and section index for that paper."""
+
         # Stub arxiv.download_pdf to claim a successful re-download
         async def fake_download(arxiv_id, *, force_refresh=False):
             return {
@@ -58,19 +56,16 @@ class TestDownloadPdfCascade:
         assert md_path.exists()
 
         try:
-            result = await server._download_pdf_by_provider(
-                "2301.00001", force_refresh=True
-            )
+            result = await server._download_pdf_by_provider("2301.00001", force_refresh=True)
 
             # The cascade must have happened
             assert "error" not in result
             assert result.get("cached") is False
             assert result.get("cascaded_invalidated") == ["markdown", "sections"]
             assert not md_path.exists(), "Markdown should have been deleted"
-            assert (
-                cache.get("arxiv", "sections", papers._sections_key(canonical))
-                is None
-            ), "Sections cache should have been invalidated"
+            assert cache.get("arxiv", "sections", papers._sections_key(canonical)) is None, (
+                "Sections cache should have been invalidated"
+            )
         finally:
             md_path.unlink(missing_ok=True)
             cache.invalidate("arxiv", "sections", papers._sections_key(canonical))
@@ -79,6 +74,7 @@ class TestDownloadPdfCascade:
     async def test_no_cascade_on_cache_hit(self, tmp_path: Path, monkeypatch):
         """When the PDF was served from cache (cached=True), no cascade —
         the existing markdown is still consistent with the bytes on disk."""
+
         async def fake_download(arxiv_id, *, force_refresh=False):
             return {
                 "path": "/tmp/dummy.pdf",
@@ -94,9 +90,7 @@ class TestDownloadPdfCascade:
         md_path.write_text("# Fresh\n\nstill valid\n")
 
         try:
-            result = await server._download_pdf_by_provider(
-                "2301.00002", force_refresh=True
-            )
+            result = await server._download_pdf_by_provider("2301.00002", force_refresh=True)
             assert result.get("cached") is True
             assert "cascaded_invalidated" not in result
             assert md_path.exists(), "Cached-hit must NOT delete markdown"
@@ -106,6 +100,7 @@ class TestDownloadPdfCascade:
     @pytest.mark.asyncio
     async def test_no_cascade_when_force_refresh_false(self, monkeypatch):
         """Without force_refresh, cascade never fires even on cache miss."""
+
         async def fake_download(arxiv_id, *, force_refresh=False):
             return {"path": "/tmp/dummy.pdf", "size_bytes": 100, "cached": False}
 
@@ -117,9 +112,7 @@ class TestDownloadPdfCascade:
         md_path.write_text("# Untouched\n")
 
         try:
-            result = await server._download_pdf_by_provider(
-                "2301.00003", force_refresh=False
-            )
+            result = await server._download_pdf_by_provider("2301.00003", force_refresh=False)
             assert "cascaded_invalidated" not in result
             assert md_path.exists()
         finally:
@@ -159,6 +152,7 @@ class TestGetWorksBatch:
     @pytest.mark.asyncio
     async def test_fetches_misses_in_batch(self, monkeypatch):
         """Cache misses go out as one /works?filter=doi:...|... call."""
+
         # Pretend response: two works keyed by their DOIs
         async def fake_throttled(url, **kwargs):
             params = kwargs["params"]
@@ -169,12 +163,14 @@ class TestGetWorksBatch:
             resp = MagicMock()
             resp.status_code = 200
             resp.raise_for_status = MagicMock()
-            resp.json = MagicMock(return_value={
-                "results": [
-                    {"id": "W1", "doi": "https://doi.org/10.1/a", "title": "A"},
-                    {"id": "W2", "doi": "https://doi.org/10.2/b", "title": "B"},
-                ]
-            })
+            resp.json = MagicMock(
+                return_value={
+                    "results": [
+                        {"id": "W1", "doi": "https://doi.org/10.1/a", "title": "A"},
+                        {"id": "W2", "doi": "https://doi.org/10.2/b", "title": "B"},
+                    ]
+                }
+            )
             return resp
 
         monkeypatch.setattr(openalex, "_throttled_get", fake_throttled)
@@ -197,16 +193,19 @@ class TestGetWorksBatch:
     async def test_unmatched_dois_become_negative_cache(self, monkeypatch):
         """A DOI requested in the batch but absent from the response is
         cached negatively, same as a singleton 404."""
+
         async def fake_throttled(url, **kwargs):
             resp = MagicMock()
             resp.status_code = 200
             resp.raise_for_status = MagicMock()
             # Only return the first DOI
-            resp.json = MagicMock(return_value={
-                "results": [
-                    {"id": "W1", "doi": "https://doi.org/10.1/found", "title": "F"},
-                ]
-            })
+            resp.json = MagicMock(
+                return_value={
+                    "results": [
+                        {"id": "W1", "doi": "https://doi.org/10.1/found", "title": "F"},
+                    ]
+                }
+            )
             return resp
 
         monkeypatch.setattr(openalex, "_throttled_get", fake_throttled)
@@ -228,19 +227,19 @@ class TestGetWorksBatch:
 
     @pytest.mark.asyncio
     async def test_force_refresh_drops_cached_first(self, monkeypatch):
-        cache.put(
-            "openalex", "works", "10.1/x", {"id": "old", "doi": "https://doi.org/10.1/x"}
-        )
+        cache.put("openalex", "works", "10.1/x", {"id": "old", "doi": "https://doi.org/10.1/x"})
 
         async def fake_throttled(url, **kwargs):
             resp = MagicMock()
             resp.status_code = 200
             resp.raise_for_status = MagicMock()
-            resp.json = MagicMock(return_value={
-                "results": [
-                    {"id": "new", "doi": "https://doi.org/10.1/x", "title": "Fresh"},
-                ]
-            })
+            resp.json = MagicMock(
+                return_value={
+                    "results": [
+                        {"id": "new", "doi": "https://doi.org/10.1/x", "title": "Fresh"},
+                    ]
+                }
+            )
             return resp
 
         monkeypatch.setattr(openalex, "_throttled_get", fake_throttled)
@@ -260,11 +259,13 @@ class TestGetWorksBatch:
             resp = MagicMock()
             resp.status_code = 200
             resp.raise_for_status = MagicMock()
-            resp.json = MagicMock(return_value={
-                "results": [
-                    {"id": "W", "doi": "https://doi.org/10.1/x", "title": "X"},
-                ]
-            })
+            resp.json = MagicMock(
+                return_value={
+                    "results": [
+                        {"id": "W", "doi": "https://doi.org/10.1/x", "title": "X"},
+                    ]
+                }
+            )
             return resp
 
         monkeypatch.setattr(openalex, "_throttled_get", fake_throttled)
@@ -289,6 +290,7 @@ class TestGetPapersMetadataTool:
     async def test_mixed_sources_dispatched_correctly(self, monkeypatch):
         """A mix of arxiv ID + DOI dispatches each to the right backend
         and returns one entry per input in order."""
+
         # Stub the underlying provider getters
         async def fake_arxiv(ident, *, force_refresh=False):
             return {
@@ -338,6 +340,7 @@ class TestGetPapersMetadataTool:
     @pytest.mark.asyncio
     async def test_per_paper_failure_isolates(self, monkeypatch):
         """One failing identifier doesn't fail the whole batch."""
+
         async def fake_arxiv(ident, *, force_refresh=False):
             if ident == "2301.fail":
                 return {"error": "No paper found"}
@@ -405,9 +408,7 @@ class TestFindInMarkdown:
         assert hits[0]["match"] == "transformer"
 
     def test_case_sensitive_filters(self):
-        hits, truncated = papers.find_in_markdown(
-            _FIND_DOC, "TRANSFORMER", case_sensitive=True
-        )
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "TRANSFORMER", case_sensitive=True)
         assert hits == []
         assert truncated is False
 
@@ -424,17 +425,13 @@ class TestFindInMarkdown:
     def test_max_results_caps_output_and_flags_truncated(self):
         # _FIND_DOC has 4+ "transformer" matches; capping at 2 must report
         # truncated so the caller knows more exist.
-        hits, truncated = papers.find_in_markdown(
-            _FIND_DOC, "transformer", max_results=2
-        )
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "transformer", max_results=2)
         assert len(hits) == 2
         assert truncated is True
 
     def test_not_truncated_when_under_cap(self):
         # Exactly one match, well under the cap → not truncated.
-        hits, truncated = papers.find_in_markdown(
-            _FIND_DOC, "multi-head attention", max_results=20
-        )
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "multi-head attention", max_results=20)
         assert len(hits) == 1
         assert truncated is False
 
@@ -443,9 +440,7 @@ class TestFindInMarkdown:
         # naturally without hitting the early-return, so truncated is False.
         all_hits, _ = papers.find_in_markdown(_FIND_DOC, "transformer")
         exact = len(all_hits)
-        hits, truncated = papers.find_in_markdown(
-            _FIND_DOC, "transformer", max_results=exact
-        )
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "transformer", max_results=exact)
         assert len(hits) == exact
         assert truncated is False
 
@@ -456,7 +451,10 @@ class TestFindInMarkdown:
         assert len(hits) == 1
         h = hits[0]
         section = papers.get_section_content(_FIND_DOC, h["section_index"])
-        assert section["content"][h["char_offset"]:h["char_offset"] + len("multi-head attention")] == "multi-head attention"
+        assert (
+            section["content"][h["char_offset"] : h["char_offset"] + len("multi-head attention")]
+            == "multi-head attention"
+        )
 
     def test_no_match_returns_empty(self):
         assert papers.find_in_markdown(_FIND_DOC, "quantum entanglement") == ([], False)
@@ -485,9 +483,7 @@ class TestFindInMarkdownNormalize:
         assert truncated is False
 
     def test_unaccented_query_matches_accented_text(self):
-        hits, _ = papers.find_in_markdown(
-            _FIND_DOC_ACCENTS, "cafe", normalize=True
-        )
+        hits, _ = papers.find_in_markdown(_FIND_DOC_ACCENTS, "cafe", normalize=True)
         assert len(hits) >= 1
         # The reported match is the ORIGINAL accented substring.
         assert hits[0]["match"] == "café"
@@ -502,32 +498,24 @@ class TestFindInMarkdownNormalize:
     def test_offsets_align_with_get_section_content(self):
         # The critical contract: char_offset/match address the ORIGINAL
         # section text even though matching happened on folded text.
-        hits, _ = papers.find_in_markdown(
-            _FIND_DOC_ACCENTS, "Gutierrez", normalize=True
-        )
+        hits, _ = papers.find_in_markdown(_FIND_DOC_ACCENTS, "Gutierrez", normalize=True)
         assert len(hits) == 1
         h = hits[0]
-        section = papers.get_section_content(
-            _FIND_DOC_ACCENTS, h["section_index"]
-        )
+        section = papers.get_section_content(_FIND_DOC_ACCENTS, h["section_index"])
         off = h["char_offset"]
-        assert section["content"][off:off + len(h["match"])] == h["match"]
+        assert section["content"][off : off + len(h["match"])] == h["match"]
         assert h["match"] == "Gutiérrez"
 
     def test_ligature_folds(self):
         # "ﬁ" (U+FB01) folds to "fi" and expands length; the reported
         # match must still be the original single ligature char.
-        hits, _ = papers.find_in_markdown(
-            _FIND_DOC_ACCENTS, "final", normalize=True
-        )
+        hits, _ = papers.find_in_markdown(_FIND_DOC_ACCENTS, "final", normalize=True)
         assert len(hits) == 1
         assert hits[0]["match"] == "ﬁnal"
 
     def test_whole_words_with_normalize(self):
         doc = "## S\n\nThe café and the cafeteria differ.\n"
-        hits, _ = papers.find_in_markdown(
-            doc, "cafe", normalize=True, whole_words=True
-        )
+        hits, _ = papers.find_in_markdown(doc, "cafe", normalize=True, whole_words=True)
         # Matches the whole word "café" (folds to ASCII "cafe"), not the
         # "cafe" inside "cafeteria".
         assert len(hits) == 1
@@ -536,17 +524,13 @@ class TestFindInMarkdownNormalize:
     def test_all_combining_query_returns_empty(self):
         # A query that folds to nothing (a lone combining acute accent)
         # must not match everywhere.
-        assert papers.find_in_markdown(
-            _FIND_DOC_ACCENTS, "́", normalize=True
-        ) == ([], False)
+        assert papers.find_in_markdown(_FIND_DOC_ACCENTS, "́", normalize=True) == ([], False)
 
 
 class TestFindInPaperTool:
     @pytest.mark.asyncio
     async def test_unconverted_paper_returns_error(self):
-        result = await server.find_in_paper(
-            identifier="2301.99999", query="transformer"
-        )
+        result = await server.find_in_paper(identifier="2301.99999", query="transformer")
         assert "error" in result
         assert "not converted" in result["error"]
 
@@ -564,9 +548,7 @@ class TestFindInPaperTool:
         md_path.write_text(_FIND_DOC)
 
         try:
-            result = await server.find_in_paper(
-                identifier=identifier, query="transformer"
-            )
+            result = await server.find_in_paper(identifier=identifier, query="transformer")
             assert "error" not in result, result
             assert result["query"] == "transformer"
             assert result["result_count"] >= 4
@@ -593,9 +575,7 @@ class TestFindInPaperTool:
 
         try:
             # Without normalize the unaccented query misses.
-            plain = await server.find_in_paper(
-                identifier=identifier, query="Gutierrez"
-            )
+            plain = await server.find_in_paper(identifier=identifier, query="Gutierrez")
             assert plain["result_count"] == 0
 
             folded = await server.find_in_paper(

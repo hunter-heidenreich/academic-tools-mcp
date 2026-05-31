@@ -70,9 +70,7 @@ async def _request_slot(url: str):
         _pending -= 1
 
 
-async def _throttled_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
+async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
     """Execute a GET against ACL Anthology with the canonical pooled shape.
 
     Thin wrapper over ``_request_slot`` so a transient blip surfaces a
@@ -80,7 +78,8 @@ async def _throttled_get(
     """
     async with _request_slot(url):
         return await _http.get_with_retry(
-            client, url,
+            client,
+            url,
             backoff_seconds=1.0,
             provider=NAMESPACE,
             **kwargs,
@@ -101,11 +100,11 @@ def _normalize_doi(doi: str) -> str:
     """Normalize a DOI to bare form (e.g., 10.18653/v1/2023.acl-long.1)."""
     doi = doi.strip()
     if doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/"):]
+        doi = doi[len("https://doi.org/") :]
     elif doi.startswith("http://doi.org/"):
-        doi = doi[len("http://doi.org/"):]
+        doi = doi[len("http://doi.org/") :]
     elif doi.startswith("doi:"):
-        doi = doi[len("doi:"):]
+        doi = doi[len("doi:") :]
     return doi
 
 
@@ -138,7 +137,7 @@ def doi_to_anthology_id(doi: str) -> str | None:
     bare = _normalize_doi(doi)
     if not bare.startswith(_ACL_DOI_PREFIX):
         return None
-    return _normalize_anthology_id(bare[len(_ACL_DOI_PREFIX):])
+    return _normalize_anthology_id(bare[len(_ACL_DOI_PREFIX) :])
 
 
 def _canonical_key(doi: str) -> str:
@@ -169,9 +168,7 @@ def pdf_path(doi: str) -> Path:
     return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(aid)
 
 
-async def download_pdf(
-    doi: str, *, force_refresh: bool = False
-) -> dict[str, Any]:
+async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Download the PDF for an ACL Anthology paper and cache it locally.
 
     ``force_refresh=True`` re-downloads and atomically replaces the

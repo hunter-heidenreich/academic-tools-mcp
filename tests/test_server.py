@@ -5,12 +5,9 @@ the smartness wired up at the @mcp.tool layer in server.py — chaining
 across providers and the auto-source picker.
 """
 
-import asyncio
-
 import pytest
 
 from academic_tools_mcp import arxiv, biorxiv, crossref, openalex, opencitations, server
-
 
 # ---------------------------------------------------------------------------
 # get_paper_metadata: follow_published auto-chain to OpenAlex
@@ -41,9 +38,7 @@ class TestFollowPublished:
             }
 
         async def _no_openalex(doi, **kwargs):
-            raise AssertionError(
-                "OpenAlex must NOT be called when follow_published is False"
-            )
+            raise AssertionError("OpenAlex must NOT be called when follow_published is False")
 
         monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv_get_paper)
         monkeypatch.setattr(openalex, "get_work", _no_openalex)
@@ -57,9 +52,7 @@ class TestFollowPublished:
         assert "followed_published" not in result
 
     @pytest.mark.asyncio
-    async def test_follow_published_returns_openalex_journal_record(
-        self, monkeypatch
-    ):
+    async def test_follow_published_returns_openalex_journal_record(self, monkeypatch):
         async def fake_biorxiv_get_paper(doi, **kwargs):
             return {
                 "doi": "10.1101/2024.01.01.123",
@@ -70,8 +63,7 @@ class TestFollowPublished:
 
         async def fake_openalex_get_work(doi, **kwargs):
             assert doi == "10.1038/s41586-024-07000-0", (
-                "follow_published must call OpenAlex with the published_doi, "
-                "not the preprint DOI"
+                "follow_published must call OpenAlex with the published_doi, not the preprint DOI"
             )
             return {
                 "title": "Journal version title",
@@ -81,15 +73,17 @@ class TestFollowPublished:
                 "type": "article",
                 "language": "en",
                 "primary_location": {"source": {"display_name": "Nature"}},
-                "open_access": {"is_oa": True, "oa_status": "hybrid", "oa_url": "https://nature.com/x"},
+                "open_access": {
+                    "is_oa": True,
+                    "oa_status": "hybrid",
+                    "oa_url": "https://nature.com/x",
+                },
             }
 
         monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv_get_paper)
         monkeypatch.setattr(openalex, "get_work", fake_openalex_get_work)
 
-        result = await server.get_paper_metadata(
-            "10.1101/2024.01.01.123", follow_published=True
-        )
+        result = await server.get_paper_metadata("10.1101/2024.01.01.123", follow_published=True)
         assert result["_source"] == "openalex_via_biorxiv"
         assert result["title"] == "Journal version title"
         assert result["doi"] == "10.1038/s41586-024-07000-0"
@@ -102,9 +96,7 @@ class TestFollowPublished:
         assert result["followed_published"] is True
 
     @pytest.mark.asyncio
-    async def test_follow_published_no_published_doi_returns_preprint(
-        self, monkeypatch
-    ):
+    async def test_follow_published_no_published_doi_returns_preprint(self, monkeypatch):
         # An unpublished preprint: follow_published=True must still
         # return the bioRxiv record (no journal version exists). The
         # parameter is opt-in convenience, not "I refuse to return a
@@ -117,16 +109,12 @@ class TestFollowPublished:
             }
 
         async def _no_openalex(doi, **kwargs):
-            raise AssertionError(
-                "OpenAlex must NOT be called when there is no published_doi"
-            )
+            raise AssertionError("OpenAlex must NOT be called when there is no published_doi")
 
         monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv_get_paper)
         monkeypatch.setattr(openalex, "get_work", _no_openalex)
 
-        result = await server.get_paper_metadata(
-            "10.1101/unpub", follow_published=True
-        )
+        result = await server.get_paper_metadata("10.1101/unpub", follow_published=True)
         assert result["_source"] == "biorxiv"
         assert result["title"] == "Still preprint"
         # No journal version to follow → no chain attempted → the signal is
@@ -134,9 +122,7 @@ class TestFollowPublished:
         assert "followed_published" not in result
 
     @pytest.mark.asyncio
-    async def test_follow_published_falls_back_when_openalex_misses(
-        self, monkeypatch
-    ):
+    async def test_follow_published_falls_back_when_openalex_misses(self, monkeypatch):
         # Journal version exists but isn't in OpenAlex yet (paper too
         # new to index, etc.). We must fall back to the preprint record
         # so the agent gets *something* — silently failing or erroring
@@ -155,9 +141,7 @@ class TestFollowPublished:
         monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv_get_paper)
         monkeypatch.setattr(openalex, "get_work", fake_openalex_get_work)
 
-        result = await server.get_paper_metadata(
-            "10.1101/2024.fresh", follow_published=True
-        )
+        result = await server.get_paper_metadata("10.1101/2024.fresh", follow_published=True)
         assert result["_source"] == "biorxiv"
         assert result["title"] == "Fresh preprint"
         assert result["published_doi"] == "10.1038/not-yet-indexed"
@@ -241,9 +225,7 @@ class TestReferencesAutoSource:
         assert result["total"] == 1
 
     @pytest.mark.asyncio
-    async def test_auto_returns_combined_error_when_both_sources_fail(
-        self, monkeypatch
-    ):
+    async def test_auto_returns_combined_error_when_both_sources_fail(self, monkeypatch):
         async def fake_cr(doi):
             return {"error": "Crossref says no"}
 
@@ -280,9 +262,7 @@ class TestReferencesAutoSource:
         )
         assert result["_source"] == "opencitations"
         assert result["page"] == 2
-        assert cr_called is False, (
-            "explicit source must not trigger the survey of the other source"
-        )
+        assert cr_called is False, "explicit source must not trigger the survey of the other source"
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +291,7 @@ class TestSearchAuthorCount:
                     },
                 ],
             }
+
         monkeypatch.setattr(arxiv, "search_papers", fake_search)
 
         result = await server.search_arxiv("anything")
@@ -324,13 +305,16 @@ class TestSearchAuthorCount:
         async def fake_search(query, max_results=10):
             return {
                 "total_results": 1,
-                "entries": [{
-                    "id": "http://arxiv.org/abs/2301.99999",
-                    "title": "Authorless oddity",
-                    "published": "2023-01-01T00:00:00Z",
-                    "authors": [],
-                }],
+                "entries": [
+                    {
+                        "id": "http://arxiv.org/abs/2301.99999",
+                        "title": "Authorless oddity",
+                        "published": "2023-01-01T00:00:00Z",
+                        "authors": [],
+                    }
+                ],
             }
+
         monkeypatch.setattr(arxiv, "search_papers", fake_search)
 
         result = await server.search_arxiv("anything")
@@ -344,28 +328,30 @@ class TestSearchAuthorCount:
         # feature-detecting field names.
         async def fake_search(query, max_results=10):
             return {"total_results": 0, "entries": []}
+
         monkeypatch.setattr(arxiv, "search_papers", fake_search)
 
         result = await server.search_arxiv("anything")
         assert set(result.keys()) == {"total_results", "results"}
 
     @pytest.mark.asyncio
-    async def test_search_crossref_by_title_includes_author_count(
-        self, monkeypatch
-    ):
+    async def test_search_crossref_by_title_includes_author_count(self, monkeypatch):
         async def fake_search(bibliographic, year=None, rows=5):
             return {
-                "items": [{
-                    "DOI": "10.1234/x",
-                    "title": ["Some title"],
-                    "author": [
-                        {"given": "Jane", "family": "Doe"},
-                        {"given": "John", "family": "Roe"},
-                        {"given": "Alice", "family": "Smith"},
-                    ],
-                    "published-online": {"date-parts": [[2023]]},
-                }],
+                "items": [
+                    {
+                        "DOI": "10.1234/x",
+                        "title": ["Some title"],
+                        "author": [
+                            {"given": "Jane", "family": "Doe"},
+                            {"given": "John", "family": "Roe"},
+                            {"given": "Alice", "family": "Smith"},
+                        ],
+                        "published-online": {"date-parts": [[2023]]},
+                    }
+                ],
             }
+
         monkeypatch.setattr(crossref, "search_works", fake_search)
 
         result = await server.search_crossref_by_title("anything")
@@ -378,12 +364,15 @@ class TestSearchAuthorCount:
         # slim tool must report 0 instead of NoneType / KeyError.
         async def fake_search(bibliographic, year=None, rows=5):
             return {
-                "items": [{
-                    "DOI": "10.1234/x",
-                    "title": ["No-author edge case"],
-                    "published-online": {"date-parts": [[2023]]},
-                }],
+                "items": [
+                    {
+                        "DOI": "10.1234/x",
+                        "title": ["No-author edge case"],
+                        "published-online": {"date-parts": [[2023]]},
+                    }
+                ],
             }
+
         monkeypatch.setattr(crossref, "search_works", fake_search)
 
         result = await server.search_crossref_by_title("anything")
@@ -406,14 +395,13 @@ class TestAuthorsShapeSymmetry:
     """
 
     @pytest.mark.asyncio
-    async def test_arxiv_branch_includes_empty_institution_fields(
-        self, monkeypatch
-    ):
+    async def test_arxiv_branch_includes_empty_institution_fields(self, monkeypatch):
         async def fake_arxiv(arxiv_id, **kwargs):
             return {
                 "id": "http://arxiv.org/abs/2301.00001v1",
                 "authors": [{"name": "Jane Doe"}, {"name": "John Roe"}],
             }
+
         monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
 
         result = await server.get_paper_authors("2301.00001")
@@ -422,9 +410,7 @@ class TestAuthorsShapeSymmetry:
         assert result["page_institution_count"] == 0
 
     @pytest.mark.asyncio
-    async def test_biorxiv_branch_includes_empty_institution_fields(
-        self, monkeypatch
-    ):
+    async def test_biorxiv_branch_includes_empty_institution_fields(self, monkeypatch):
         async def fake_biorxiv(doi, **kwargs):
             return {
                 "doi": "10.1101/x",
@@ -432,6 +418,7 @@ class TestAuthorsShapeSymmetry:
                 "author_corresponding": "Jane Doe",
                 "author_corresponding_institution": "Some Lab",
             }
+
         monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv)
 
         result = await server.get_paper_authors("10.1101/x")
@@ -460,6 +447,7 @@ class TestAuthorsShapeSymmetry:
                     },
                 ]
             }
+
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
 
         result = await server.get_paper_authors("10.1234/x")
@@ -477,14 +465,13 @@ class TestCanonicalIdInResponses:
     """
 
     @pytest.mark.asyncio
-    async def test_arxiv_metadata_strips_version_and_lowercases(
-        self, monkeypatch
-    ):
+    async def test_arxiv_metadata_strips_version_and_lowercases(self, monkeypatch):
         async def fake_arxiv(arxiv_id, **kwargs):
             return {
                 "id": "http://arxiv.org/abs/2301.00001v3",
                 "title": "x",
             }
+
         monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
 
         # Caller passes the version-suffixed form; canonical strips it.
@@ -495,6 +482,7 @@ class TestCanonicalIdInResponses:
     async def test_openalex_metadata_lowercases_doi(self, monkeypatch):
         async def fake_openalex(doi, **kwargs):
             return {"title": "x", "doi": "https://doi.org/10.1038/X.2024.Y"}
+
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
 
         # Mixed-case URL form normalises to lowercase bare DOI.
@@ -502,9 +490,7 @@ class TestCanonicalIdInResponses:
         assert result["_canonical_id"] == "10.1038/x.2024.y"
 
     @pytest.mark.asyncio
-    async def test_canonical_id_present_across_paper_tool_family(
-        self, monkeypatch
-    ):
+    async def test_canonical_id_present_across_paper_tool_family(self, monkeypatch):
         # All four unified paper tools must echo _canonical_id so an
         # agent that branches on _source always finds the same field.
         async def fake_arxiv(arxiv_id, **kwargs):
@@ -515,6 +501,7 @@ class TestCanonicalIdInResponses:
                 "authors": [{"name": "Jane Doe"}],
                 "published": "2023-01-01T00:00:00Z",
             }
+
         monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
 
         for tool in (
@@ -524,14 +511,10 @@ class TestCanonicalIdInResponses:
             server.get_paper_bibtex,
         ):
             result = await tool("2301.00001v1")
-            assert result["_canonical_id"] == "2301.00001", (
-                f"{tool.__name__} missing canonical id"
-            )
+            assert result["_canonical_id"] == "2301.00001", f"{tool.__name__} missing canonical id"
 
     @pytest.mark.asyncio
-    async def test_follow_published_canonical_is_journal_doi(
-        self, monkeypatch
-    ):
+    async def test_follow_published_canonical_is_journal_doi(self, monkeypatch):
         # When follow_published chains from a bioRxiv preprint to the
         # OpenAlex journal record, _canonical_id must reflect the
         # journal DOI (the paper the response now describes), with the
@@ -549,9 +532,7 @@ class TestCanonicalIdInResponses:
         monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv)
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
 
-        result = await server.get_paper_metadata(
-            "10.1101/2024.01.01.123", follow_published=True
-        )
+        result = await server.get_paper_metadata("10.1101/2024.01.01.123", follow_published=True)
         assert result["_source"] == "openalex_via_biorxiv"
         assert result["_canonical_id"] == "10.1038/s41586-024-07000-0"
         assert result["preprint_doi"] == "10.1101/2024.01.01.123"
@@ -572,6 +553,7 @@ class TestCitationsSourceParam:
     async def test_auto_dispatches_to_opencitations(self, monkeypatch):
         async def fake_oc(doi):
             return {"citations": [{"doi": "10.x/a"}], "count": 1}
+
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
 
         result = await server.get_paper_citations("10.x/x")
@@ -582,12 +564,11 @@ class TestCitationsSourceParam:
     async def test_explicit_opencitations_matches_auto(self, monkeypatch):
         async def fake_oc(doi):
             return {"citations": [{"doi": "10.x/a"}], "count": 1}
+
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
 
         auto = await server.get_paper_citations("10.x/x", source="auto")
-        explicit = await server.get_paper_citations(
-            "10.x/x", source="opencitations"
-        )
+        explicit = await server.get_paper_citations("10.x/x", source="opencitations")
         # Same source dispatch, same response shape — pinning the param
         # is a no-op today and stays no-op as long as OpenCitations is
         # the only provider.

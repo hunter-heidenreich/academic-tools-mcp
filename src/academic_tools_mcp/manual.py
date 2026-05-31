@@ -106,7 +106,7 @@ def _resolve_target(identifier: str) -> dict[str, Any]:
       - canonical: canonical cache key for that provider
       - pdf_path: Path where the provider expects its PDF
     """
-    from . import arxiv, biorxiv, acl_anthology
+    from . import acl_anthology, arxiv, biorxiv
 
     normalized = _normalize_identifier(identifier)
 

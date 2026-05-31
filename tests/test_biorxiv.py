@@ -6,7 +6,6 @@ import pytest
 
 from academic_tools_mcp import biorxiv
 
-
 # ---------------------------------------------------------------------------
 # DOI normalization
 # ---------------------------------------------------------------------------
@@ -17,42 +16,63 @@ class TestNormalizeDoi:
         assert biorxiv._normalize_doi("10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
 
     def test_doi_prefix(self):
-        assert biorxiv._normalize_doi("doi:10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi("doi:10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
+        )
 
     def test_doi_prefix_uppercase(self):
-        assert biorxiv._normalize_doi("DOI:10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi("DOI:10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
+        )
 
     def test_https_doi_url(self):
-        assert biorxiv._normalize_doi("https://doi.org/10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi("https://doi.org/10.1101/2024.01.01.573838")
+            == "10.1101/2024.01.01.573838"
+        )
 
     def test_http_doi_url(self):
-        assert biorxiv._normalize_doi("http://doi.org/10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi("http://doi.org/10.1101/2024.01.01.573838")
+            == "10.1101/2024.01.01.573838"
+        )
 
     def test_dx_doi_url(self):
-        assert biorxiv._normalize_doi("https://dx.doi.org/10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi("https://dx.doi.org/10.1101/2024.01.01.573838")
+            == "10.1101/2024.01.01.573838"
+        )
 
     def test_biorxiv_content_url(self):
-        assert biorxiv._normalize_doi(
-            "https://www.biorxiv.org/content/10.1101/2024.01.01.573838v1"
-        ) == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi("https://www.biorxiv.org/content/10.1101/2024.01.01.573838v1")
+            == "10.1101/2024.01.01.573838"
+        )
 
     def test_biorxiv_content_url_full_pdf(self):
-        assert biorxiv._normalize_doi(
-            "https://www.biorxiv.org/content/10.1101/2024.01.01.573838v2.full.pdf"
-        ) == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi(
+                "https://www.biorxiv.org/content/10.1101/2024.01.01.573838v2.full.pdf"
+            )
+            == "10.1101/2024.01.01.573838"
+        )
 
     def test_medrxiv_content_url(self):
-        assert biorxiv._normalize_doi(
-            "https://www.medrxiv.org/content/10.1101/2020.09.09.20191205v1"
-        ) == "10.1101/2020.09.09.20191205"
+        assert (
+            biorxiv._normalize_doi("https://www.medrxiv.org/content/10.1101/2020.09.09.20191205v1")
+            == "10.1101/2020.09.09.20191205"
+        )
 
     def test_strips_whitespace(self):
-        assert biorxiv._normalize_doi("  10.1101/2024.01.01.573838  ") == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi("  10.1101/2024.01.01.573838  ") == "10.1101/2024.01.01.573838"
+        )
 
     def test_biorxiv_url_no_www(self):
-        assert biorxiv._normalize_doi(
-            "https://biorxiv.org/content/10.1101/2024.01.01.573838v1"
-        ) == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._normalize_doi("https://biorxiv.org/content/10.1101/2024.01.01.573838v1")
+            == "10.1101/2024.01.01.573838"
+        )
 
 
 class TestCanonicalKey:
@@ -60,9 +80,10 @@ class TestCanonicalKey:
         assert biorxiv._canonical_key("10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
 
     def test_url_normalizes_and_lowercases(self):
-        assert biorxiv._canonical_key(
-            "https://doi.org/10.1101/2024.01.01.573838"
-        ) == "10.1101/2024.01.01.573838"
+        assert (
+            biorxiv._canonical_key("https://doi.org/10.1101/2024.01.01.573838")
+            == "10.1101/2024.01.01.573838"
+        )
 
 
 class TestIsBiorxivDoi:
@@ -200,11 +221,17 @@ class TestParsePaper:
 
     def test_biorxiv_pdf_url(self):
         result = biorxiv._parse_paper(_SAMPLE_RAW)
-        assert result["pdf_url"] == "https://www.biorxiv.org/content/10.1101/2024.01.01.573838v2.full.pdf"
+        assert (
+            result["pdf_url"]
+            == "https://www.biorxiv.org/content/10.1101/2024.01.01.573838v2.full.pdf"
+        )
 
     def test_medrxiv_pdf_url(self):
         result = biorxiv._parse_paper(_MEDRXIV_RAW)
-        assert result["pdf_url"] == "https://www.medrxiv.org/content/10.1101/2020.09.09.20191205v1.full.pdf"
+        assert (
+            result["pdf_url"]
+            == "https://www.medrxiv.org/content/10.1101/2020.09.09.20191205v1.full.pdf"
+        )
 
     def test_medrxiv_server_detection(self):
         result = biorxiv._parse_paper(_MEDRXIV_RAW)
@@ -267,9 +294,7 @@ class TestThrottledGet:
     @pytest.mark.asyncio
     async def test_no_delay_after_gap(self, monkeypatch):
         """No sleep needed when enough time has passed."""
-        monkeypatch.setattr(
-            biorxiv, "_last_request_time", time.monotonic() - 2.0
-        )
+        monkeypatch.setattr(biorxiv, "_last_request_time", time.monotonic() - 2.0)
         monkeypatch.setattr(biorxiv, "_request_lock", asyncio.Lock())
 
         slept = []

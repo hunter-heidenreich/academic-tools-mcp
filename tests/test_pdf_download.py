@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -25,9 +24,7 @@ async def _passthrough_slot():
     yield
 
 
-def _mock_stream_response(
-    status_code: int = 200, chunks: list[bytes] | None = None
-):
+def _mock_stream_response(status_code: int = 200, chunks: list[bytes] | None = None):
     """Build a mock async-context-manager that yields a streaming response."""
     chunks = chunks or [b"%PDF-1.4 fake content"]
 

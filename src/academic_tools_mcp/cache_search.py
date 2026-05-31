@@ -65,14 +65,61 @@ _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-.]*[a-z0-9]|[a-z0-9]")
 # queries like "in distribution shift". The list is the standard NLTK
 # top-25 minus terms that show up as content in this domain ("not",
 # "no", "very", "all").
-_STOPWORDS = frozenset({
-    "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at",
-    "for", "with", "by", "from", "as", "is", "are", "was", "were", "be",
-    "been", "being", "this", "that", "these", "those", "it", "its",
-    "we", "our", "their", "them", "they", "he", "she", "his", "her",
-    "i", "you", "your", "if", "then", "than", "so", "such", "into",
-    "about", "over", "under", "between",
-})
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "for",
+        "with",
+        "by",
+        "from",
+        "as",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "its",
+        "we",
+        "our",
+        "their",
+        "them",
+        "they",
+        "he",
+        "she",
+        "his",
+        "her",
+        "i",
+        "you",
+        "your",
+        "if",
+        "then",
+        "than",
+        "so",
+        "such",
+        "into",
+        "about",
+        "over",
+        "under",
+        "between",
+    }
+)
 
 # Heading regex matching the same shape used by papers.parse_sections.
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
@@ -106,9 +153,7 @@ def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
     if normalize:
         text = _textnorm.fold(text)
     return [
-        tok
-        for tok in _TOKEN_RE.findall(text.lower())
-        if tok not in _STOPWORDS and len(tok) > 1
+        tok for tok in _TOKEN_RE.findall(text.lower()) if tok not in _STOPWORDS and len(tok) > 1
     ]
 
 
@@ -234,10 +279,16 @@ _NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
     # suffixes — actual old-style IDs DO carry a slash). Both forms
     # write through the same `replace("/", "_")` step, so we restore
     # the one slash for old-style IDs and leave new-style alone.
-    "arxiv": [("hep-th_", "hep-th/"), ("hep-ph_", "hep-ph/"),
-              ("astro-ph_", "astro-ph/"), ("cond-mat_", "cond-mat/"),
-              ("gr-qc_", "gr-qc/"), ("nucl-th_", "nucl-th/"),
-              ("math-ph_", "math-ph/"), ("quant-ph_", "quant-ph/")],
+    "arxiv": [
+        ("hep-th_", "hep-th/"),
+        ("hep-ph_", "hep-ph/"),
+        ("astro-ph_", "astro-ph/"),
+        ("cond-mat_", "cond-mat/"),
+        ("gr-qc_", "gr-qc/"),
+        ("nucl-th_", "nucl-th/"),
+        ("math-ph_", "math-ph/"),
+        ("quant-ph_", "quant-ph/"),
+    ],
     # bioRxiv DOIs are always "10.1101/<suffix>" — exactly one slash.
     "biorxiv": [("10.1101_", "10.1101/")],
     # ACL Anthology DOIs are always "10.18653/v1/<suffix>" — two slashes.
@@ -262,7 +313,7 @@ def _filename_to_canonical(namespace: str, stem: str) -> str:
     repairs = _NAMESPACE_PREFIX_REPAIRS.get(namespace, [])
     for needle, replacement in repairs:
         if stem.startswith(needle):
-            return replacement + stem[len(needle):]
+            return replacement + stem[len(needle) :]
     return stem
 
 
@@ -344,14 +395,10 @@ def _load_index() -> dict[str, Any]:
 
 def _save_index(index: dict[str, Any]) -> None:
     """Persist the index atomically (reuses the shared cache helper)."""
-    cache._atomic_write_json(
-        _index_path(), json.dumps(index, ensure_ascii=False)
-    )
+    cache._atomic_write_json(_index_path(), json.dumps(index, ensure_ascii=False))
 
 
-def _build_entry(
-    namespace: str, path: Path, *, mtime_ns: int, size: int
-) -> dict[str, Any] | None:
+def _build_entry(namespace: str, path: Path, *, mtime_ns: int, size: int) -> dict[str, Any] | None:
     """Tokenise one markdown file into an index entry, or ``None`` to skip.
 
     Both tokenisation modes are computed and stored so a single index
@@ -415,9 +462,7 @@ def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
                 and existing.get("size") == st.st_size
             ):
                 continue
-            entry = _build_entry(
-                ns, path, mtime_ns=st.st_mtime_ns, size=st.st_size
-            )
+            entry = _build_entry(ns, path, mtime_ns=st.st_mtime_ns, size=st.st_size)
             if entry is None:
                 # Unreadable or no-content file — drop any stale entry.
                 if key in entries:
@@ -499,12 +544,14 @@ def search(
         tf = entry[tf_field]
         if not tf:
             continue
-        docs.append({
-            "namespace": entry["namespace"],
-            "stem": entry["stem"],
-            "tf": tf,
-            "length": entry[len_field],
-        })
+        docs.append(
+            {
+                "namespace": entry["namespace"],
+                "stem": entry["stem"],
+                "tf": tf,
+                "length": entry[len_field],
+            }
+        )
         total_length += entry[len_field]
 
     if not docs:
@@ -534,9 +581,7 @@ def search(
             tf = doc["tf"].get(term, 0)
             if tf == 0:
                 continue
-            denom = tf + _BM25_K1 * (
-                1 - _BM25_B + _BM25_B * doc["length"] / avgdl
-            )
+            denom = tf + _BM25_K1 * (1 - _BM25_B + _BM25_B * doc["length"] / avgdl)
             score += idf * (tf * (_BM25_K1 + 1)) / denom
         return score
 
@@ -551,31 +596,24 @@ def search(
         # section, and title. Title is recomputed from this read rather
         # than cached in the index so the output is byte-identical to a
         # fresh scan. A winner that vanished since the refresh is skipped.
-        path = (
-            cache._CACHE_ROOT / doc["namespace"] / "markdown"
-            / f"{doc['stem']}.md"
-        )
+        path = cache._CACHE_ROOT / doc["namespace"] / "markdown" / f"{doc['stem']}.md"
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         title = _extract_title(text)
-        snippet, snippet_offset = _extract_snippet(
-            text, unique_query_terms, normalize=normalize
-        )
-        section = (
-            _section_for_offset(text, snippet_offset)
-            if snippet_offset is not None
-            else None
-        )
+        snippet, snippet_offset = _extract_snippet(text, unique_query_terms, normalize=normalize)
+        section = _section_for_offset(text, snippet_offset) if snippet_offset is not None else None
         canonical_id = _filename_to_canonical(doc["namespace"], doc["stem"])
-        out.append({
-            "namespace": doc["namespace"],
-            "canonical_id": canonical_id,
-            "score": round(score, 3),
-            "title": title,
-            "snippet": snippet,
-            "section": section,
-            "char_count": len(text),
-        })
+        out.append(
+            {
+                "namespace": doc["namespace"],
+                "canonical_id": canonical_id,
+                "score": round(score, 3),
+                "title": title,
+                "snippet": snippet,
+                "section": section,
+                "char_count": len(text),
+            }
+        )
     return out

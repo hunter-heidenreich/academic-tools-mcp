@@ -73,9 +73,7 @@ async def test_aclose_all_swallows_provider_exceptions(monkeypatch):
     shutdown is best-effort by design."""
     raises = _StubClient(behaviour="raise")
     healthy = _StubClient()
-    monkeypatch.setattr(
-        _clients, "_clients", {"bad": raises, "ok": healthy}
-    )
+    monkeypatch.setattr(_clients, "_clients", {"bad": raises, "ok": healthy})
 
     await _clients.aclose_all()
 

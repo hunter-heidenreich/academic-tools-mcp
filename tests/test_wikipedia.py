@@ -6,7 +6,6 @@ import pytest
 
 from academic_tools_mcp import wikipedia
 
-
 # ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
@@ -56,9 +55,7 @@ class TestThrottledGet:
 
     @pytest.mark.asyncio
     async def test_no_delay_after_gap(self, monkeypatch):
-        monkeypatch.setattr(
-            wikipedia, "_last_request_time", time.monotonic() - 3.0
-        )
+        monkeypatch.setattr(wikipedia, "_last_request_time", time.monotonic() - 3.0)
         monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
 
         slept = []
@@ -181,11 +178,7 @@ class TestGetSummary:
             "title": "Cytochrome P450",
             "description": "Class of enzymes",
             "extract": "Cytochromes P450 are a superfamily of enzymes.",
-            "content_urls": {
-                "desktop": {
-                    "page": "https://en.wikipedia.org/wiki/Cytochrome_P450"
-                }
-            },
+            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Cytochrome_P450"}},
             "pageid": 709137,
         }
 
@@ -199,6 +192,7 @@ class TestGetSummary:
 
         # Clear any cached entry
         from academic_tools_mcp import cache
+
         monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
         stored = []
         monkeypatch.setattr(cache, "put", lambda *a: stored.append(a))
@@ -234,6 +228,7 @@ class TestGetSummary:
         monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
 
         from academic_tools_mcp import cache
+
         monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
 
         class MockClient:
@@ -261,6 +256,7 @@ class TestPageExists:
     @pytest.mark.asyncio
     async def test_standard_page_exists(self, monkeypatch):
         """Standard page should return exists=True, is_disambiguation=False."""
+
         async def mock_summary(title):
             return {
                 "title": "Cytochrome P450",
@@ -281,6 +277,7 @@ class TestPageExists:
     @pytest.mark.asyncio
     async def test_disambiguation_page(self, monkeypatch):
         """Disambiguation page should return exists=True, is_disambiguation=True."""
+
         async def mock_summary(title):
             return {
                 "title": "Mercury",
@@ -300,6 +297,7 @@ class TestPageExists:
     @pytest.mark.asyncio
     async def test_nonexistent_page(self, monkeypatch):
         """Nonexistent page should return exists=False."""
+
         async def mock_summary(title):
             return {"error": "Wikipedia page not found: xyzzy"}
 
