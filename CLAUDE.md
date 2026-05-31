@@ -17,6 +17,19 @@ uv run pytest -k "test_particle" -v                      # Run tests matching a 
 uv run python -m academic_tools_mcp.server               # Run the MCP server
 ```
 
+## Code style & the format-on-edit hook
+
+`ruff` (format + lint) and `mypy` enforce style — config in `pyproject.toml`. A
+`PostToolUse` hook (`.claude/hooks/ruff-format.sh`, wired in `.claude/settings.json`)
+runs `ruff format` + `ruff check --fix` on every `.py` file the moment it's edited.
+
+**Footgun:** because the hook autofixes after *each* edit, an `import` added before
+its first use exists is momentarily unused and gets stripped (F401) — the next edit
+then references a name that's gone. Write the **code that uses the symbol first, then
+backfill the import** (a transient reference to a not-yet-imported name is harmless —
+ruff only deletes unused imports, never code), or add the import and its use in the
+same edit.
+
 ## Changelog & versioning
 
 This project keeps a [`CHANGELOG.md`](./CHANGELOG.md) in [Keep a Changelog](https://keepachangelog.com/) format and uses calendar versioning (`YYYY.MM.DD`, git tag `vYYYY.MM.DD`).
