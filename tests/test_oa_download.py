@@ -193,6 +193,8 @@ class TestOaDownload:
         assert "error" in result
         assert "no open-access pdf url" in result["error"].lower()
         assert "import_paper" in result["suggestion"]
+        # Closed-access is a definitive, non-retryable condition for this paper.
+        assert result["retryable"] is False
         assert not _oa_dest().exists()
 
     @pytest.mark.asyncio
@@ -200,8 +202,127 @@ class TestOaDownload:
         _stub_get_work(monkeypatch, {"error": f"No work found for DOI: {_DOI}"})
         result = await oa_download.download_pdf(_DOI)
         assert result["error"] == f"No work found for DOI: {_DOI}"
+        # A definitive (non-retryable) OpenAlex miss keeps the import escape hatch.
         assert "import_paper" in result["suggestion"]
         assert not _oa_dest().exists()
+
+    @pytest.mark.asyncio
+    async def test_transient_openalex_error_has_no_import_suggestion(self, monkeypatch):
+        # A retryable OpenAlex error (timeout / 5xx) is surfaced as-is: the
+        # agent should retry, NOT be told to go fetch the PDF by hand.
+        _stub_get_work(monkeypatch, {"error": "upstream timeout", "retryable": True})
+        result = await oa_download.download_pdf(_DOI)
+        assert result["error"] == "upstream timeout"
+        assert result["retryable"] is True
+        assert "suggestion" not in result
+        assert not _oa_dest().exists()
+
+    @pytest.mark.asyncio
+    async def test_no_oa_url_failure_is_negative_cached(self, monkeypatch):
+        _stub_get_work(
+            monkeypatch,
+            {"open_access": {"is_oa": False, "oa_status": "closed"}},
+        )
+        result1 = await oa_download.download_pdf(_DOI)
+        assert "error" in result1
+
+        # Second call must be served from the negative cache — no OpenAlex hit.
+        def boom(*_a, **_k):  # pragma: no cover - must not be called
+            raise AssertionError("network hit on negative-cache hit")
+
+        monkeypatch.setattr(openalex, "get_work", boom)
+        result2 = await oa_download.download_pdf(_DOI)
+        assert result2 == result1
+        assert "_expires_at" not in result2
+
+    @pytest.mark.asyncio
+    async def test_landing_page_failure_is_negative_cached(self, monkeypatch):
+        # OpenAlex only knows an HTML landing page (oa_url, not a pdf_url).
+        # stream_to_file rejects it; the rejection must be negative-cached so
+        # a retrying agent doesn't re-fetch-and-reject the page every call.
+        _stub_get_work(monkeypatch, {"open_access": {"oa_url": "http://x/landing"}})
+        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        _install_stream(
+            monkeypatch,
+            _mock_stream_response(chunks=[b"<html>paywall</html>"], content_type="text/html"),
+        )
+        result1 = await oa_download.download_pdf(_DOI)
+        assert "error" in result1
+        assert not _oa_dest().exists()
+
+        # Second call: served from negative cache — neither OpenAlex nor the
+        # publisher host is touched.
+        def boom(*_a, **_k):  # pragma: no cover - must not be called
+            raise AssertionError("network hit on negative-cache hit")
+
+        monkeypatch.setattr(openalex, "get_work", boom)
+        monkeypatch.setattr(_clients, "get_client", boom)
+        result2 = await oa_download.download_pdf(_DOI)
+        assert result2 == result1
+        assert "_expires_at" not in result2
+
+    @pytest.mark.asyncio
+    async def test_size_cap_failure_is_not_negative_cached(self, monkeypatch):
+        # MAX_PDF_BYTES is a config knob, not a property of the paper. A
+        # size-cap abort must NOT be negative-cached: raising the cap should
+        # let the next call succeed without force_refresh.
+        monkeypatch.setenv("MAX_PDF_BYTES", "4")
+        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        _install_stream(
+            monkeypatch,
+            _mock_stream_response(chunks=[b"%PDF-1.4 way over the four-byte cap"]),
+        )
+
+        calls = {"n": 0}
+
+        async def counting_get_work(_doi, **_kw):
+            calls["n"] += 1
+            return {"best_oa_location": {"pdf_url": "http://x/p.pdf"}}
+
+        monkeypatch.setattr(openalex, "get_work", counting_get_work)
+
+        result1 = await oa_download.download_pdf(_DOI)
+        assert "max_bytes" in result1
+
+        # Second call re-resolves OpenAlex rather than serving a negative hit.
+        result2 = await oa_download.download_pdf(_DOI)
+        assert "max_bytes" in result2
+        assert calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_ignores_negative_cache(self, monkeypatch):
+        # Seed a negative entry with a first failed (closed-access) call.
+        _stub_get_work(
+            monkeypatch,
+            {"open_access": {"is_oa": False, "oa_status": "closed"}},
+        )
+        first = await oa_download.download_pdf(_DOI)
+        assert "error" in first
+
+        # force_refresh must bypass (and clear) the negative entry: a now-OA
+        # paper with a valid stream succeeds instead of returning the stale miss.
+        _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
+        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        _install_stream(monkeypatch, _mock_stream_response(chunks=[b"%PDF-1.4 fresh"]))
+        result = await oa_download.download_pdf(_DOI, force_refresh=True)
+        assert result["cached"] is False
+        assert _oa_dest().read_bytes() == b"%PDF-1.4 fresh"
+
+    @pytest.mark.asyncio
+    async def test_zero_byte_cached_file_is_a_miss(self, monkeypatch):
+        # A 0-byte leftover from an interrupted write must not be served as a
+        # cache hit — it's re-downloaded like the manual import path does.
+        dest = _oa_dest()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"")
+
+        _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
+        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        _install_stream(monkeypatch, _mock_stream_response(chunks=[b"%PDF-1.4 fresh"]))
+
+        result = await oa_download.download_pdf(_DOI)
+        assert result["cached"] is False
+        assert dest.read_bytes() == b"%PDF-1.4 fresh"
 
 
 # --- stream_to_file content guard ------------------------------------------
