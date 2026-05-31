@@ -134,7 +134,7 @@ class TestSearchWorksParams:
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             mock_resp.raise_for_status = MagicMock()
-            mock_resp.json.return_value = {"message": {"items": []}}
+            mock_resp.json.return_value = {"message": {"items": [], "total-results": 42}}
             return mock_resp
 
         mock_client = MagicMock()
@@ -146,7 +146,9 @@ class TestSearchWorksParams:
 
         result = await crossref.search_works("some title", year=2022, rows=3)
 
-        assert result == {"items": []}
+        # total_results is surfaced from message.total-results (the upstream
+        # match count), distinct from the length of the returned page.
+        assert result == {"items": [], "total_results": 42}
         params = captured_kwargs.get("params", {})
         assert params["query.bibliographic"] == "some title"
         assert params["rows"] == "3"

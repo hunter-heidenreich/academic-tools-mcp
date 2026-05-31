@@ -193,7 +193,7 @@ async def search_works(
         if cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS) is None:
             cache.put(NAMESPACE, "works", canonical, item)
 
-    return {"items": items}
+    return {"items": items, "total_results": data["message"].get("total-results")}
 
 
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
