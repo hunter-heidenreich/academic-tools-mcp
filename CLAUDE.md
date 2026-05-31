@@ -30,9 +30,16 @@ Releases are cut deliberately — not on every merge — by renaming `[Unrelease
 **Layered design — tools never hit the API directly. Every API client uses every shared module.**
 
 ```
-server.py (MCP tools, FastMCP lifespan)
+server.py (thin entry: re-exports mcp + tools; registers debug tool)
   │
-  ├── API clients (seven, all share the same shape)
+  ├── _app.py + tools/   (FastMCP instance + lifespan + Annotated param types
+  │     _app.py            in _app.py; 21 @mcp.tool functions split across
+  │     tools/paper.py     paper / pipeline / graph / search by job)
+  │     tools/pipeline.py
+  │     tools/graph.py
+  │     tools/search.py
+  │
+  ├── providers/   (seven API clients, all share the same shape)
   │     openalex.py / arxiv.py / biorxiv.py
   │     crossref.py / opencitations.py / wikipedia.py / acl_anthology.py
   │
@@ -60,9 +67,9 @@ server.py (MCP tools, FastMCP lifespan)
 Per-module deep detail (atomic writes, throttle/backpressure semantics, single-flight slot rules, per-provider quirks, PDF subprocess gating, server tool shapes and error contracts) lives in `.claude/rules/` and loads only when Claude touches the matching file:
 
 - `.claude/rules/infrastructure.md` — `cache.py`, `_http.py`, `_clients.py`, `_singleflight.py`, `_stats.py`, `config.py`
-- `.claude/rules/providers.md` — all seven API clients
+- `.claude/rules/providers.md` — all seven API clients (`providers/*.py`)
 - `.claude/rules/pipeline.md` — `papers.py`, `manual.py`, `cache_search.py`
-- `.claude/rules/server.md` — `server.py`, `bibtex.py`
+- `.claude/rules/server.md` — `server.py`, `_app.py`, `tools/*.py`, `bibtex.py`
 
 Known bugs, fragile code paths, and intentional-constraint trade-offs (with `file:line` references and fix sketches) are inventoried in [`KNOWN_ISSUES.md`](./KNOWN_ISSUES.md). Read it before touching the PDF download/convert pipeline or the retry/backpressure layer.
 
@@ -106,18 +113,18 @@ Eviction is mtime-based and self-healing — `cache.get(..., max_age_seconds=N)`
 
 ## Adding a New OpenAlex Entity
 
-1. Add `_normalize_*` and `_canonical_*` functions in `openalex.py`.
+1. Add `_normalize_*` and `_canonical_*` functions in `providers/openalex.py`.
 2. Add an async `get_*` function that checks cache, fetches, stores.
-3. Add focused tool(s) in `server.py` that extract lean slices.
+3. Add focused tool(s) in the matching `tools/*.py` module (OpenAlex metadata → `tools/paper.py`) that extract lean slices; shared param types live in `_app.py`.
 4. Add unit tests for normalization in `tests/test_openalex.py`.
 
 ## Adding a New API Provider
 
-Mirror `arxiv.py` or `crossref.py` — they're the canonical examples. The shape (pooled client, `_throttled_get` + burst cap, `_single_flight`, cache → negative cache → fetch with re-checks inside the slot, 404 → negative cache) is documented in `.claude/rules/providers.md` and `.claude/rules/infrastructure.md`. After mirroring it:
+Mirror `providers/arxiv.py` or `providers/crossref.py` — they're the canonical examples. The shape (pooled client, `_throttled_get` + burst cap, `_single_flight`, cache → negative cache → fetch with re-checks inside the slot, 404 → negative cache) is documented in `.claude/rules/providers.md` and `.claude/rules/infrastructure.md`. New clients live under `providers/` and import shared infra one level up (`from .. import _http, cache, …`). After mirroring it:
 
-1. Add the module name to `_reset_pooled_state` in `tests/conftest.py` and to `_PROVIDER_MODULES` in `_stats.py`.
+1. Add the dotted module path (`providers.<name>`) to `_reset_pooled_state` in `tests/conftest.py` and to `_PROVIDER_MODULES` in `_stats.py`.
 2. Add env vars to `.env.example` and load via `config.get()`.
-3. Add tools in `server.py`.
+3. Add tools in the matching `tools/*.py` module.
 4. Tests covering normalization, parsing, backpressure, 404 negative-cache, and TTL eviction / `force_refresh` if relevant.
 
 ## APIs NOT to Use
