@@ -123,4 +123,11 @@ Generates BibTeX entries for three provider shapes:
 - `generate_arxiv_bibtex()` — `@misc` (preprint) or `@article` (published) with `eprint`/`archiveprefix`/`primaryclass` fields.
 - `generate_biorxiv_bibtex()` — `@article` when `published_doi` set, else `@misc` with preprint DOI, server name, `howpublished` URL.
 
-All three share helpers for surname particles (`van`, `de la`, `von`, etc.) in citation keys and author formatting.
+All three share helpers for surname particles (`van`, `de la`, `von`, etc.) in citation keys and author formatting (`_format_names` + `_format_one_name`, parameterised by a `name_of` accessor so OpenAlex's nested `author.display_name` and arXiv/bioRxiv's flat `name` reuse one code path).
+
+Output-correctness contracts (so generated entries always compile):
+
+- **Citation keys are ASCII `[a-z0-9]`.** `_key_token` transliterates the common non-decomposable characters (`ø ł ß đ æ œ þ ð ı`, via `_TRANSLIT`) that `_textnorm.fold` can't strip, then folds diacritics, lowercases, and drops everything else (apostrophes, hyphens, periods, spaces, surviving non-ASCII). `_extract_last_name` and `_first_key_word` both route through it.
+- **Escaping treats field text as literal.** `_escape_bibtex` neutralises the full LaTeX special set — strips literal `{ }` first (so they can't unbalance the field), then escapes `\` → `\textbackslash{}`, `& % $ # _`, and `~ ^` → `\textascii*{}`. It does **not** preserve braces for case-protection. DOIs use the narrower `_escape_doi` (`& % # _` only — no backslash mangling of the DOI string).
+- **Organisational authors are brace-wrapped.** `_format_one_name` detects consortium/collaboration names (`_ORG_RE`) and emits `{The ATLAS Collaboration}` so BibTeX treats them atomically instead of splitting off a fake surname.
+- **Cross-entry key disambiguation is out of scope.** These functions are stateless (one paper per call) and cannot see sibling entries, so two papers sharing author+year+title-word collide on one key. A caller concatenating many entries into a single `.bib` must deduplicate keys itself.

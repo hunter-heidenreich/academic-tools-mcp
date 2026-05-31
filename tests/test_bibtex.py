@@ -1,3 +1,5 @@
+import re
+
 from academic_tools_mcp.bibtex import (
     _extract_last_name,
     _format_authors_bibtex,
@@ -26,6 +28,35 @@ class TestExtractLastName:
 
     def test_middle_name(self):
         assert _extract_last_name("Andrew J. Ballard") == "ballard"
+
+    def test_non_decomposable_oslash(self):
+        # ø does not decompose under NFKD; must be transliterated, not retained.
+        key = _extract_last_name("Lars Løkke")
+        assert key == "lokke"
+        assert key.isascii()
+
+    def test_non_decomposable_lstroke(self):
+        # ł (no NFKD decomposition) + ę (decomposes to e + ogonek).
+        key = _extract_last_name("Lech Wałęsa")
+        assert key == "walesa"
+        assert key.isascii()
+
+    def test_non_decomposable_eszett(self):
+        key = _extract_last_name("Hans Straße")
+        assert key == "strasse"
+        assert key.isascii()
+
+    def test_apostrophe_stripped(self):
+        # Apostrophe is illegal in a BibTeX key.
+        key = _extract_last_name("Conor O'Brien")
+        assert key == "obrien"
+        assert re.fullmatch(r"[a-z0-9]+", key)
+
+    def test_hyphen_stripped(self):
+        # Hyphen is illegal in a BibTeX key.
+        key = _extract_last_name("Irene Joliot-Curie")
+        assert key == "joliotcurie"
+        assert re.fullmatch(r"[a-z0-9]+", key)
 
 
 class TestFormatAuthorsBibtex:
@@ -202,6 +233,26 @@ class TestGenerateBibtex:
         bib = generate_bibtex(self._make_work(title="A_B #1 Study"))
         assert r"A\_B \#1 Study" in bib
 
+    def test_dollar_backslash_caret_tilde_neutralized(self):
+        bib = generate_bibtex(self._make_work(title=r"Cost $5 and 50\50 a^b x~y"))
+        assert r"\$5" in bib
+        assert r"\textbackslash{}" in bib
+        assert r"\textasciicircum{}" in bib
+        assert r"\textasciitilde{}" in bib
+        # No raw $ survives (only the escaped \$ form).
+        assert "$" not in bib.replace(r"\$", "")
+        # Braces stay balanced across the whole entry.
+        assert bib.count("{") == bib.count("}")
+
+    def test_literal_braces_in_title_stripped(self):
+        bib = generate_bibtex(self._make_work(title="A {NaCl} study"))
+        assert bib.count("{") == bib.count("}")
+        assert "A NaCl study" in bib
+
+    def test_doi_underscore_escaped(self):
+        bib = generate_bibtex(self._make_work(doi="https://doi.org/10.1234/foo_bar"))
+        assert r"doi={10.1234/foo\_bar}" in bib
+
 
 class TestGenerateArxivBibtex:
     def _make_arxiv_paper(self, **overrides):
@@ -365,3 +416,46 @@ class TestGenerateBiorxivBibtex:
         bib = generate_biorxiv_bibtex(self._make_biorxiv_paper(authors=[]))
         assert "unknown2024" in bib
         assert "author=" not in bib
+
+
+class TestCorporateAuthors:
+    def test_openalex_consortium_brace_wrapped(self):
+        work = {
+            "type": "article",
+            "title": "Observation of a New Particle",
+            "publication_year": 2012,
+            "authorships": [{"author": {"display_name": "The ATLAS Collaboration"}}],
+            "biblio": {},
+            "primary_location": {"source": {"display_name": "Physics Letters B"}},
+            "ids": {},
+        }
+        bib = generate_bibtex(work)
+        # Atomic: BibTeX must not split "Collaboration" off as a surname.
+        assert "author={{The ATLAS Collaboration}}" in bib
+        assert "Collaboration, The ATLAS" not in bib
+
+    def test_arxiv_consortium_brace_wrapped(self):
+        paper = {
+            "id": "http://arxiv.org/abs/1207.7214v2",
+            "title": "Observation of a New Particle",
+            "published": "2012-07-31T00:00:00Z",
+            "authors": [{"name": "The ATLAS Collaboration", "affiliations": []}],
+            "primary_category": "hep-ex",
+            "journal_ref": None,
+            "doi": None,
+        }
+        bib = generate_arxiv_bibtex(paper)
+        assert "author={{The ATLAS Collaboration}}" in bib
+
+    def test_regular_author_not_wrapped(self):
+        work = {
+            "type": "article",
+            "title": "A Study",
+            "publication_year": 2020,
+            "authorships": [{"author": {"display_name": "John Smith"}}],
+            "biblio": {},
+            "primary_location": {"source": {"display_name": "J"}},
+            "ids": {},
+        }
+        bib = generate_bibtex(work)
+        assert "author={Smith, John}" in bib

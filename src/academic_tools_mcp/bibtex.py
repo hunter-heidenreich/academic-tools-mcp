@@ -1,6 +1,8 @@
 import re
-import unicodedata
+from collections.abc import Callable, Iterable
 from typing import Any
+
+from ._textnorm import fold
 
 # OpenAlex type -> BibTeX entry type
 _TYPE_MAP: dict[str, str] = {
@@ -23,24 +25,67 @@ _TYPE_MAP: dict[str, str] = {
     "other": "misc",
 }
 
-# Common surname particles
+# Common surname particles. "al"/"el" are intentionally included for Arabic
+# "al-" and Spanish "el"; they can false-positive on a rare standalone token,
+# an accepted trade-off for correct handling of "de la", "van der", etc.
 _PARTICLES = {"van", "von", "de", "del", "della", "di", "la", "le", "den", "der", "el", "al"}
 
+# Stopwords skipped when picking the first significant title word for a key.
+_TITLE_SKIP = {"a", "an", "the", "on", "in", "of", "for", "to", "with", "and", "or"}
 
-def _strip_accents_for_key(s: str) -> str:
-    """Remove accents for BibTeX key generation only."""
-    nfkd = unicodedata.normalize("NFKD", s)
-    return "".join(c for c in nfkd if not unicodedata.combining(c))
+# Characters with no NFKD decomposition that fold() leaves intact — transliterate
+# to ASCII so citation keys stay ASCII-only.
+_TRANSLIT = str.maketrans(
+    {
+        "ø": "o",
+        "Ø": "o",
+        "ł": "l",
+        "Ł": "l",
+        "đ": "d",
+        "Đ": "d",
+        "ı": "i",
+        "ð": "d",
+        "Ð": "d",
+        "þ": "th",
+        "Þ": "th",
+        "ß": "ss",
+        "æ": "ae",
+        "Æ": "ae",
+        "œ": "oe",
+        "Œ": "oe",
+    }
+)
+
+# Organisational author names (consortia, collaborations) must be brace-wrapped
+# so BibTeX treats them atomically instead of splitting off a fake surname.
+_ORG_RE = re.compile(
+    r"\b(collaboration|consortium|group|team|project|network|initiative|survey)\b",
+    re.IGNORECASE,
+)
+
+
+def _fold_translit(s: str) -> str:
+    """ASCII-fold for key generation: transliterate non-decomposables, then
+    NFKD-fold to strip diacritics. Case preserved (callers lowercase)."""
+    return fold(s.translate(_TRANSLIT))
+
+
+def _key_token(s: str) -> str:
+    """Reduce a string to a BibTeX-key-safe token: ASCII-folded, lowercased,
+    stripped to ``[a-z0-9]`` (drops apostrophes, hyphens, periods, spaces, and
+    any surviving non-ASCII)."""
+    return re.sub(r"[^a-z0-9]", "", _fold_translit(s).lower())
 
 
 def _extract_last_name(display_name: str) -> str:
-    """Extract a usable last name from an author display name.
+    """Extract a key-safe last name from an author display name.
 
-    Handles particles like 'van Tilborg' -> 'vantilborg'.
+    Handles particles like 'van Tilborg' -> 'vantilborg' and guarantees an
+    ASCII ``[a-z0-9]`` result.
     """
     parts = display_name.strip().split()
     if len(parts) <= 1:
-        return _strip_accents_for_key(parts[0]).lower() if parts else "unknown"
+        return (_key_token(parts[0]) if parts else "") or "unknown"
 
     # Walk backwards from the end to collect last name + particles
     last_parts = [parts[-1]]
@@ -50,7 +95,15 @@ def _extract_last_name(display_name: str) -> str:
         else:
             break
     last_parts.reverse()
-    return _strip_accents_for_key("".join(last_parts)).lower()
+    return _key_token("".join(last_parts)) or "unknown"
+
+
+def _first_key_word(title: str) -> str:
+    """First significant (non-stopword) title word, as a key-safe token."""
+    for word in re.findall(r"[A-Za-z]+", _fold_translit(title)):
+        if word.lower() not in _TITLE_SKIP:
+            return _key_token(word)
+    return "untitled"
 
 
 def _generate_key(work: dict[str, Any]) -> str:
@@ -63,54 +116,76 @@ def _generate_key(work: dict[str, Any]) -> str:
         last_name = "unknown"
 
     year = work.get("publication_year", "")
-
-    title = work.get("title", "") or ""
-    # Get first meaningful word from title (skip articles/prepositions)
-    skip = {"a", "an", "the", "on", "in", "of", "for", "to", "with", "and", "or"}
-    title_words = re.findall(r"[a-zA-Z]+", title)
-    first_word = "untitled"
-    for w in title_words:
-        if w.lower() not in skip:
-            first_word = _strip_accents_for_key(w).lower()
-            break
-
+    first_word = _first_key_word(work.get("title", "") or "")
     return f"{last_name}{year}{first_word}"
 
 
-def _format_authors_bibtex(authorships: list[dict[str, Any]]) -> str:
-    """Format author names for BibTeX: 'Last, First and Last, First'."""
-    names = []
-    for authorship in authorships:
-        display_name = authorship.get("author", {}).get("display_name", "")
-        if not display_name:
-            continue
-        parts = display_name.strip().split()
-        if len(parts) == 1:
-            names.append(parts[0])
+def _format_one_name(display_name: str) -> str:
+    """Format a single author display name as 'Last, First'.
+
+    Organisational names (consortia, collaborations) are brace-wrapped so
+    BibTeX treats them atomically rather than splitting off a fake surname.
+    """
+    name = display_name.strip()
+    if _ORG_RE.search(name):
+        return f"{{{name}}}"
+    parts = name.split()
+    if len(parts) == 1:
+        return parts[0]
+    # Find where the last name starts (including particles)
+    last_start = len(parts) - 1
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i].lower() in _PARTICLES:
+            last_start = i
         else:
-            # Find where the last name starts (including particles)
-            last_start = len(parts) - 1
-            for i in range(len(parts) - 2, -1, -1):
-                if parts[i].lower() in _PARTICLES:
-                    last_start = i
-                else:
-                    break
-            first = " ".join(parts[:last_start])
-            last = " ".join(parts[last_start:])
-            if first:
-                names.append(f"{last}, {first}")
-            else:
-                names.append(last)
+            break
+    first = " ".join(parts[:last_start])
+    last = " ".join(parts[last_start:])
+    return f"{last}, {first}" if first else last
+
+
+def _format_names(items: Iterable[Any], name_of: Callable[[Any], str]) -> str:
+    """Join formatted author names with ' and ', skipping blanks.
+
+    ``name_of`` pulls the display string out of each item (OpenAlex authorships
+    nest it under ``author.display_name``; arXiv/bioRxiv use a flat ``name``).
+    """
+    names = [_format_one_name(n) for item in items if (n := name_of(item).strip())]
     return " and ".join(names)
 
 
+def _format_authors_bibtex(authorships: list[dict[str, Any]]) -> str:
+    """Format OpenAlex authorships: 'Last, First and Last, First'."""
+    return _format_names(authorships, lambda a: a.get("author", {}).get("display_name", ""))
+
+
+# LaTeX specials replaced verbatim (after backslash + brace handling) when a
+# field value is treated as literal text.
+_ESCAPE_SIMPLE = {"&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_"}
+
+
 def _escape_bibtex(s: str) -> str:
-    """Escape special BibTeX characters."""
-    # Protect text that shouldn't be lowercased by BibTeX
-    s = s.replace("&", r"\&")
-    s = s.replace("%", r"\%")
-    s = s.replace("_", r"\_")
-    s = s.replace("#", r"\#")
+    """Neutralize LaTeX specials so ``s`` is safe as a literal field value.
+
+    Treats the input as plain text — it does NOT preserve braces for
+    case-protection. Order matters: literal braces are stripped first (so they
+    can't unbalance the field), the backslash is escaped next (before we start
+    emitting our own backslashes), then the remaining specials.
+    """
+    s = s.replace("{", "").replace("}", "")
+    s = s.replace("\\", r"\textbackslash{}")
+    for ch, repl in _ESCAPE_SIMPLE.items():
+        s = s.replace(ch, repl)
+    s = s.replace("~", r"\textasciitilde{}")
+    s = s.replace("^", r"\textasciicircum{}")
+    return s
+
+
+def _escape_doi(s: str) -> str:
+    """Escape only the BibTeX-fatal characters in a DOI, leaving the DOI string
+    otherwise intact (no backslash mangling)."""
+    for ch in ("&", "%", "#", "_"):
+        s = s.replace(ch, "\\" + ch)
     return s
 
 
@@ -142,9 +217,7 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     # Type-specific venue field
     if entry_type == "article" and venue_name:
         fields.append(("journal", f"{{{_escape_bibtex(venue_name)}}}"))
-    elif (
-        entry_type == "inproceedings" and venue_name or entry_type == "incollection" and venue_name
-    ):
+    elif entry_type in ("inproceedings", "incollection") and venue_name:
         fields.append(("booktitle", f"{{{_escape_bibtex(venue_name)}}}"))
     elif entry_type == "phdthesis":
         # For dissertations, venue is typically the university
@@ -173,7 +246,7 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     if publisher:
         fields.append(("publisher", f"{{{_escape_bibtex(publisher)}}}"))
     if doi:
-        fields.append(("doi", f"{{{doi}}}"))
+        fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
 
     # Preprint-specific fields
     if entry_type == "misc" and work_type in ("preprint", "posted-content"):
@@ -209,46 +282,17 @@ def _generate_arxiv_key(paper: dict[str, Any]) -> str:
 
     published = paper.get("published", "") or ""
     year = published[:4] if len(published) >= 4 else ""
-
-    title = paper.get("title", "") or ""
-    skip = {"a", "an", "the", "on", "in", "of", "for", "to", "with", "and", "or"}
-    title_words = re.findall(r"[a-zA-Z]+", title)
-    first_word = "untitled"
-    for w in title_words:
-        if w.lower() not in skip:
-            first_word = _strip_accents_for_key(w).lower()
-            break
+    first_word = _first_key_word(paper.get("title", "") or "")
 
     return f"{last_name}{year}{first_word}"
 
 
 def _format_arxiv_authors_bibtex(authors: list[dict[str, Any]]) -> str:
-    """Format arXiv author names for BibTeX: 'Last, First and Last, First'.
+    """Format arXiv/bioRxiv author names: 'Last, First and Last, First'.
 
-    arXiv authors are stored as {"name": "First Last", "affiliations": [...]}.
+    These authors are stored as {"name": "First Last", ...}.
     """
-    names = []
-    for author in authors:
-        display_name = author.get("name", "")
-        if not display_name:
-            continue
-        parts = display_name.strip().split()
-        if len(parts) == 1:
-            names.append(parts[0])
-        else:
-            last_start = len(parts) - 1
-            for i in range(len(parts) - 2, -1, -1):
-                if parts[i].lower() in _PARTICLES:
-                    last_start = i
-                else:
-                    break
-            first = " ".join(parts[:last_start])
-            last = " ".join(parts[last_start:])
-            if first:
-                names.append(f"{last}, {first}")
-            else:
-                names.append(last)
-    return " and ".join(names)
+    return _format_names(authors, lambda a: a.get("name", ""))
 
 
 def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
@@ -288,7 +332,7 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     if primary_cat:
         fields.append(("primaryclass", f"{{{primary_cat}}}"))
     if doi:
-        fields.append(("doi", f"{{{doi}}}"))
+        fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
 
     field_str = ",\n".join(f"  {name}={value}" for name, value in fields)
     return f"@{entry_type}{{{key},\n{field_str}\n}}"
@@ -309,16 +353,7 @@ def _generate_biorxiv_key(paper: dict[str, Any]) -> str:
 
     date = paper.get("date", "") or ""
     year = date[:4] if len(date) >= 4 else ""
-
-    title = paper.get("title", "") or ""
-    skip = {"a", "an", "the", "on", "in", "of", "for", "to", "with", "and", "or"}
-    title_words = re.findall(r"[a-zA-Z]+", title)
-    first_word = "untitled"
-    for w in title_words:
-        if w.lower() not in skip:
-            first_word = _strip_accents_for_key(w).lower()
-            break
-
+    first_word = _first_key_word(paper.get("title", "") or "")
     return f"{last_name}{year}{first_word}"
 
 
@@ -344,14 +379,14 @@ def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     if authors:
         fields.append(("author", f"{{{_format_arxiv_authors_bibtex(authors)}}}"))
     if entry_type == "article" and published_doi:
-        fields.append(("doi", f"{{{published_doi}}}"))
+        fields.append(("doi", f"{{{_escape_doi(published_doi)}}}"))
     if year:
         fields.append(("year", f"{{{year}}}"))
     if entry_type == "misc":
         server_name = "medRxiv" if server == "medrxiv" else "bioRxiv"
         fields.append(("publisher", f"{{{server_name}}}"))
         if doi:
-            fields.append(("doi", f"{{{doi}}}"))
+            fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
             fields.append(("howpublished", f"{{\\url{{https://doi.org/{doi}}}}}"))
 
     field_str = ",\n".join(f"  {name}={value}" for name, value in fields)

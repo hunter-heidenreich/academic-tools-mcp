@@ -13,8 +13,8 @@ NFKD changes length: combining marks contribute zero folded chars, and a
 ligature like "ﬁ" expands to "fi" (one original char → two folded
 chars). The index map carries enough information to invert either case.
 
-This mirrors — but does not repurpose — ``bibtex._strip_accents_for_key``,
-which folds for citation-key generation where offsets are irrelevant.
+``bibtex`` builds on ``fold`` for citation-key generation (where offsets are
+irrelevant), layering ASCII transliteration on top via ``_fold_translit``.
 """
 
 from __future__ import annotations

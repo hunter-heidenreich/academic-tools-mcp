@@ -27,6 +27,16 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- BibTeX generation now emits valid, compilable entries for inputs that
+  previously produced broken output. Citation keys are sanitised to ASCII
+  `[a-z0-9]` — non-decomposable characters (`ø`, `ł`, `ß`, …) are transliterated
+  and apostrophes/hyphens/periods dropped, so keys from authors like `O'Brien`
+  or `Wałęsa` no longer leak illegal characters. Title/venue escaping now
+  neutralises the full LaTeX special set (`$ \ { } ~ ^` in addition to
+  `& % _ #`), and DOI fields escape their BibTeX-fatal characters.
+  Organisational authors (e.g. "The ATLAS Collaboration") are brace-wrapped so
+  BibTeX treats them atomically instead of inventing a surname. ([#23])
+
 - Single-flight no longer logs a spurious `Future exception was never
   retrieved` warning to stderr when a coalesced fetch with no concurrent
   followers raises. The leader now marks its own future's exception retrieved
@@ -247,3 +257,4 @@ grouped by milestone rather than per commit.
 [#16]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/16
 [#17]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/17
 [#22]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/22
+[#23]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/23
