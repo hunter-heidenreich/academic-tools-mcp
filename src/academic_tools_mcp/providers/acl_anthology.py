@@ -5,9 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-from .. import _clients, _http, _pdf_download, _singleflight, _stats, cache
+from .. import _clients, _http, _pdf_download, _singleflight, _stats, cache, papers
 
 NAMESPACE = "acl_anthology"
 
@@ -70,30 +68,29 @@ async def _request_slot(url: str):
         _pending -= 1
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET against ACL Anthology with the canonical pooled shape.
-
-    Thin wrapper over ``_request_slot`` so a transient blip surfaces a
-    structured error and the burst cap shields against runaway fan-out.
-    """
-    async with _request_slot(url):
-        return await _http.get_with_retry(
-            client,
-            url,
-            backoff_seconds=1.0,
-            provider=NAMESPACE,
-            **kwargs,
-        )
-
-
 # ---------------------------------------------------------------------------
 # DOI → Anthology ID resolution
 # ---------------------------------------------------------------------------
 
 
+def _strip_acl_prefix(bare: str) -> str | None:
+    """Return the anthology-id suffix if ``bare`` carries the ACL prefix.
+
+    DOIs are officially case-insensitive, so the prefix is matched
+    case-insensitively (``10.18653/V1/...`` is just as valid as
+    ``10.18653/v1/...``). The prefix is fixed-length, so we lowercase only
+    the leading slice and cut at ``len(prefix)`` — the suffix is returned
+    untouched for ``_normalize_anthology_id`` to handle. Returns ``None``
+    when ``bare`` is not an ACL DOI.
+    """
+    if bare[: len(_ACL_DOI_PREFIX)].lower() == _ACL_DOI_PREFIX:
+        return bare[len(_ACL_DOI_PREFIX) :]
+    return None
+
+
 def is_acl_doi(doi: str) -> bool:
     """Check if a DOI belongs to the ACL Anthology."""
-    return _normalize_doi(doi).startswith(_ACL_DOI_PREFIX)
+    return _strip_acl_prefix(_normalize_doi(doi)) is not None
 
 
 def _normalize_doi(doi: str) -> str:
@@ -134,10 +131,10 @@ def doi_to_anthology_id(doi: str) -> str | None:
     e.g., "10.18653/v1/2023.acl-long.1" -> "2023.acl-long.1"
     Returns None if the DOI is not an ACL Anthology DOI.
     """
-    bare = _normalize_doi(doi)
-    if not bare.startswith(_ACL_DOI_PREFIX):
+    suffix = _strip_acl_prefix(_normalize_doi(doi))
+    if suffix is None:
         return None
-    return _normalize_anthology_id(bare[len(_ACL_DOI_PREFIX) :])
+    return _normalize_anthology_id(suffix)
 
 
 def _canonical_key(doi: str) -> str:
@@ -156,15 +153,26 @@ def pdf_url(anthology_id: str) -> str:
 
 
 def _pdf_filename(anthology_id: str) -> str:
-    """Build a human-readable PDF filename from an Anthology ID."""
-    return anthology_id.replace("/", "_") + ".pdf"
+    """Build a filesystem/shell-safe PDF filename from an Anthology ID.
+
+    Routes through ``papers._safe_stem`` (same as the manual import path) so
+    the filename — which reaches the ``bash -c`` converter — can't carry shell
+    metacharacters. Real Anthology IDs are ``[A-Za-z0-9.-]`` only, so they map
+    to the same name as before (no cache migration); ``/`` still folds to ``_``.
+    """
+    return papers._safe_stem(anthology_id) + ".pdf"
 
 
 def pdf_path(doi: str) -> Path:
-    """Return the expected cache path for a PDF (may or may not exist yet)."""
+    """Return the expected cache path for a PDF (may or may not exist yet).
+
+    Raises ``ValueError`` for a non-ACL DOI rather than returning a sentinel
+    path: a path whose ``.exists()`` is truthy (e.g. ``/dev/null``) would let
+    a non-PDF slip past ``convert_paper``'s existence guard.
+    """
     aid = doi_to_anthology_id(doi)
     if aid is None:
-        return Path("/dev/null")
+        raise ValueError(f"Not an ACL Anthology DOI: {doi}")
     return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(aid)
 
 
