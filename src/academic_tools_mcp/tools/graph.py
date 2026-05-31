@@ -5,7 +5,6 @@ from typing import Any
 
 from .. import _app
 from .._app import (
-    CITATION_SOURCE,
     DOI,
     FORCE_REFRESH,
     PAGE,
@@ -275,7 +274,6 @@ async def get_paper_citations_count(
 @mcp.tool
 async def get_paper_citations(
     doi: DOI,
-    source: CITATION_SOURCE = "auto",
     page: PAGE = 1,
     page_size: PAGE_SIZE = 20,
     force_refresh: FORCE_REFRESH = False,
@@ -288,9 +286,11 @@ async def get_paper_citations(
     string), journal_self_citation, author_self_citation. No bibliographic
     metadata — chain a citing DOI into get_paper_metadata for that.
 
-    Defaults: source="auto" (currently always OpenCitations), page=1,
-    page_size=20 (1-50). Call get_paper_citations_count first to see
-    the total.
+    Defaults: page=1, page_size=20 (1-50). Call get_paper_citations_count
+    first to see the total. OpenCitations is the only source for incoming
+    citations today, so there is no source parameter (unlike
+    get_paper_references); one would be reintroduced if a second citation
+    source ever ships.
 
     ``force_refresh=True`` re-fetches from OpenCitations, bypassing the cache —
     pass it on the first page for fresh coverage; omit it when paginating so
@@ -299,10 +299,6 @@ async def get_paper_citations(
     Errors: bad DOI / upstream failure → ``{error, suggestion}`` with
     retry hints for transient failures.
     """
-    # source is reserved for forward compatibility; both values dispatch
-    # to OpenCitations today. Keeping the parameter in the signature now
-    # means agent code path "page through citations" can pin source=
-    # "opencitations" without breaking when a second source ships.
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
