@@ -63,6 +63,8 @@ OpenCitations Index API v2 (`api.opencitations.net/index/v2`). Outgoing referenc
 
 MediaWiki OpenSearch (`/w/api.php?action=opensearch`) for title search; Wikimedia REST (`/api/rest_v1/page/summary/{title}`) for summaries and existence verification. Detects disambiguation pages via the `type` field. Rate limit ~1 req/sec (1000ms gap). `_get_client()` bakes in `User-Agent` (mailto from `WIKIPEDIA_MAILTO`) — requests without a `User-Agent` may be blocked. Cache namespace: `wikipedia/summaries`.
 
+**Parsing/encoding hardening (parity with crossref/openalex/opencitations).** A malformed/truncated 200 body raises `json.JSONDecodeError` — caught via `_PARSE_ERRORS` → `_parse_error_dict()` (`{error, retryable: True}`, a fresh dict each call) and **not** negative-cached, so a retry re-fetches; `get_summary` treats a non-dict 200 body the same way rather than crashing the `data.get(...)` calls. The page title is percent-encoded into the summary path via `quote(url_title, safe="")` (the whole segment — a slash in a title like `AC/DC` is part of the title, not a path separator) so reserved chars can't split the path or truncate the request to the wrong record. **The cache key is case-sensitive beyond the first character** — Wikipedia titles only auto-capitalize the leading letter, so the canonical form is `url_title[:1].upper() + url_title[1:]`, not a full lowercase (which would collide case-distinct articles like `PET` vs `Pet`). The 404 error dict carries `not_found: True` (mirrors `openalex.get_work`); `page_exists` reports `exists: False` **only** on that definitive 404, and propagates transient errors as-is instead of treating a network blip as a confident non-existence.
+
 **Limit:** 1000 req/hour for identified clients.
 
 ## acl_anthology.py
