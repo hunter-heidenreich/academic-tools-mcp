@@ -9,7 +9,26 @@ correct ORIGINAL offsets so ``find_in_paper`` offsets stay aligned with
 
 from __future__ import annotations
 
+import pytest
+
 from academic_tools_mcp import _textnorm
+
+# Strings that exercise the tricky corners of NFKD folding: stacked combining
+# marks on one base, precomposed glyphs that decompose, ligatures (1→N), and
+# non-letter compatibility decompositions (circled / fullwidth / superscript).
+_TRICKY = [
+    "",
+    "transformer",
+    "café",
+    "é̀",  # base + acute + grave (two combining marks on one base)
+    "ế",  # Vietnamese precomposed → base + two combining marks
+    "ab́",  # trailing combining mark after a base char
+    "́ab",  # leading combining mark
+    "ﬁle",  # ligature mid-word
+    "①",  # circled digit one → "1"
+    "Ａ",  # fullwidth A → "A"
+    "²",  # superscript two → "2"
+]
 
 
 class TestFold:
@@ -71,3 +90,31 @@ class TestFoldWithMap:
 
     def test_all_combining_input(self):
         assert _textnorm.fold_with_map("́̀") == ("", [2])
+
+    def test_trailing_combining_mark(self):
+        # A combining mark after a base char folds away; the base maps to
+        # its own index and the end sentinel jumps past the dropped mark.
+        folded, index_map = _textnorm.fold_with_map("ab́")
+        assert folded == "ab"
+        assert index_map == [0, 1, 3]
+
+    def test_match_at_end_of_folded_text(self):
+        # A match ending at the very end of the folded text must round-trip
+        # through the end sentinel back to the end of the original string.
+        text = "a café"
+        folded, index_map = _textnorm.fold_with_map(text)
+        start = folded.index("cafe")
+        end = start + len("cafe")  # == len(folded)
+        assert end == len(folded)
+        assert text[index_map[start] : index_map[end]] == "café"
+
+
+class TestFoldEquivalence:
+    """``fold`` (whole-string NFKD) and ``fold_with_map`` (per-char NFKD) are
+    two separate implementations; their folded output MUST stay identical, or
+    ``search_cached_papers`` would tokenise (``fold``) and extract snippets
+    (``fold_with_map``) against divergent text."""
+
+    @pytest.mark.parametrize("text", _TRICKY)
+    def test_folded_strings_agree(self, text):
+        assert _textnorm.fold(text) == _textnorm.fold_with_map(text)[0]
