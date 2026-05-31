@@ -20,7 +20,8 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from academic_tools_mcp import _clients, acl_anthology, arxiv, biorxiv, cache
+from academic_tools_mcp import _clients, cache
+from academic_tools_mcp.providers import acl_anthology, arxiv, biorxiv
 
 
 @contextlib.asynccontextmanager

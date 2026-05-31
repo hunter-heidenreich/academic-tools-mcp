@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from . import _clients, _http, _pdf_download, _singleflight, _stats, cache
+from .. import _clients, _http, _pdf_download, _singleflight, _stats, cache
 
 NAMESPACE = "biorxiv"
 _BASE_URL = "https://api.biorxiv.org"

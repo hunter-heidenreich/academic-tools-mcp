@@ -2,7 +2,7 @@ import asyncio
 import time
 from typing import Any
 
-from . import _clients, _http, _singleflight, _stats, cache, config
+from .. import _clients, _http, _singleflight, _stats, cache, config
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"

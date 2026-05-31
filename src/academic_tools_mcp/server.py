@@ -9,21 +9,23 @@ from pydantic import Field
 from . import (
     _clients,
     _stats,
-    acl_anthology,
-    arxiv,
-    biorxiv,
     cache,
     cache_search,
     config,
-    crossref,
     manual,
     oa_download,
-    openalex,
-    opencitations,
     papers,
-    wikipedia,
 )
 from .bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
+from .providers import (
+    acl_anthology,
+    arxiv,
+    biorxiv,
+    crossref,
+    openalex,
+    opencitations,
+    wikipedia,
+)
 
 
 @asynccontextmanager

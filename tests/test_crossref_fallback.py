@@ -10,7 +10,8 @@ fields are null on the fallback response.
 
 import pytest
 
-from academic_tools_mcp import openalex, server
+from academic_tools_mcp import server
+from academic_tools_mcp.providers import openalex
 
 
 # A canonical OpenAlex 404 error dict, as get_work now produces it.

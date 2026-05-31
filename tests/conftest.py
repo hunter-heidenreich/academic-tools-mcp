@@ -11,6 +11,7 @@ This autouse fixture clears all of that before each test runs.
 """
 
 import asyncio
+import importlib
 from typing import Any
 
 import pytest
@@ -39,18 +40,18 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
     # error if reused. Counters are zeroed for the same reason as before:
     # an error path that raised before the finally block could otherwise
     # leak _pending into the next test.
-    for module_name in (
-        "arxiv",
-        "openalex",
-        "biorxiv",
-        "crossref",
-        "opencitations",
-        "wikipedia",
-        "acl_anthology",
+    for module_path in (
+        "providers.arxiv",
+        "providers.openalex",
+        "providers.biorxiv",
+        "providers.crossref",
+        "providers.opencitations",
+        "providers.wikipedia",
+        "providers.acl_anthology",
         "oa_download",
     ):
         try:
-            module: Any = __import__(f"academic_tools_mcp.{module_name}", fromlist=[module_name])
+            module: Any = importlib.import_module(f"academic_tools_mcp.{module_path}")
         except ImportError:
             continue
         if hasattr(module, "_pending"):

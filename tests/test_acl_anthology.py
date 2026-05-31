@@ -1,4 +1,4 @@
-from academic_tools_mcp import acl_anthology
+from academic_tools_mcp.providers import acl_anthology
 
 # ---------------------------------------------------------------------------
 # DOI detection

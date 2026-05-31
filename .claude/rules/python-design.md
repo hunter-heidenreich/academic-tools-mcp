@@ -40,16 +40,17 @@ it.
   *inside* a tool, and don't add a fifth `get_<provider>_metadata` variant —
   extend the dispatcher instead. Responses tag `_source` / `_canonical_id` so
   callers branch on provider-specific fields downstream.
-- **A new API provider mirrors an existing one.** `arxiv.py` and `crossref.py`
-  are the canonical shapes: pooled `httpx.AsyncClient`, two-stage gating
-  (`_request_sem` + gap-lock, see `arxiv.py:28`), 5-deep burst cap →
+- **A new API provider mirrors an existing one.** `providers/arxiv.py` and
+  `providers/crossref.py` are the canonical shapes: pooled `httpx.AsyncClient`,
+  two-stage gating (`_request_sem` + gap-lock, see `providers/arxiv.py`),
+  5-deep burst cap →
   `LocalBackpressureError`, single-flight by canonical id, one transparent retry,
   404 → negative cache, positive-cache TTL eviction, `_stats` counters. Same
   shape every time — a provider that invents its own concurrency or caching
   scheme is a bug, not a feature.
 - **Narrow, named exceptions over broad behaviour.** The OA-download path only
   fetches the OA URL OpenAlex already surfaces (`openalex.best_pdf_url`,
-  `openalex.py:60`) — never a caller-supplied URL. Keep such trust boundaries in
+  `providers/openalex.py`) — never a caller-supplied URL. Keep such trust boundaries in
   one small module (`oa_download.py`) rather than threading an `allow_arbitrary`
   flag through the download stack.
 

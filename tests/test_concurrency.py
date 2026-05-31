@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from academic_tools_mcp import arxiv, openalex
+from academic_tools_mcp.providers import arxiv, openalex
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from . import _clients, _http, _singleflight, _stats, cache
+from .. import _clients, _http, _singleflight, _stats, cache
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"

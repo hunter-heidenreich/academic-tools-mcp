@@ -1,7 +1,8 @@
 import pytest
 
-from academic_tools_mcp import cache, openalex
-from academic_tools_mcp.openalex import (
+from academic_tools_mcp import cache
+from academic_tools_mcp.providers import openalex
+from academic_tools_mcp.providers.openalex import (
     _canonical_author_id,
     _canonical_doi,
     _normalize_author_id,

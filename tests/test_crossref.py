@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from academic_tools_mcp import crossref
+from academic_tools_mcp.providers import crossref
 
 # ---------------------------------------------------------------------------
 # DOI normalization

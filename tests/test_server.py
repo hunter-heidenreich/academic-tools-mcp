@@ -7,7 +7,8 @@ across providers and the auto-source picker.
 
 import pytest
 
-from academic_tools_mcp import arxiv, biorxiv, crossref, openalex, opencitations, server
+from academic_tools_mcp import server
+from academic_tools_mcp.providers import arxiv, biorxiv, crossref, openalex, opencitations
 
 # ---------------------------------------------------------------------------
 # get_paper_metadata: follow_published auto-chain to OpenAlex

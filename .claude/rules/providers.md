@@ -1,12 +1,6 @@
 ---
 paths:
-  - "src/academic_tools_mcp/openalex.py"
-  - "src/academic_tools_mcp/arxiv.py"
-  - "src/academic_tools_mcp/biorxiv.py"
-  - "src/academic_tools_mcp/crossref.py"
-  - "src/academic_tools_mcp/opencitations.py"
-  - "src/academic_tools_mcp/wikipedia.py"
-  - "src/academic_tools_mcp/acl_anthology.py"
+  - "src/academic_tools_mcp/providers/*.py"
 ---
 
 # API providers
