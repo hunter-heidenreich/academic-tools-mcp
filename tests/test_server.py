@@ -7,7 +7,7 @@ across providers and the auto-source picker.
 
 import pytest
 
-from academic_tools_mcp import _app, server
+from academic_tools_mcp import _app, cache, manual, papers, server
 from academic_tools_mcp.providers import arxiv, biorxiv, crossref, openalex, opencitations
 from academic_tools_mcp.tools import paper
 
@@ -464,14 +464,153 @@ class TestSearchAuthorCount:
     async def test_search_arxiv_response_shape_matches_crossref(self, monkeypatch):
         # search_arxiv and search_crossref_by_title must return the same
         # top-level shape so an agent can branch on the source without
-        # feature-detecting field names.
-        async def fake_search(query, max_results=10):
+        # feature-detecting field names. total_results is the upstream
+        # match count (how many exist); result_count is how many hits the
+        # call actually returned.
+        async def fake_arxiv(query, max_results=10):
             return {"total_results": 0, "entries": []}
+
+        async def fake_crossref(bibliographic, year=None, rows=5):
+            return {"items": [], "total_results": 0}
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_arxiv)
+        monkeypatch.setattr(crossref, "search_works", fake_crossref)
+
+        arxiv_result = await server.search_arxiv("anything")
+        crossref_result = await server.search_crossref_by_title("anything")
+        assert set(arxiv_result.keys()) == {"total_results", "result_count", "results"}
+        assert set(crossref_result.keys()) == set(arxiv_result.keys())
+
+    @pytest.mark.asyncio
+    async def test_search_arxiv_total_vs_result_count(self, monkeypatch):
+        # total_results is arXiv's upstream match count; result_count is
+        # how many hits this page returned. They are NOT the same number.
+        async def fake_search(query, max_results=10):
+            return {
+                "total_results": 50000,
+                "entries": [
+                    {
+                        "id": "http://arxiv.org/abs/2301.00001v1",
+                        "title": "One of many",
+                        "published": "2023-01-01T00:00:00Z",
+                        "authors": [{"name": "Jane Doe"}],
+                    },
+                ],
+            }
 
         monkeypatch.setattr(arxiv, "search_papers", fake_search)
 
         result = await server.search_arxiv("anything")
-        assert set(result.keys()) == {"total_results", "results"}
+        assert result["total_results"] == 50000
+        assert result["result_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_crossref_total_vs_result_count(self, monkeypatch):
+        # Crossref exposes message.total-results upstream; the tool surfaces
+        # it as total_results (NOT len of the returned page) plus a
+        # result_count for the page size, matching search_arxiv.
+        async def fake_search(bibliographic, year=None, rows=5):
+            return {
+                "items": [
+                    {
+                        "DOI": "10.1234/x",
+                        "title": ["One of many"],
+                        "author": [{"given": "Jane", "family": "Doe"}],
+                        "published-online": {"date-parts": [[2023]]},
+                    }
+                ],
+                "total_results": 312,
+            }
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        result = await server.search_crossref_by_title("anything")
+        assert result["total_results"] == 312
+        assert result["result_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_crossref_date_parts_none(self, monkeypatch):
+        # Malformed Crossref record: date-parts present but null. Must not
+        # crash (TypeError on None[0]) — degrade to year=None.
+        async def fake_search(bibliographic, year=None, rows=5):
+            return {
+                "items": [
+                    {
+                        "DOI": "10.1234/x",
+                        "title": ["Null date-parts"],
+                        "published-online": {"date-parts": None},
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        result = await server.search_crossref_by_title("anything")
+        assert result["results"][0]["year"] is None
+
+    @pytest.mark.asyncio
+    async def test_search_crossref_date_parts_empty(self, monkeypatch):
+        # Malformed Crossref record: date-parts is an empty list. Must not
+        # crash (IndexError on [][0]) — degrade to year=None.
+        async def fake_search(bibliographic, year=None, rows=5):
+            return {
+                "items": [
+                    {
+                        "DOI": "10.1234/x",
+                        "title": ["Empty date-parts"],
+                        "published-print": {"date-parts": []},
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        result = await server.search_crossref_by_title("anything")
+        assert result["results"][0]["year"] is None
+
+    @pytest.mark.asyncio
+    async def test_search_crossref_year_from_posted(self, monkeypatch):
+        # bioRxiv/preprint records carry their date under `posted`, not
+        # published-print/-online. The de-facto bioRxiv search must still
+        # surface the year.
+        async def fake_search(bibliographic, year=None, rows=5):
+            return {
+                "items": [
+                    {
+                        "DOI": "10.1101/2024.05.01.123",
+                        "title": ["A preprint"],
+                        "author": [{"given": "Jane", "family": "Doe"}],
+                        "posted": {"date-parts": [[2024, 5]]},
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        result = await server.search_crossref_by_title("anything")
+        assert result["results"][0]["year"] == 2024
+
+    @pytest.mark.asyncio
+    async def test_search_crossref_org_first_author(self, monkeypatch):
+        # Consortium authors carry a `name` field with no given/family.
+        # first_author must surface it instead of dropping to None.
+        async def fake_search(bibliographic, year=None, rows=5):
+            return {
+                "items": [
+                    {
+                        "DOI": "10.1234/x",
+                        "title": ["Big collaboration paper"],
+                        "author": [{"name": "The ATLAS Collaboration"}],
+                        "published-online": {"date-parts": [[2023]]},
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        result = await server.search_crossref_by_title("anything")
+        assert result["results"][0]["first_author"] == "The ATLAS Collaboration"
+        assert result["results"][0]["author_count"] == 1
 
     @pytest.mark.asyncio
     async def test_search_crossref_by_title_includes_author_count(self, monkeypatch):
@@ -517,6 +656,48 @@ class TestSearchAuthorCount:
         result = await server.search_crossref_by_title("anything")
         assert result["results"][0]["author_count"] == 0
         assert result["results"][0]["first_author"] is None
+
+
+# ---------------------------------------------------------------------------
+# find_in_paper: error contract + happy path
+# ---------------------------------------------------------------------------
+
+
+class TestFindInPaper:
+    """find_in_paper scans one converted paper's markdown. It must error
+    cleanly (with a suggestion, like every other tool here) when the paper
+    isn't converted, and return positioned hits when it is.
+    """
+
+    @pytest.fixture
+    def isolated_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / ".cache")
+        return tmp_path / ".cache"
+
+    @pytest.mark.asyncio
+    async def test_unconverted_paper_errors_with_suggestion(self, isolated_cache):
+        # No markdown on disk for this identifier — the response must carry
+        # both an `error` and a `suggestion`, matching the {error, suggestion}
+        # contract the rest of the search tools honour.
+        result = await server.find_in_paper("2301.00001", "anything")
+        assert "error" in result
+        assert "suggestion" in result
+
+    @pytest.mark.asyncio
+    async def test_finds_substring_in_converted_paper(self, isolated_cache):
+        # Seed a converted-markdown file at the path find_in_paper resolves
+        # to, then assert it locates the query and returns positioned hits.
+        target = manual._resolve_target("2301.00001")
+        md_path = papers._markdown_path(target["namespace"], target["canonical"])
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# Title\n\n## Introduction\n\nWe study variational dropout here.\n")
+
+        result = await server.find_in_paper("2301.00001", "variational dropout")
+        assert result["result_count"] == 1
+        assert result["truncated"] is False
+        hit = result["results"][0]
+        assert hit["section"] == "Introduction"
+        assert "char_offset" in hit
 
 
 # ---------------------------------------------------------------------------

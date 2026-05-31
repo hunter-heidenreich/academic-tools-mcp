@@ -32,6 +32,25 @@ def _published_year(paper: dict[str, Any]) -> int | None:
     return None
 
 
+def _crossref_year(item: dict[str, Any]) -> int | None:
+    """Extract a publication year from a Crossref work item.
+
+    Crossref date fields are irregular: a record may carry its date under
+    ``published-print`` / ``published-online`` / ``published`` (journal
+    articles), ``posted`` (preprints — including every bioRxiv DOI), or
+    ``issued``. Each holds a ``date-parts`` nested list, but that list can
+    be ``null`` or ``[]`` on malformed records (and ``[[null]]`` when only a
+    partial date was deposited), so naive indexing crashes. Walk the
+    fallback chain and return the first integer year, else ``None``.
+    """
+    for key in ("published-print", "published-online", "published", "posted", "issued"):
+        parts = (item.get(key) or {}).get("date-parts") or [[]]
+        first = parts[0] if parts else []
+        if first and isinstance(first[0], int):
+            return first[0]
+    return None
+
+
 @mcp.tool
 async def search_arxiv(
     query: Annotated[
@@ -58,9 +77,13 @@ async def search_arxiv(
     get_paper_metadata(arxiv_id) for the full record (free cache hit —
     each search entry is opportunistically cached).
 
-    Returns ``{total_results, results: [...]}`` — same shape as
-    search_crossref_by_title so an agent can branch on the source
-    without learning per-tool field names.
+    Returns ``{total_results, result_count, results: [...]}`` — same shape
+    as search_crossref_by_title so an agent can branch on the source
+    without learning per-tool field names. ``total_results`` is the total
+    number of matches upstream (how many exist); ``result_count`` is how
+    many hits this call returned (``len(results)``, capped by
+    ``max_results``). A ``total_results`` far larger than ``result_count``
+    means more matches exist than were returned.
     """
     result = await arxiv.search_papers(query, max_results=max_results)
     if "error" in result:
@@ -69,18 +92,20 @@ async def search_arxiv(
             "Refine the query or retry if arXiv is temporarily unavailable.",
         )
 
+    results = [
+        {
+            "arxiv_id": _arxiv_id_from_entry(p),
+            "title": p.get("title"),
+            "first_author": _first_author_name(p),
+            "author_count": len(p.get("authors") or []),
+            "published_year": _published_year(p),
+        }
+        for p in result.get("entries", [])
+    ]
     return {
-        "total_results": result["total_results"],
-        "results": [
-            {
-                "arxiv_id": _arxiv_id_from_entry(p),
-                "title": p.get("title"),
-                "first_author": _first_author_name(p),
-                "author_count": len(p.get("authors") or []),
-                "published_year": _published_year(p),
-            }
-            for p in result.get("entries", [])
-        ],
+        "total_results": result.get("total_results"),
+        "result_count": len(results),
+        "results": results,
     }
 
 
@@ -107,9 +132,13 @@ async def search_crossref_by_title(
     arXiv ID. Also serves as the de facto search for bioRxiv papers,
     since Crossref indexes all bioRxiv DOIs.
 
-    Returns ``{total_results, results: [...]}``. Capped at 5 hits per
-    call. Year filtering is optional but recommended; note that Crossref
-    publication dates may differ from arXiv preprint dates.
+    Returns ``{total_results, result_count, results: [...]}`` (same shape
+    as search_arxiv). ``total_results`` is Crossref's upstream match count
+    (how many exist); ``result_count`` is how many hits this call returned.
+    Capped at 5 hits per call, so ``total_results`` is typically far larger
+    than ``result_count`` — refine the title to narrow it. Year filtering
+    is optional but recommended; note that Crossref publication dates may
+    differ from arXiv preprint dates.
     """
     response = await crossref.search_works(title, year=year, rows=5)
     if "error" in response:
@@ -127,9 +156,11 @@ async def search_crossref_by_title(
             if name_parts:
                 first_author = " ".join(name_parts)
                 break
-
-        pub_date = item.get("published-print") or item.get("published-online") or {}
-        date_parts = pub_date.get("date-parts", [[]])[0]
+            # Consortium / organisational authors carry a `name` field
+            # with no given/family — surface it rather than dropping to None.
+            if a.get("name"):
+                first_author = a["name"]
+                break
 
         results.append(
             {
@@ -137,11 +168,15 @@ async def search_crossref_by_title(
                 "title": (item.get("title") or [None])[0],
                 "first_author": first_author,
                 "author_count": len(authors),
-                "year": date_parts[0] if date_parts else None,
+                "year": _crossref_year(item),
             }
         )
 
-    return {"total_results": len(results), "results": results}
+    return {
+        "total_results": response.get("total_results"),
+        "result_count": len(results),
+        "results": results,
+    }
 
 
 @mcp.tool
@@ -151,9 +186,10 @@ async def find_in_paper(
         str,
         Field(
             description=(
-                "Substring (or regex with whole_words=True) to find. "
-                "Plain literal text — special regex characters are "
-                "escaped automatically."
+                "Text to find. Always matched literally — special regex "
+                "characters are escaped automatically, so you cannot pass a "
+                "pattern. whole_words=True only adds word boundaries around "
+                "this literal so 'set' won't match 'subset'."
             ),
             min_length=1,
         ),
@@ -217,21 +253,23 @@ async def find_in_paper(
     'cafe' matches 'café' (and vice versa); offsets/match/snippet stay
     aligned to the original text. Word boundaries remain ASCII-oriented.
 
-    Errors: paper not converted yet → ``{error}`` with guidance to run
-    convert_paper. No matches → ``{result_count: 0, results: []}`` (an
-    empty result is not an error).
+    Errors: paper not converted yet → ``{error, suggestion}`` pointing at
+    the download_pdf → convert_paper pipeline. No matches → ``{result_count:
+    0, results: []}`` (an empty result is not an error).
     """
     target = manual._resolve_target(identifier)
     md_path = papers._markdown_path(target["namespace"], target["canonical"])
 
     if not md_path.exists():
         return {
-            "error": f"Paper not converted yet for: {identifier}. "
-            "Pipeline: download_pdf → convert_paper → find_in_paper / "
-            "get_paper_sections / get_paper_section."
+            "error": f"Paper not converted yet for: {identifier}.",
+            "suggestion": "Run the pipeline first: download_pdf → convert_paper, "
+            "then find_in_paper / get_paper_sections / get_paper_section.",
         }
 
-    markdown = md_path.read_text()
+    # Read off the event loop alongside the regex pass — a large converted
+    # paper's disk read would otherwise block other concurrent fetches.
+    markdown = await asyncio.to_thread(md_path.read_text)
 
     # Wrap the synchronous regex pass in to_thread so a paper with
     # thousands of matches doesn't pin the event loop.

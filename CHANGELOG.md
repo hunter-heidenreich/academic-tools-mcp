@@ -70,6 +70,16 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- The search-list tools now report a `result_count` (how many hits the call
+  returned) alongside `total_results`, and `total_results` is now the **upstream
+  match count** consistently across `search_arxiv` and `search_crossref_by_title`.
+  Previously `search_crossref_by_title` set `total_results` to the length of the
+  returned page (≤5), so an agent comparing it against `search_arxiv`'s upstream
+  total (which can be thousands) was silently misled — the two tools advertise the
+  same shape. `search_crossref_by_title` now surfaces Crossref's
+  `message.total-results` (which the provider had been discarding); `search_arxiv`
+  keeps its upstream total and gains `result_count`. `search_wikipedia` /
+  `search_cached_papers` already reported `result_count`. ([#38])
 - `get_paper_references(source="auto")` now biases its source pick toward
   Crossref. Selection previously chose whichever provider returned more
   references, so a one-or-two-entry margin could flip to OpenCitations' bare
@@ -97,6 +107,21 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- `search_crossref_by_title` no longer crashes on malformed Crossref date
+  metadata. A record whose `date-parts` was `null` or `[]` (both occur in the
+  wild) raised an unhandled `TypeError`/`IndexError` instead of returning the
+  tool's `{error}` contract, taking down the whole 5-result page. Year extraction
+  is now defensive and also reads `published` / `posted` / `issued`, so preprint
+  records — including every bioRxiv DOI, whose date lives under `posted` — report
+  a `year` instead of silently `null` (this tool is the de-facto bioRxiv search).
+  ([#38])
+- `search_crossref_by_title` now surfaces organisational/consortium first authors
+  (e.g. `The ATLAS Collaboration`), which Crossref stores in a `name` field with
+  no given/family. Such papers previously returned `first_author: null` despite a
+  non-zero `author_count`. ([#38])
+- `find_in_paper` now returns a `{error, suggestion}` pair (matching every other
+  tool) when a paper isn't converted yet, and reads the cached markdown off the
+  event loop so a large paper's disk read doesn't stall concurrent fetches. ([#38])
 - `get_paper_metadata(follow_published=True)` no longer mislabels a *transient*
   OpenAlex failure on the journal-version lookup as "not indexed yet". When the
   bioRxiv→journal chain hits a 5xx/timeout (a retryable error, not a definitive
@@ -519,3 +544,4 @@ grouped by milestone rather than per commit.
 [#35]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/35
 [#36]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/36
 [#37]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/37
+[#38]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/38
