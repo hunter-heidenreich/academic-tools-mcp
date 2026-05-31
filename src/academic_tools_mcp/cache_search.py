@@ -139,6 +139,18 @@ _INDEX_LOCK = threading.Lock()
 # collision-free separator for the flat entry key.
 _INDEX_KEY_SEP = "\x00"
 
+# In-memory memo of the last parsed index, keyed by index.json's own
+# (mtime_ns, size). An unchanged corpus leaves index.json untouched, so a
+# follow-up search reuses this parsed dict instead of re-reading and
+# re-parsing the JSON (the O(corpus) parse that otherwise ran on every call).
+# Copy-on-write: _refresh_index never mutates the memo dict in place — on a
+# memo hit it shallow-copies the entries before mutating and swaps the memo to
+# a fresh object — so a concurrent search still scoring a previously-returned
+# dict is never disturbed. Both fields are guarded by _INDEX_LOCK, the same
+# critical section as the file I/O. Tests reset them via conftest.
+_INDEX_MEMO: dict[str, Any] | None = None
+_INDEX_MEMO_SIG: tuple[int, int] | None = None
+
 
 def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
     """Lowercase, drop stopwords, return a list of content tokens.
@@ -213,31 +225,34 @@ def _extract_snippet(
 
     # Find every occurrence of every query term, collecting (offset, term).
     # Word-boundary match so "drop" doesn't hit inside "dropout".
+    #
+    # Both modes locate against a transformed copy of the markdown but report
+    # ORIGINAL offsets via index_map. The map is required even when
+    # normalize=False: str.lower() is not length-preserving (U+0130 'İ' →
+    # 'i' + combining dot), so a raw m.start() would drift past the real match
+    # for any doc containing such a char before the hit.
     hits: list[tuple[int, str]] = []
-    if normalize:
-        folded, index_map = _textnorm.fold_with_map(markdown)
-        lowered = folded.lower()
-    else:
-        index_map = None
-        lowered = markdown.lower()
+    lowered, index_map = _textnorm.lower_with_map(markdown, fold=normalize)
     for term in query_terms:
         # Escape regex metacharacters in the term itself.
         pattern = re.compile(rf"\b{re.escape(term)}\b")
         for m in pattern.finditer(lowered):
-            off = index_map[m.start()] if index_map is not None else m.start()
-            hits.append((off, term))
+            hits.append((index_map[m.start()], term))
 
     if not hits:
         return markdown[:window].strip(), None
 
     # Score each hit by counting distinct query terms within ±window/2
-    # chars. Sort hits by offset so the sliding window stays linear.
+    # chars. Sort hits by offset so each window scan only walks nearby hits.
     hits.sort()
     half = window // 2
     best_offset = hits[0][0]
     best_distinct = 1
-    # Two-pointer sweep: for each hit, how many distinct terms fall
-    # inside [hit - half, hit + half]?
+    # For each hit, count distinct terms in [hit - half, hit + half] by
+    # walking neighbours outward until they leave the window. This is
+    # O(hits × hits-in-window), worst-case quadratic when one term repeats
+    # densely within a single window — bounded in practice only because at
+    # most top_k winners are ever passed here.
     for i, (off, _term) in enumerate(hits):
         lo = off - half
         hi = off + half
@@ -273,22 +288,6 @@ def _extract_snippet(
 # contain underscores; we can only safely restore the slashes that the
 # known prefix introduced.
 _NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
-    # arxiv canonical IDs have no slashes (e.g. "2301.00001",
-    # "hep-th/9901001" canonicalises to lowercase but the slash is
-    # stripped by _canonical_arxiv_id only via re.sub on version
-    # suffixes — actual old-style IDs DO carry a slash). Both forms
-    # write through the same `replace("/", "_")` step, so we restore
-    # the one slash for old-style IDs and leave new-style alone.
-    "arxiv": [
-        ("hep-th_", "hep-th/"),
-        ("hep-ph_", "hep-ph/"),
-        ("astro-ph_", "astro-ph/"),
-        ("cond-mat_", "cond-mat/"),
-        ("gr-qc_", "gr-qc/"),
-        ("nucl-th_", "nucl-th/"),
-        ("math-ph_", "math-ph/"),
-        ("quant-ph_", "quant-ph/"),
-    ],
     # bioRxiv DOIs are always "10.1101/<suffix>" — exactly one slash.
     "biorxiv": [("10.1101_", "10.1101/")],
     # ACL Anthology DOIs are always "10.18653/v1/<suffix>" — two slashes.
@@ -303,6 +302,14 @@ _NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
     "manual": [],
 }
 
+# Old-style arXiv IDs carry exactly one slash: "archive[.subject]/NNNNNNN"
+# (e.g. "hep-th/9901001", "cs/0501001", "math.GT/0309136"). _canonical_arxiv_id
+# lowercases them and keeps the slash, then the storage step turns it into "_",
+# so the stem is "archive[.subject]_NNNNNNN". This regex inverts ALL archives
+# (not just the hyphenated physics ones) in one shot. New-style IDs start with a
+# digit ("2301.00001") and never match, so they pass through untouched.
+_ARXIV_OLDSTYLE_STEM_RE = re.compile(r"^([a-z][a-z.\-]*)_(\d{7})$")
+
 
 def _filename_to_canonical(namespace: str, stem: str) -> str:
     """Invert ``canonical.replace("/", "_")`` for the given namespace.
@@ -310,6 +317,9 @@ def _filename_to_canonical(namespace: str, stem: str) -> str:
     ``stem`` is the filename without the ``.md`` extension. Returns the
     canonical form the original code would have used as a cache key.
     """
+    if namespace == "arxiv":
+        m = _ARXIV_OLDSTYLE_STEM_RE.match(stem)
+        return f"{m.group(1)}/{m.group(2)}" if m else stem
     repairs = _NAMESPACE_PREFIX_REPAIRS.get(namespace, [])
     for needle, replacement in repairs:
         if stem.startswith(needle):
@@ -430,6 +440,21 @@ def _build_entry(namespace: str, path: Path, *, mtime_ns: int, size: int) -> dic
     }
 
 
+def _index_sig() -> tuple[int, int] | None:
+    """``(mtime_ns, size)`` of index.json, or ``None`` if it doesn't exist.
+
+    The staleness key for the in-memory memo: an unchanged corpus never
+    rewrites index.json, so an unchanged signature means the parsed dict is
+    still good. A missing file (``None``) compares equal across calls too, so
+    an empty-corpus session also avoids re-parsing.
+    """
+    try:
+        st = _index_path().stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
     """Bring the on-disk index in sync with the markdown corpus.
 
@@ -438,13 +463,28 @@ def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
     re-tokenises it; prunes entries whose file is gone. Persists only when
     something actually changed. Always walks the *full* corpus (never the
     namespace-filtered subset) so the index stays globally complete
-    regardless of which namespace the calling search filtered on. Returns
-    the freshly-parsed in-memory index — a per-call dict, so callers can
-    score against it lock-free after this returns.
+    regardless of which namespace the calling search filtered on.
+
+    The parsed index is memoised in ``_INDEX_MEMO`` keyed by index.json's stat
+    signature, so an unchanged corpus skips the JSON re-parse entirely (the
+    cheap stat-walk still runs as the change detector). Returns a per-call
+    index dict whose ``entries`` are never mutated in place after return — a
+    memo hit copies them before mutating — so callers score lock-free after
+    this returns.
     """
+    global _INDEX_MEMO, _INDEX_MEMO_SIG
     with _INDEX_LOCK:
-        index = _load_index()
-        entries: dict[str, Any] = index["entries"]
+        sig = _index_sig()
+        if not force_refresh and _INDEX_MEMO is not None and sig == _INDEX_MEMO_SIG:
+            # Memo hit: reuse the parsed dict, but copy entries before any
+            # mutation so a prior caller still scoring the memo isn't touched.
+            entries: dict[str, Any] = dict(_INDEX_MEMO["entries"])
+        else:
+            # Memo miss (or forced rebuild): parse from disk. This dict is
+            # freshly built and held by no other caller, so it is safe to
+            # mutate in place.
+            entries = _load_index()["entries"]
+        index: dict[str, Any] = {"version": _INDEX_VERSION, "entries": entries}
         dirty = False
         seen: set[str] = set()
         for ns, path in _iter_markdown_files(None):
@@ -477,6 +517,11 @@ def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
             dirty = True
         if dirty:
             _save_index(index)
+        # Refresh the memo to this now-current index. Re-stat after a save so
+        # the signature matches the bytes we just wrote (a dirty save changes
+        # index.json's mtime/size); on a clean pass the signature is unchanged.
+        _INDEX_MEMO = index
+        _INDEX_MEMO_SIG = _index_sig()
         return index
 
 
@@ -520,7 +565,9 @@ def search(
     of the staleness signal — a safety valve for the rare case where a
     file changed without its ``mtime``/``size`` changing.
     """
-    top_k = max(1, min(top_k, _MAX_TOP_K))
+    if top_k <= 0:
+        return []
+    top_k = min(top_k, _MAX_TOP_K)
     query_tokens = _tokenize(query, normalize=normalize)
     if not query_tokens:
         return []
@@ -585,8 +632,12 @@ def search(
             score += idf * (tf * (_BM25_K1 + 1)) / denom
         return score
 
+    # Sort by score descending, breaking ties by (namespace, stem) so the
+    # output is deterministic regardless of the order entries happened to land
+    # in the incremental index (a changed file keeps its slot, a new file is
+    # appended — so insertion order drifts as the corpus evolves).
     scored = [(_bm25(d), d) for d in docs]
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda x: (-x[0], x[1]["namespace"], x[1]["stem"]))
 
     out: list[dict[str, Any]] = []
     for score, doc in scored[:top_k]:
