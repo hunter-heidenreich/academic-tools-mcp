@@ -16,6 +16,23 @@ from .._app import (
 )
 from ..providers import opencitations
 
+# Auto source-selection bias. Crossref entries carry structured
+# bibliographic metadata (author/title/year/journal/DOI); OpenCitations
+# entries are bare DOI-to-DOI links. A near-tie on raw count would flip
+# auto to the metadata-poor source for the sake of a row or two, so
+# OpenCitations only wins when it has *materially* more references.
+_CROSSREF_HYSTERESIS = 1.2
+
+
+def _source_error(result: dict[str, Any]) -> dict[str, Any]:
+    """Lean copy of a provider error dict for embedding in a multi-source response.
+
+    Forwards the structured signal — ``error`` plus ``retryable`` /
+    ``suggestion`` when present — instead of just the message string, so an
+    agent can still tell a transient failure from a definitive one.
+    """
+    return {k: result[k] for k in ("error", "retryable", "suggestion") if k in result}
+
 
 def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
     """Extract lean fields from a raw Crossref reference object."""
@@ -62,12 +79,12 @@ async def get_paper_references_count(
 
     sources: dict[str, dict[str, Any]] = {}
     if "error" in cr_result:
-        sources["crossref"] = {"error": cr_result["error"]}
+        sources["crossref"] = _source_error(cr_result)
     else:
         sources["crossref"] = {"count": len(cr_result.get("reference") or [])}
 
     if "error" in oc_result:
-        sources["opencitations"] = {"error": oc_result["error"]}
+        sources["opencitations"] = _source_error(oc_result)
     else:
         sources["opencitations"] = {"count": oc_result.get("count", 0)}
 
@@ -120,12 +137,21 @@ async def get_paper_references(
 ) -> dict[str, Any]:
     """Page through outgoing references (bibliography) from the chosen source.
 
-    Default ``source="auto"`` fires Crossref and OpenCitations in parallel,
-    picks whichever has more references, and pages from that one — saves
-    a turn vs. calling get_paper_references_count first. The chosen
-    source is reported in ``_source`` so subsequent pagination calls can
-    pin it explicitly. If one provider errors, the other wins
-    automatically; if both error, the response carries both errors.
+    Default ``source="auto"`` fires Crossref and OpenCitations in parallel
+    and pages from the better source — saves a turn vs. calling
+    get_paper_references_count first. Selection is biased toward Crossref
+    (its entries carry structured author/title/year metadata vs.
+    OpenCitations' bare DOI links): OpenCitations only wins when it has
+    materially more references, not on a one-or-two-entry margin. The
+    chosen source is reported in ``_source``. If one provider errors, the
+    other wins automatically and the response carries a ``partial_failure``
+    field naming the failed source so an empty result isn't mistaken for a
+    confident "no references"; if both error, the response carries both errors.
+
+    ``source="auto"`` only resolves on the first page. Paginating past page 1
+    must pin ``_source`` to the value returned on page 1 (auto on page>1
+    returns an error) — re-surveying could pick a different source mid-walk
+    and silently shift the offsets.
 
     ``force_refresh=True`` re-fetches the underlying source(s), bypassing the
     cache — pass it on the first page when you need fresh coverage; omit it
@@ -163,37 +189,67 @@ async def get_paper_references(
             return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
         return _opencitations_refs_page(data, doi, page, page_size)
 
-    # source == "auto": survey both, pick the bigger. The fetches are
-    # cached so a follow-up page=2 call with the same source doesn't
-    # re-survey or re-fetch.
+    # source == "auto": resolve the source on page 1 only. Pages 2..N must
+    # pin the source returned on page 1 — re-surveying here could pick a
+    # different provider if the cached counts have drifted (a force_refresh
+    # on a later page, or a TTL lapse mid-walk), silently shifting `total`
+    # and the slice offsets out from under the agent.
+    if page > 1:
+        return {
+            "error": "source='auto' only resolves on page 1; pin _source to paginate.",
+            "suggestion": (
+                "Re-call get_paper_references with source set to the _source "
+                "value returned on page 1 ('crossref' or 'opencitations') so the "
+                "pagination offsets stay consistent across pages."
+            ),
+        }
+
+    # Survey both. The fetches are cached so a follow-up page-1 call with
+    # the same DOI doesn't re-fetch.
     cr_task = _app._fetch_crossref_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_work, oc_data = await asyncio.gather(cr_task, oc_task)
 
-    cr_count = len(cr_work.get("reference") or []) if "error" not in cr_work else -1
-    oc_count = oc_data.get("count", 0) if "error" not in oc_data else -1
+    cr_ok = "error" not in cr_work
+    oc_ok = "error" not in oc_data
+    cr_count = len(cr_work.get("reference") or []) if cr_ok else -1
+    oc_count = oc_data.get("count", 0) if oc_ok else -1
 
-    if cr_count < 0 and oc_count < 0:
+    if not cr_ok and not oc_ok:
         # Both upstreams failed. Surface both errors so the agent can
         # decide whether to retry or pick one explicitly.
         return {
             "error": "Both reference sources failed for this DOI.",
             "sources": {
-                "crossref": {"error": cr_work.get("error")},
-                "opencitations": {"error": oc_data.get("error")},
+                "crossref": _source_error(cr_work),
+                "opencitations": _source_error(oc_data),
             },
             "suggestion": (
                 "Both Crossref and OpenCitations are unreachable or have "
                 "no record for this DOI. Check the DOI format with "
-                "search_crossref_by_title, or retry — these were transient "
-                "failures if either error message says 'Transient'."
+                "search_crossref_by_title, or retry — retryable errors are "
+                "flagged 'retryable': true in each source's error."
             ),
         }
 
-    # Pick the bigger count; tie goes to Crossref (richer metadata).
-    if cr_count >= oc_count:
-        return _crossref_refs_page(cr_work, doi, page, page_size)
-    return _opencitations_refs_page(oc_data, doi, page, page_size)
+    # Pick the source. With both available, bias toward Crossref's richer
+    # per-entry metadata: OpenCitations wins only when it has materially
+    # more references. When one source errored its count is -1, so the
+    # surviving source wins automatically.
+    if oc_count > cr_count * _CROSSREF_HYSTERESIS:
+        page_result = _opencitations_refs_page(oc_data, doi, page, page_size)
+    else:
+        page_result = _crossref_refs_page(cr_work, doi, page, page_size)
+
+    # If exactly one source failed, the chosen page came from the survivor.
+    # Surface the failure so an empty/short result isn't read as a confident
+    # "no references" when the other source merely had a transient error.
+    if cr_ok != oc_ok:
+        failed = "opencitations" if cr_ok else "crossref"
+        failed_result = oc_data if cr_ok else cr_work
+        page_result["partial_failure"] = {"source": failed, **_source_error(failed_result)}
+
+    return page_result
 
 
 @mcp.tool
@@ -213,7 +269,7 @@ async def get_paper_citations_count(
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
-    return {"doi": doi, "count": data["count"]}
+    return {"doi": doi, "count": data.get("count", 0)}
 
 
 @mcp.tool

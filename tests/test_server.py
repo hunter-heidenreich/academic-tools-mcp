@@ -265,6 +265,107 @@ class TestReferencesAutoSource:
         assert result["page"] == 2
         assert cr_called is False, "explicit source must not trigger the survey of the other source"
 
+    @pytest.mark.asyncio
+    async def test_auto_prefers_crossref_on_near_tie(self, monkeypatch):
+        # OpenCitations has one more entry, but Crossref's richer per-row
+        # metadata should win the near-tie — OpenCitations only takes over
+        # when it has materially more references.
+        async def fake_cr(doi, **kwargs):
+            return {"reference": [{"DOI": f"10.1/{i}"} for i in range(10)]}
+
+        async def fake_oc(doi, **kwargs):
+            return {"references": [{"doi": f"10.2/{i}"} for i in range(11)], "count": 11}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.x/x", source="auto")
+        assert result["_source"] == "crossref"
+
+    @pytest.mark.asyncio
+    async def test_auto_picks_opencitations_when_materially_more(self, monkeypatch):
+        # 15 vs 10 clears the hysteresis margin — the breadth is worth the
+        # metadata-poorer payload.
+        async def fake_cr(doi, **kwargs):
+            return {"reference": [{"DOI": f"10.1/{i}"} for i in range(10)]}
+
+        async def fake_oc(doi, **kwargs):
+            return {"references": [{"doi": f"10.2/{i}"} for i in range(15)], "count": 15}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.x/x", source="auto")
+        assert result["_source"] == "opencitations"
+        assert result["total"] == 15
+
+    @pytest.mark.asyncio
+    async def test_auto_empty_winner_surfaces_other_source_failure(self, monkeypatch):
+        # Crossref errors transiently; OpenCitations succeeds but with zero
+        # references. The empty OpenCitations page must NOT read as a
+        # confident "no references" — it carries partial_failure so the
+        # agent knows Crossref failed and is worth a retry.
+        async def fake_cr(doi, **kwargs):
+            return {"error": "Transient: Crossref 503", "retryable": True}
+
+        async def fake_oc(doi, **kwargs):
+            return {"references": [], "count": 0}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.x/x", source="auto")
+        assert result["_source"] == "opencitations"
+        assert result["total"] == 0
+        assert result["partial_failure"]["source"] == "crossref"
+        assert result["partial_failure"]["error"] == "Transient: Crossref 503"
+        assert result["partial_failure"]["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_auto_both_fail_preserves_retryable(self, monkeypatch):
+        # The combined-error response must forward the structured retryable
+        # flag, not just the message string, so the agent can tell a
+        # transient failure from a definitive one.
+        async def fake_cr(doi, **kwargs):
+            return {"error": "Transient: Crossref 503", "retryable": True}
+
+        async def fake_oc(doi, **kwargs):
+            return {"error": "OpenCitations says no"}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.x/x", source="auto")
+        assert "error" in result
+        assert result["sources"]["crossref"]["error"] == "Transient: Crossref 503"
+        assert result["sources"]["crossref"]["retryable"] is True
+        assert result["sources"]["opencitations"]["error"] == "OpenCitations says no"
+
+    @pytest.mark.asyncio
+    async def test_auto_page_gt_one_requires_pinned_source(self, monkeypatch):
+        # Paginating past page 1 with source='auto' is rejected with an
+        # actionable error BEFORE any provider is surveyed — re-surveying
+        # could pick a different source and shift the offsets mid-walk.
+        called = False
+
+        async def fake_cr(doi, **kwargs):
+            nonlocal called
+            called = True
+            return {"reference": []}
+
+        async def fake_oc(doi, **kwargs):
+            nonlocal called
+            called = True
+            return {"references": [], "count": 0}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.x/x", source="auto", page=2)
+        assert "error" in result
+        assert "_source" in result["suggestion"]
+        assert called is False, "page>1 auto must not survey either provider"
+
 
 # ---------------------------------------------------------------------------
 # Slim search hits: author_count lets the agent decide whether to paginate
@@ -574,6 +675,18 @@ class TestCitationsSourceParam:
         # is a no-op today and stays no-op as long as OpenCitations is
         # the only provider.
         assert auto == explicit
+
+    @pytest.mark.asyncio
+    async def test_count_missing_count_key_is_zero(self, monkeypatch):
+        # If a success response ever lacks the 'count' key, the count tool
+        # must degrade to 0 rather than KeyError into a raw 500.
+        async def fake_oc(doi, **kwargs):
+            return {"citations": []}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations_count("10.x/x")
+        assert result["count"] == 0
 
 
 # ---------------------------------------------------------------------------
