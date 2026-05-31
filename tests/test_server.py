@@ -687,8 +687,8 @@ class TestFindInPaper:
     async def test_finds_substring_in_converted_paper(self, isolated_cache):
         # Seed a converted-markdown file at the path find_in_paper resolves
         # to, then assert it locates the query and returns positioned hits.
-        target = manual._resolve_target("2301.00001")
-        md_path = papers._markdown_path(target["namespace"], target["canonical"])
+        target = manual.resolve_target("2301.00001")
+        md_path = papers.markdown_path(target["namespace"], target["canonical"])
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Title\n\n## Introduction\n\nWe study variational dropout here.\n")
 
@@ -926,18 +926,12 @@ class TestCitationsSourceParam:
         assert result["total"] == 1
 
     @pytest.mark.asyncio
-    async def test_explicit_opencitations_matches_auto(self, monkeypatch):
-        async def fake_oc(doi, **kwargs):
-            return {"citations": [{"doi": "10.x/a"}], "count": 1}
+    async def test_no_source_parameter(self):
+        # The reserved-but-inert `source` param was removed; it's gone from
+        # the signature (a future second source would reintroduce it).
+        import inspect
 
-        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
-
-        auto = await server.get_paper_citations("10.x/x", source="auto")
-        explicit = await server.get_paper_citations("10.x/x", source="opencitations")
-        # Same source dispatch, same response shape — pinning the param
-        # is a no-op today and stays no-op as long as OpenCitations is
-        # the only provider.
-        assert auto == explicit
+        assert "source" not in inspect.signature(server.get_paper_citations).parameters
 
     @pytest.mark.asyncio
     async def test_count_missing_count_key_is_zero(self, monkeypatch):

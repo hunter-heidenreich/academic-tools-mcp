@@ -5,10 +5,10 @@ import pytest
 from academic_tools_mcp import cache
 from academic_tools_mcp.providers import openalex
 from academic_tools_mcp.providers.openalex import (
-    canonical_author_id,
-    canonical_doi,
     _normalize_author_id,
     _normalize_doi,
+    canonical_author_id,
+    canonical_doi,
     reconstruct_abstract,
 )
 
