@@ -45,13 +45,13 @@ class TestDownloadPdfCascade:
 
         # Place a fake markdown + sections cache for the canonical id
         canonical = "2301.00001"
-        md_path = papers._markdown_path("arxiv", canonical)
+        md_path = papers.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Stale\n\nold markdown content\n")
         cache.put(
             "arxiv",
             "sections",
-            papers._sections_key(canonical),
+            papers.sections_key(canonical),
             {"sections": [{"index": 0, "title": "Stale"}], "markdown_checksum": "x"},
         )
         assert md_path.exists()
@@ -64,12 +64,12 @@ class TestDownloadPdfCascade:
             assert result.get("cached") is False
             assert result.get("cascaded_invalidated") == ["markdown", "sections"]
             assert not md_path.exists(), "Markdown should have been deleted"
-            assert cache.get("arxiv", "sections", papers._sections_key(canonical)) is None, (
+            assert cache.get("arxiv", "sections", papers.sections_key(canonical)) is None, (
                 "Sections cache should have been invalidated"
             )
         finally:
             md_path.unlink(missing_ok=True)
-            cache.invalidate("arxiv", "sections", papers._sections_key(canonical))
+            cache.invalidate("arxiv", "sections", papers.sections_key(canonical))
 
     @pytest.mark.asyncio
     async def test_no_cascade_on_cache_hit(self, tmp_path: Path, monkeypatch):
@@ -86,7 +86,7 @@ class TestDownloadPdfCascade:
         monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
 
         canonical = "2301.00002"
-        md_path = papers._markdown_path("arxiv", canonical)
+        md_path = papers.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Fresh\n\nstill valid\n")
 
@@ -108,7 +108,7 @@ class TestDownloadPdfCascade:
         monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
 
         canonical = "2301.00003"
-        md_path = papers._markdown_path("arxiv", canonical)
+        md_path = papers.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Untouched\n")
 
@@ -304,8 +304,8 @@ class TestGetPapersMetadataTool:
 
         async def fake_batch(dois, *, force_refresh=False):
             return {
-                openalex._canonical_doi(d): {
-                    "doi": f"https://doi.org/{openalex._canonical_doi(d)}",
+                openalex.canonical_doi(d): {
+                    "doi": f"https://doi.org/{openalex.canonical_doi(d)}",
                     "title": f"OA {d}",
                     "primary_location": {"source": {"display_name": "Journal"}},
                     "open_access": {"is_oa": True, "oa_status": "gold"},
@@ -539,12 +539,12 @@ class TestFindInPaperTool:
     async def test_finds_query_in_converted_paper(self, tmp_path, monkeypatch):
         """Place a fake markdown for an arxiv id and verify the tool
         finds occurrences of a query inside it."""
-        # Use a real-looking arxiv ID so _resolve_target routes to the
+        # Use a real-looking arxiv ID so resolve_target routes to the
         # arxiv namespace (a manual-namespace label would also work but
         # this is the more interesting code path).
         identifier = "2301.55555"
-        canonical = server.arxiv._canonical_arxiv_id(identifier)
-        md_path = papers._markdown_path("arxiv", canonical)
+        canonical = server.arxiv.canonical_arxiv_id(identifier)
+        md_path = papers.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(_FIND_DOC)
 
@@ -569,8 +569,8 @@ class TestFindInPaperTool:
     @pytest.mark.asyncio
     async def test_normalize_matches_accented_text(self):
         identifier = "2301.55556"
-        canonical = server.arxiv._canonical_arxiv_id(identifier)
-        md_path = papers._markdown_path("arxiv", canonical)
+        canonical = server.arxiv.canonical_arxiv_id(identifier)
+        md_path = papers.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(_FIND_DOC_ACCENTS)
 

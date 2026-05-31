@@ -39,9 +39,7 @@ async def _passthrough_slot(*_args, **_kwargs):
 
 def _dest(mod, identifier: str) -> Path:
     canonical = (
-        arxiv._canonical_arxiv_id(identifier)
-        if mod is arxiv
-        else biorxiv._canonical_key(identifier)
+        arxiv.canonical_arxiv_id(identifier) if mod is arxiv else biorxiv.canonical_key(identifier)
     )
     return cache._cache_dir(mod.NAMESPACE, "pdfs") / mod._pdf_filename(canonical)
 
@@ -143,7 +141,7 @@ async def test_download_slot_does_not_deadlock_on_get_paper(mod, identifier, mon
     # production, so a shared key would deadlock.
     async def fake_get_paper(ident, **_kw):
         canonical = (
-            arxiv._canonical_arxiv_id(ident) if mod is arxiv else biorxiv._canonical_key(ident)
+            arxiv.canonical_arxiv_id(ident) if mod is arxiv else biorxiv.canonical_key(ident)
         )
         return await mod._single_flight.do(canonical, lambda: stub_get(ident))
 

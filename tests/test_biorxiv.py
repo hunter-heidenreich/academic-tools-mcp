@@ -105,11 +105,11 @@ class TestNormalizeDoi:
 
 class TestCanonicalKey:
     def test_lowercases(self):
-        assert biorxiv._canonical_key("10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
+        assert biorxiv.canonical_key("10.1101/2024.01.01.573838") == "10.1101/2024.01.01.573838"
 
     def test_url_normalizes_and_lowercases(self):
         assert (
-            biorxiv._canonical_key("https://doi.org/10.1101/2024.01.01.573838")
+            biorxiv.canonical_key("https://doi.org/10.1101/2024.01.01.573838")
             == "10.1101/2024.01.01.573838"
         )
 
@@ -488,7 +488,7 @@ class TestGetPaperParseErrors:
         calls = _stub_json_responses(monkeypatch, _BAD_JSON, _BAD_JSON, _BAD_JSON, _BAD_JSON)
 
         await biorxiv.get_paper("10.1101/2024.01.01.573838")
-        canonical = biorxiv._canonical_key("10.1101/2024.01.01.573838")
+        canonical = biorxiv.canonical_key("10.1101/2024.01.01.573838")
         assert cache.get_negative(biorxiv.NAMESPACE, "papers", canonical) is None
 
         first = calls[0]
@@ -533,7 +533,7 @@ class TestGetPaperIntegration:
         result = await biorxiv.get_paper("10.1101/9999.99.99.999999")
         assert "error" in result
 
-        canonical = biorxiv._canonical_key("10.1101/9999.99.99.999999")
+        canonical = biorxiv.canonical_key("10.1101/9999.99.99.999999")
         assert cache.get_negative(biorxiv.NAMESPACE, "papers", canonical) is not None
 
         before = calls[0]

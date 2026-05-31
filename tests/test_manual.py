@@ -97,94 +97,93 @@ class TestPdfFilename:
 
 class TestResolveTarget:
     def test_arxiv_new_style(self):
-        target = manual._resolve_target("2301.00001")
+        target = manual.resolve_target("2301.00001")
         assert target["namespace"] == "arxiv"
         assert target["canonical"] == "2301.00001"
 
     def test_arxiv_with_version(self):
-        target = manual._resolve_target("2301.00001v2")
+        target = manual.resolve_target("2301.00001v2")
         assert target["namespace"] == "arxiv"
         assert target["canonical"] == "2301.00001"
 
     def test_arxiv_old_style(self):
-        target = manual._resolve_target("hep-th/9901001")
+        target = manual.resolve_target("hep-th/9901001")
         assert target["namespace"] == "arxiv"
         assert target["canonical"] == "hep-th/9901001"
 
     def test_arxiv_url(self):
-        target = manual._resolve_target("https://arxiv.org/abs/2301.00001v2")
+        target = manual.resolve_target("https://arxiv.org/abs/2301.00001v2")
         assert target["namespace"] == "arxiv"
         assert target["canonical"] == "2301.00001"
 
     def test_biorxiv_doi(self):
-        target = manual._resolve_target("10.1101/2024.01.01.573838")
+        target = manual.resolve_target("10.1101/2024.01.01.573838")
         assert target["namespace"] == "biorxiv"
         assert target["canonical"] == "10.1101/2024.01.01.573838"
 
     def test_biorxiv_url(self):
-        target = manual._resolve_target("https://doi.org/10.1101/2024.01.01.573838")
+        target = manual.resolve_target("https://doi.org/10.1101/2024.01.01.573838")
         assert target["namespace"] == "biorxiv"
 
     def test_acl_doi(self):
-        target = manual._resolve_target("10.18653/v1/2023.acl-long.1")
+        target = manual.resolve_target("10.18653/v1/2023.acl-long.1")
         assert target["namespace"] == "acl_anthology"
 
     def test_acl_doi_url(self):
-        target = manual._resolve_target("https://doi.org/10.18653/v1/2023.acl-long.1")
+        target = manual.resolve_target("https://doi.org/10.18653/v1/2023.acl-long.1")
         assert target["namespace"] == "acl_anthology"
 
     def test_generic_doi_falls_back_to_manual(self):
-        target = manual._resolve_target("10.1038/s41586-024-00001-1")
+        target = manual.resolve_target("10.1038/s41586-024-00001-1")
         assert target["namespace"] == "manual"
 
     def test_freeform_falls_back_to_manual(self):
-        target = manual._resolve_target("my-paper-2024")
+        target = manual.resolve_target("my-paper-2024")
         assert target["namespace"] == "manual"
 
 
 class TestResolveMetadataSource:
     def test_arxiv_new_style(self):
-        assert manual._resolve_metadata_source("2301.00001") == "arxiv"
+        assert manual.resolve_metadata_source("2301.00001") == "arxiv"
 
     def test_arxiv_with_version(self):
-        assert manual._resolve_metadata_source("2301.00001v2") == "arxiv"
+        assert manual.resolve_metadata_source("2301.00001v2") == "arxiv"
 
     def test_arxiv_old_style(self):
-        assert manual._resolve_metadata_source("hep-th/9901001") == "arxiv"
+        assert manual.resolve_metadata_source("hep-th/9901001") == "arxiv"
 
     def test_arxiv_url(self):
-        assert manual._resolve_metadata_source("https://arxiv.org/abs/2301.00001") == "arxiv"
+        assert manual.resolve_metadata_source("https://arxiv.org/abs/2301.00001") == "arxiv"
 
     def test_biorxiv_doi(self):
-        assert manual._resolve_metadata_source("10.1101/2024.01.01.573838") == "biorxiv"
+        assert manual.resolve_metadata_source("10.1101/2024.01.01.573838") == "biorxiv"
 
     def test_biorxiv_url(self):
         assert (
-            manual._resolve_metadata_source("https://doi.org/10.1101/2024.01.01.573838")
-            == "biorxiv"
+            manual.resolve_metadata_source("https://doi.org/10.1101/2024.01.01.573838") == "biorxiv"
         )
 
     def test_acl_doi_routes_to_openalex(self):
         # ACL Anthology has no metadata API — its DOIs route to OpenAlex
-        assert manual._resolve_metadata_source("10.18653/v1/2023.acl-long.1") == "openalex"
+        assert manual.resolve_metadata_source("10.18653/v1/2023.acl-long.1") == "openalex"
 
     def test_generic_publisher_doi_routes_to_openalex(self):
-        assert manual._resolve_metadata_source("10.1038/s41586-024-00001-1") == "openalex"
+        assert manual.resolve_metadata_source("10.1038/s41586-024-00001-1") == "openalex"
 
     def test_doi_url_routes_to_openalex(self):
         assert (
-            manual._resolve_metadata_source("https://doi.org/10.1038/s41586-024-00001-1")
+            manual.resolve_metadata_source("https://doi.org/10.1038/s41586-024-00001-1")
             == "openalex"
         )
 
     def test_doi_prefix_routes_to_openalex(self):
-        assert manual._resolve_metadata_source("doi:10.1038/s41586-024-00001-1") == "openalex"
+        assert manual.resolve_metadata_source("doi:10.1038/s41586-024-00001-1") == "openalex"
 
     def test_freeform_label_returns_none(self):
-        assert manual._resolve_metadata_source("my-paper-2024") is None
+        assert manual.resolve_metadata_source("my-paper-2024") is None
 
     def test_empty_string_returns_none(self):
-        assert manual._resolve_metadata_source("") is None
+        assert manual.resolve_metadata_source("") is None
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +338,9 @@ class TestImportMarkdown:
         result = manual.import_markdown(str(md), ident)
 
         namespace = result["namespace"]
-        target = manual._resolve_target(ident)
+        target = manual.resolve_target(ident)
         canonical = target["canonical"]
-        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
+        cached = cache.get(namespace, "sections", papers.sections_key(canonical))
         assert cached is not None
         assert len(cached["sections"]) == 2
 
@@ -359,12 +358,12 @@ class TestImportMarkdown:
         result = manual.import_markdown(str(md), ident)
 
         namespace = result["namespace"]
-        canonical = manual._resolve_target(ident)["canonical"]
-        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
+        canonical = manual.resolve_target(ident)["canonical"]
+        cached = cache.get(namespace, "sections", papers.sections_key(canonical))
         assert cached is not None
         # Checksum present and matches the markdown actually written to cache.
-        md_path = papers._markdown_path(namespace, canonical)
-        assert cached["markdown_checksum"] == papers._markdown_checksum(md_path)
+        md_path = papers.markdown_path(namespace, canonical)
+        assert cached["markdown_checksum"] == papers.markdown_checksum(md_path)
 
     def test_arxiv_markdown_routes_to_arxiv_namespace(self, tmp_path):
         md = tmp_path / "paper.md"
@@ -428,16 +427,16 @@ class TestImportForceRefresh:
         assert "cascaded_invalidated" not in first
 
         namespace = first["namespace"]
-        canonical = manual._resolve_target(ident)["canonical"]
+        canonical = manual.resolve_target(ident)["canonical"]
 
         # Simulate a prior conversion: markdown + sections cache present.
-        md_path = papers._markdown_path(namespace, canonical)
+        md_path = papers.markdown_path(namespace, canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Stale\n\nOld converted text.", encoding="utf-8")
         cache.put(
             namespace,
             "sections",
-            papers._sections_key(canonical),
+            papers.sections_key(canonical),
             {"sections": [{"title": "Stale", "index": 0}], "markdown_checksum": "x"},
         )
 
@@ -452,7 +451,7 @@ class TestImportForceRefresh:
         assert refreshed["cascaded_invalidated"] == ["markdown", "sections"]
         assert manual.pdf_path(ident).read_bytes() == b"%PDF-1.4 version TWO is strictly longer"
         assert not md_path.exists()
-        assert cache.get(namespace, "sections", papers._sections_key(canonical)) is None
+        assert cache.get(namespace, "sections", papers.sections_key(canonical)) is None
 
     def test_force_refresh_replaces_markdown(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache, papers
@@ -479,13 +478,13 @@ class TestImportForceRefresh:
         assert [s["title"] for s in refreshed["sections"]] == ["Beta", "Gamma"]
 
         namespace = refreshed["namespace"]
-        canonical = manual._resolve_target(ident)["canonical"]
-        md_path = papers._markdown_path(namespace, canonical)
+        canonical = manual.resolve_target(ident)["canonical"]
+        md_path = papers.markdown_path(namespace, canonical)
         assert md_path.read_text(encoding="utf-8") == "## Beta\n\nSecond.\n\n## Gamma\n\nThird."
-        cached = cache.get(namespace, "sections", papers._sections_key(canonical))
+        cached = cache.get(namespace, "sections", papers.sections_key(canonical))
         assert [s["title"] for s in cached["sections"]] == ["Beta", "Gamma"]
         # Stored checksum matches the new on-disk file.
-        assert cached["markdown_checksum"] == papers._markdown_checksum(md_path)
+        assert cached["markdown_checksum"] == papers.markdown_checksum(md_path)
 
 
 class TestImportAtomicityAndEncoding:
@@ -548,8 +547,8 @@ class TestImportAtomicityAndEncoding:
             assert second["cached"] is True
 
         namespace = first["namespace"]
-        canonical = manual._resolve_target(ident)["canonical"]
-        md_path = papers._markdown_path(namespace, canonical)
+        canonical = manual.resolve_target(ident)["canonical"]
+        md_path = papers.markdown_path(namespace, canonical)
         assert md_path.read_text(encoding="utf-8") == content
 
 

@@ -50,7 +50,7 @@ async def _download_pdf_by_provider(
     cascade an agent that re-downloads has to remember to also
     ``convert_paper(force_refresh=True)`` or quietly read stale text.
     """
-    target = manual._resolve_target(identifier)
+    target = manual.resolve_target(identifier)
     ns = target["namespace"]
 
     if ns == "arxiv":
@@ -91,18 +91,18 @@ async def _download_pdf_by_provider(
     # a cache hit (cached True) or a failure (handled by the "error" guard).
     if force_refresh and "error" not in result and result.get("cached") is False:
         canonical = target["canonical"]
-        md_path = papers._markdown_path(ns, canonical)
+        md_path = papers.markdown_path(ns, canonical)
         # Hold the per-paper sections lock while dropping both halves so a
         # concurrent convert_pdf can't read a half-cleared state (and so its
         # cached-markdown read can't race this unlink into a FileNotFoundError).
-        async with papers._sections_lock(ns, canonical):
+        async with papers.sections_lock(ns, canonical):
             try:
                 md_path.unlink()
             except OSError:
                 # Already gone (FileNotFoundError) or any other unlink failure
                 # is non-fatal — the goal is only to drop now-stale markdown.
                 pass
-            cache.invalidate(ns, "sections", papers._sections_key(canonical))
+            cache.invalidate(ns, "sections", papers.sections_key(canonical))
         result["cascaded_invalidated"] = ["markdown", "sections"]
 
     return result
@@ -186,7 +186,7 @@ async def convert_paper(
         non-retryable. On a full-mode timeout the suggestion points at
         ``mode="fast"``.
     """
-    target = manual._resolve_target(identifier)
+    target = manual.resolve_target(identifier)
     pdf = target["pdf_path"]
 
     if not pdf.exists():
@@ -258,7 +258,7 @@ async def get_paper_sections(
     Errors: not yet converted → guidance to run convert_paper.
     Next step: get_paper_section(identifier, index_or_title).
     """
-    target = manual._resolve_target(identifier)
+    target = manual.resolve_target(identifier)
     sections_data = await papers.get_or_parse_sections(
         target["namespace"], target["canonical"], force_refresh=force_refresh
     )
@@ -300,8 +300,8 @@ async def get_paper_section(
     Errors: not yet converted → guidance to run convert_paper. Unknown or
     ambiguous section title → error listing the available titles.
     """
-    target = manual._resolve_target(identifier)
-    md_path = papers._markdown_path(target["namespace"], target["canonical"])
+    target = manual.resolve_target(identifier)
+    md_path = papers.markdown_path(target["namespace"], target["canonical"])
 
     if not md_path.exists():
         return {

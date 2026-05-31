@@ -35,11 +35,11 @@ def _canonical_for_source(source: str | None, identifier: str) -> str | None:
     tool calls instead of re-normalizing input each time.
     """
     if source == "arxiv":
-        return arxiv._canonical_arxiv_id(identifier)
+        return arxiv.canonical_arxiv_id(identifier)
     if source == "biorxiv":
-        return biorxiv._canonical_key(identifier)
+        return biorxiv.canonical_key(identifier)
     if source == "openalex":
-        return openalex._canonical_doi(identifier)
+        return openalex.canonical_doi(identifier)
     return None
 
 
@@ -93,7 +93,7 @@ async def _fetch_source(
     get_paper_metadata inspects OpenAlex's ``not_found`` for the Crossref
     fallback. Simple callers enrich via ``_METADATA_HINT_BY_SOURCE[source]``.
     """
-    source = manual._resolve_metadata_source(identifier)
+    source = manual.resolve_metadata_source(identifier)
     canonical_id = _canonical_for_source(source, identifier)
     if source == "arxiv":
         obj = await arxiv.get_paper(identifier, force_refresh=force_refresh)
@@ -202,7 +202,7 @@ def _crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
     falling back to print/online dates. Returns the year and, when month
     (and optionally day) are present, a zero-padded ISO string.
     """
-    for key in ("issued", "published-print", "published-online", "published"):
+    for key in ("issued", "published-print", "published-online", "published", "posted"):
         parts = (work.get(key) or {}).get("date-parts") or [[]]
         first = parts[0] if parts else []
         if first and isinstance(first[0], int):
@@ -323,7 +323,7 @@ async def get_paper_metadata(
                 return _format_openalex_via_biorxiv(
                     work,
                     obj.get("doi"),
-                    openalex._canonical_doi(published_doi),
+                    openalex.canonical_doi(published_doi),
                 )
             # OpenAlex didn't return the journal version — fall back to the
             # preprint record but signal followed_published=False so the agent
@@ -347,7 +347,7 @@ async def get_paper_metadata(
     if source == "openalex" and obj.get("not_found") and fallback_crossref:
         cr = await _app._fetch_crossref_work(identifier)
         if "error" not in cr:
-            return _format_crossref_metadata(cr, crossref._canonical_doi(identifier))
+            return _format_crossref_metadata(cr, crossref.canonical_doi(identifier))
 
     if "error" in obj:
         return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
@@ -416,7 +416,7 @@ async def get_papers_metadata(
         results[slot] = formatted
 
     for i, ident in enumerate(identifiers):
-        source = manual._resolve_metadata_source(ident)
+        source = manual.resolve_metadata_source(ident)
         if source in ("arxiv", "biorxiv"):
             singleton_tasks.append(asyncio.create_task(_singleton_one(i, ident)))
         elif source == "openalex":
@@ -431,7 +431,7 @@ async def get_papers_metadata(
             [d for _, d in openalex_indices], force_refresh=force_refresh
         )
         for slot, ident in openalex_indices:
-            canonical = openalex._canonical_doi(ident)
+            canonical = openalex.canonical_doi(ident)
             work = batch.get(canonical)
             if work is None or "error" in work:
                 err = work or {"error": f"No work found for DOI: {ident}"}

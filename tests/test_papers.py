@@ -481,7 +481,7 @@ class TestConvertPdfCachePaths:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
 
     def _seed_markdown(self, namespace, canonical, body):
-        md_path = papers._markdown_path(namespace, canonical)
+        md_path = papers.markdown_path(namespace, canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(body)
         return md_path
@@ -496,10 +496,10 @@ class TestConvertPdfCachePaths:
         cache.put(
             ns,
             "sections",
-            papers._sections_key(canonical),
+            papers.sections_key(canonical),
             {
                 "sections": sections,
-                "markdown_checksum": papers._markdown_checksum(md_path),
+                "markdown_checksum": papers.markdown_checksum(md_path),
             },
         )
 
@@ -520,7 +520,7 @@ class TestConvertPdfCachePaths:
         assert titles == ["Intro", "Methods"]
 
         # And the sections cache is now populated for next time
-        refreshed = cache.get(ns, "sections", papers._sections_key(canonical))
+        refreshed = cache.get(ns, "sections", papers.sections_key(canonical))
         assert refreshed is not None
         assert refreshed["sections"] == result["sections"]
 
@@ -532,7 +532,7 @@ class TestConvertPdfCachePaths:
         cache.put(
             ns,
             "sections",
-            papers._sections_key(canonical),
+            papers.sections_key(canonical),
             {
                 "sections": [{"index": 0, "title": "Old", "h3s": [], "approx_tokens": 1}],
                 "markdown_checksum": "deadbeef",  # deliberately wrong
@@ -544,7 +544,7 @@ class TestConvertPdfCachePaths:
         # Re-parsed from current markdown, not the stale cache
         assert [s["title"] for s in result["sections"]] == ["Old"]
 
-        refreshed = cache.get(ns, "sections", papers._sections_key(canonical))
+        refreshed = cache.get(ns, "sections", papers.sections_key(canonical))
         assert refreshed["markdown_checksum"] != "deadbeef"
 
     @pytest.mark.asyncio
@@ -557,7 +557,7 @@ class TestConvertPdfCachePaths:
         cache.put(
             ns,
             "sections",
-            papers._sections_key(canonical),
+            papers.sections_key(canonical),
             {
                 "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
                 "markdown_checksum": None,
@@ -567,8 +567,8 @@ class TestConvertPdfCachePaths:
         result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical)
         assert [s["title"] for s in result["sections"]] == ["Fresh"]
 
-        refreshed = cache.get(ns, "sections", papers._sections_key(canonical))
-        assert refreshed["markdown_checksum"] == papers._markdown_checksum(md_path)
+        refreshed = cache.get(ns, "sections", papers.sections_key(canonical))
+        assert refreshed["markdown_checksum"] == papers.markdown_checksum(md_path)
 
     @pytest.mark.asyncio
     async def test_errors_when_neither_markdown_nor_pdf_exists(self, isolated_cache):
@@ -587,17 +587,17 @@ class TestConvertPdfCachePaths:
         cache.put(
             ns,
             "sections",
-            papers._sections_key(canonical),
+            papers.sections_key(canonical),
             {
                 "sections": [{"index": 0, "title": "A", "h3s": [], "approx_tokens": 1}],
-                "markdown_checksum": papers._markdown_checksum(md_path),
+                "markdown_checksum": papers.markdown_checksum(md_path),
             },
         )
 
         result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical, force_refresh=True)
         assert "error" in result
         assert not md_path.exists(), "force_refresh should unlink the markdown"
-        assert cache.get(ns, "sections", papers._sections_key(canonical)) is None, (
+        assert cache.get(ns, "sections", papers.sections_key(canonical)) is None, (
             "force_refresh should invalidate the sections cache"
         )
 
@@ -659,7 +659,7 @@ class TestConvertPdfCachePaths:
 
         # Hold the paper's lock so the convert_pdf task blocks after its outer
         # exists() check (which sees the file) and before its read.
-        lock = papers._sections_lock(ns, canonical)
+        lock = papers.sections_lock(ns, canonical)
         await lock.acquire()
 
         task = asyncio.create_task(convert_pdf(Path("/nonexistent.pdf"), ns, canonical))
@@ -691,13 +691,13 @@ class TestSectionLocksLRU:
     def test_unbounded_below_cap(self, monkeypatch):
         monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 100)
         for i in range(50):
-            papers._sections_lock("test", f"paper-{i}")
+            papers.sections_lock("test", f"paper-{i}")
         assert len(papers._section_locks) == 50
 
     def test_evicts_oldest_when_cap_exceeded(self, monkeypatch):
         monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 5)
         for i in range(10):
-            papers._sections_lock("test", f"paper-{i}")
+            papers.sections_lock("test", f"paper-{i}")
         assert len(papers._section_locks) == 5
         # Newest five survive; oldest five evicted.
         survivors = set(papers._section_locks)
@@ -705,13 +705,13 @@ class TestSectionLocksLRU:
 
     def test_touch_promotes_to_end(self, monkeypatch):
         monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 3)
-        papers._sections_lock("test", "a")
-        papers._sections_lock("test", "b")
-        papers._sections_lock("test", "c")
+        papers.sections_lock("test", "a")
+        papers.sections_lock("test", "b")
+        papers.sections_lock("test", "c")
         # Touch "a" so it moves to the end of the LRU order.
-        papers._sections_lock("test", "a")
+        papers.sections_lock("test", "a")
         # Adding "d" should now evict "b" (the new oldest), not "a".
-        papers._sections_lock("test", "d")
+        papers.sections_lock("test", "d")
         keys = list(papers._section_locks.keys())
         assert ("test", "b") not in keys
         assert ("test", "a") in keys
@@ -722,11 +722,11 @@ class TestSectionLocksLRU:
         # and evict the next free one instead — dropping a held lock
         # would let a racing caller bypass mutual exclusion.
         monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 2)
-        held = papers._sections_lock("test", "held")
+        held = papers.sections_lock("test", "held")
         await held.acquire()
         try:
-            papers._sections_lock("test", "free-1")
-            papers._sections_lock("test", "free-2")
+            papers.sections_lock("test", "free-1")
+            papers.sections_lock("test", "free-2")
             keys = set(papers._section_locks.keys())
             # "held" must still be present; one of the free ones got evicted.
             assert ("test", "held") in keys
@@ -738,12 +738,12 @@ class TestSectionLocksLRU:
         # When every lock is held, eviction must bail (go over cap) rather
         # than spin — and must do so without dropping a held lock.
         monkeypatch.setattr(papers, "_SECTION_LOCKS_MAX", 2)
-        a = papers._sections_lock("test", "a")
-        b = papers._sections_lock("test", "b")
+        a = papers.sections_lock("test", "a")
+        b = papers.sections_lock("test", "b")
         await a.acquire()
         await b.acquire()
         try:
-            papers._sections_lock("test", "c")  # over cap, but a/b are held
+            papers.sections_lock("test", "c")  # over cap, but a/b are held
             keys = set(papers._section_locks.keys())
             assert ("test", "a") in keys
             assert ("test", "b") in keys
@@ -753,8 +753,8 @@ class TestSectionLocksLRU:
             b.release()
 
     def test_returns_same_lock_for_same_key(self):
-        lock1 = papers._sections_lock("test", "same")
-        lock2 = papers._sections_lock("test", "same")
+        lock1 = papers.sections_lock("test", "same")
+        lock2 = papers.sections_lock("test", "same")
         assert lock1 is lock2
 
 
@@ -1369,11 +1369,11 @@ class TestConvertPdfFastMode:
 
         # Markdown landed in the cache and the section index carries the
         # checksum plus the conversion_mode tag.
-        md_path = papers._markdown_path("test", "fast-1")
+        md_path = papers.markdown_path("test", "fast-1")
         assert md_path.exists()
-        cached = cache.get("test", "sections", papers._sections_key("fast-1"))
+        cached = cache.get("test", "sections", papers.sections_key("fast-1"))
         assert cached["conversion_mode"] == "fast"
-        assert cached["markdown_checksum"] == papers._markdown_checksum(md_path)
+        assert cached["markdown_checksum"] == papers.markdown_checksum(md_path)
 
     @pytest.mark.asyncio
     async def test_fast_mode_runs_outside_global_lock(self, isolated_cache, real_pdf, monkeypatch):
@@ -1402,7 +1402,7 @@ class TestConvertPdfFastMode:
         self, isolated_cache, real_pdf, monkeypatch
     ):
         # Seed the markdown cache, then assert the subprocess is never spawned.
-        md_path = papers._markdown_path("test", "fast-cached")
+        md_path = papers.markdown_path("test", "fast-cached")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Cached\n\nAlready converted.")
 
@@ -1423,16 +1423,16 @@ class TestConvertPdfFastMode:
         # it must NOT relabel a previously FULL-converted paper as degraded
         # "fast". Call _convert_fast directly to exercise exactly that branch.
         ns, canonical = "test", "fast-preserve-full"
-        md_path = papers._markdown_path(ns, canonical)
+        md_path = papers.markdown_path(ns, canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Intro\n\nFull-quality body.")
         cache.put(
             ns,
             "sections",
-            papers._sections_key(canonical),
+            papers.sections_key(canonical),
             {
                 "sections": papers.parse_sections(md_path.read_text()),
-                "markdown_checksum": papers._markdown_checksum(md_path),
+                "markdown_checksum": papers.markdown_checksum(md_path),
                 "conversion_mode": "full",
             },
         )
@@ -1445,7 +1445,7 @@ class TestConvertPdfFastMode:
         assert result["cached"] is True
         assert result["conversion_mode"] == "full"
         # And the recorded mode in the sections cache stays "full".
-        cached = cache.get(ns, "sections", papers._sections_key(canonical))
+        cached = cache.get(ns, "sections", papers.sections_key(canonical))
         assert cached["conversion_mode"] == "full"
 
     @pytest.mark.asyncio
@@ -1480,7 +1480,7 @@ class TestConvertPdfFastMode:
         assert "no text" in result["error"]
         assert result["conversion_mode"] == "fast"
         # Nothing should have been cached.
-        assert not papers._markdown_path("test", "fast-empty").exists()
+        assert not papers.markdown_path("test", "fast-empty").exists()
 
     @pytest.mark.asyncio
     async def test_fast_mode_spawn_failure_returns_error(

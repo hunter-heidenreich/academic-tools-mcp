@@ -240,8 +240,8 @@ async def find_in_paper(
     the download_pdf → convert_paper pipeline. No matches → ``{result_count:
     0, results: []}`` (an empty result is not an error).
     """
-    target = manual._resolve_target(identifier)
-    md_path = papers._markdown_path(target["namespace"], target["canonical"])
+    target = manual.resolve_target(identifier)
+    md_path = papers.markdown_path(target["namespace"], target["canonical"])
 
     if not md_path.exists():
         return {

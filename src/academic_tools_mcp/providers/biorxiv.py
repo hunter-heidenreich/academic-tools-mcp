@@ -154,7 +154,7 @@ def _normalize_doi(doi: str) -> str:
     return doi
 
 
-def _canonical_key(doi: str) -> str:
+def canonical_key(doi: str) -> str:
     """Return a canonical cache key from a bioRxiv/medRxiv DOI."""
     return _normalize_doi(doi).lower()
 
@@ -271,7 +271,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     ``published_doi`` for a preprint that may have just been published.
     """
     bare = _normalize_doi(doi)
-    canonical = _canonical_key(doi)
+    canonical = canonical_key(doi)
 
     if force_refresh:
         cache.invalidate(NAMESPACE, "papers", canonical)
@@ -343,7 +343,7 @@ def _pdf_filename(canonical: str) -> str:
 
 def pdf_path(doi: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
-    canonical = _canonical_key(doi)
+    canonical = canonical_key(doi)
     return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
@@ -364,7 +364,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     Returns a dict with the file path and size, or an error. Concurrent
     callers for the same DOI share one download via single-flight.
     """
-    canonical = _canonical_key(doi)
+    canonical = canonical_key(doi)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
     if not force_refresh and dest.exists():

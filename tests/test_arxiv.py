@@ -66,19 +66,19 @@ class TestNormalizeArxivId:
 
 class TestCanonicalArxivId:
     def test_strips_version(self):
-        assert arxiv._canonical_arxiv_id("2301.00001v2") == "2301.00001"
+        assert arxiv.canonical_arxiv_id("2301.00001v2") == "2301.00001"
 
     def test_no_version(self):
-        assert arxiv._canonical_arxiv_id("2301.00001") == "2301.00001"
+        assert arxiv.canonical_arxiv_id("2301.00001") == "2301.00001"
 
     def test_lowercases(self):
-        assert arxiv._canonical_arxiv_id("hep-TH/9901001") == "hep-th/9901001"
+        assert arxiv.canonical_arxiv_id("hep-TH/9901001") == "hep-th/9901001"
 
     def test_url_strips_version_and_lowercases(self):
-        assert arxiv._canonical_arxiv_id("https://arxiv.org/abs/2301.00001v3") == "2301.00001"
+        assert arxiv.canonical_arxiv_id("https://arxiv.org/abs/2301.00001v3") == "2301.00001"
 
     def test_old_style_strips_version(self):
-        assert arxiv._canonical_arxiv_id("hep-th/9901001v1") == "hep-th/9901001"
+        assert arxiv.canonical_arxiv_id("hep-th/9901001v1") == "hep-th/9901001"
 
 
 # ---------------------------------------------------------------------------
@@ -692,7 +692,7 @@ class TestMalformedXml:
         calls = _stub_text_response(monkeypatch, "<feed><entry></fe")
 
         await arxiv.get_paper("2301.00001")
-        canonical = arxiv._canonical_arxiv_id("2301.00001")
+        canonical = arxiv.canonical_arxiv_id("2301.00001")
         assert cache.get_negative(arxiv.NAMESPACE, "papers", canonical) is None
 
         await arxiv.get_paper("2301.00001")
@@ -756,7 +756,7 @@ class TestHttpErrorCaching:
         assert "error" in result1
         assert calls[0] == 1
 
-        canonical = arxiv._canonical_arxiv_id("2301.00001")
+        canonical = arxiv.canonical_arxiv_id("2301.00001")
         assert cache.get_negative(arxiv.NAMESPACE, "papers", canonical) is not None
 
         result2 = await arxiv.get_paper("2301.00001")
@@ -775,7 +775,7 @@ class TestHttpErrorCaching:
         result = await arxiv.get_paper("2301.00001")
         assert "error" in result
 
-        canonical = arxiv._canonical_arxiv_id("2301.00001")
+        canonical = arxiv.canonical_arxiv_id("2301.00001")
         assert cache.get_negative(arxiv.NAMESPACE, "papers", canonical) is None
 
 
@@ -792,7 +792,7 @@ class TestSearchOpportunisticCache:
 
         _reset_throttle(monkeypatch, tmp_path)
 
-        canonical = arxiv._canonical_arxiv_id("2301.00001")
+        canonical = arxiv.canonical_arxiv_id("2301.00001")
         cache.put(arxiv.NAMESPACE, "papers", canonical, {"title": "Stale Title", "id": "old"})
 
         # Age the cached entry well past the positive TTL.

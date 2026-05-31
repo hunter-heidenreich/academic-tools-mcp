@@ -77,7 +77,7 @@ def _normalize_doi(doi: str) -> str:
     return doi
 
 
-def _canonical_doi(doi: str) -> str:
+def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
     return _normalize_doi(doi).lower()
 
@@ -187,7 +187,7 @@ def _normalize_author_id(author_id: str) -> str:
     return author_id
 
 
-def _canonical_author_id(author_id: str) -> str:
+def canonical_author_id(author_id: str) -> str:
     """Return a canonical author ID for cache keying."""
     return _normalize_author_id(author_id).lower()
 
@@ -202,7 +202,7 @@ async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str
     before fetching — author metadata (h_index, works_count) drifts on the
     same 30-day timescale as works, so a caller may want a fresh read.
     """
-    canonical = _canonical_author_id(author_id)
+    canonical = canonical_author_id(author_id)
 
     if force_refresh:
         cache.invalidate(NAMESPACE, "authors", canonical)
@@ -263,7 +263,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     before fetching — useful when the agent needs a fresh citation
     count or to retry an identifier that previously 404'd.
     """
-    canonical = _canonical_doi(doi)
+    canonical = canonical_doi(doi)
 
     if force_refresh:
         cache.invalidate(NAMESPACE, "works", canonical)
@@ -369,7 +369,7 @@ async def get_works_batch(
     canonicals_in_order: list[str] = []
     seen: set[str] = set()
     for doi in dois:
-        canonical = _canonical_doi(doi)
+        canonical = canonical_doi(doi)
         if canonical in seen:
             continue
         seen.add(canonical)

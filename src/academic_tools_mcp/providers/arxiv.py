@@ -162,7 +162,7 @@ def _normalize_arxiv_id(arxiv_id: str) -> str:
     return arxiv_id
 
 
-def _canonical_arxiv_id(arxiv_id: str) -> str:
+def canonical_arxiv_id(arxiv_id: str) -> str:
     """Return a canonical arXiv ID for cache keying.
 
     Strips version suffix and lowercases so that v1/v2/latest share one
@@ -257,7 +257,7 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
     for this canonical ID before fetching, so an agent can re-pull a
     paper whose cached entry might be stale (e.g. a new version uploaded).
     """
-    canonical = _canonical_arxiv_id(arxiv_id)
+    canonical = canonical_arxiv_id(arxiv_id)
 
     if force_refresh:
         cache.invalidate(NAMESPACE, "papers", canonical)
@@ -386,7 +386,7 @@ async def search_papers(
         raw_id = paper.get("id", "")
         if "/abs/" in raw_id:
             paper_id = raw_id.split("/abs/")[-1]
-            paper_canonical = _canonical_arxiv_id(paper_id)
+            paper_canonical = canonical_arxiv_id(paper_id)
             if (
                 cache.get(
                     NAMESPACE, "papers", paper_canonical, max_age_seconds=_POSITIVE_TTL_SECONDS
@@ -408,7 +408,7 @@ def _pdf_filename(canonical: str) -> str:
 
 def pdf_path(arxiv_id: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
-    canonical = _canonical_arxiv_id(arxiv_id)
+    canonical = canonical_arxiv_id(arxiv_id)
     return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
@@ -429,7 +429,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     Returns a dict with the file path and size, or an error. Concurrent
     callers for the same ID share one download via single-flight.
     """
-    canonical = _canonical_arxiv_id(arxiv_id)
+    canonical = canonical_arxiv_id(arxiv_id)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
     if not force_refresh and dest.exists():

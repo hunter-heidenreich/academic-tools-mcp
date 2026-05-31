@@ -228,7 +228,7 @@ def _make_extraction_dir(canonical: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=f"pdf-convert-{_safe_stem(canonical)}-"))
 
 
-def _markdown_checksum(md_path: Path) -> str:
+def markdown_checksum(md_path: Path) -> str:
     """Compute SHA-256 hex digest of a markdown file.
 
     Used for cache invalidation — if the markdown changes, sections must be re-parsed.
@@ -239,12 +239,12 @@ def _markdown_checksum(md_path: Path) -> str:
     return hashlib.sha256(md_path.read_bytes()).hexdigest()
 
 
-def _markdown_path(namespace: str, canonical: str) -> Path:
+def markdown_path(namespace: str, canonical: str) -> Path:
     """Return the cache path for converted markdown."""
     return cache._cache_dir(namespace, "markdown") / (canonical.replace("/", "_") + ".md")
 
 
-def _sections_key(canonical: str) -> str:
+def sections_key(canonical: str) -> str:
     """Cache key for section index JSON."""
     return canonical.replace("/", "_")
 
@@ -261,7 +261,7 @@ _SECTION_LOCKS_MAX: int = 1024
 _section_locks: "OrderedDict[tuple[str, str], asyncio.Lock]" = OrderedDict()
 
 
-def _sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
+def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
     """Return the async lock guarding the sections cache for one paper.
 
     Adding/looking up under the GIL is atomic, so racing constructors
@@ -570,7 +570,7 @@ async def _reparse_sections_locked(
 ) -> dict[str, Any] | None:
     """Return the sections payload for a converted paper, re-parsing if stale.
 
-    **The caller MUST already hold the per-paper ``_sections_lock``** (this is
+    **The caller MUST already hold the per-paper ``sections_lock``** (this is
     the shared core behind ``get_or_parse_sections`` and ``convert_pdf``'s
     cached-markdown branch, which both hold the lock for the surrounding work).
 
@@ -582,13 +582,13 @@ async def _reparse_sections_locked(
     loop and reads UTF-8 explicitly so a non-UTF-8 host locale can't mis-decode.
     """
     if force_refresh:
-        cache.invalidate(namespace, "sections", _sections_key(canonical))
+        cache.invalidate(namespace, "sections", sections_key(canonical))
 
-    current_checksum = _markdown_checksum(md_path)
+    current_checksum = markdown_checksum(md_path)
     if not current_checksum:
         return None
 
-    cached = cache.get(namespace, "sections", _sections_key(canonical))
+    cached = cache.get(namespace, "sections", sections_key(canonical))
     if cached is not None:
         stored_checksum = cached.get("markdown_checksum")
         if (
@@ -612,7 +612,7 @@ async def _reparse_sections_locked(
         "markdown_checksum": current_checksum,
         "conversion_mode": recorded_mode,
     }
-    cache.put(namespace, "sections", _sections_key(canonical), payload)
+    cache.put(namespace, "sections", sections_key(canonical), payload)
     return payload
 
 
@@ -622,14 +622,14 @@ async def get_or_parse_sections(
     """Public sections accessor: read the cache, re-parsing the markdown if the
     section index is missing or its checksum drifted.
 
-    Acquires the per-paper ``_sections_lock`` and delegates to
+    Acquires the per-paper ``sections_lock`` and delegates to
     ``_reparse_sections_locked``. Returns the sections payload
     (``{sections, markdown_checksum, conversion_mode}``) or ``None`` when the
     paper isn't converted (no markdown on disk). ``force_refresh=True`` drops
     the cached section index first so the next read re-parses.
     """
-    md_path = _markdown_path(namespace, canonical)
-    async with _sections_lock(namespace, canonical):
+    md_path = markdown_path(namespace, canonical)
+    async with sections_lock(namespace, canonical):
         return await _reparse_sections_locked(
             namespace, canonical, md_path, force_refresh=force_refresh
         )
@@ -665,10 +665,10 @@ def _finalize_markdown(
     cache.put(
         namespace,
         "sections",
-        _sections_key(canonical),
+        sections_key(canonical),
         {
             "sections": sections,
-            "markdown_checksum": _markdown_checksum(md_path),
+            "markdown_checksum": markdown_checksum(md_path),
             "conversion_mode": mode,
         },
     )
@@ -696,8 +696,8 @@ async def _convert_fast(
     concurrent fast calls on the same paper so they don't both spawn and race
     the cache write; stderr is captured separately so stdout stays clean text.
     """
-    md_path = _markdown_path(namespace, canonical)
-    async with _sections_lock(namespace, canonical):
+    md_path = markdown_path(namespace, canonical)
+    async with sections_lock(namespace, canonical):
         # A racing fast caller may have written the markdown between the outer
         # cached-check and our acquiring this lock — re-check before spawning.
         # Guard the read: a concurrent force_refresh / download cascade may have
@@ -713,16 +713,16 @@ async def _convert_fast(
             sections = parse_sections(cached_markdown)
             # Preserve a recorded "full" mode: re-reading a full-quality
             # conversion through mode="fast" must not relabel it as degraded.
-            existing = cache.get(namespace, "sections", _sections_key(canonical))
+            existing = cache.get(namespace, "sections", sections_key(canonical))
             recorded_mode = existing.get("conversion_mode") if existing is not None else None
             mode_tag = recorded_mode or "fast"
             cache.put(
                 namespace,
                 "sections",
-                _sections_key(canonical),
+                sections_key(canonical),
                 {
                     "sections": sections,
-                    "markdown_checksum": _markdown_checksum(md_path),
+                    "markdown_checksum": markdown_checksum(md_path),
                     "conversion_mode": mode_tag,
                 },
             )
@@ -845,23 +845,23 @@ async def convert_pdf(
     Returns:
         Dict with markdown_path, sections, cached, conversion_mode, or an error.
     """
-    md_path = _markdown_path(namespace, canonical)
+    md_path = markdown_path(namespace, canonical)
 
     if force_refresh:
         # Drop both halves under the per-paper lock so a concurrent reader
         # can't catch a half-cleared state (markdown gone, stale sections
         # entry still pointing at the old checksum).
-        async with _sections_lock(namespace, canonical):
+        async with sections_lock(namespace, canonical):
             if md_path.exists():
                 md_path.unlink()
-            cache.invalidate(namespace, "sections", _sections_key(canonical))
+            cache.invalidate(namespace, "sections", sections_key(canonical))
 
     # If the markdown is already cached, never re-run the slow conversion —
     # re-parse from the existing markdown if the sections cache is missing or
     # stale (handled by the shared _reparse_sections_locked, which also returns
     # None if the file vanished under the lock so we fall through to conversion).
     if md_path.exists():
-        async with _sections_lock(namespace, canonical):
+        async with sections_lock(namespace, canonical):
             payload = await _reparse_sections_locked(namespace, canonical, md_path)
             if payload is not None:
                 return {

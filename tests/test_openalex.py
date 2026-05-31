@@ -5,8 +5,8 @@ import pytest
 from academic_tools_mcp import cache
 from academic_tools_mcp.providers import openalex
 from academic_tools_mcp.providers.openalex import (
-    _canonical_author_id,
-    _canonical_doi,
+    canonical_author_id,
+    canonical_doi,
     _normalize_author_id,
     _normalize_doi,
     reconstruct_abstract,
@@ -34,16 +34,16 @@ class TestNormalizeDoi:
 
 class TestCanonicalDoi:
     def test_lowercases(self):
-        assert _canonical_doi("10.1234/ABC") == "10.1234/abc"
+        assert canonical_doi("10.1234/ABC") == "10.1234/abc"
 
     def test_strips_prefix_and_lowercases(self):
-        assert _canonical_doi("doi:10.1234/ABC") == "10.1234/abc"
+        assert canonical_doi("doi:10.1234/ABC") == "10.1234/abc"
 
     def test_strips_url_and_lowercases(self):
-        assert _canonical_doi("https://doi.org/10.1234/ABC") == "10.1234/abc"
+        assert canonical_doi("https://doi.org/10.1234/ABC") == "10.1234/abc"
 
     def test_strips_http_url_and_lowercases(self):
-        assert _canonical_doi("http://doi.org/10.1234/ABC") == "10.1234/abc"
+        assert canonical_doi("http://doi.org/10.1234/ABC") == "10.1234/abc"
 
 
 class TestNormalizeAuthorId:
@@ -60,14 +60,14 @@ class TestNormalizeAuthorId:
 
 class TestCanonicalAuthorId:
     def test_lowercases(self):
-        assert _canonical_author_id("A5023888391") == "a5023888391"
+        assert canonical_author_id("A5023888391") == "a5023888391"
 
     def test_strips_url_and_lowercases(self):
-        assert _canonical_author_id("https://openalex.org/A5023888391") == "a5023888391"
+        assert canonical_author_id("https://openalex.org/A5023888391") == "a5023888391"
 
     def test_orcid_lowercased(self):
         assert (
-            _canonical_author_id("https://orcid.org/0000-0001-6187-6610")
+            canonical_author_id("https://orcid.org/0000-0001-6187-6610")
             == "https://orcid.org/0000-0001-6187-6610"
         )
 
