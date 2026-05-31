@@ -70,14 +70,14 @@ def _is_arxiv_identifier(normalized: str) -> bool:
     return bool(_ARXIV_NEW_RE.match(candidate) or _ARXIV_OLD_RE.match(candidate))
 
 
-def _resolve_metadata_source(identifier: str) -> str | None:
+def resolve_metadata_source(identifier: str) -> str | None:
     """Detect which provider should serve *metadata* for *identifier*.
 
     Returns one of ``"arxiv"``, ``"biorxiv"``, ``"openalex"``, or ``None``
     when the identifier does not resolve to a known metadata provider
     (e.g. a freeform label).
 
-    Unlike :func:`_resolve_target` (which routes PDF storage), ACL DOIs and
+    Unlike :func:`resolve_target` (which routes PDF storage), ACL DOIs and
     any other DOI shape route to OpenAlex — ACL Anthology has no metadata
     API of its own, and OpenAlex handles arbitrary publisher DOIs.
     """
@@ -97,7 +97,7 @@ def _resolve_metadata_source(identifier: str) -> str | None:
     return None
 
 
-def _resolve_target(identifier: str) -> dict[str, Any]:
+def resolve_target(identifier: str) -> dict[str, Any]:
     """Detect the target provider from *identifier* and return routing info.
 
     Returns a dict with:
@@ -112,7 +112,7 @@ def _resolve_target(identifier: str) -> dict[str, Any]:
     # --- arXiv (not a DOI, so check first) ---
     arxiv_norm = arxiv._normalize_arxiv_id(normalized)
     if _ARXIV_NEW_RE.match(arxiv_norm) or _ARXIV_OLD_RE.match(arxiv_norm):
-        canonical = arxiv._canonical_arxiv_id(normalized)
+        canonical = arxiv.canonical_arxiv_id(normalized)
         return {
             "namespace": arxiv.NAMESPACE,
             "canonical": canonical,
@@ -121,7 +121,7 @@ def _resolve_target(identifier: str) -> dict[str, Any]:
 
     # --- ACL Anthology DOI (must check before generic DOI) ---
     if acl_anthology.is_acl_doi(normalized):
-        canonical = acl_anthology._canonical_key(normalized)
+        canonical = acl_anthology.canonical_key(normalized)
         return {
             "namespace": acl_anthology.NAMESPACE,
             "canonical": canonical,
@@ -130,7 +130,7 @@ def _resolve_target(identifier: str) -> dict[str, Any]:
 
     # --- bioRxiv / medRxiv DOI ---
     if biorxiv.is_biorxiv_doi(normalized):
-        canonical = biorxiv._canonical_key(normalized)
+        canonical = biorxiv.canonical_key(normalized)
         return {
             "namespace": biorxiv.NAMESPACE,
             "canonical": canonical,
@@ -171,7 +171,7 @@ def _manual_pdf_path(canonical: str) -> Path:
 
 def pdf_path(identifier: str) -> Path:
     """Return the expected cache path for a PDF, routed to the correct provider."""
-    return _resolve_target(identifier)["pdf_path"]
+    return resolve_target(identifier)["pdf_path"]
 
 
 def _looks_like_cached_pdf(path: Path) -> bool:
@@ -199,14 +199,14 @@ def _invalidate_derived(namespace: str, canonical: str) -> None:
     stale relative to the new bytes, so the next ``convert_paper`` must re-run
     rather than return previously-converted text.
     """
-    md_path = papers._markdown_path(namespace, canonical)
+    md_path = papers.markdown_path(namespace, canonical)
     try:
         md_path.unlink()
     except FileNotFoundError:
         pass
     except OSError:
         pass
-    cache.invalidate(namespace, "sections", papers._sections_key(canonical))
+    cache.invalidate(namespace, "sections", papers.sections_key(canonical))
 
 
 def import_local_pdf(
@@ -251,7 +251,7 @@ def import_local_pdf(
             )
         }
 
-    target = _resolve_target(identifier)
+    target = resolve_target(identifier)
     dest = target["pdf_path"]
 
     existed = dest.exists()
@@ -320,10 +320,10 @@ def import_markdown(
     if not source.is_file():
         return {"error": f"Not a file: {file_path}"}
 
-    target = _resolve_target(identifier)
+    target = resolve_target(identifier)
     namespace = target["namespace"]
     canonical = target["canonical"]
-    md_path = papers._markdown_path(namespace, canonical)
+    md_path = papers.markdown_path(namespace, canonical)
 
     if not force_refresh and md_path.exists():
         # Cached markdown is written UTF-8 (below), so read it back UTF-8 too
@@ -374,9 +374,9 @@ def import_markdown(
     sections = papers.parse_sections(markdown)
     sections_data = {
         "sections": sections,
-        "markdown_checksum": papers._markdown_checksum(md_path),
+        "markdown_checksum": papers.markdown_checksum(md_path),
     }
-    cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
+    cache.put(namespace, "sections", papers.sections_key(canonical), sections_data)
 
     return {
         "identifier": _normalize_identifier(identifier),

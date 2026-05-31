@@ -303,7 +303,7 @@ _NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
 }
 
 # Old-style arXiv IDs carry exactly one slash: "archive[.subject]/NNNNNNN"
-# (e.g. "hep-th/9901001", "cs/0501001", "math.GT/0309136"). _canonical_arxiv_id
+# (e.g. "hep-th/9901001", "cs/0501001", "math.GT/0309136"). canonical_arxiv_id
 # lowercases them and keeps the slash, then the storage step turns it into "_",
 # so the stem is "archive[.subject]_NNNNNNN". This regex inverts ALL archives
 # (not just the hyphenated physics ones) in one shot. New-style IDs start with a

@@ -137,7 +137,7 @@ def doi_to_anthology_id(doi: str) -> str | None:
     return _normalize_anthology_id(suffix)
 
 
-def _canonical_key(doi: str) -> str:
+def canonical_key(doi: str) -> str:
     """Return a canonical cache key from an ACL DOI."""
     return _normalize_doi(doi).lower()
 
@@ -192,7 +192,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     if aid is None:
         return {"error": f"Not an ACL Anthology DOI: {doi}"}
 
-    canonical = _canonical_key(doi)
+    canonical = canonical_key(doi)
     dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(aid)
 
     if not force_refresh and dest.exists():

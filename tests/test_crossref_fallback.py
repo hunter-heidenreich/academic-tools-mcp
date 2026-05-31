@@ -176,3 +176,72 @@ class TestFormatCrossrefMetadata:
         result = server._format_crossref_metadata(work, "10.1/x")
         assert result["title"] is None
         assert result["venue"] is None
+
+    def test_posted_only_date_yields_year(self):
+        # Preprint-only Crossref records carry just `posted` (no issued /
+        # published-*). The date walk must include it, or a non-arXiv/bioRxiv
+        # preprint DOI reached via fallback_crossref returns year=None.
+        work = {"title": ["A Preprint"], "posted": {"date-parts": [[2025, 11, 3]]}}
+        result = server._format_crossref_metadata(work, "10.1/x")
+        assert result["publication_year"] == 2025
+        assert result["publication_date"] == "2025-11-03"
+
+    def test_issued_preferred_over_posted(self):
+        # When both a formal `issued` date and a preprint `posted` date are
+        # present, the canonical (issued) date wins.
+        work = {
+            "title": ["X"],
+            "issued": {"date-parts": [[2024, 6]]},
+            "posted": {"date-parts": [[2023, 1]]},
+        }
+        result = server._format_crossref_metadata(work, "10.1/x")
+        assert result["publication_year"] == 2024
+        assert result["publication_date"] == "2024-06"
+
+
+class TestFirstHelper:
+    """Unit coverage for the shared _app._first list-unwrap helper."""
+
+    def test_unwraps_list(self):
+        from academic_tools_mcp._app import _first
+
+        assert _first(["a", "b"]) == "a"
+
+    def test_empty_list_is_none(self):
+        from academic_tools_mcp._app import _first
+
+        assert _first([]) is None
+
+    def test_passes_through_scalar(self):
+        from academic_tools_mcp._app import _first
+
+        assert _first("plain") == "plain"
+        assert _first(None) is None
+
+
+class TestCrossrefDateHelper:
+    """Unit coverage for the shared _app._crossref_date helper (used by both
+    paper.py metadata formatting and search.py year extraction, so the two
+    can't drift on whether `posted` counts)."""
+
+    def test_reads_posted(self):
+        from academic_tools_mcp._app import _crossref_date
+
+        assert _crossref_date({"posted": {"date-parts": [[2025, 11, 3]]}}) == (
+            2025,
+            "2025-11-03",
+        )
+
+    def test_issued_wins_over_posted(self):
+        from academic_tools_mcp._app import _crossref_date
+
+        work = {"issued": {"date-parts": [[2024]]}, "posted": {"date-parts": [[2023]]}}
+        assert _crossref_date(work) == (2024, "2024")
+
+    def test_guards_malformed_date_parts(self):
+        from academic_tools_mcp._app import _crossref_date
+
+        assert _crossref_date({"issued": {"date-parts": None}}) == (None, None)
+        assert _crossref_date({"issued": {"date-parts": []}}) == (None, None)
+        assert _crossref_date({"issued": {"date-parts": [[None]]}}) == (None, None)
+        assert _crossref_date({}) == (None, None)

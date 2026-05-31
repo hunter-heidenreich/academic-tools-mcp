@@ -37,7 +37,7 @@ def _reset_section_locks(monkeypatch):
 
 def _seed_markdown(namespace, canonical, body):
     """Write markdown straight into the cache path (no subprocess)."""
-    md_path = papers._markdown_path(namespace, canonical)
+    md_path = papers.markdown_path(namespace, canonical)
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(body, encoding="utf-8")
     return md_path
@@ -72,7 +72,7 @@ class TestNonUtf8Reads:
     @pytest.mark.asyncio
     async def test_get_paper_section_reads_non_utf8(self, isolated_cache):
         ident = "non-utf8-section"
-        target = manual._resolve_target(ident)
+        target = manual.resolve_target(ident)
         _seed_markdown(target["namespace"], target["canonical"], _NON_ASCII_MD)
 
         with _c_ctype_locale():
@@ -86,7 +86,7 @@ class TestNonUtf8Reads:
         # No sections cache seeded → get_paper_sections must read+parse the
         # markdown, which is where the encoding-less read bit.
         ident = "non-utf8-sections"
-        target = manual._resolve_target(ident)
+        target = manual.resolve_target(ident)
         _seed_markdown(target["namespace"], target["canonical"], _NON_ASCII_MD)
 
         with _c_ctype_locale():
@@ -110,13 +110,13 @@ class TestConcurrentUnlink:
         # cascade that wins the lock and unlinks the file in that gap must
         # not raise FileNotFoundError.
         ident = "race-sections"
-        target = manual._resolve_target(ident)
+        target = manual.resolve_target(ident)
         ns, canonical = target["namespace"], target["canonical"]
         md_path = _seed_markdown(ns, canonical, "## A\n\nbody\n")
 
         # Hold the paper's lock so the tool blocks after its outer exists()
         # check (which sees the file) and before its read.
-        lock = papers._sections_lock(ns, canonical)
+        lock = papers.sections_lock(ns, canonical)
         await lock.acquire()
 
         task = asyncio.create_task(server.get_paper_sections(ident))
@@ -138,7 +138,7 @@ class TestConcurrentUnlink:
         # asyncio — but the read must still degrade to a clean error rather
         # than an uncaught FileNotFoundError if the file is gone at read time.
         ident = "race-section"
-        target = manual._resolve_target(ident)
+        target = manual.resolve_target(ident)
         md_path = _seed_markdown(target["namespace"], target["canonical"], "## A\n\nbody\n")
 
         real_read_text = Path.read_text
@@ -164,7 +164,7 @@ class TestConvertErrorStripsPaths:
     @pytest.mark.asyncio
     async def test_convert_paper_strips_paths_on_error(self, isolated_cache, monkeypatch):
         ident = "strip-error"
-        target = manual._resolve_target(ident)
+        target = manual.resolve_target(ident)
         # The pdf.exists() precheck must pass so we reach papers.convert_pdf.
         pdf = target["pdf_path"]
         pdf.parent.mkdir(parents=True, exist_ok=True)

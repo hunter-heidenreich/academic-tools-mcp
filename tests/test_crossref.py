@@ -34,11 +34,11 @@ class TestNormalizeDoi:
 
 class TestCanonicalDoi:
     def test_lowercases(self):
-        assert crossref._canonical_doi("10.1038/Nature12373") == "10.1038/nature12373"
+        assert crossref.canonical_doi("10.1038/Nature12373") == "10.1038/nature12373"
 
     def test_normalizes_and_lowercases(self):
         assert (
-            crossref._canonical_doi("https://doi.org/10.1038/Nature12373") == "10.1038/nature12373"
+            crossref.canonical_doi("https://doi.org/10.1038/Nature12373") == "10.1038/nature12373"
         )
 
 

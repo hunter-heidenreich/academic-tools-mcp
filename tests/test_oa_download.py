@@ -79,7 +79,7 @@ def _isolated_cache(tmp_path, monkeypatch):
 
 
 def _oa_dest() -> Path:
-    return Path(manual._resolve_target(_DOI)["pdf_path"])
+    return Path(manual.resolve_target(_DOI)["pdf_path"])
 
 
 def _stub_get_work(monkeypatch, work: dict) -> None:
@@ -443,12 +443,12 @@ class TestServerDispatch:
         # markdown + section index, just like the native providers.
         from academic_tools_mcp import papers
 
-        target = manual._resolve_target(_DOI)
+        target = manual.resolve_target(_DOI)
         ns, canonical = target["namespace"], target["canonical"]
-        md_path = papers._markdown_path(ns, canonical)
+        md_path = papers.markdown_path(ns, canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("stale markdown")
-        cache.put(ns, "sections", papers._sections_key(canonical), {"sections": []})
+        cache.put(ns, "sections", papers.sections_key(canonical), {"sections": []})
 
         async def fake_oa_download(identifier, *, force_refresh=False):
             return {"path": "/x.pdf", "size_bytes": 10, "cached": False}
@@ -459,4 +459,4 @@ class TestServerDispatch:
 
         assert result["cascaded_invalidated"] == ["markdown", "sections"]
         assert not md_path.exists()
-        assert cache.get(ns, "sections", papers._sections_key(canonical)) is None
+        assert cache.get(ns, "sections", papers.sections_key(canonical)) is None

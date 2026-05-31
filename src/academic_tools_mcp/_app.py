@@ -144,6 +144,50 @@ def _arxiv_id_from_entry(paper: dict[str, Any]) -> str:
     return raw_id
 
 
+def _first(value: Any) -> Any:
+    """First element of a list, else the value itself (or None for empties).
+
+    Crossref returns several scalar-ish fields (title, container-title) as
+    single-element lists, so unwrap them to match the OpenAlex shape. Shared by
+    paper.py (metadata formatting) and search.py (Crossref triage hits).
+    """
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+# Canonical fallback order for a Crossref work's publication date. Prefers the
+# formally-issued/published dates; `posted` (preprint date, present on every
+# bioRxiv DOI and other preprint-only records) is the last resort so a record
+# carrying only `posted` still yields a year. Shared by paper.py's metadata
+# formatting and search.py's triage-hit year extraction so the two can't drift
+# (they previously disagreed on whether `posted` counted).
+_CROSSREF_DATE_KEYS = ("issued", "published-print", "published-online", "published", "posted")
+
+
+def _crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
+    """Extract ``(year, ISO-date)`` from a Crossref work's date-parts.
+
+    Crossref dates are ``{"date-parts": [[year, month, day]]}`` with month and
+    day optional. Walks ``_CROSSREF_DATE_KEYS`` and returns the year plus, when
+    month (and optionally day) are present, a zero-padded ISO string. Guards
+    malformed ``date-parts`` (``null`` / ``[]`` / ``[[null]]``) so a bad record
+    degrades to ``(None, None)`` instead of crashing.
+    """
+    for key in _CROSSREF_DATE_KEYS:
+        parts = (work.get(key) or {}).get("date-parts") or [[]]
+        first = parts[0] if parts else []
+        if first and isinstance(first[0], int):
+            year = first[0]
+            iso = f"{year:04d}"
+            if len(first) >= 2 and isinstance(first[1], int):
+                iso += f"-{first[1]:02d}"
+                if len(first) >= 3 and isinstance(first[2], int):
+                    iso += f"-{first[2]:02d}"
+            return year, iso
+    return None, None
+
+
 FOLLOW_PUBLISHED = Annotated[
     bool,
     Field(

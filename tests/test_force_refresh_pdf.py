@@ -75,12 +75,12 @@ _ACL_DOI = "10.18653/v1/P16-1160"
 
 
 def _arxiv_dest() -> Path:
-    canonical = arxiv._canonical_arxiv_id(_ARXIV_ID)
+    canonical = arxiv.canonical_arxiv_id(_ARXIV_ID)
     return cache._cache_dir(arxiv.NAMESPACE, "pdfs") / arxiv._pdf_filename(canonical)
 
 
 def _biorxiv_dest() -> Path:
-    canonical = biorxiv._canonical_key(_BIORXIV_DOI)
+    canonical = biorxiv.canonical_key(_BIORXIV_DOI)
     return cache._cache_dir(biorxiv.NAMESPACE, "pdfs") / biorxiv._pdf_filename(canonical)
 
 

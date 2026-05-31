@@ -175,7 +175,7 @@ async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[
     that entry. Concurrent callers for the same identifier share one fetch
     via single-flight.
     """
-    target = manual._resolve_target(identifier)
+    target = manual.resolve_target(identifier)
     canonical = target["canonical"]
     dest = Path(target["pdf_path"])
 

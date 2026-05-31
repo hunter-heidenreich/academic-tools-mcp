@@ -131,7 +131,7 @@ def _normalize_doi(doi: str) -> str:
     return doi
 
 
-def _canonical_doi(doi: str) -> str:
+def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
     return _normalize_doi(doi).lower()
 
@@ -187,7 +187,7 @@ async def search_works(
         doi = item.get("DOI")
         if not doi:
             continue
-        canonical = _canonical_doi(doi)
+        canonical = canonical_doi(doi)
         # TTL-aware (not cache.has) so a stale-but-present entry is refreshed
         # by fresher search data; mirrors arxiv.search_papers.
         if cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS) is None:
@@ -206,7 +206,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     before fetching — useful when the reference list may have grown since the
     cached fetch, or to retry an identifier that previously 404'd.
     """
-    canonical = _canonical_doi(doi)
+    canonical = canonical_doi(doi)
 
     if force_refresh:
         cache.invalidate(NAMESPACE, "works", canonical)

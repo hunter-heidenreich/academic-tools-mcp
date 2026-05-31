@@ -687,8 +687,8 @@ class TestFindInPaper:
     async def test_finds_substring_in_converted_paper(self, isolated_cache):
         # Seed a converted-markdown file at the path find_in_paper resolves
         # to, then assert it locates the query and returns positioned hits.
-        target = manual._resolve_target("2301.00001")
-        md_path = papers._markdown_path(target["namespace"], target["canonical"])
+        target = manual.resolve_target("2301.00001")
+        md_path = papers.markdown_path(target["namespace"], target["canonical"])
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Title\n\n## Introduction\n\nWe study variational dropout here.\n")
 
@@ -703,6 +703,51 @@ class TestFindInPaper:
 # ---------------------------------------------------------------------------
 # get_paper_authors: response shape is symmetric across providers
 # ---------------------------------------------------------------------------
+
+
+class TestFormatOpenalexAuthors:
+    """Unit coverage for the extracted _format_openalex_authors slice helper."""
+
+    def test_slices_page_and_dedupes_institutions(self):
+        work = {
+            "authorships": [
+                {
+                    "author": {"display_name": "Dan", "id": "A1"},
+                    "author_position": "first",
+                    "is_corresponding": True,
+                    "institutions": [{"display_name": "MIT"}, {"display_name": "CSAIL"}],
+                },
+                {
+                    "author": {"display_name": "Eve", "id": "A2"},
+                    "author_position": "last",
+                    "is_corresponding": False,
+                    "institutions": [{"display_name": "MIT"}],
+                },
+                {
+                    "author": {"display_name": "Frank", "id": "A3"},
+                    "author_position": "middle",
+                    "is_corresponding": False,
+                    "institutions": [{"display_name": "Stanford"}],
+                },
+            ]
+        }
+        # author_count is the global total; the returned page is just [0, 2).
+        out = paper._format_openalex_authors(work, 0, 2)
+        assert out["author_count"] == 3
+        assert [a["name"] for a in out["authors"]] == ["Dan", "Eve"]
+        assert out["authors"][0]["openalex_id"] == "A1"
+        assert out["authors"][0]["position"] == "first"
+        assert out["authors"][0]["is_corresponding"] is True
+        # MIT appears on both page authors but is deduped in the roll-up.
+        assert out["page_institutions"] == ["MIT", "CSAIL"]
+        assert out["page_institution_count"] == 2
+
+    def test_empty_authorships(self):
+        out = paper._format_openalex_authors({}, 0, 25)
+        assert out["author_count"] == 0
+        assert out["authors"] == []
+        assert out["page_institutions"] == []
+        assert out["page_institution_count"] == 0
 
 
 class TestAuthorsShapeSymmetry:
@@ -881,18 +926,12 @@ class TestCitationsSourceParam:
         assert result["total"] == 1
 
     @pytest.mark.asyncio
-    async def test_explicit_opencitations_matches_auto(self, monkeypatch):
-        async def fake_oc(doi, **kwargs):
-            return {"citations": [{"doi": "10.x/a"}], "count": 1}
+    async def test_no_source_parameter(self):
+        # The reserved-but-inert `source` param was removed; it's gone from
+        # the signature (a future second source would reintroduce it).
+        import inspect
 
-        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
-
-        auto = await server.get_paper_citations("10.x/x", source="auto")
-        explicit = await server.get_paper_citations("10.x/x", source="opencitations")
-        # Same source dispatch, same response shape — pinning the param
-        # is a no-op today and stays no-op as long as OpenCitations is
-        # the only provider.
-        assert auto == explicit
+        assert "source" not in inspect.signature(server.get_paper_citations).parameters
 
     @pytest.mark.asyncio
     async def test_count_missing_count_key_is_zero(self, monkeypatch):
@@ -961,6 +1000,60 @@ class TestGetAuthorForceRefresh:
 # ---------------------------------------------------------------------------
 # Error-suggestion hints are centralized in the module constants
 # ---------------------------------------------------------------------------
+
+
+class TestFetchSourceDispatch:
+    """_fetch_source resolves identifier → (source, canonical_id, raw_obj),
+    returning the raw (un-enriched) provider object so get_paper_metadata can
+    inspect provider-specific error flags before a suggestion is attached."""
+
+    @pytest.mark.asyncio
+    async def test_arxiv_success_returns_canonical_and_raw(self, monkeypatch):
+        async def fake(arxiv_id, **kwargs):
+            return {"id": "http://arxiv.org/abs/2301.00001v1", "title": "T"}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake)
+        source, cid, obj = await paper._fetch_source("2301.00001v1")
+        assert source == "arxiv"
+        assert cid == "2301.00001"
+        assert obj["title"] == "T"
+
+    @pytest.mark.asyncio
+    async def test_error_is_left_unenriched(self, monkeypatch):
+        async def fake(doi, **kwargs):
+            return {"error": "boom"}
+
+        monkeypatch.setattr(openalex, "get_work", fake)
+        source, cid, obj = await paper._fetch_source("10.1234/x")
+        assert source == "openalex"
+        assert obj == {"error": "boom"}  # no suggestion attached by _fetch_source
+
+    @pytest.mark.asyncio
+    async def test_unknown_identifier_yields_source_none(self):
+        source, cid, obj = await paper._fetch_source("not-an-identifier-at-all")
+        assert source is None
+        assert cid is None
+        assert "error" in obj
+
+
+class TestFormatMetadataBySource:
+    """_format_metadata_by_source routes a raw object to the right per-source
+    formatter so get_paper_metadata and the batch path share one mapping."""
+
+    def test_dispatches_each_source(self):
+        arxiv_obj = {"id": "http://arxiv.org/abs/2301.00001v1", "title": "A"}
+        assert (
+            paper._format_metadata_by_source("arxiv", arxiv_obj, "2301.00001")["_source"] == "arxiv"
+        )
+        bio_obj = {"doi": "10.1101/x", "title": "B"}
+        assert (
+            paper._format_metadata_by_source("biorxiv", bio_obj, "10.1101/x")["_source"]
+            == "biorxiv"
+        )
+        oa_obj = {"title": "C"}
+        assert (
+            paper._format_metadata_by_source("openalex", oa_obj, "10.1/c")["_source"] == "openalex"
+        )
 
 
 class TestMetadataHintsCentralized:

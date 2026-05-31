@@ -113,7 +113,7 @@ def _normalize_doi(doi: str) -> str:
     return doi
 
 
-def _canonical_doi(doi: str) -> str:
+def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
     return _normalize_doi(doi).lower()
 
@@ -165,7 +165,7 @@ async def get_references(doi: str, *, force_refresh: bool = False) -> dict[str, 
     before fetching — useful because the citation graph grows continuously,
     so an agent may want fresher reference coverage than the 7-day TTL.
     """
-    canonical = _canonical_doi(doi)
+    canonical = canonical_doi(doi)
 
     if force_refresh:
         cache.invalidate(NAMESPACE, "references", canonical)
@@ -242,7 +242,7 @@ async def get_citations(doi: str, *, force_refresh: bool = False) -> dict[str, A
     before fetching — incoming citations grow continuously, so an agent may
     want a fresher count than the 7-day TTL would serve.
     """
-    canonical = _canonical_doi(doi)
+    canonical = canonical_doi(doi)
 
     if force_refresh:
         cache.invalidate(NAMESPACE, "citations", canonical)

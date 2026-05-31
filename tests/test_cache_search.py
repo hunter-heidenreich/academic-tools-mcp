@@ -222,7 +222,7 @@ class TestFilenameToCanonical:
         assert cache_search._filename_to_canonical("arxiv", "math_0309136") == "math/0309136"
 
     def test_arxiv_old_style_with_subject_class_restores_slash(self):
-        # Subject-class form, lowercased by _canonical_arxiv_id:
+        # Subject-class form, lowercased by canonical_arxiv_id:
         # "math.GT/0309136" → canonical "math.gt/0309136" → stem
         # "math.gt_0309136" on disk → must invert back.
         assert cache_search._filename_to_canonical("arxiv", "math.gt_0309136") == "math.gt/0309136"
