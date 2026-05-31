@@ -1,5 +1,6 @@
 """PDF pipeline tools: download / convert / sections / section / import."""
 
+import asyncio
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -85,6 +86,9 @@ async def _download_pdf_by_provider(
             ),
         }
 
+    # Cascade only on a real re-download. Every provider download_pdf returns an
+    # explicit cached flag, so `cached is False` distinguishes a fresh fetch from
+    # a cache hit (cached True) or a failure (handled by the "error" guard).
     if force_refresh and "error" not in result and result.get("cached") is False:
         canonical = target["canonical"]
         md_path = papers._markdown_path(ns, canonical)
@@ -94,9 +98,9 @@ async def _download_pdf_by_provider(
         async with papers._sections_lock(ns, canonical):
             try:
                 md_path.unlink()
-            except FileNotFoundError:
-                pass
             except OSError:
+                # Already gone (FileNotFoundError) or any other unlink failure
+                # is non-fatal — the goal is only to drop now-stale markdown.
                 pass
             cache.invalidate(ns, "sections", papers._sections_key(canonical))
         result["cascaded_invalidated"] = ["markdown", "sections"]
@@ -201,28 +205,37 @@ async def convert_paper(
         mode=mode,
     )
     if "error" in result:
+        # Error responses cross the same MCP boundary as success ones — strip
+        # cache filesystem paths here too so a future error shape that happens
+        # to carry one can't leak it to the agent.
         if result.get("busy"):
-            return _enrich_error(
-                result,
-                "Another PDF is being converted right now. Wait and retry; "
-                "in the meantime you can still read sections of papers that "
-                "are already converted, retry this one with mode='fast' (a "
-                "quick degraded text-only extraction that skips the lock), or "
-                "work on non-PDF tools.",
+            return _strip_internal_paths(
+                _enrich_error(
+                    result,
+                    "Another PDF is being converted right now. Wait and retry; "
+                    "in the meantime you can still read sections of papers that "
+                    "are already converted, retry this one with mode='fast' (a "
+                    "quick degraded text-only extraction that skips the lock), or "
+                    "work on non-PDF tools.",
+                )
             )
         if result.get("timed_out") and mode == "full":
-            return _enrich_error(
-                result,
-                "Full conversion exceeded the timeout. For a quick degraded "
-                "fallback, retry with mode='fast' (plain-text extraction, no "
-                "tables/equations) — or raise PDF_CONVERT_TIMEOUT if you need "
-                "the full-quality markdown.",
+            return _strip_internal_paths(
+                _enrich_error(
+                    result,
+                    "Full conversion exceeded the timeout. For a quick degraded "
+                    "fallback, retry with mode='fast' (plain-text extraction, no "
+                    "tables/equations) — or raise PDF_CONVERT_TIMEOUT if you need "
+                    "the full-quality markdown.",
+                )
             )
-        return _enrich_error(
-            result,
-            "Conversion failed permanently — do not retry. "
-            "The PDF may be too large, corrupted, or in an unsupported format. "
-            "Try importing a different version or pre-converted markdown via import_paper.",
+        return _strip_internal_paths(
+            _enrich_error(
+                result,
+                "Conversion failed permanently — do not retry. "
+                "The PDF may be too large, corrupted, or in an unsupported format. "
+                "Try importing a different version or pre-converted markdown via import_paper.",
+            )
         )
     return _strip_internal_paths(result)
 
@@ -262,29 +275,40 @@ async def get_paper_sections(
     async with papers._sections_lock(namespace, canonical):
         if force_refresh:
             cache.invalidate(namespace, "sections", papers._sections_key(canonical))
+
+        # The outer exists() check raced the lock: a concurrent force_refresh
+        # cascade (download_pdf / convert_paper) may have unlinked the markdown
+        # after we saw it but before we won the lock. _markdown_checksum returns
+        # "" for a missing file, so treat that as "not converted" rather than
+        # letting the read below raise FileNotFoundError. Every unlinker holds
+        # this same lock, so once we have a real checksum the file is stable.
+        current_checksum = papers._markdown_checksum(md_path)
+        if not current_checksum:
+            return {
+                "error": f"Paper not converted yet for: {identifier}. "
+                "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
+            }
+
         cached = cache.get(namespace, "sections", papers._sections_key(canonical))
-        if cached is not None:
-            stored_checksum = cached.get("markdown_checksum", None)
-            current_checksum = papers._markdown_checksum(md_path)
-            if stored_checksum is not None and stored_checksum == current_checksum:
-                # Cache valid — return stored sections
-                sections_data = cached
-            else:
-                # Missing or mismatched checksum — re-parse and update cache
-                markdown = md_path.read_text()
-                sections = papers.parse_sections(markdown)
-                sections_data = {
-                    "sections": sections,
-                    "markdown_checksum": current_checksum,
-                }
-                cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
+        stored_checksum = cached.get("markdown_checksum") if cached is not None else None
+        if (
+            cached is not None
+            and stored_checksum is not None
+            and stored_checksum == current_checksum
+        ):
+            # Cache valid — return stored sections.
+            sections_data = cached
         else:
-            # No cache — parse and create
-            markdown = md_path.read_text()
-            sections = papers.parse_sections(markdown)
+            # No/stale sections cache — re-parse the markdown off the event loop
+            # (like find_in_paper) and refresh the cache. Read UTF-8 explicitly
+            # so a non-UTF-8 host locale can't mis-decode the cached markdown.
+            def _read_and_parse() -> list[dict[str, Any]]:
+                return papers.parse_sections(md_path.read_text(encoding="utf-8"))
+
+            sections = await asyncio.to_thread(_read_and_parse)
             sections_data = {
                 "sections": sections,
-                "markdown_checksum": papers._markdown_checksum(md_path),
+                "markdown_checksum": current_checksum,
             }
             cache.put(namespace, "sections", papers._sections_key(canonical), sections_data)
 
@@ -329,14 +353,27 @@ async def get_paper_section(
             "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
         }
 
-    markdown = md_path.read_text()
-
     try:
         section_key: int | str = int(section)
     except ValueError:
         section_key = section
 
-    return papers.get_section_content(markdown, section_key, offset=offset, max_chars=max_chars)
+    # Read + slice off the event loop (like find_in_paper). Read UTF-8
+    # explicitly so a non-UTF-8 host locale can't mis-decode the cached
+    # markdown, and degrade to the clean "not converted" error if the file was
+    # unlinked by a concurrent force_refresh cascade between the exists() check
+    # and the read rather than letting FileNotFoundError escape.
+    def _read_and_extract() -> dict[str, Any]:
+        markdown = md_path.read_text(encoding="utf-8")
+        return papers.get_section_content(markdown, section_key, offset=offset, max_chars=max_chars)
+
+    try:
+        return await asyncio.to_thread(_read_and_extract)
+    except FileNotFoundError:
+        return {
+            "error": f"Paper not converted yet for: {identifier}. "
+            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
+        }
 
 
 _MARKDOWN_EXTS = {".md", ".markdown"}
