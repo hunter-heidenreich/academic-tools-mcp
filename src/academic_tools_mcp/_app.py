@@ -306,9 +306,9 @@ PAGE = Annotated[
 ]
 
 
-async def _fetch_crossref_work(doi: str) -> dict[str, Any]:
+async def _fetch_crossref_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a work from Crossref and return it, or propagate an error dict."""
-    return await crossref.get_work(doi)
+    return await crossref.get_work(doi, force_refresh=force_refresh)
 
 
 REF_SOURCE = Annotated[

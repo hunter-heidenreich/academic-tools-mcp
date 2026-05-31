@@ -7,13 +7,14 @@ from .. import _app
 from .._app import (
     CITATION_SOURCE,
     DOI,
+    FORCE_REFRESH,
     PAGE,
     PAGE_SIZE,
     REF_SOURCE,
     _enrich_error,
     mcp,
 )
-from ..providers import crossref, opencitations
+from ..providers import opencitations
 
 
 def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
@@ -39,19 +40,24 @@ def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool
-async def get_paper_references_count(doi: DOI) -> dict[str, Any]:
+async def get_paper_references_count(
+    doi: DOI, force_refresh: FORCE_REFRESH = False
+) -> dict[str, Any]:
     """Survey outgoing-reference coverage across Crossref and OpenCitations.
 
     Fires both providers in parallel via asyncio.gather. Counts often
     differ — call this first to pick the better-covered source before
     paginating with get_paper_references.
 
+    ``force_refresh=True`` re-fetches both sources, bypassing the cache —
+    useful when a reference list may have grown since it was last cached.
+
     Returns ``{doi, sources: {crossref: {count: N} | {error, suggestion?},
     opencitations: {count: M} | {error, suggestion?}}}``. Partial-failure
     tolerant: if one source errors the other's count is still reported.
     """
-    cr_task = crossref.get_work(doi)
-    oc_task = opencitations.get_references(doi)
+    cr_task = _app._fetch_crossref_work(doi, force_refresh=force_refresh)
+    oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_result, oc_result = await asyncio.gather(cr_task, oc_task)
 
     sources: dict[str, dict[str, Any]] = {}
@@ -110,6 +116,7 @@ async def get_paper_references(
     source: REF_SOURCE = "auto",
     page: PAGE = 1,
     page_size: PAGE_SIZE = 20,
+    force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
     """Page through outgoing references (bibliography) from the chosen source.
 
@@ -119,6 +126,10 @@ async def get_paper_references(
     source is reported in ``_source`` so subsequent pagination calls can
     pin it explicitly. If one provider errors, the other wins
     automatically; if both error, the response carries both errors.
+
+    ``force_refresh=True`` re-fetches the underlying source(s), bypassing the
+    cache — pass it on the first page when you need fresh coverage; omit it
+    when paginating so page 2..N reuse the warmed cache.
 
     Returns ``{_source, doi, total, page, page_size, has_more, references: [...]}``.
     The per-entry shape differs by source:
@@ -138,7 +149,7 @@ async def get_paper_references(
     hints for transient failures.
     """
     if source == "crossref":
-        work = await _app._fetch_crossref_work(doi)
+        work = await _app._fetch_crossref_work(doi, force_refresh=force_refresh)
         if "error" in work:
             return _enrich_error(
                 work,
@@ -147,7 +158,7 @@ async def get_paper_references(
         return _crossref_refs_page(work, doi, page, page_size)
 
     if source == "opencitations":
-        data = await opencitations.get_references(doi)
+        data = await opencitations.get_references(doi, force_refresh=force_refresh)
         if "error" in data:
             return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
         return _opencitations_refs_page(data, doi, page, page_size)
@@ -155,8 +166,8 @@ async def get_paper_references(
     # source == "auto": survey both, pick the bigger. The fetches are
     # cached so a follow-up page=2 call with the same source doesn't
     # re-survey or re-fetch.
-    cr_task = _app._fetch_crossref_work(doi)
-    oc_task = opencitations.get_references(doi)
+    cr_task = _app._fetch_crossref_work(doi, force_refresh=force_refresh)
+    oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_work, oc_data = await asyncio.gather(cr_task, oc_task)
 
     cr_count = len(cr_work.get("reference") or []) if "error" not in cr_work else -1
@@ -186,15 +197,20 @@ async def get_paper_references(
 
 
 @mcp.tool
-async def get_paper_citations_count(doi: DOI) -> dict[str, Any]:
+async def get_paper_citations_count(
+    doi: DOI, force_refresh: FORCE_REFRESH = False
+) -> dict[str, Any]:
     """Count incoming citations (papers that cite this work) via OpenCitations.
 
     Returns ``{doi, count}`` on success or ``{error, suggestion}`` on failure.
     OpenCitations is the only source for incoming citations (no Crossref
     equivalent), so unlike get_paper_references_count there is no source
     survey — call this then page with get_paper_citations.
+
+    ``force_refresh=True`` re-fetches from OpenCitations, bypassing the cache —
+    incoming citations grow continuously, so use it for a fresher count.
     """
-    data = await opencitations.get_citations(doi)
+    data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
     return {"doi": doi, "count": data["count"]}
@@ -206,6 +222,7 @@ async def get_paper_citations(
     source: CITATION_SOURCE = "auto",
     page: PAGE = 1,
     page_size: PAGE_SIZE = 20,
+    force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
     """Page through incoming citations (papers that cite this work) from OpenCitations.
 
@@ -219,6 +236,10 @@ async def get_paper_citations(
     page_size=20 (1-50). Call get_paper_citations_count first to see
     the total.
 
+    ``force_refresh=True`` re-fetches from OpenCitations, bypassing the cache —
+    pass it on the first page for fresh coverage; omit it when paginating so
+    page 2..N reuse the warmed cache.
+
     Errors: bad DOI / upstream failure → ``{error, suggestion}`` with
     retry hints for transient failures.
     """
@@ -226,7 +247,7 @@ async def get_paper_citations(
     # to OpenCitations today. Keeping the parameter in the signature now
     # means agent code path "page through citations" can pin source=
     # "opencitations" without breaking when a second source ships.
-    data = await opencitations.get_citations(doi)
+    data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
 

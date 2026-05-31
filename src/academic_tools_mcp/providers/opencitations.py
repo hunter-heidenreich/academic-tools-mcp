@@ -1,6 +1,8 @@
 import asyncio
+import json
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -8,6 +10,25 @@ from .. import _clients, _http, _singleflight, _stats, cache
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
+
+# The OpenCitations Index API returns JSON; a malformed/truncated 200 body
+# raises ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the
+# HTTP errors so the tool always returns the uniform ``{error}`` contract
+# rather than crashing on a garbled response.
+_PARSE_ERRORS = (json.JSONDecodeError,)
+
+
+def _parse_error_dict() -> dict[str, Any]:
+    """Fresh structured error for an unparseable OpenCitations response.
+
+    A new dict each call (like ``_http.error_dict``) so a caller — or a
+    single-flight follower sharing the result — can't mutate a shared object.
+    """
+    return {
+        "error": "OpenCitations returned a response that could not be parsed.",
+        "retryable": True,
+    }
+
 
 # Rate limiting: 180 req/min = 3 req/sec. Enforce a minimum 334ms gap.
 # Concurrency cap of 2 lets references + citations fetch in parallel
@@ -133,21 +154,30 @@ def _format_record(raw: dict[str, Any], id_field: str) -> dict[str, Any]:
     return record
 
 
-async def get_references(doi: str) -> dict[str, Any]:
+async def get_references(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch outgoing references for a DOI from OpenCitations.
 
     Returns a dict with the list of citation records. Each record contains
     parsed IDs (doi, omid, openalex, pmid), creation date, and self-citation
     flags. Concurrent callers for the same DOI share one fetch.
+
+    ``force_refresh=True`` drops both positive and negative cache entries
+    before fetching — useful because the citation graph grows continuously,
+    so an agent may want fresher reference coverage than the 7-day TTL.
     """
     canonical = _canonical_doi(doi)
 
-    cached = cache.get(NAMESPACE, "references", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-    if cached is not None:
-        return cached
-    neg = cache.get_negative(NAMESPACE, "references", canonical)
-    if neg is not None:
-        return neg
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "references", canonical)
+    else:
+        cached = cache.get(
+            NAMESPACE, "references", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS
+        )
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "references", canonical)
+        if neg is not None:
+            return neg
 
     async def _fetch() -> dict[str, Any]:
         cached = cache.get(
@@ -165,7 +195,11 @@ async def get_references(doi: str) -> dict[str, Any]:
             client = _clients.get_client(NAMESPACE, timeout=30.0)
             response = await _throttled_get(
                 client,
-                f"{OPENCITATIONS_BASE_URL}/references/doi:{bare_doi}",
+                # Percent-encode the DOI so reserved characters (#, ?, …)
+                # aren't misread as a URL fragment/query and silently fetch
+                # the wrong record. The "doi:" scheme prefix and the DOI's
+                # own slash stay literal (safe="/").
+                f"{OPENCITATIONS_BASE_URL}/references/doi:{quote(bare_doi, safe='/')}",
             )
 
             if response.status_code == 404:
@@ -175,10 +209,21 @@ async def get_references(doi: str) -> dict[str, Any]:
 
             response.raise_for_status()
             records = response.json()
+        except _PARSE_ERRORS:
+            # A 200 body we couldn't parse — truncated/garbled. Transient,
+            # not "not found": surface a retryable error and do NOT
+            # negative-cache it so a retry re-fetches.
+            return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("OpenCitations", e)
 
-        references = [_format_record(r, "cited") for r in records]
+        if not isinstance(records, list):
+            # Anomalous 200 that isn't the expected list of records — treat
+            # like a parse failure rather than iterating garbage (or caching
+            # an empty result for the TTL).
+            return _parse_error_dict()
+
+        references = [_format_record(r, "cited") for r in records if isinstance(r, dict)]
         data: dict[str, Any] = {"references": references, "count": len(references)}
 
         cache.put(NAMESPACE, "references", canonical, data)
@@ -187,20 +232,27 @@ async def get_references(doi: str) -> dict[str, Any]:
     return await _single_flight.do(("references", canonical), _fetch)
 
 
-async def get_citations(doi: str) -> dict[str, Any]:
+async def get_citations(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch incoming citations for a DOI from OpenCitations.
 
     Returns a dict with the list of citation records (works that cite this DOI).
     Concurrent callers for the same DOI share one fetch.
+
+    ``force_refresh=True`` drops both positive and negative cache entries
+    before fetching — incoming citations grow continuously, so an agent may
+    want a fresher count than the 7-day TTL would serve.
     """
     canonical = _canonical_doi(doi)
 
-    cached = cache.get(NAMESPACE, "citations", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-    if cached is not None:
-        return cached
-    neg = cache.get_negative(NAMESPACE, "citations", canonical)
-    if neg is not None:
-        return neg
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "citations", canonical)
+    else:
+        cached = cache.get(NAMESPACE, "citations", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            return cached
+        neg = cache.get_negative(NAMESPACE, "citations", canonical)
+        if neg is not None:
+            return neg
 
     async def _fetch() -> dict[str, Any]:
         cached = cache.get(NAMESPACE, "citations", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
@@ -216,7 +268,11 @@ async def get_citations(doi: str) -> dict[str, Any]:
             client = _clients.get_client(NAMESPACE, timeout=30.0)
             response = await _throttled_get(
                 client,
-                f"{OPENCITATIONS_BASE_URL}/citations/doi:{bare_doi}",
+                # Percent-encode the DOI so reserved characters (#, ?, …)
+                # aren't misread as a URL fragment/query and silently fetch
+                # the wrong record. The "doi:" scheme prefix and the DOI's
+                # own slash stay literal (safe="/").
+                f"{OPENCITATIONS_BASE_URL}/citations/doi:{quote(bare_doi, safe='/')}",
             )
 
             if response.status_code == 404:
@@ -226,10 +282,21 @@ async def get_citations(doi: str) -> dict[str, Any]:
 
             response.raise_for_status()
             records = response.json()
+        except _PARSE_ERRORS:
+            # A 200 body we couldn't parse — truncated/garbled. Transient,
+            # not "not found": surface a retryable error and do NOT
+            # negative-cache it so a retry re-fetches.
+            return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("OpenCitations", e)
 
-        citations = [_format_record(r, "citing") for r in records]
+        if not isinstance(records, list):
+            # Anomalous 200 that isn't the expected list of records — treat
+            # like a parse failure rather than iterating garbage (or caching
+            # an empty result for the TTL).
+            return _parse_error_dict()
+
+        citations = [_format_record(r, "citing") for r in records if isinstance(r, dict)]
         data: dict[str, Any] = {"citations": citations, "count": len(citations)}
 
         cache.put(NAMESPACE, "citations", canonical, data)

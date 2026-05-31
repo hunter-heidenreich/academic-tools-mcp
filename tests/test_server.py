@@ -165,10 +165,10 @@ class TestReferencesAutoSource:
 
     @pytest.mark.asyncio
     async def test_auto_picks_bigger_source(self, monkeypatch):
-        async def fake_cr(doi):
+        async def fake_cr(doi, **kwargs):
             return {"reference": [{"DOI": "10.1/a"}, {"DOI": "10.1/b"}]}
 
-        async def fake_oc(doi):
+        async def fake_oc(doi, **kwargs):
             return {
                 "references": [
                     {"doi": "10.2/a"},
@@ -192,10 +192,10 @@ class TestReferencesAutoSource:
         # bibliographic metadata (author, title, year), while
         # OpenCitations is just DOI links. If counts are equal the agent
         # gets more useful per-row info from Crossref.
-        async def fake_cr(doi):
+        async def fake_cr(doi, **kwargs):
             return {"reference": [{"DOI": "10.1/a"}, {"DOI": "10.1/b"}]}
 
-        async def fake_oc(doi):
+        async def fake_oc(doi, **kwargs):
             return {
                 "references": [{"doi": "10.2/a"}, {"doi": "10.2/b"}],
                 "count": 2,
@@ -212,10 +212,10 @@ class TestReferencesAutoSource:
         # Crossref errors (e.g. no record), OpenCitations succeeds —
         # auto must serve from OpenCitations, not propagate the Crossref
         # error.
-        async def fake_cr(doi):
+        async def fake_cr(doi, **kwargs):
             return {"error": "No work found on Crossref for DOI: 10.x/x"}
 
-        async def fake_oc(doi):
+        async def fake_oc(doi, **kwargs):
             return {"references": [{"doi": "10.2/a"}], "count": 1}
 
         monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
@@ -227,10 +227,10 @@ class TestReferencesAutoSource:
 
     @pytest.mark.asyncio
     async def test_auto_returns_combined_error_when_both_sources_fail(self, monkeypatch):
-        async def fake_cr(doi):
+        async def fake_cr(doi, **kwargs):
             return {"error": "Crossref says no"}
 
-        async def fake_oc(doi):
+        async def fake_oc(doi, **kwargs):
             return {"error": "OpenCitations says no"}
 
         monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
@@ -247,10 +247,10 @@ class TestReferencesAutoSource:
         # Important — paginating page=2..N must not re-survey.
         cr_called = False
 
-        async def fake_oc(doi):
+        async def fake_oc(doi, **kwargs):
             return {"references": [{"doi": f"10.2/{i}"} for i in range(50)], "count": 50}
 
-        async def fake_cr(doi):
+        async def fake_cr(doi, **kwargs):
             nonlocal cr_called
             cr_called = True
             return {"reference": []}
@@ -552,7 +552,7 @@ class TestCitationsSourceParam:
 
     @pytest.mark.asyncio
     async def test_auto_dispatches_to_opencitations(self, monkeypatch):
-        async def fake_oc(doi):
+        async def fake_oc(doi, **kwargs):
             return {"citations": [{"doi": "10.x/a"}], "count": 1}
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
@@ -563,7 +563,7 @@ class TestCitationsSourceParam:
 
     @pytest.mark.asyncio
     async def test_explicit_opencitations_matches_auto(self, monkeypatch):
-        async def fake_oc(doi):
+        async def fake_oc(doi, **kwargs):
             return {"citations": [{"doi": "10.x/a"}], "count": 1}
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)

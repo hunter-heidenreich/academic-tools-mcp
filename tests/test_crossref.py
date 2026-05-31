@@ -451,3 +451,23 @@ class TestGetWorkDoiEncoding:
         await crossref.get_work("10.1038/nature12373")
 
         assert recorder.urls[0].endswith("/works/10.1038/nature12373")
+
+
+class TestGetWorkForceRefresh:
+    @pytest.mark.asyncio
+    async def test_force_refresh_rebypasses_cache(self, tmp_path, monkeypatch):
+        # A reference list grows as publishers re-deposit; force_refresh drops
+        # the cached work and re-fetches so the reference-survey path can pull
+        # fresh data on demand.
+        _reset_crossref(monkeypatch, tmp_path)
+        recorder = _stub_json_responses(monkeypatch, _work_response())
+
+        await crossref.get_work("10.1234/x")
+        assert recorder.count == 1
+
+        # Plain re-read is a cache hit.
+        await crossref.get_work("10.1234/x")
+        assert recorder.count == 1
+
+        await crossref.get_work("10.1234/x", force_refresh=True)
+        assert recorder.count == 2
