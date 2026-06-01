@@ -50,11 +50,11 @@ def test_negative_hit_counter(tmp_path, monkeypatch):
 
 
 def test_snapshot_includes_in_flight(monkeypatch):
-    """In-flight pending counts come from each provider module's live
-    ``_pending`` global, not from the cumulative counters."""
+    """In-flight pending counts come from each provider module's shared
+    ``_throttle.pending`` count, not from the cumulative counters."""
     from academic_tools_mcp.providers import arxiv
 
-    monkeypatch.setattr(arxiv, "_pending", 3, raising=False)
+    monkeypatch.setattr(arxiv._throttle, "pending", 3)
     snap = _stats.snapshot()
     assert snap["providers"]["arxiv"]["in_flight"] == 3
 

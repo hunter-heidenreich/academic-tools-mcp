@@ -76,17 +76,17 @@ _ACL_DOI = "10.18653/v1/P16-1160"
 
 def _arxiv_dest() -> Path:
     canonical = arxiv.canonical_arxiv_id(_ARXIV_ID)
-    return cache._cache_dir(arxiv.NAMESPACE, "pdfs") / arxiv._pdf_filename(canonical)
+    return cache.cache_dir(arxiv.NAMESPACE, "pdfs") / arxiv._pdf_filename(canonical)
 
 
 def _biorxiv_dest() -> Path:
     canonical = biorxiv.canonical_key(_BIORXIV_DOI)
-    return cache._cache_dir(biorxiv.NAMESPACE, "pdfs") / biorxiv._pdf_filename(canonical)
+    return cache.cache_dir(biorxiv.NAMESPACE, "pdfs") / biorxiv._pdf_filename(canonical)
 
 
 def _acl_dest() -> Path:
     aid = acl_anthology.doi_to_anthology_id(_ACL_DOI)
-    return cache._cache_dir(acl_anthology.NAMESPACE, "pdfs") / acl_anthology._pdf_filename(aid)
+    return cache.cache_dir(acl_anthology.NAMESPACE, "pdfs") / acl_anthology._pdf_filename(aid)
 
 
 def _setup_provider(name: str, monkeypatch) -> tuple[Path, callable]:

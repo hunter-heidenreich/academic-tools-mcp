@@ -1,6 +1,3 @@
-import asyncio
-import time
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -281,95 +278,26 @@ class TestParsePaper:
 
 
 # ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
-
-class TestThrottledGet:
-    @pytest.mark.asyncio
-    async def test_first_request_no_delay(self, monkeypatch):
-        """First request (when _last_request_time is 0) should not sleep."""
-        monkeypatch.setattr(biorxiv, "_last_request_time", 0.0)
-        monkeypatch.setattr(biorxiv, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await biorxiv._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-    @pytest.mark.asyncio
-    async def test_second_request_waits(self, monkeypatch):
-        """Second request made immediately should sleep."""
-        monkeypatch.setattr(biorxiv, "_last_request_time", time.monotonic())
-        monkeypatch.setattr(biorxiv, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await biorxiv._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 1
-        assert slept[0] >= 0.3  # should be close to 0.5
-
-    @pytest.mark.asyncio
-    async def test_no_delay_after_gap(self, monkeypatch):
-        """No sleep needed when enough time has passed."""
-        monkeypatch.setattr(biorxiv, "_last_request_time", time.monotonic() - 2.0)
-        monkeypatch.setattr(biorxiv, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await biorxiv._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-
-# ---------------------------------------------------------------------------
 # Malformed-body / parse-error handling and get_paper integration
 # ---------------------------------------------------------------------------
+#
+# The rate-limiter gap, concurrency cap, and burst-cap backpressure are no
+# longer per-provider code — they live in ``_throttle.Throttle`` and are
+# covered once in tests/test_throttle.py.
 
 
 def _reset_biorxiv(monkeypatch, tmp_path):
-    """Reset bioRxiv pooled state + cache root and no-op the throttle sleep."""
+    """Point the cache at tmp_path and disable the throttle gap (no real sleeps).
+
+    The conftest autouse fixture already resets each provider's ``_throttle``
+    and ``_single_flight`` between tests; here we additionally zero the gap so a
+    multi-request test (e.g. the bioRxiv→medRxiv fallback) doesn't wait it out.
+    """
     from academic_tools_mcp import _singleflight, cache
 
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
-    monkeypatch.setattr(biorxiv, "_pending", 0)
-    monkeypatch.setattr(biorxiv, "_last_request_time", 0.0)
-    monkeypatch.setattr(biorxiv, "_request_lock", asyncio.Lock())
+    monkeypatch.setattr(biorxiv._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(biorxiv, "_single_flight", _singleflight.SingleFlight())
-
-    async def mock_sleep(_):
-        pass
-
-    monkeypatch.setattr(biorxiv.asyncio, "sleep", mock_sleep)
 
 
 # Sentinel: a payload whose .json() raises, simulating a malformed/truncated body.

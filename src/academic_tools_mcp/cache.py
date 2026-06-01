@@ -1,13 +1,15 @@
+import copy
 import hashlib
 import json
 import os
 import shutil
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from . import _stats, config
+from . import _singleflight, _stats, config
 
 
 def _resolve_cache_root() -> Path:
@@ -44,10 +46,14 @@ _DEFAULT_NEG_TTL_SECONDS = 86400.0
 _NEG_SUBDIR = "_neg"
 
 
-def _cache_dir(namespace: str, entity: str) -> Path:
+def cache_dir(namespace: str, entity: str) -> Path:
     """Return the cache directory for a given namespace and entity type.
 
     e.g., namespace="openalex", entity="works" -> .cache/openalex/works/
+
+    Public because the PDF-handling modules (``providers/*.download_pdf``,
+    ``manual``, ``papers``) build canonical file paths under it — a cross-module
+    use that shouldn't reach for a leading-underscore name.
     """
     return _CACHE_ROOT / namespace / entity
 
@@ -78,7 +84,7 @@ def get(
     self-heals: the bad file is unlinked and None is returned so the next
     put() writes a clean value.
     """
-    path = _cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
+    path = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     if not path.exists():
         _stats.incr(namespace, "cache_misses")
         return None
@@ -165,13 +171,74 @@ def invalidate(namespace: str, entity: str, identifier: str) -> None:
     so a forced refresh of a previously-404'd identifier doesn't keep
     serving the cached error.
     """
-    pos = _cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
+    pos = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     neg = _neg_path(namespace, entity, identifier)
     for p in (pos, neg):
         try:
             p.unlink()
         except (FileNotFoundError, OSError):
             pass
+
+
+async def cached_lookup(
+    *,
+    single_flight: "_singleflight.SingleFlight",
+    namespace: str,
+    entity: str,
+    canonical: str,
+    positive_ttl: float,
+    fetch: Callable[[], Awaitable[dict[str, Any]]],
+    force_refresh: bool = False,
+    sf_key: Any = None,
+) -> dict[str, Any]:
+    """Run the shared cached-getter protocol around a provider's ``fetch``.
+
+    Every provider getter (``arxiv.get_paper``, ``openalex.get_work``, …) shares
+    this exact shape; it lives here once so the subtle ordering can't drift:
+
+      1. ``force_refresh`` -> ``invalidate`` both cache halves, then always fetch.
+      2. Otherwise check the positive cache (TTL-aware) then the negative cache
+         and short-circuit on a hit.
+      3. Coalesce concurrent callers for ``sf_key`` (default ``canonical``) via
+         single-flight; **inside** the slot, re-check both caches first so a
+         follower picks up the leader's just-written entry instead of re-fetching.
+
+    ``fetch`` owns its own caching: it decides whether to ``put`` (positive),
+    ``put_negative`` (with whatever TTL), or cache nothing (transient parse
+    errors). It is only called on a genuine miss. Provider-specific quirks
+    (bioRxiv's medRxiv fallback, arxiv's three not-found shapes, the 404 branch)
+    all live in that closure.
+
+    Each caller receives an independent deep copy of the result: in-batch
+    single-flight followers share the leader's object, so without the copy a
+    caller mutating its result would corrupt the others' (and the cached dict
+    a follower's inner-recheck handed back).
+    """
+    if force_refresh:
+        invalidate(namespace, entity, canonical)
+    else:
+        cached = get(namespace, entity, canonical, max_age_seconds=positive_ttl)
+        if cached is not None:
+            return cached
+        neg = get_negative(namespace, entity, canonical)
+        if neg is not None:
+            return neg
+
+    async def _runner() -> dict[str, Any]:
+        # Re-check inside the slot: a leader for this key may have populated the
+        # cache while a follower's coroutine was suspended at the outer check.
+        # On a forced refresh we still re-check so concurrent forced callers
+        # share one fetch (the leader writes, followers see the fresh entry).
+        cached = get(namespace, entity, canonical, max_age_seconds=positive_ttl)
+        if cached is not None:
+            return cached
+        neg = get_negative(namespace, entity, canonical)
+        if neg is not None:
+            return neg
+        return await fetch()
+
+    result = await single_flight.do(sf_key if sf_key is not None else canonical, _runner)
+    return copy.deepcopy(result)
 
 
 def _atomic_write_text(path: Path, payload: str, *, encoding: str = "utf-8") -> None:
@@ -254,14 +321,14 @@ def _atomic_copy(src: Path, dst: Path) -> None:
 
 def put(namespace: str, entity: str, identifier: str, data: dict[str, Any]) -> None:
     """Store a response in the cache. Atomic via _atomic_write_json."""
-    final_path = _cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
+    final_path = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     _atomic_write_json(final_path, payload)
 
 
 def has(namespace: str, entity: str, identifier: str) -> bool:
     """Check if a cached response exists."""
-    path = _cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
+    path = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     return path.exists()
 
 
@@ -276,7 +343,7 @@ def has(namespace: str, entity: str, identifier: str) -> bool:
 
 
 def _neg_path(namespace: str, entity: str, identifier: str) -> Path:
-    return _cache_dir(namespace, entity) / _NEG_SUBDIR / f"{_cache_key(identifier)}.json"
+    return cache_dir(namespace, entity) / _NEG_SUBDIR / f"{_cache_key(identifier)}.json"
 
 
 def get_negative(namespace: str, entity: str, identifier: str) -> dict[str, Any] | None:

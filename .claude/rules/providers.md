@@ -7,17 +7,21 @@ paths:
 
 ## Common shape
 
-Every per-provider client uses the same pattern:
+Every per-provider client uses the same pattern. The two cross-cutting pieces —
+*throttling* and the *cached-getter protocol* — are **shared infrastructure**, not
+per-provider code: see `_throttle.Throttle` and `cache.cached_lookup` in
+`.claude/rules/infrastructure.md`. A provider supplies only its *policy* and its
+*quirks*.
 
 - Persistent `httpx.AsyncClient` from `_clients.get_client(NAMESPACE, ...)`.
-- `_throttled_get` enforcing the three-layer gating (`_MAX_PENDING=5` burst cap → `_request_sem` of size `_MAX_CONCURRENT` → `_request_lock` for the inter-start gap), routing through `_http.get_with_retry` with `backoff_seconds=max(_MIN_REQUEST_GAP, 1.0)` so per-provider rate-limit policies apply to retries too. The arxiv / biorxiv / acl_anthology modules also expose `_request_slot` as an `@contextlib.asynccontextmanager` so streaming PDF downloads (via `_pdf_download.stream_to_file`) can hold the slot for the whole stream lifetime.
-- `_MAX_CONCURRENT` per-provider: arxiv=1 (single-connection rule), openalex=4, acl_anthology=4, crossref=3 (polite-pool concurrency budget), biorxiv=2, opencitations=2, wikipedia=2.
-- Module-level `_single_flight` keyed by canonical identifier (sometimes tuple-keyed, e.g. `("references", canonical)` so different sub-fetches for the same DOI run independently).
-- Cache lookup re-checked **inside** the single-flight slot to catch a leader's just-written entry.
-- Negative cache check both **before** and **inside** the slot.
-- On definitive 404, error dict is written to negative cache before being returned.
+- A module-level `_throttle = Throttle(namespace=NAMESPACE, label=..., max_concurrent=_MAX_CONCURRENT, min_gap_seconds=_MIN_REQUEST_GAP, max_pending=_MAX_PENDING)`, exposed via thin `_throttled_get` (→ `_throttle.get`) and, in the PDF-downloading modules, `_request_slot` (→ `_throttle.slot`) wrappers. The `Throttle` does the three-layer gating + `_http.get_with_retry`; don't re-implement it.
+- `_MAX_CONCURRENT` per-provider (the policy constant passed to `Throttle`): arxiv=1 (single-connection rule), openalex=4, acl_anthology=4, crossref=3 (polite-pool concurrency budget), biorxiv=2, opencitations=2, wikipedia=2.
+- Module-level `_single_flight` instance, passed to `cache.cached_lookup`.
+- Each getter is `canonical = canonical_*(id)` → define an async `_fetch()` closure (the HTTP + parse + `cache.put`/`put_negative` body, holding the provider's quirks) → `return await cache.cached_lookup(single_flight=_single_flight, namespace=NAMESPACE, entity="<entity>", canonical=canonical, positive_ttl=_POSITIVE_TTL_SECONDS, fetch=_fetch, force_refresh=force_refresh, sf_key=...)`. `cached_lookup` owns the force_refresh-invalidate, the outer + in-slot cache re-checks, the single-flight coalescing, and the per-caller deep copy — the getter no longer hand-rolls any of it.
+- Pass a tuple `sf_key` when one canonical id has multiple sub-fetches (`("work", canonical)` / `("author", canonical)` for openalex; `("references", canonical)` / `("citations", canonical)` for opencitations); omit it to key on `canonical`.
+- Inside `_fetch`: on definitive 404, write the error dict to negative cache before returning; on a transient parse failure return `_parse_error_dict()` and cache nothing.
 
-If the data is mutable enough that an agent might want to bypass the cache, accept `force_refresh: bool = False` and call `cache.invalidate(NAMESPACE, "<entity>", canonical)` at the top of the function before the cache check (see `arxiv.get_paper` / `openalex.get_work` / `biorxiv.get_paper`).
+To let an agent bypass the cache, accept `force_refresh: bool = False` and thread it into `cached_lookup` (which invalidates both halves before fetching) — see `arxiv.get_paper` / `openalex.get_work` / `biorxiv.get_paper` / `wikipedia.get_summary`.
 
 ## openalex.py
 
@@ -57,7 +61,7 @@ Crossref REST API (`api.crossref.org/works/{doi}`). DOI normalization. `_get_cli
 
 OpenCitations Index API v2 (`api.opencitations.net/index/v2`). Outgoing references (`/references/doi:...`) and incoming citations (`/citations/doi:...`). Rate limit ~3 req/sec (334ms gap, 180/min) per OpenCitations policy. Parses space-delimited multi-ID strings (`omid:... doi:... openalex:... pmid:...`) via `_parse_ids()`. Cache namespaces: `opencitations/references`, `opencitations/citations`. Single-flight tuple-prefixed (`("references", canonical)` vs `("citations", canonical)`) — fetching both directions for one paper runs as two slots.
 
-**Parsing/encoding hardening (parity with crossref/openalex).** The bare DOI is percent-encoded into the `.../doi:{doi}` path via `quote(..., safe="/")` so reserved chars (`#`, `?`) can't truncate the request to the wrong record (the `doi:` scheme prefix and the DOI's own slash stay literal). A malformed/truncated 200 body raises `json.JSONDecodeError` — caught via `_PARSE_ERRORS` → `_parse_error_dict()` (`{error, retryable: True}`, a fresh dict each call) and **not** negative-cached, so a retry re-fetches. An anomalous 200 that isn't the expected list of records (dict / null / string) is treated identically rather than crashing the `_format_record` comprehension; non-dict items inside the list are skipped. Both `get_references` and `get_citations` take `force_refresh` (mirrors `openalex.get_work`: invalidate both cache halves up front, skip the pre-slot checks, keep the in-slot re-checks) — the citation graph grows continuously, so an agent may want fresher coverage than the 7-day TTL.
+**Parsing/encoding hardening (parity with crossref/openalex).** The bare DOI is percent-encoded into the `.../doi:{doi}` path via `quote(..., safe="/")` so reserved chars (`#`, `?`) can't truncate the request to the wrong record (the `doi:` scheme prefix and the DOI's own slash stay literal). A malformed/truncated 200 body raises `json.JSONDecodeError` — caught via `_PARSE_ERRORS` → `_parse_error_dict()` (`{error, retryable: True}`, a fresh dict each call) and **not** negative-cached, so a retry re-fetches. An anomalous 200 that isn't the expected list of records (dict / null / string) is treated identically rather than crashing the `_format_record` comprehension; non-dict items inside the list are skipped. `get_references` / `get_citations` are one-line wrappers over a shared `_fetch_direction(doi, *, kind, id_field, force_refresh)` — the two directions differ only by `kind` (the API path segment, cache entity, and result key: `"references"`/`"citations"`) and `id_field` (`"cited"`/`"citing"`). Both take `force_refresh` (threaded into `cached_lookup`) — the citation graph grows continuously, so an agent may want fresher coverage than the 7-day TTL.
 
 ## wikipedia.py
 

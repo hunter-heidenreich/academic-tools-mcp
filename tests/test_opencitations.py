@@ -1,6 +1,3 @@
-import asyncio
-import time
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -83,90 +80,23 @@ class TestParseIds:
 # ---------------------------------------------------------------------------
 
 
-class TestThrottledGet:
-    @pytest.mark.asyncio
-    async def test_first_request_no_delay(self, monkeypatch):
-        monkeypatch.setattr(opencitations, "_last_request_time", 0.0)
-        monkeypatch.setattr(opencitations, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await opencitations._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-    @pytest.mark.asyncio
-    async def test_second_request_waits(self, monkeypatch):
-        monkeypatch.setattr(opencitations, "_last_request_time", time.monotonic())
-        monkeypatch.setattr(opencitations, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await opencitations._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 1
-        assert slept[0] >= 0.2  # should be close to 0.334
-
-    @pytest.mark.asyncio
-    async def test_no_delay_after_gap(self, monkeypatch):
-        monkeypatch.setattr(opencitations, "_last_request_time", time.monotonic() - 1.0)
-        monkeypatch.setattr(opencitations, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await opencitations._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-
 # ---------------------------------------------------------------------------
 # Malformed-body / parse-error handling, DOI path encoding, force_refresh
 # ---------------------------------------------------------------------------
 
 
 def _reset_opencitations(monkeypatch, tmp_path):
-    """Reset OpenCitations pooled state + cache root and no-op the throttle sleep."""
-    import asyncio as _asyncio
+    """Point the cache at tmp_path and disable the throttle gap (no real sleeps).
 
+    The conftest autouse fixture already resets each provider's ``_throttle``
+    and ``_single_flight`` between tests; here we additionally zero the gap so a
+    references+citations test doesn't wait out OpenCitations' pacing.
+    """
     from academic_tools_mcp import _singleflight, cache
 
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
-    monkeypatch.setattr(opencitations, "_pending", 0)
-    monkeypatch.setattr(opencitations, "_last_request_time", 0.0)
-    monkeypatch.setattr(opencitations, "_request_lock", _asyncio.Lock())
+    monkeypatch.setattr(opencitations._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(opencitations, "_single_flight", _singleflight.SingleFlight())
-
-    async def mock_sleep(_):
-        pass
-
-    monkeypatch.setattr(opencitations.asyncio, "sleep", mock_sleep)
 
 
 # Sentinel: a payload whose .json() raises, simulating a malformed/truncated body.

@@ -4,6 +4,14 @@ import json
 from academic_tools_mcp import cache
 
 
+def test_cache_dir_is_public_and_namespaced(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+    # Public name (no leading underscore) so the PDF-handling modules can
+    # build canonical paths without reaching for a private helper.
+    assert cache.cache_dir("openalex", "works") == tmp_path / "openalex" / "works"
+
+
 def test_put_and_get(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
 
@@ -513,3 +521,212 @@ def test_atomic_copy_no_torn_file_on_failure(tmp_path, monkeypatch):
 
     assert not dst.exists()
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+# ---------------------------------------------------------------------------
+# cached_lookup — the shared "force_refresh -> outer check -> single-flight ->
+# inner re-check" protocol that every provider getter used to hand-roll.
+# ---------------------------------------------------------------------------
+
+
+def test_cached_lookup_serves_positive_hit_without_fetch(tmp_path, monkeypatch):
+    import asyncio
+
+    from academic_tools_mcp import _singleflight
+
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    cache.put("openalex", "works", "10.1/x", {"id": "W1"})
+    sf = _singleflight.SingleFlight()
+    calls = 0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        return {"id": "fetched"}
+
+    out = asyncio.run(
+        cache.cached_lookup(
+            single_flight=sf,
+            namespace="openalex",
+            entity="works",
+            canonical="10.1/x",
+            positive_ttl=999.0,
+            fetch=fetch,
+        )
+    )
+    assert out == {"id": "W1"}
+    assert calls == 0, "a positive cache hit must short-circuit before fetch"
+
+
+def test_cached_lookup_serves_negative_hit_without_fetch(tmp_path, monkeypatch):
+    import asyncio
+
+    from academic_tools_mcp import _singleflight
+
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    cache.put_negative("openalex", "works", "10.1/x", {"error": "404"})
+    sf = _singleflight.SingleFlight()
+    calls = 0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        return {"id": "fetched"}
+
+    out = asyncio.run(
+        cache.cached_lookup(
+            single_flight=sf,
+            namespace="openalex",
+            entity="works",
+            canonical="10.1/x",
+            positive_ttl=999.0,
+            fetch=fetch,
+        )
+    )
+    assert out == {"error": "404"}
+    assert calls == 0
+
+
+def test_cached_lookup_force_refresh_invalidates_then_fetches(tmp_path, monkeypatch):
+    import asyncio
+
+    from academic_tools_mcp import _singleflight
+
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    cache.put("openalex", "works", "10.1/x", {"id": "stale"})
+    cache.put_negative("openalex", "works", "10.1/x", {"error": "old 404"})
+    sf = _singleflight.SingleFlight()
+
+    async def fetch():
+        return {"id": "fresh"}
+
+    out = asyncio.run(
+        cache.cached_lookup(
+            single_flight=sf,
+            namespace="openalex",
+            entity="works",
+            canonical="10.1/x",
+            positive_ttl=999.0,
+            fetch=fetch,
+            force_refresh=True,
+        )
+    )
+    assert out == {"id": "fresh"}
+    # Both halves were dropped before the fetch.
+    assert cache.get_negative("openalex", "works", "10.1/x") is None
+
+
+def test_cached_lookup_coalesces_concurrent_callers(tmp_path, monkeypatch):
+    import asyncio
+
+    from academic_tools_mcp import _singleflight
+
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    sf = _singleflight.SingleFlight()
+    calls = 0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)  # let followers pile up behind the leader
+        data = {"id": "W1"}
+        cache.put("openalex", "works", "10.1/x", data)
+        return data
+
+    async def run():
+        return await asyncio.gather(
+            *[
+                cache.cached_lookup(
+                    single_flight=sf,
+                    namespace="openalex",
+                    entity="works",
+                    canonical="10.1/x",
+                    positive_ttl=999.0,
+                    fetch=fetch,
+                )
+                for _ in range(5)
+            ]
+        )
+
+    results = asyncio.run(run())
+    assert calls == 1, "single-flight must coalesce 5 concurrent callers into one fetch"
+    assert all(r == {"id": "W1"} for r in results)
+
+
+def test_cached_lookup_returns_independent_copies(tmp_path, monkeypatch):
+    """In-batch single-flight followers must NOT alias the leader's dict.
+
+    Before the defensive copy, every follower shared the leader's return
+    object, so a caller mutating its result corrupted the others'.
+    """
+    import asyncio
+
+    from academic_tools_mcp import _singleflight
+
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    sf = _singleflight.SingleFlight()
+
+    async def fetch():
+        await asyncio.sleep(0.01)
+        data = {"id": "W1", "nested": {"k": "v"}}
+        cache.put("openalex", "works", "10.1/x", data)
+        return data
+
+    async def run():
+        return await asyncio.gather(
+            *[
+                cache.cached_lookup(
+                    single_flight=sf,
+                    namespace="openalex",
+                    entity="works",
+                    canonical="10.1/x",
+                    positive_ttl=999.0,
+                    fetch=fetch,
+                )
+                for _ in range(3)
+            ]
+        )
+
+    a, b, c = asyncio.run(run())
+    assert a is not b and b is not c, "each caller must get its own object"
+    a["mutated"] = True
+    a["nested"]["k"] = "changed"
+    assert "mutated" not in b and "mutated" not in c
+    assert b["nested"]["k"] == "v", "nested mutation must not leak across callers"
+    # The on-disk cache must also be untouched by a caller's mutation.
+    assert cache.get("openalex", "works", "10.1/x")["nested"]["k"] == "v"
+
+
+def test_cached_lookup_uses_custom_single_flight_key(tmp_path, monkeypatch):
+    """A tuple sf_key keeps distinct sub-fetches for one canonical id apart."""
+    import asyncio
+
+    from academic_tools_mcp import _singleflight
+
+    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    sf = _singleflight.SingleFlight()
+    order = []
+
+    async def make(kind):
+        async def fetch():
+            order.append(kind)
+            await asyncio.sleep(0.01)
+            return {"kind": kind}
+
+        return await cache.cached_lookup(
+            single_flight=sf,
+            namespace="opencitations",
+            entity=kind,
+            canonical="10.1/x",
+            positive_ttl=999.0,
+            fetch=fetch,
+            sf_key=(kind, "10.1/x"),
+        )
+
+    async def run():
+        return await asyncio.gather(make("references"), make("citations"))
+
+    refs, cites = asyncio.run(run())
+    assert refs == {"kind": "references"}
+    assert cites == {"kind": "citations"}
+    assert sorted(order) == ["citations", "references"], "distinct keys must not coalesce"

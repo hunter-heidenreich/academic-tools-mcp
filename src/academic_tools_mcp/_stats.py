@@ -34,7 +34,7 @@ from typing import Any
 _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
 
-# Names of provider modules whose ``_pending`` counter we sample for
+# Names of provider modules whose ``_throttle.pending`` count we sample for
 # real-time in-flight reporting. Kept in sync with the modules listed
 # in tests/conftest.py's reset fixture.
 _PROVIDER_MODULES = (
@@ -122,7 +122,11 @@ def snapshot() -> dict[str, Any]:
             mod = importlib.import_module(f"academic_tools_mcp.{module_path}")
         except ImportError:
             continue
-        pending = getattr(mod, "_pending", None)
+        # In-flight is the open-slot count on the module's shared Throttle.
+        # (Fall back to a legacy ``_pending`` global for any module not yet
+        # migrated.)
+        throttle = getattr(mod, "_throttle", None)
+        pending = throttle.pending if throttle is not None else getattr(mod, "_pending", None)
         if pending is None:
             continue
         out.setdefault(key, {})["in_flight"] = int(pending)

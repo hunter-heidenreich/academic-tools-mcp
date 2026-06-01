@@ -43,6 +43,10 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- `get_wikipedia_summary` (and the underlying `wikipedia.get_summary`) now
+  accept `force_refresh=True`, dropping the cached entry and re-fetching — parity
+  with every other cached getter, for an article that may have been edited since
+  the cached 30-day-TTL fetch. ([#41])
 - `get_author` now accepts `force_refresh=True`, dropping the cached OpenAlex
   profile and re-fetching — bringing it in line with the unified paper tools.
   Author stats (`h_index`, `cited_by_count`, `works_count`) drift on the same
@@ -106,6 +110,11 @@ grouped by milestone rather than per commit.
   the download's own slot. ([#22])
 
 ### Fixed
+
+- Concurrent calls for the same identifier no longer share a single response
+  object. When several callers raced for one paper, single-flight handed every
+  follower the *same* dict the leader returned, so a caller mutating its result
+  corrupted the others'. Each caller now receives an independent deep copy. ([#41])
 
 - `get_paper_sections` and `get_paper_section` now read cached markdown as UTF-8
   explicitly. Under a non-UTF-8 host locale (e.g. an `LC_ALL=C` container/cron
@@ -562,3 +571,4 @@ grouped by milestone rather than per commit.
 [#37]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/37
 [#38]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/38
 [#39]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/39
+[#41]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/41
