@@ -41,7 +41,7 @@ def _dest(mod, identifier: str) -> Path:
     canonical = (
         arxiv.canonical_arxiv_id(identifier) if mod is arxiv else biorxiv.canonical_key(identifier)
     )
-    return cache._cache_dir(mod.NAMESPACE, "pdfs") / mod._pdf_filename(canonical)
+    return cache.cache_dir(mod.NAMESPACE, "pdfs") / mod._pdf_filename(canonical)
 
 
 def _setup(mod, identifier: str, monkeypatch) -> None:

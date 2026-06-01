@@ -166,7 +166,7 @@ def _pdf_filename(canonical: str) -> str:
 
 def _manual_pdf_path(canonical: str) -> Path:
     """PDF path in the manual namespace (fallback only)."""
-    return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    return cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
 def pdf_path(identifier: str) -> Path:

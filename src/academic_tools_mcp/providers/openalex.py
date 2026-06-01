@@ -1,10 +1,9 @@
-import asyncio
 import json
-import time
 from typing import Any
 from urllib.parse import quote
 
-from .. import _clients, _http, _singleflight, _stats, cache, config
+from .. import _clients, _http, _singleflight, cache, config
+from .._throttle import Throttle
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
@@ -37,12 +36,8 @@ def _parse_error_dict() -> dict[str, Any]:
 # other providers — past 5 stacked requests, the agent gets fast
 # feedback instead of silent serialisation.
 _MAX_CONCURRENT = 4
-_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
-_request_lock = asyncio.Lock()
-_last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.1
 _MAX_PENDING = 5
-_pending: int = 0
 
 # Coalesces concurrent calls for the same DOI / author ID so the
 # unified-paper tools (metadata, authors, abstract, bibtex) plus the
@@ -132,46 +127,22 @@ def _get_client():
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
+_throttle = Throttle(
+    namespace=NAMESPACE,
+    label="OpenAlex",
+    max_concurrent=_MAX_CONCURRENT,
+    min_gap_seconds=_MIN_REQUEST_GAP,
+    max_pending=_MAX_PENDING,
+)
+
+
 async def _throttled_get(url: str, **kwargs: Any):
-    """Execute a GET respecting the rate gap, concurrency cap and burst cap.
+    """Execute a GET respecting OpenAlex's rate limit (see ``Throttle.get``).
 
-    ``_request_sem`` (size ``_MAX_CONCURRENT``) caps simultaneous
-    in-flight requests; the inner ``_request_lock`` is held only long
-    enough to enforce the inter-start gap and update
-    ``_last_request_time``. The actual GET runs concurrently with
-    other in-flight requests up to the sem cap.
-
-    Burst cap raises ``LocalBackpressureError`` rather than queueing
-    so a 6th concurrent caller learns to back off instead of silently
-    waiting half a second per slot.
+    Url-only signature (unlike the other providers' ``client, url`` form): it
+    builds the pooled polite-pool client internally via ``_get_client``.
     """
-    global _last_request_time, _pending
-    if _pending >= _MAX_PENDING:
-        _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError("OpenAlex", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
-    _pending += 1
-    try:
-        async with _request_sem:
-            async with _request_lock:
-                now = time.monotonic()
-                elapsed = now - _last_request_time
-                wait_seconds = 0.0
-                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                    wait_seconds = _MIN_REQUEST_GAP - elapsed
-                    await asyncio.sleep(wait_seconds)
-                _last_request_time = time.monotonic()
-            _stats.log_request(NAMESPACE, url, wait_seconds)
-            _stats.incr(NAMESPACE, "http_calls")
-            client = _get_client()
-            return await _http.get_with_retry(
-                client,
-                url,
-                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
-                provider=NAMESPACE,
-                **kwargs,
-            )
-    finally:
-        _pending -= 1
+    return await _throttle.get(_get_client(), url, **kwargs)
 
 
 def _normalize_author_id(author_id: str) -> str:
@@ -204,24 +175,7 @@ async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str
     """
     canonical = canonical_author_id(author_id)
 
-    if force_refresh:
-        cache.invalidate(NAMESPACE, "authors", canonical)
-    else:
-        cached = cache.get(NAMESPACE, "authors", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "authors", canonical)
-        if neg is not None:
-            return neg
-
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "authors", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "authors", canonical)
-        if neg is not None:
-            return neg
-
         api_id = _normalize_author_id(author_id)
         params = _build_params()
 
@@ -251,7 +205,16 @@ async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str
         cache.put(NAMESPACE, "authors", canonical, data)
         return data
 
-    return await _single_flight.do(("author", canonical), _fetch)
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="authors",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        sf_key=("author", canonical),
+    )
 
 
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -265,24 +228,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """
     canonical = canonical_doi(doi)
 
-    if force_refresh:
-        cache.invalidate(NAMESPACE, "works", canonical)
-    else:
-        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "works", canonical)
-        if neg is not None:
-            return neg
-
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "works", canonical)
-        if neg is not None:
-            return neg
-
         # Percent-encode the DOI so reserved characters (#, ?, …) aren't
         # misread as a URL fragment/query and silently truncate the request
         # to the wrong record. The prefix/suffix slash stays literal
@@ -314,7 +260,16 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         cache.put(NAMESPACE, "works", canonical, data)
         return data
 
-    return await _single_flight.do(("work", canonical), _fetch)
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="works",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        sf_key=("work", canonical),
+    )
 
 
 # Per-batch chunk size for /works?filter=doi:... fan-in. OpenAlex's

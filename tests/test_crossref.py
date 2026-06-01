@@ -1,5 +1,3 @@
-import asyncio
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -47,69 +45,6 @@ class TestCanonicalDoi:
 # ---------------------------------------------------------------------------
 
 
-class TestThrottledGet:
-    @pytest.mark.asyncio
-    async def test_first_request_no_delay(self, monkeypatch):
-        monkeypatch.setattr(crossref, "_last_request_time", 0.0)
-        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await crossref._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-    @pytest.mark.asyncio
-    async def test_second_request_waits(self, monkeypatch):
-        monkeypatch.setattr(crossref, "_last_request_time", time.monotonic())
-        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await crossref._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 1
-        assert slept[0] > 0
-
-    @pytest.mark.asyncio
-    async def test_no_delay_after_gap(self, monkeypatch):
-        monkeypatch.setattr(crossref, "_last_request_time", time.monotonic() - 1.0)
-        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await crossref._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-
 # ---------------------------------------------------------------------------
 # Headers
 # ---------------------------------------------------------------------------
@@ -124,8 +59,7 @@ class TestSearchWorksParams:
     @pytest.mark.asyncio
     async def test_builds_params_with_year(self, monkeypatch):
         """Verify search_works sends correct params including year filter."""
-        monkeypatch.setattr(crossref, "_last_request_time", 0.0)
-        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
 
         captured_kwargs = {}
 
@@ -158,8 +92,7 @@ class TestSearchWorksParams:
     @pytest.mark.asyncio
     async def test_builds_params_without_year(self, monkeypatch):
         """Verify search_works omits filter when year is None."""
-        monkeypatch.setattr(crossref, "_last_request_time", 0.0)
-        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
 
         captured_kwargs = {}
 
@@ -210,8 +143,7 @@ class TestSearchWorksCacheWarming:
         from academic_tools_mcp import cache
 
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-        monkeypatch.setattr(crossref, "_last_request_time", 0.0)
-        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
 
         # Two hits with DOIs + one hit without (real-world quirk —
         # Crossref occasionally returns items missing a DOI). The
@@ -249,8 +181,7 @@ class TestSearchWorksCacheWarming:
         from academic_tools_mcp import cache
 
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-        monkeypatch.setattr(crossref, "_last_request_time", 0.0)
-        monkeypatch.setattr(crossref, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
 
         # Pre-seed a richer cached version.
         rich = {"DOI": "10.1234/A", "title": ["A"], "abstract": "<p>full</p>"}
@@ -299,21 +230,17 @@ class TestBuildHeaders:
 
 
 def _reset_crossref(monkeypatch, tmp_path):
-    """Reset Crossref pooled state + cache root and no-op the throttle sleep."""
-    import asyncio as _asyncio
+    """Point the cache at tmp_path and disable the throttle gap (no real sleeps).
 
+    The conftest autouse fixture already resets each provider's ``_throttle``
+    and ``_single_flight`` between tests; here we additionally zero the gap so a
+    multi-request test doesn't wait out Crossref's pacing.
+    """
     from academic_tools_mcp import _singleflight, cache
 
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
-    monkeypatch.setattr(crossref, "_pending", 0)
-    monkeypatch.setattr(crossref, "_last_request_time", 0.0)
-    monkeypatch.setattr(crossref, "_request_lock", _asyncio.Lock())
+    monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(crossref, "_single_flight", _singleflight.SingleFlight())
-
-    async def mock_sleep(_):
-        pass
-
-    monkeypatch.setattr(crossref.asyncio, "sleep", mock_sleep)
 
 
 # Sentinel: a payload whose .json() raises, simulating a malformed/truncated body.

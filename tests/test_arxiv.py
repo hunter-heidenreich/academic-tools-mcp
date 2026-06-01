@@ -1,7 +1,6 @@
 import asyncio
 import time
 import xml.etree.ElementTree as ET
-from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -198,157 +197,12 @@ class TestParseEntry:
 
 
 # ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
-
-class TestThrottledGet:
-    @pytest.mark.asyncio
-    async def test_first_request_no_delay(self, monkeypatch):
-        """First request (when _last_request_time is 0) should not sleep."""
-        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await arxiv._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-    @pytest.mark.asyncio
-    async def test_second_request_waits(self, monkeypatch):
-        """Second request made immediately should sleep ~3 seconds."""
-        monkeypatch.setattr(arxiv, "_last_request_time", time.monotonic())
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await arxiv._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 1
-        assert slept[0] >= 2.5  # should be close to 3.0
-
-    @pytest.mark.asyncio
-    async def test_no_delay_after_gap(self, monkeypatch):
-        """No sleep needed when enough time has passed."""
-        monkeypatch.setattr(arxiv, "_last_request_time", time.monotonic() - 5.0)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await arxiv._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-
-# ---------------------------------------------------------------------------
-# Burst-cap backpressure
-# ---------------------------------------------------------------------------
-
-
-class TestThrottleBackpressure:
-    """The throttle refuses to stack more than ``_MAX_PENDING`` callers
-    behind itself. Past that, the next caller raises
-    ``LocalBackpressureError`` so the agent gets fast feedback rather
-    than quietly queueing for tens of seconds.
-    """
-
-    @pytest.mark.asyncio
-    async def test_overflow_raises_local_backpressure(self, monkeypatch):
-        # Force the gauge to the cap so the next call trips it.
-        monkeypatch.setattr(arxiv, "_pending", arxiv._MAX_PENDING)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-
-        mock_client = MagicMock()
-        # An overflow must NOT issue a network request; if it did, the
-        # AsyncMock would record the call.
-        mock_client.get = AsyncMock(
-            side_effect=AssertionError("throttle should refuse before issuing a request")
-        )
-
-        with pytest.raises(arxiv._http.LocalBackpressureError) as ei:
-            await arxiv._throttled_get(mock_client, "http://example.com")
-
-        exc = ei.value
-        assert exc.provider == "arXiv"
-        assert exc.pending == arxiv._MAX_PENDING
-        assert exc.max_pending == arxiv._MAX_PENDING
-
-        # The gauge must not have been bumped by an overflow call;
-        # otherwise legitimate callers further down the line would
-        # trip the cap when they shouldn't.
-        assert arxiv._pending == arxiv._MAX_PENDING
-
-    @pytest.mark.asyncio
-    async def test_pending_resets_when_request_succeeds(self, monkeypatch):
-        # One happy-path call should bump the gauge and drop it back.
-        monkeypatch.setattr(arxiv, "_pending", 0)
-        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-
-        async def mock_sleep(_):
-            pass
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=MagicMock())
-
-        await arxiv._throttled_get(mock_client, "http://example.com")
-        assert arxiv._pending == 0
-
-    @pytest.mark.asyncio
-    async def test_pending_resets_when_request_raises(self, monkeypatch):
-        # An upstream failure mid-request must still drop the gauge —
-        # otherwise a single transient error would permanently lower
-        # our effective burst budget.
-        monkeypatch.setattr(arxiv, "_pending", 0)
-        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
-
-        async def mock_sleep(_):
-            pass
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(side_effect=RuntimeError("boom"))
-
-        with pytest.raises(RuntimeError):
-            await arxiv._throttled_get(mock_client, "http://example.com")
-        assert arxiv._pending == 0
-
-
-# ---------------------------------------------------------------------------
 # Single-flight on get_paper
 # ---------------------------------------------------------------------------
+#
+# The rate-limiter gap, concurrency cap, and burst-cap backpressure are no
+# longer per-provider code — they live in ``_throttle.Throttle`` and are
+# covered once in tests/test_throttle.py.
 
 
 class TestGetPaperSingleFlight:
@@ -364,15 +218,8 @@ class TestGetPaperSingleFlight:
         from academic_tools_mcp import _clients, _singleflight, cache
 
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
-        monkeypatch.setattr(arxiv, "_pending", 0)
-        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
-
-        async def mock_sleep(_):
-            pass
-
-        monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
         atom_xml = """<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -424,15 +271,8 @@ class TestGetPaperSingleFlight:
         from academic_tools_mcp import _clients, _singleflight, cache
 
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
-        monkeypatch.setattr(arxiv, "_pending", 0)
-        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
-
-        async def mock_sleep(_):
-            pass
-
-        monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
         not_found_atom = """<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -491,15 +331,8 @@ class TestGetPaperSingleFlight:
         from academic_tools_mcp import _clients, _singleflight, cache
 
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
-        monkeypatch.setattr(arxiv, "_pending", 0)
-        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
-
-        async def mock_sleep(_):
-            pass
-
-        monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
         atom_xml = """<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -562,15 +395,8 @@ class TestGetPaperSingleFlight:
         from academic_tools_mcp import _clients, _singleflight, cache
 
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
-        monkeypatch.setattr(arxiv, "_pending", 0)
-        monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
-        monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
-
-        async def mock_sleep(_):
-            pass
-
-        monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
         get_calls = 0
 
@@ -621,19 +447,18 @@ class TestGetPaperSingleFlight:
 
 
 def _reset_throttle(monkeypatch, tmp_path):
-    """Reset arxiv pooled state + cache root and no-op the throttle sleep."""
+    """Point the cache at tmp_path and disable the throttle gap (no real sleeps).
+
+    The conftest autouse fixture already resets each provider's ``_throttle``
+    (pending / last_request_time / lock / sem) and ``_single_flight`` between
+    tests; here we additionally zero the inter-start gap so a multi-request test
+    doesn't wait out arxiv's 3 s pacing.
+    """
     from academic_tools_mcp import _singleflight, cache
 
     monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
-    monkeypatch.setattr(arxiv, "_pending", 0)
-    monkeypatch.setattr(arxiv, "_last_request_time", 0.0)
-    monkeypatch.setattr(arxiv, "_request_lock", asyncio.Lock())
+    monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
-
-    async def mock_sleep(_):
-        pass
-
-    monkeypatch.setattr(arxiv.asyncio, "sleep", mock_sleep)
 
 
 def _stub_text_response(monkeypatch, text, *, status_code=200, raises=None):
@@ -786,7 +611,6 @@ class TestSearchOpportunisticCache:
         # stale entry (past the positive TTL) must be refreshed by newer
         # search data, not skipped.
         import os
-        import time
 
         from academic_tools_mcp import cache
 
@@ -796,7 +620,7 @@ class TestSearchOpportunisticCache:
         cache.put(arxiv.NAMESPACE, "papers", canonical, {"title": "Stale Title", "id": "old"})
 
         # Age the cached entry well past the positive TTL.
-        path = cache._cache_dir(arxiv.NAMESPACE, "papers") / f"{cache._cache_key(canonical)}.json"
+        path = cache.cache_dir(arxiv.NAMESPACE, "papers") / f"{cache._cache_key(canonical)}.json"
         old = time.time() - (arxiv._POSITIVE_TTL_SECONDS + 86400)
         os.utime(path, (old, old))
 

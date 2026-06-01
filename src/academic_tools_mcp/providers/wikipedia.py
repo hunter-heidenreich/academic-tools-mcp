@@ -7,15 +7,14 @@ Provides search and page summary/existence checking via:
 No authentication required. Rate-limited to ~1 req/sec as a courtesy.
 """
 
-import asyncio
 import json
-import time
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _http, _singleflight, _stats, cache, config
+from .. import _clients, _http, _singleflight, cache, config
+from .._throttle import Throttle
 
 NAMESPACE = "wikipedia"
 
@@ -53,14 +52,11 @@ def _build_user_agent() -> str:
 
 # Rate limiting: ~1 req/sec (well within 1,000 req/hour reader tier).
 # Concurrency cap of 2 lets a search + summary lookup overlap; gap of
-# 1s keeps the sustained rate under the per-hour budget.
+# 1s keeps the sustained rate under the per-hour budget. Gating lives
+# in ``_throttle``.
 _MAX_CONCURRENT = 2
-_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
-_request_lock = asyncio.Lock()
-_last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 1.0
 _MAX_PENDING = 5
-_pending: int = 0
 
 # Coalesces concurrent get_summary calls for the same canonical title.
 _single_flight = _singleflight.SingleFlight()
@@ -85,39 +81,18 @@ def _get_client():
     return _clients.get_client(NAMESPACE, headers=_headers(), timeout=15.0)
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET request with polite rate limiting.
+_throttle = Throttle(
+    namespace=NAMESPACE,
+    label="Wikipedia",
+    max_concurrent=_MAX_CONCURRENT,
+    min_gap_seconds=_MIN_REQUEST_GAP,
+    max_pending=_MAX_PENDING,
+)
 
-    Refuses past ``_MAX_PENDING`` queued callers via
-    ``LocalBackpressureError`` so an agent that fans out gets fast
-    feedback rather than waiting through 5 seconds of stacked gaps.
-    """
-    global _last_request_time, _pending
-    if _pending >= _MAX_PENDING:
-        _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError("Wikipedia", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
-    _pending += 1
-    try:
-        async with _request_sem:
-            async with _request_lock:
-                now = time.monotonic()
-                elapsed = now - _last_request_time
-                wait_seconds = 0.0
-                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                    wait_seconds = _MIN_REQUEST_GAP - elapsed
-                    await asyncio.sleep(wait_seconds)
-                _last_request_time = time.monotonic()
-            _stats.log_request(NAMESPACE, url, wait_seconds)
-            _stats.incr(NAMESPACE, "http_calls")
-            return await _http.get_with_retry(
-                client,
-                url,
-                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
-                provider=NAMESPACE,
-                **kwargs,
-            )
-    finally:
-        _pending -= 1
+
+async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+    """Execute a GET respecting Wikipedia's polite rate limit (see ``Throttle.get``)."""
+    return await _throttle.get(client, url, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -168,12 +143,17 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def get_summary(title: str) -> dict[str, Any]:
+async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a page summary from the Wikipedia REST API.
 
     Returns a dict with title, description, extract (plain text summary),
     url, and page type. Returns an error dict if the page doesn't exist.
     Concurrent callers for the same title share one fetch.
+
+    ``force_refresh=True`` drops both positive and negative cache entries
+    before fetching — parity with every other cached getter, useful when an
+    article has been edited since the cached 30-day-TTL fetch or to retry a
+    title that previously 404'd.
     """
     # Normalize: spaces to underscores for the URL path
     url_title = title.strip().replace(" ", "_")
@@ -184,21 +164,8 @@ async def get_summary(title: str) -> dict[str, Any]:
     # them and serve one's summary for the other. Fold only the first letter
     # (matching MediaWiki's own title normalization) and preserve the rest.
     canonical = url_title[:1].upper() + url_title[1:]
-    cached = cache.get(NAMESPACE, "summaries", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-    if cached is not None:
-        return cached
-    neg = cache.get_negative(NAMESPACE, "summaries", canonical)
-    if neg is not None:
-        return neg
 
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "summaries", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "summaries", canonical)
-        if neg is not None:
-            return neg
-
         try:
             client = _get_client()
             response = await _throttled_get(
@@ -242,7 +209,15 @@ async def get_summary(title: str) -> dict[str, Any]:
         cache.put(NAMESPACE, "summaries", canonical, result)
         return result
 
-    return await _single_flight.do(canonical, _fetch)
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="summaries",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+    )
 
 
 async def page_exists(title: str) -> dict[str, Any]:

@@ -26,10 +26,13 @@ it.
   cached provider object, then returns only the relevant fields (see the unified
   paper tools in `server.py`). An LLM agent should never receive a raw OpenAlex
   response. New tool → extract a lean slice.
-- **Shared infrastructure is single-homed.** Caching (`cache.py`), single-flight
-  (`_singleflight.py`), counters (`_stats.py`), and config (`config.py`) each
-  have exactly one home. Need that behaviour in a new provider? Route through the
-  existing module; don't fork a local copy.
+- **Shared infrastructure is single-homed.** Caching (`cache.py`), the
+  cached-getter protocol (`cache.cached_lookup`), throttling (`_throttle.Throttle`),
+  single-flight (`_singleflight.py`), retry (`_http.get_with_retry`), counters
+  (`_stats.py`), and config (`config.py`) each have exactly one home. Need that
+  behaviour in a new provider? Route through the existing module — construct a
+  `Throttle`, call `cached_lookup` — don't fork a local copy of the gating or the
+  force_refresh→check→single-flight→re-check dance.
 
 ## Single responsibility — one job per unit
 
@@ -41,13 +44,13 @@ it.
   extend the dispatcher instead. Responses tag `_source` / `_canonical_id` so
   callers branch on provider-specific fields downstream.
 - **A new API provider mirrors an existing one.** `providers/arxiv.py` and
-  `providers/crossref.py` are the canonical shapes: pooled `httpx.AsyncClient`,
-  two-stage gating (`_request_sem` + gap-lock, see `providers/arxiv.py`),
-  5-deep burst cap →
-  `LocalBackpressureError`, single-flight by canonical id, one transparent retry,
-  404 → negative cache, positive-cache TTL eviction, `_stats` counters. Same
-  shape every time — a provider that invents its own concurrency or caching
-  scheme is a bug, not a feature.
+  `providers/crossref.py` are the canonical shapes: pooled `httpx.AsyncClient`, a
+  `_throttle.Throttle` instance (gating via `Throttle.slot`/`.get`, see
+  `providers/arxiv.py`) exposed through thin `_throttled_get`/`_request_slot`
+  wrappers, each getter driven by `cache.cached_lookup` (single-flight by canonical
+  id, force_refresh, 404 → negative cache inside the `fetch` closure), positive-cache
+  TTL eviction, `_stats` counters. Same shape every time — a provider that invents
+  its own concurrency or caching scheme is a bug, not a feature.
 - **Narrow, named exceptions over broad behaviour.** The OA-download path only
   fetches the OA URL OpenAlex already surfaces (`openalex.best_pdf_url`,
   `providers/openalex.py`) — never a caller-supplied URL. Keep such trust boundaries in
@@ -59,11 +62,14 @@ it.
 - **Reuse the primitive; don't re-derive it.** Throttling, retry, atomic cache
   writes, streaming PDF download (`_pdf_download.stream_to_file`) are written
   once. Adding a feature = composing these, not copying their internals.
-- **But don't abstract across providers that merely look similar.** Per-provider
-  quirks (arxiv `_MAX_CONCURRENT=1`, biorxiv async `published_doi`, negative-TTL
-  overrides) are deliberate — see `.claude/rules/providers.md`. Shared *shape*,
-  not shared *code*, is the contract. Don't collapse seven clients into one
-  generic class to chase DRY.
+- **But don't abstract across providers that merely look similar.** The shared
+  *mechanism* (gating via `_throttle.Throttle`, the getter protocol via
+  `cache.cached_lookup`) is single-homed; the per-provider *policy and quirks*
+  stay in each module and must not be collapsed: arxiv `_MAX_CONCURRENT=1`, biorxiv's
+  async `published_doi` + medRxiv fallback, arxiv's three not-found shapes,
+  negative-TTL overrides, openalex's url-only `_throttled_get`. Pass those as
+  constructor args / `fetch` closures — don't fold them into the shared code, and
+  don't collapse the seven clients into one generic class to chase DRY.
 
 ## No mode flags that fork behaviour
 

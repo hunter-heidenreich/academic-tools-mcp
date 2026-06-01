@@ -10,6 +10,7 @@ from .._app import (
     _CACHE_SEARCH_NAMESPACE,
     _CACHE_SEARCH_TOP_K,
     _FIND_MAX_RESULTS,
+    FORCE_REFRESH,
     PAPER_ID,
     _arxiv_id_from_entry,
     _crossref_date,
@@ -408,19 +409,21 @@ async def get_wikipedia_summary(
             "Spaces and underscores both work."
         ),
     ],
+    force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
     """Fetch the structured summary (extract) of a Wikipedia article.
 
     Returns ``{title, description, extract, url, type, pageid}``. ``type``
     is ``"standard"`` for normal articles or ``"disambiguation"`` for
     disambiguation pages (where ``extract`` is typically a list of
-    candidate meanings). Cached per article — one network hit ever.
+    candidate meanings). Cached per article (30-day TTL); pass
+    ``force_refresh=True`` to re-fetch an article that may have been edited.
 
     Errors: page not found / Wikipedia outage → ``{error, suggestion}``.
     Use search_wikipedia first if you don't already know the canonical
     title.
     """
-    result = await wikipedia.get_summary(title)
+    result = await wikipedia.get_summary(title, force_refresh=force_refresh)
     if "error" in result:
         return _enrich_error(
             result,

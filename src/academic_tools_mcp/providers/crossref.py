@@ -1,12 +1,11 @@
-import asyncio
 import json
-import time
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _http, _singleflight, _stats, cache, config
+from .. import _clients, _http, _singleflight, cache, config
+from .._throttle import Throttle
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
@@ -32,14 +31,10 @@ def _parse_error_dict() -> dict[str, Any]:
 
 # Rate limiting for the polite pool: max 10 req/sec, 3 concurrent.
 # Concurrency cap of 3 matches the polite-pool concurrency budget; gap
-# of 100ms gives 10 req/sec sustained.
+# of 100ms gives 10 req/sec sustained. Gating lives in ``_throttle``.
 _MAX_CONCURRENT = 3
-_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
-_request_lock = asyncio.Lock()
-_last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.1  # 100ms -> ~10 req/sec max
 _MAX_PENDING = 5
-_pending: int = 0
 
 # Coalesces concurrent calls for the same canonical DOI so the unified
 # paper tools called in parallel don't all hit Crossref independently.
@@ -73,39 +68,18 @@ def _get_client():
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET request respecting Crossref's rate limit.
+_throttle = Throttle(
+    namespace=NAMESPACE,
+    label="Crossref",
+    max_concurrent=_MAX_CONCURRENT,
+    min_gap_seconds=_MIN_REQUEST_GAP,
+    max_pending=_MAX_PENDING,
+)
 
-    Refuses past ``_MAX_PENDING`` queued callers via
-    ``LocalBackpressureError`` so an agent that fans out queries gets
-    fast feedback rather than waiting tens of slots deep.
-    """
-    global _last_request_time, _pending
-    if _pending >= _MAX_PENDING:
-        _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError("Crossref", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
-    _pending += 1
-    try:
-        async with _request_sem:
-            async with _request_lock:
-                now = time.monotonic()
-                elapsed = now - _last_request_time
-                wait_seconds = 0.0
-                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                    wait_seconds = _MIN_REQUEST_GAP - elapsed
-                    await asyncio.sleep(wait_seconds)
-                _last_request_time = time.monotonic()
-            _stats.log_request(NAMESPACE, url, wait_seconds)
-            _stats.incr(NAMESPACE, "http_calls")
-            return await _http.get_with_retry(
-                client,
-                url,
-                backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
-                provider=NAMESPACE,
-                **kwargs,
-            )
-    finally:
-        _pending -= 1
+
+async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+    """Execute a GET respecting Crossref's rate limit (see ``Throttle.get``)."""
+    return await _throttle.get(client, url, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -208,24 +182,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """
     canonical = canonical_doi(doi)
 
-    if force_refresh:
-        cache.invalidate(NAMESPACE, "works", canonical)
-    else:
-        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "works", canonical)
-        if neg is not None:
-            return neg
-
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "works", canonical)
-        if neg is not None:
-            return neg
-
         bare_doi = _normalize_doi(doi)
 
         try:
@@ -265,4 +222,12 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         cache.put(NAMESPACE, "works", canonical, work)
         return work
 
-    return await _single_flight.do(canonical, _fetch)
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="works",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+    )

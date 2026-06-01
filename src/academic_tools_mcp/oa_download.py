@@ -18,13 +18,11 @@ with no duplicate download.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import time
 from pathlib import Path
 from typing import Any
 
-from . import _clients, _http, _pdf_download, _singleflight, _stats, cache, manual
+from . import _clients, _pdf_download, _singleflight, cache, manual
+from ._throttle import Throttle
 from .providers import openalex
 
 NAMESPACE = "oa_download"
@@ -35,15 +33,10 @@ NAMESPACE = "oa_download"
 # the burst cap and pooled connection still apply — the same robustness
 # primitives every other provider gets.
 _MAX_CONCURRENT = 2
-_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
-_request_lock = asyncio.Lock()
-_last_request_time: float = 0.0
-# Vestigial for parity with the other PDF providers: with no gap the
-# gap-lock computation below never sleeps. Kept so the slot keeps the
-# uniform three-layer shape (burst cap → sem → gap-lock).
+# No inter-start gap (each URL is a different host); kept at 0 so the shared
+# Throttle's gap-lock never sleeps. The gating mechanism lives in ``_throttle``.
 _MIN_REQUEST_GAP = 0.0
 _MAX_PENDING = 5
-_pending: int = 0
 
 # Coalesces concurrent download_pdf calls for the same paper.
 _single_flight = _singleflight.SingleFlight()
@@ -86,35 +79,22 @@ def _cached_hit(dest: Path) -> dict[str, Any]:
     return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": True}
 
 
-@contextlib.asynccontextmanager
-async def _request_slot(url: str):
-    """Acquire the OA-download rate-limit slot for the with-block lifetime.
+_throttle = Throttle(
+    namespace=NAMESPACE,
+    label="OA download",
+    max_concurrent=_MAX_CONCURRENT,
+    min_gap_seconds=_MIN_REQUEST_GAP,
+    max_pending=_MAX_PENDING,
+)
 
-    No throttle gap (each URL is a different host), but the concurrency
-    cap, burst cap, and stats counters still apply so a misbehaving
-    fan-out fails fast and a streaming download holds an open connection
-    that counts toward the cap.
+
+def _request_slot(url: str):
+    """OA-download rate-limit slot (see ``Throttle.slot``).
+
+    Kept module-level so the streaming PDF download's ``slot_factory`` lambda
+    and the test seam resolve a module attribute.
     """
-    global _last_request_time, _pending
-    if _pending >= _MAX_PENDING:
-        _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError("OA download", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
-    _pending += 1
-    try:
-        async with _request_sem:
-            async with _request_lock:
-                now = time.monotonic()
-                elapsed = now - _last_request_time
-                wait_seconds = 0.0
-                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                    wait_seconds = _MIN_REQUEST_GAP - elapsed
-                    await asyncio.sleep(wait_seconds)
-                _last_request_time = time.monotonic()
-            _stats.log_request(NAMESPACE, url, wait_seconds)
-            _stats.incr(NAMESPACE, "http_calls")
-            yield
-    finally:
-        _pending -= 1
+    return _throttle.slot(url)
 
 
 async def _resolve_and_download(

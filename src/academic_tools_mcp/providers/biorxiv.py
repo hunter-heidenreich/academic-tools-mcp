@@ -1,14 +1,12 @@
-import asyncio
-import contextlib
 import json
 import re
-import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from .. import _clients, _http, _pdf_download, _singleflight, _stats, cache
+from .. import _clients, _http, _pdf_download, _singleflight, cache
+from .._throttle import Throttle
 
 NAMESPACE = "biorxiv"
 _BASE_URL = "https://api.biorxiv.org"
@@ -37,17 +35,12 @@ _DOI_PREFIX = "10.1101/"
 
 # Rate limiting: no documented limit, but be polite (~2 req/sec).
 # Concurrency cap of 2 allows a metadata + PDF-URL chase to run in
-# parallel without hammering the (unmonitored) API.
+# parallel without hammering the (unmonitored) API. Burst cap of 5 past
+# which a stacked caller gets a backpressure error rather than silent
+# queueing. The gating mechanism itself lives in ``_throttle.Throttle``.
 _MAX_CONCURRENT = 2
-_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
-_request_lock = asyncio.Lock()
-_last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 0.5
-
-# Burst cap. Same shape as the other providers: past 5 stacked callers,
-# the next gets a structured backpressure error instead of silent queueing.
 _MAX_PENDING = 5
-_pending: int = 0
 
 # Coalesces concurrent calls for the same canonical DOI so the unified
 # paper tools called in parallel (metadata, authors, abstract, bibtex)
@@ -66,53 +59,27 @@ _NEG_TTL_SECONDS = 3600.0
 _POSITIVE_TTL_SECONDS = 7 * 86400.0
 
 
-@contextlib.asynccontextmanager
-async def _request_slot(url: str):
-    """Acquire bioRxiv's rate-limit slot for the lifetime of the with block.
+_throttle = Throttle(
+    namespace=NAMESPACE,
+    label="bioRxiv",
+    max_concurrent=_MAX_CONCURRENT,
+    min_gap_seconds=_MIN_REQUEST_GAP,
+    max_pending=_MAX_PENDING,
+)
 
-    See ``arxiv._request_slot`` for the two-stage gating shape; same
-    pattern here so streaming PDF downloads can hold the slot open
-    while bytes flow.
+
+def _request_slot(url: str):
+    """bioRxiv's rate-limit slot (see ``Throttle.slot``).
+
+    Kept module-level so the streaming PDF download's ``slot_factory`` lambda
+    and the test seam resolve a module attribute.
     """
-    global _last_request_time, _pending
-    if _pending >= _MAX_PENDING:
-        _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError("bioRxiv", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
-    _pending += 1
-    try:
-        async with _request_sem:
-            async with _request_lock:
-                now = time.monotonic()
-                elapsed = now - _last_request_time
-                wait_seconds = 0.0
-                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                    wait_seconds = _MIN_REQUEST_GAP - elapsed
-                    await asyncio.sleep(wait_seconds)
-                _last_request_time = time.monotonic()
-            _stats.log_request(NAMESPACE, url, wait_seconds)
-            _stats.incr(NAMESPACE, "http_calls")
-            yield
-    finally:
-        _pending -= 1
+    return _throttle.slot(url)
 
 
 async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET request with polite rate limiting.
-
-    Thin wrapper over ``_request_slot`` — the slot does the gating, this
-    just fires the GET (with one transparent retry) inside it. Refuses
-    past ``_MAX_PENDING`` queued callers via ``LocalBackpressureError``
-    so an agent that fans out gets fast feedback rather than waiting
-    half a second per slot.
-    """
-    async with _request_slot(url):
-        return await _http.get_with_retry(
-            client,
-            url,
-            backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
-            provider=NAMESPACE,
-            **kwargs,
-        )
+    """Execute a GET respecting bioRxiv's polite rate limit (see ``Throttle.get``)."""
+    return await _throttle.get(client, url, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -273,24 +240,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     bare = _normalize_doi(doi)
     canonical = canonical_key(doi)
 
-    if force_refresh:
-        cache.invalidate(NAMESPACE, "papers", canonical)
-    else:
-        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "papers", canonical)
-        if neg is not None:
-            return neg
-
     async def _fetch() -> dict[str, Any]:
-        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "papers", canonical)
-        if neg is not None:
-            return neg
-
         try:
             client = _clients.get_client(NAMESPACE, timeout=30.0)
             # Try bioRxiv first
@@ -332,7 +282,15 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         cache.put(NAMESPACE, "papers", canonical, paper)
         return paper
 
-    return await _single_flight.do(canonical, _fetch)
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="papers",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+    )
 
 
 def _pdf_filename(canonical: str) -> str:
@@ -344,7 +302,7 @@ def _pdf_filename(canonical: str) -> str:
 def pdf_path(doi: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
     canonical = canonical_key(doi)
-    return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    return cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -365,7 +323,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     callers for the same DOI share one download via single-flight.
     """
     canonical = canonical_key(doi)
-    dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
     if not force_refresh and dest.exists():
         return {

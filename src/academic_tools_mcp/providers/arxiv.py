@@ -1,7 +1,4 @@
-import asyncio
-import contextlib
 import re
-import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -10,7 +7,8 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import _clients, _http, _pdf_download, _singleflight, _stats, cache
+from .. import _clients, _http, _pdf_download, _singleflight, cache
+from .._throttle import Throttle
 
 # Parsing the arXiv Atom feed can fail two ways: a malformed/truncated body
 # (``ET.ParseError``) or a hostile entity-expansion payload that defusedxml
@@ -39,23 +37,14 @@ _ATOM_NS = "http://www.w3.org/2005/Atom"
 _ARXIV_NS = "http://arxiv.org/schemas/atom"
 _OPENSEARCH_NS = "http://a9.com/-/spec/opensearch/1.1/"
 
-# Rate limiting: max 1 request per 3 seconds, single connection.
-# arXiv's documented "single connection" rule means concurrency=1; the
-# semaphore enforces that, the gap-lock briefly serialises the gap
-# update + start-time record, and the actual GET runs while only the
-# semaphore is held.
+# Rate limiting: max 1 request per 3 seconds, single connection. arXiv's
+# documented "single connection" rule means concurrency=1. Burst cap of 5:
+# with a 3s gap, 5 pending = 15s of agent-blocking — past that we back off
+# rather than queue forever (the 6th caller gets a structured backpressure
+# error). The gating mechanism itself lives in ``_throttle.Throttle``.
 _MAX_CONCURRENT = 1
-_request_sem = asyncio.Semaphore(_MAX_CONCURRENT)
-_request_lock = asyncio.Lock()
-_last_request_time: float = 0.0
 _MIN_REQUEST_GAP = 3.0
-
-# Burst cap: refuse to stack more than this many requests behind the
-# throttle. With a 3s gap, 5 pending = 15s of agent-blocking — past that
-# we'd rather tell the agent to back off than silently queue forever.
-# A 6th concurrent caller gets a structured backpressure error.
 _MAX_PENDING = 5
-_pending: int = 0
 
 # Coalesces concurrent calls for the same canonical paper ID into one
 # fetch. Without this, 4 parallel unified-paper tools (metadata, authors,
@@ -74,66 +63,29 @@ _NEG_TTL_SECONDS = 3600.0
 _POSITIVE_TTL_SECONDS = 14 * 86400.0
 
 
-@contextlib.asynccontextmanager
-async def _request_slot(url: str):
-    """Acquire arXiv's rate-limit slot for the lifetime of the with block.
+_throttle = Throttle(
+    namespace=NAMESPACE,
+    label="arXiv",
+    max_concurrent=_MAX_CONCURRENT,
+    min_gap_seconds=_MIN_REQUEST_GAP,
+    max_pending=_MAX_PENDING,
+)
 
-    Two-stage gating:
-      1. ``_request_sem`` (size ``_MAX_CONCURRENT``) caps simultaneous
-         in-flight requests to honour arXiv's "single connection" rule.
-      2. ``_request_lock`` is held only briefly to serialise the gap
-         sleep + ``_last_request_time`` update; the actual GET runs
-         outside the lock so that on providers with concurrency > 1
-         multiple requests can be in flight at once. For arXiv (cap=1)
-         the sem already gives strict serialisation, but the same shape
-         is used everywhere so behaviour is uniform.
 
-    Burst cap raises ``LocalBackpressureError`` past ``_MAX_PENDING``
-    queued callers so an agent that fans out 10 calls in microseconds
-    gets fast feedback on the 6th instead of stacking forever.
+def _request_slot(url: str):
+    """arXiv's rate-limit slot (see ``Throttle.slot``).
 
-    Used by both ``_throttled_get`` and the streaming PDF download —
-    the latter needs the slot held for the whole stream lifetime, not
-    just one fire-and-return GET.
+    Kept as a module-level wrapper so the streaming PDF download's
+    ``slot_factory`` lambda and the test seam
+    (``monkeypatch.setattr(arxiv, "_request_slot", ...)``) keep resolving
+    a module attribute.
     """
-    global _last_request_time, _pending
-    if _pending >= _MAX_PENDING:
-        _stats.incr(NAMESPACE, "backpressure_refusals")
-        raise _http.LocalBackpressureError("arXiv", _pending, _MAX_PENDING, _MIN_REQUEST_GAP)
-    _pending += 1
-    try:
-        async with _request_sem:
-            async with _request_lock:
-                now = time.monotonic()
-                elapsed = now - _last_request_time
-                wait_seconds = 0.0
-                if _last_request_time > 0 and elapsed < _MIN_REQUEST_GAP:
-                    wait_seconds = _MIN_REQUEST_GAP - elapsed
-                    await asyncio.sleep(wait_seconds)
-                _last_request_time = time.monotonic()
-            _stats.log_request(NAMESPACE, url, wait_seconds)
-            _stats.incr(NAMESPACE, "http_calls")
-            yield
-    finally:
-        _pending -= 1
+    return _throttle.slot(url)
 
 
 async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET request respecting arXiv's rate limit.
-
-    Thin wrapper over ``_request_slot`` — the slot does the gating, this
-    just fires the GET (with one transparent retry) inside it.
-    """
-    async with _request_slot(url):
-        return await _http.get_with_retry(
-            client,
-            url,
-            # arXiv's 3s gap must apply to the retry too — a 1s
-            # retry would violate their "1 req per 3s" policy.
-            backoff_seconds=max(_MIN_REQUEST_GAP, 1.0),
-            provider=NAMESPACE,
-            **kwargs,
-        )
+    """Execute a GET respecting arXiv's rate limit (see ``Throttle.get``)."""
+    return await _throttle.get(client, url, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -259,30 +211,7 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
     """
     canonical = canonical_arxiv_id(arxiv_id)
 
-    if force_refresh:
-        cache.invalidate(NAMESPACE, "papers", canonical)
-    else:
-        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "papers", canonical)
-        if neg is not None:
-            return neg
-
     async def _fetch() -> dict[str, Any]:
-        # Re-check cache inside the single-flight slot: the leader for
-        # this key may have already finished and populated the cache by
-        # the time a follower's coroutine resumed past the outer check.
-        # On a forced refresh we still re-check so concurrent forced
-        # callers share one fetch (the leader writes, the followers see
-        # the fresh entry).
-        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            return cached
-        neg = cache.get_negative(NAMESPACE, "papers", canonical)
-        if neg is not None:
-            return neg
-
         api_id = _normalize_arxiv_id(arxiv_id)
 
         try:
@@ -336,7 +265,15 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
         cache.put(NAMESPACE, "papers", canonical, data)
         return data
 
-    return await _single_flight.do(canonical, _fetch)
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="papers",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+    )
 
 
 async def search_papers(
@@ -409,7 +346,7 @@ def _pdf_filename(canonical: str) -> str:
 def pdf_path(arxiv_id: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
     canonical = canonical_arxiv_id(arxiv_id)
-    return cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    return cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
 
 async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -430,7 +367,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     callers for the same ID share one download via single-flight.
     """
     canonical = canonical_arxiv_id(arxiv_id)
-    dest = cache._cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
     if not force_refresh and dest.exists():
         return {

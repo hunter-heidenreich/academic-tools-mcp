@@ -1,7 +1,5 @@
-import asyncio
 import json
-import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -33,74 +31,6 @@ def _mock_client_factory(mock_response, *, urls=None):
 
 
 # ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
-
-class TestThrottledGet:
-    @pytest.mark.asyncio
-    async def test_first_request_no_delay(self, monkeypatch):
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await wikipedia._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-    @pytest.mark.asyncio
-    async def test_second_request_waits(self, monkeypatch):
-        monkeypatch.setattr(wikipedia, "_last_request_time", time.monotonic())
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await wikipedia._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 1
-        assert slept[0] >= 0.8  # should be close to 1.0
-
-    @pytest.mark.asyncio
-    async def test_no_delay_after_gap(self, monkeypatch):
-        monkeypatch.setattr(wikipedia, "_last_request_time", time.monotonic() - 3.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
-
-        slept = []
-
-        async def mock_sleep(duration):
-            slept.append(duration)
-
-        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
-
-        mock_response = MagicMock()
-        mock_client = MagicMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        result = await wikipedia._throttled_get(mock_client, "http://example.com")
-        assert result is mock_response
-        assert len(slept) == 0
-
-
-# ---------------------------------------------------------------------------
 # Search parsing
 # ---------------------------------------------------------------------------
 
@@ -129,8 +59,7 @@ class TestSearch:
         async def mock_get(self, url, **kwargs):
             return mock_response
 
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
 
         class MockClient:
             async def __aenter__(self):
@@ -163,8 +92,7 @@ class TestSearch:
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = mock_data
 
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
 
         class MockClient:
             async def __aenter__(self):
@@ -213,8 +141,7 @@ class TestGetSummary:
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = mock_data
 
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
 
         # Clear any cached entry
         from academic_tools_mcp import cache
@@ -250,8 +177,7 @@ class TestGetSummary:
         mock_response = MagicMock()
         mock_response.status_code = 404
 
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
 
         from academic_tools_mcp import cache
 
@@ -350,8 +276,7 @@ class TestParseHardening:
         mock_response.raise_for_status = MagicMock()
         mock_response.json = MagicMock(side_effect=json.JSONDecodeError("bad", "", 0))
 
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(httpx, "AsyncClient", _mock_client_factory(mock_response))
 
         result = await wikipedia.search("anything")
@@ -370,8 +295,7 @@ class TestParseHardening:
         mock_response.raise_for_status = MagicMock()
         mock_response.json = MagicMock(side_effect=json.JSONDecodeError("bad", "", 0))
 
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
         monkeypatch.setattr(cache, "get_negative", lambda *a, **kw: None)
         stored = []
@@ -395,8 +319,7 @@ class TestParseHardening:
         mock_response.raise_for_status = MagicMock()
         mock_response.json.return_value = ["unexpected", "shape"]
 
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
         monkeypatch.setattr(cache, "get_negative", lambda *a, **kw: None)
         monkeypatch.setattr(cache, "put", lambda *a: None)
@@ -432,8 +355,7 @@ class TestTitleEncoding:
         mock_response.json.return_value = mock_data
 
         urls: list[str] = []
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
         monkeypatch.setattr(cache, "get_negative", lambda *a, **kw: None)
         monkeypatch.setattr(cache, "put", lambda *a: None)
@@ -464,8 +386,7 @@ class TestCacheKeyCaseSensitivity:
         mock_response.json.return_value = {"type": "standard", "title": "x", "extract": "x"}
 
         put_keys: list[str] = []
-        monkeypatch.setattr(wikipedia, "_last_request_time", 0.0)
-        monkeypatch.setattr(wikipedia, "_request_lock", asyncio.Lock())
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(cache, "get", lambda *a, **kw: None)
         monkeypatch.setattr(cache, "get_negative", lambda *a, **kw: None)
         monkeypatch.setattr(cache, "put", lambda ns, entity, ident, data: put_keys.append(ident))
@@ -509,3 +430,53 @@ class TestPageExistsErrorSemantics:
         result = await wikipedia.page_exists("xyzzy")
         assert result["exists"] is False
         assert result["url"] is None
+
+
+class TestGetSummaryForceRefresh:
+    @pytest.mark.asyncio
+    async def test_force_refresh_rebypasses_cache(self, tmp_path, monkeypatch):
+        """get_summary gained force_refresh for parity with every other getter:
+        a cache hit serves without a network call, force_refresh re-fetches."""
+        import httpx
+
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
+
+        calls = 0
+
+        class MockClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def get(self, url, **kwargs):
+                nonlocal calls
+                calls += 1
+                resp = MagicMock()
+                resp.status_code = 200
+                resp.raise_for_status = MagicMock()
+                resp.json.return_value = {
+                    "type": "standard",
+                    "title": "Photosynthesis",
+                    "extract": "A process.",
+                    "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/X"}},
+                    "pageid": 1,
+                }
+                return resp
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: MockClient())
+
+        await wikipedia.get_summary("Photosynthesis")
+        assert calls == 1
+
+        # Cache hit: no second network call.
+        await wikipedia.get_summary("Photosynthesis")
+        assert calls == 1
+
+        # force_refresh drops the cached entry and re-fetches.
+        await wikipedia.get_summary("Photosynthesis", force_refresh=True)
+        assert calls == 2

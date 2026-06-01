@@ -241,7 +241,7 @@ def markdown_checksum(md_path: Path) -> str:
 
 def markdown_path(namespace: str, canonical: str) -> Path:
     """Return the cache path for converted markdown."""
-    return cache._cache_dir(namespace, "markdown") / (canonical.replace("/", "_") + ".md")
+    return cache.cache_dir(namespace, "markdown") / (canonical.replace("/", "_") + ".md")
 
 
 def sections_key(canonical: str) -> str:
