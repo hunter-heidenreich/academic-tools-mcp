@@ -13,7 +13,16 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
-## [Unreleased]
+## [2026.05.31] — 2026-05-31
+
+### Removed
+
+- `get_paper_citations` no longer accepts the inert `source` parameter. It was
+  reserved for a future second incoming-citation provider but was never read —
+  OpenCitations is the only source of incoming citations — so passing it had no
+  effect. The matching unused `CITATION_SOURCE` type was dropped too.
+  (`get_paper_references` keeps its `source` param, which has three live values.)
+  ([#40])
 
 ### Security
 
@@ -147,6 +156,14 @@ grouped by milestone rather than per commit.
 - `find_in_paper` now returns a `{error, suggestion}` pair (matching every other
   tool) when a paper isn't converted yet, and reads the cached markdown off the
   event loop so a large paper's disk read doesn't stall concurrent fetches. ([#38])
+- `get_paper_metadata(doi, fallback_crossref=True)` now reports a
+  `publication_year` for a preprint-only Crossref DOI (e.g. a bioRxiv record
+  whose date lives under `posted`, not `issued`). The Crossref metadata
+  formatter walked a date-key order that omitted `posted`, so the fallback
+  returned `publication_year: null` for any record without an `issued` date —
+  even though `search_crossref_by_title` already honoured `posted`. Both call
+  sites now share one date helper walking a single canonical key order (`issued`
+  first, `posted` last). ([#40])
 - `get_paper_metadata(follow_published=True)` no longer mislabels a *transient*
   OpenAlex failure on the journal-version lookup as "not indexed yet". When the
   bioRxiv→journal chain hits a 5xx/timeout (a retryable error, not a definitive
@@ -531,7 +548,7 @@ grouped by milestone rather than per commit.
 - Configurable external PDF converter, env-based API configuration
   (mailto / keys), MIT license, and a public-facing README.
 
-[Unreleased]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.05.29...HEAD
+[2026.05.31]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.05.29...v2026.05.31
 [2026.05.29]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.30...v2026.05.29
 [2026.04.30]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.22...v2026.04.30
 [2026.04.22]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.04.16...v2026.04.22
@@ -571,4 +588,5 @@ grouped by milestone rather than per commit.
 [#37]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/37
 [#38]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/38
 [#39]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/39
+[#40]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/40
 [#41]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/41
