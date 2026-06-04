@@ -7,7 +7,7 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import _clients, _http, _pdf_download, _singleflight, cache
+from .. import _clients, _http, _pdf_download, _singleflight, cache, config
 from .._throttle import Throttle
 
 # Parsing the arXiv Atom feed can fail two ways: a malformed/truncated body
@@ -63,12 +63,47 @@ _NEG_TTL_SECONDS = 3600.0
 _POSITIVE_TTL_SECONDS = 14 * 86400.0
 
 
+def _build_headers() -> dict[str, str]:
+    """Build request headers with a descriptive User-Agent.
+
+    Unlike the polite-pool opt-in providers (crossref/openalex, which only
+    set a User-Agent when a mailto is configured), arXiv is sent a
+    descriptive User-Agent *unconditionally*: its Fastly edge throttles
+    generic library User-Agents (e.g. ``python-httpx/x.y``) far more
+    aggressively, returning 429/503 on modest bursts. ``ARXIV_MAILTO``, when
+    set, is appended as a contact so arXiv can reach the operator before
+    tightening limits.
+    """
+    user_agent = "academic-tools-mcp/1.0 (https://github.com/academic-tools-mcp"
+    mailto = config.get("ARXIV_MAILTO")
+    if mailto:
+        user_agent += f"; mailto:{mailto}"
+    user_agent += ")"
+    return {"User-Agent": user_agent}
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Return the persistent AsyncClient for arXiv calls.
+
+    The descriptive User-Agent is baked in at construction so every call
+    (metadata, search, PDF download) identifies the client and avoids
+    arXiv's heavier throttling of anonymous library traffic.
+    """
+    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
+
+
 _throttle = Throttle(
     namespace=NAMESPACE,
     label="arXiv",
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
+    # arXiv's Fastly edge returns 429/503 with no (or zero) Retry-After when an
+    # IP is briefly penalty-boxed; a single retry often lands in the same
+    # window. Two retries (three attempts total) let get_with_retry's
+    # exponential backoff (≈3s then ≈6s) ride out a short cooldown instead of
+    # surfacing the error to the agent.
+    retry_attempts=3,
 )
 
 
@@ -215,7 +250,7 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
         api_id = _normalize_arxiv_id(arxiv_id)
 
         try:
-            client = _clients.get_client(NAMESPACE, timeout=30.0)
+            client = _get_client()
             response = await _throttled_get(
                 client,
                 ARXIV_BASE_URL,
@@ -289,7 +324,7 @@ async def search_papers(
     capped = min(max(max_results, 1), 50)
 
     try:
-        client = _clients.get_client(NAMESPACE, timeout=30.0)
+        client = _get_client()
         response = await _throttled_get(
             client,
             ARXIV_BASE_URL,
@@ -402,7 +437,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
         if not pdf_url:
             return {"error": f"No PDF link found for arXiv ID: {arxiv_id}"}
 
-        client = _clients.get_client(NAMESPACE, timeout=30.0)
+        client = _get_client()
         return await _pdf_download.stream_to_file(
             client,
             pdf_url,

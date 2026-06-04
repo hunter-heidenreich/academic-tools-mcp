@@ -57,12 +57,18 @@ class Throttle:
         max_concurrent: int,
         min_gap_seconds: float,
         max_pending: int = 5,
+        retry_attempts: int = 2,
     ) -> None:
         self.namespace = namespace
         self.label = label
         self.max_concurrent = max_concurrent
         self.min_gap_seconds = min_gap_seconds
         self.max_pending = max_pending
+        # Total attempts (1 original + N-1 retries) for ``get``. Default 2 = one
+        # transparent retry; a provider behind a flakier edge (arXiv's Fastly
+        # 429/503-without-Retry-After) raises it so ``get_with_retry``'s
+        # exponential backoff can ride out a short cooldown.
+        self.retry_attempts = retry_attempts
         self.pending = 0
         self.last_request_time: float = 0.0
         self._sem = asyncio.Semaphore(max_concurrent)
@@ -121,6 +127,7 @@ class Throttle:
             return await _http.get_with_retry(
                 client,
                 url,
+                max_attempts=self.retry_attempts,
                 backoff_seconds=max(self.min_gap_seconds, 1.0),
                 provider=self.namespace,
                 **kwargs,

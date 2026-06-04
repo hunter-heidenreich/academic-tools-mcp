@@ -13,6 +13,29 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
+## [Unreleased]
+
+### Fixed
+
+- arXiv metadata/search/PDF requests now send a **descriptive `User-Agent`**
+  instead of the default `python-httpx/x.y`. arXiv's Fastly edge throttles
+  anonymous library traffic far more aggressively — returning HTTP 429/503 on
+  modest bursts — which surfaced to agents as "couldn't get arXiv metadata"
+  errors. The new optional `ARXIV_MAILTO` env var is appended as a contact when
+  set; the descriptive UA is sent even when it's blank. ([#43])
+- arXiv requests now retry **twice** (three attempts total) instead of once.
+  arXiv's edge returns 429/503 with no `Retry-After` when an IP is briefly
+  penalty-boxed, where a single retry tended to land in the same cooldown
+  window. ([#43])
+
+### Changed
+
+- `get_with_retry` now backs off **exponentially** across attempts
+  (`backoff_seconds`, then 2×, 4×…, capped at the 10-minute ceiling). At the
+  default of one retry this is byte-for-byte unchanged; it only widens the gap
+  for providers that opt into more attempts (currently arXiv, via a new
+  per-provider `Throttle(retry_attempts=…)` knob). ([#43])
+
 ## [2026.05.31] — 2026-05-31
 
 ### Removed
@@ -590,3 +613,4 @@ grouped by milestone rather than per commit.
 [#39]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/39
 [#40]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/40
 [#41]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/41
+[#43]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/43
