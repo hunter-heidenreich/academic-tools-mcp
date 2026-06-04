@@ -140,3 +140,25 @@ async def test_get_fires_request_inside_slot():
     client.get.assert_awaited_once()
     snap = _stats.snapshot()["providers"]
     assert snap.get("testprovider", {}).get("http_calls") == 1
+
+
+@pytest.mark.asyncio
+async def test_get_threads_retry_attempts_into_get_with_retry(monkeypatch):
+    """A provider's retry_attempts policy reaches get_with_retry as max_attempts."""
+    t = _make(retry_attempts=3)
+    captured: dict = {}
+
+    async def fake_get_with_retry(client, url, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(status_code=200)
+
+    monkeypatch.setattr(_http, "get_with_retry", fake_get_with_retry)
+
+    await t.get(MagicMock(), "http://example.com")
+
+    assert captured["max_attempts"] == 3
+
+
+def test_retry_attempts_defaults_to_two():
+    """The default is one transparent retry (1 original + 1)."""
+    assert _make().retry_attempts == 2

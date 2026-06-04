@@ -167,7 +167,7 @@ async def get_with_retry(
     provider: str | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
-    """Issue a GET with one transparent retry on transient failure.
+    """Issue a GET with transparent retries on transient failure.
 
     Transient = httpx network/timeout exception, 408/425/429, or any 5xx
     response. All other outcomes (200, 4xx other than the above) are
@@ -175,24 +175,36 @@ async def get_with_retry(
     or status-code branch handles them.
 
     On 429 (and 503) we honour ``Retry-After`` when present. The actual
-    sleep is ``min(max(Retry-After, backoff_seconds), _MAX_RETRY_AFTER_SECONDS)``,
+    sleep is ``min(max(Retry-After, effective_backoff), _MAX_RETRY_AFTER_SECONDS)``,
     so a server that asks us to wait several minutes is respected (up to a
     10-minute ceiling), a missing or zero header doesn't drop us below the
     provider's own throttle gap (``backoff_seconds`` is the floor), and a
     misconfigured ``Retry-After: 86400`` can't pin our throttle for hours.
-    Because ``max_attempts=2`` at most one such sleep ever occurs.
+
+    Backoff grows exponentially across attempts: the sleep before attempt
+    *n* uses ``backoff_seconds * 2**(n-1)``. At the default ``max_attempts=2``
+    only one sleep ever happens (factor ``2**0 = 1``), so single-retry
+    providers are unchanged. A provider that opts into more attempts — e.g.
+    arXiv, whose Fastly edge returns 429/503 with **no** ``Retry-After`` when
+    an IP is briefly penalty-boxed — gets a widening gap (backoff, 2×, 4×…)
+    so the later retries straddle the cooldown instead of all landing inside
+    the same throttled window.
 
     On the FINAL attempt the result is returned (or the exception
-    re-raised) without further retry. ``max_attempts=2`` means 1 original
-    + 1 retry — the upstream APIs are well-behaved enough that a single
-    transient blip is the common case and a sustained outage is not
-    something we should mask from the agent.
+    re-raised) without further retry. ``max_attempts=2`` means 1 original +
+    1 retry; the throttle a provider holds (`_throttle.Throttle`) sets this
+    per provider, so a flakier upstream can ask for more without every
+    caller masking a sustained outage.
 
     GET-only by design: every cached lookup in this codebase is a GET
     and the caller's existing test mocks all stub ``client.get``, so a
     method-agnostic helper would force unrelated mock churn.
     """
     for attempt in range(1, max_attempts + 1):
+        # Exponential growth per attempt; capped so a high max_attempts can't
+        # produce an absurd sleep. Factor is 1 on the first attempt, so the
+        # default single-retry path is byte-for-byte unchanged.
+        effective_backoff = min(backoff_seconds * (2 ** (attempt - 1)), _MAX_RETRY_AFTER_SECONDS)
         try:
             response = await client.get(url, **kwargs)
         except (httpx.TimeoutException, httpx.RequestError):
@@ -200,7 +212,7 @@ async def get_with_retry(
                 raise
             if provider is not None:
                 _stats.incr(provider, "http_retries")
-            await asyncio.sleep(backoff_seconds)
+            await asyncio.sleep(effective_backoff)
             continue
 
         if attempt >= max_attempts:
@@ -211,7 +223,7 @@ async def get_with_retry(
         if provider is not None:
             _stats.incr(provider, "http_retries")
         retry_after = _retry_after_seconds(response) or 0.0
-        sleep_for = min(max(retry_after, backoff_seconds), _MAX_RETRY_AFTER_SECONDS)
+        sleep_for = min(max(retry_after, effective_backoff), _MAX_RETRY_AFTER_SECONDS)
         await asyncio.sleep(sleep_for)
 
     # Unreachable: the loop always returns or raises before falling out.

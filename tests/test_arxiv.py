@@ -81,6 +81,43 @@ class TestCanonicalArxivId:
 
 
 # ---------------------------------------------------------------------------
+# User-Agent / client headers
+# ---------------------------------------------------------------------------
+
+
+class TestUserAgent:
+    def test_descriptive_ua_sent_without_mailto(self, monkeypatch):
+        # arXiv throttles generic library User-Agents harder, so a descriptive
+        # UA is sent even when no contact email is configured.
+        monkeypatch.delenv("ARXIV_MAILTO", raising=False)
+        headers = arxiv._build_headers()
+        ua = headers["User-Agent"]
+        assert ua.startswith("academic-tools-mcp/")
+        assert "python-httpx" not in ua
+        assert "mailto:" not in ua
+
+    def test_mailto_appended_when_configured(self, monkeypatch):
+        monkeypatch.setenv("ARXIV_MAILTO", "ops@example.com")
+        ua = arxiv._build_headers()["User-Agent"]
+        assert "mailto:ops@example.com" in ua
+
+    def test_get_client_bakes_in_headers(self, monkeypatch):
+        monkeypatch.setenv("ARXIV_MAILTO", "ops@example.com")
+        captured: dict = {}
+
+        def fake_get_client(name, **kwargs):
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            return object()
+
+        monkeypatch.setattr(arxiv._clients, "get_client", fake_get_client)
+        arxiv._get_client()
+
+        assert captured["name"] == arxiv.NAMESPACE
+        assert "mailto:ops@example.com" in captured["kwargs"]["headers"]["User-Agent"]
+
+
+# ---------------------------------------------------------------------------
 # XML parsing
 # ---------------------------------------------------------------------------
 

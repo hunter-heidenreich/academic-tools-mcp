@@ -321,6 +321,36 @@ class TestGetWithRetry:
         assert self.slept == [2.0]
 
     @pytest.mark.asyncio
+    async def test_multiple_attempts_back_off_exponentially(self):
+        # A provider that opts into more attempts (e.g. arXiv) gets a widening
+        # gap between retries: backoff, then 2×backoff. Two retryable responses
+        # without Retry-After, then success.
+        client = _FakeClient([_response(429), _response(503), _response(200)])
+        resp = await _http.get_with_retry(client, "u", max_attempts=3, backoff_seconds=3.0)
+        assert resp.status_code == 200
+        assert len(client.calls) == 3
+        assert self.slept == [3.0, 6.0]
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff_respects_ceiling(self):
+        # The per-attempt exponential growth is still clamped to the 10-minute
+        # ceiling so a high max_attempts can't produce an absurd sleep.
+        client = _FakeClient([_response(503), _response(503), _response(503), _response(200)])
+        await _http.get_with_retry(client, "u", max_attempts=4, backoff_seconds=400.0)
+        # 400, then min(800, 600), then min(1600, 600).
+        assert self.slept == [400.0, 600.0, 600.0]
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff_applies_to_network_errors(self):
+        # The widening gap covers the transport-exception path too, not just
+        # retryable status codes.
+        timeout = httpx.ReadTimeout("slow", request=httpx.Request("GET", "https://x"))
+        client = _FakeClient([timeout, timeout, _response(200)])
+        resp = await _http.get_with_retry(client, "u", max_attempts=3, backoff_seconds=2.0)
+        assert resp.status_code == 200
+        assert self.slept == [2.0, 4.0]
+
+    @pytest.mark.asyncio
     async def test_kwargs_forwarded_to_request(self):
         client = _FakeClient([_response(200)])
         await _http.get_with_retry(
