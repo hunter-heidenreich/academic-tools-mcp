@@ -1,6 +1,6 @@
 [project]
 name = "academic-tools-mcp"
-version = "2026.5.31"
+version = "2026.6.4"
 description = "MCP server for academic research tools (OpenAlex, etc.)"
 readme = "README.md"
 license = "MIT"
