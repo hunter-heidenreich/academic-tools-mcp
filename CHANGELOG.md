@@ -27,7 +27,7 @@ grouped by milestone rather than per commit.
   reads the body before `raise_for_status()` on an error status, and
   `error_dict` degrades to a placeholder snippet if a caller has not. Callers
   now see e.g. `OA download HTTP 403: <body snippet>`. Success responses are
-  still streamed and never buffered.
+  still streamed and never buffered. ([#44])
 
 ## [2026.06.04] — 2026-06-04
 
@@ -631,3 +631,4 @@ grouped by milestone rather than per commit.
 [#40]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/40
 [#41]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/41
 [#43]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/43
+[#44]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/44
