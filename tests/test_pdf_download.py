@@ -179,3 +179,99 @@ class TestStreamToFile:
         assert "error" not in result
         assert result["size_bytes"] == 1024 * 1024
         assert dest.stat().st_size == 1024 * 1024
+
+
+# --- streaming error responses ---------------------------------------------
+
+
+class _UnreadStream(httpx.AsyncByteStream):
+    """A response body that is genuinely streamed.
+
+    ``httpx.MockTransport`` with ``text=``/``content=`` hands back a response
+    whose content is already buffered, so ``.text`` works and the bug under
+    test cannot reproduce. A real stream is required.
+    """
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    async def __aiter__(self):
+        yield self._payload
+
+
+def _streaming_client(status_code: int, body: bytes, content_type: str = "text/html"):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            headers={"content-type": content_type},
+            stream=_UnreadStream(body),
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_4xx_returns_the_status_not_a_response_not_read(tmp_path):
+    """Regression: a publisher 403 on the open-access path used to escape as
+    httpx.ResponseNotRead.
+
+    ``error_dict`` reads ``exc.response.text`` for the 4xx snippet, which is
+    unavailable on an unread streaming response. ResponseNotRead subclasses
+    RuntimeError, not HTTPError, so ``except HTTPX_ERRORS`` did not catch it
+    and it propagated out of the download entirely — the caller saw
+    "Attempted to access streaming response content" instead of "HTTP 403".
+    """
+    client = _streaming_client(403, b"<html>Forbidden</html>")
+    try:
+        result = await _pdf_download.stream_to_file(
+            client,
+            "https://publisher.example/paper.pdf",
+            tmp_path / "out.pdf",
+            slot_factory=_passthrough_slot,
+            provider_label="OA download",
+            require_pdf=True,
+        )
+    finally:
+        await client.aclose()
+
+    assert "403" in result["error"]
+    assert "Forbidden" in result["error"], "the body snippet still reaches the caller"
+    assert not (tmp_path / "out.pdf").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_404_still_short_circuits_before_the_body_read(tmp_path):
+    client = _streaming_client(404, b"<html>nope</html>")
+    try:
+        result = await _pdf_download.stream_to_file(
+            client,
+            "https://publisher.example/paper.pdf",
+            tmp_path / "out.pdf",
+            slot_factory=_passthrough_slot,
+            provider_label="OA download",
+            not_found_message="Open-access PDF not found",
+        )
+    finally:
+        await client.aclose()
+
+    assert result == {"error": "Open-access PDF not found"}
+
+
+@pytest.mark.asyncio
+async def test_a_streaming_success_is_never_buffered(tmp_path):
+    """The fix must read only error bodies; a 200 PDF stays streamed."""
+    client = _streaming_client(200, b"%PDF-1.4 real content", content_type="application/pdf")
+    try:
+        result = await _pdf_download.stream_to_file(
+            client,
+            "https://publisher.example/paper.pdf",
+            tmp_path / "out.pdf",
+            slot_factory=_passthrough_slot,
+            provider_label="OA download",
+            require_pdf=True,
+        )
+    finally:
+        await client.aclose()
+
+    assert result["size_bytes"] == len(b"%PDF-1.4 real content")
+    assert (tmp_path / "out.pdf").read_bytes() == b"%PDF-1.4 real content"

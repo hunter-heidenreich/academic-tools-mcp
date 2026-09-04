@@ -361,3 +361,32 @@ class TestGetWithRetry:
         )
         assert client.calls[0][1]["params"] == {"q": "hi"}
         assert client.calls[0][1]["headers"] == {"X-Test": "1"}
+
+
+class _UnreadStream(httpx.AsyncByteStream):
+    """A genuinely streamed body: `.text` raises until aread() is called."""
+
+    async def __aiter__(self):
+        yield b"<html>Forbidden</html>"
+
+
+def test_error_dict_survives_an_unread_streaming_body():
+    """`error_dict` must not raise when the 4xx snippet is unavailable.
+
+    httpx.ResponseNotRead subclasses RuntimeError rather than HTTPError, so it
+    is not caught by the `except HTTPX_ERRORS` blocks that wrap every call to
+    this helper: an uncaught one escapes the provider and replaces the status
+    code with a stream-access message.
+    """
+    response = httpx.Response(
+        403,
+        headers={"content-type": "text/html"},
+        stream=_UnreadStream(),
+        request=httpx.Request("GET", "https://publisher.example/paper.pdf"),
+    )
+    exc = httpx.HTTPStatusError("403", request=response.request, response=response)
+
+    result = _http.error_dict("OA download", exc)
+
+    assert "403" in result["error"]
+    assert "not read" in result["error"]
