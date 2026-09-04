@@ -13,6 +13,22 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
+## [Unreleased]
+
+### Fixed
+
+- `download_pdf(..., allow_oa_url=True)` no longer fails with `Attempted to
+  access streaming response content, without having called read()` when the
+  open-access URL returns a 4xx other than 404. `error_dict` builds the 4xx
+  message from `response.text`, which is unavailable on an unread streaming
+  response; the resulting `httpx.ResponseNotRead` subclasses `RuntimeError`
+  rather than `HTTPError`, so `except HTTPX_ERRORS` did not catch it and it
+  propagated out of the download, hiding the real status. `stream_to_file` now
+  reads the body before `raise_for_status()` on an error status, and
+  `error_dict` degrades to a placeholder snippet if a caller has not. Callers
+  now see e.g. `OA download HTTP 403: <body snippet>`. Success responses are
+  still streamed and never buffered.
+
 ## [2026.06.04] — 2026-06-04
 
 ### Fixed

@@ -130,9 +130,23 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
             return {
                 "error": f"{provider} server error (HTTP {status}). Transient — retry.",
             }
-        # Other 4xx — surface a snippet of the body for debugging
+        # Other 4xx — surface a snippet of the body for debugging.
+        #
+        # `.text` is only available once the body has been read. On a
+        # `client.stream()` response it raises httpx.ResponseNotRead, which is
+        # a RuntimeError rather than an HTTPError and so is *not* caught by the
+        # `except HTTPX_ERRORS` blocks that call this helper: it escaped the
+        # provider entirely and replaced a plain "HTTP 403" with
+        # "Attempted to access streaming response content, without having
+        # called read()". Callers that stream should aread() the body on an
+        # error status (see `_pdf_download.stream_to_file`); this guard keeps a
+        # caller that does not from losing the status code as well.
+        try:
+            snippet = exc.response.text[:200]
+        except httpx.ResponseNotRead:
+            snippet = "<streaming response body not read>"
         return {
-            "error": f"{provider} HTTP {status}: {exc.response.text[:200]}",
+            "error": f"{provider} HTTP {status}: {snippet}",
         }
     if isinstance(exc, httpx.TimeoutException):
         return {"error": f"{provider} request timed out. Transient — retry."}

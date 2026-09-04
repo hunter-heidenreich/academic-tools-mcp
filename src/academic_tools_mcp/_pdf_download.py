@@ -116,6 +116,16 @@ async def stream_to_file(
         async with slot_factory(), client.stream("GET", url, timeout=timeout) as response:
             if response.status_code == 404:
                 return {"error": (not_found_message or f"{provider_label}: PDF not found at {url}")}
+            if response.status_code >= 400:
+                # Read the body before raising. This is a streaming response, so
+                # its content is not available until aread(); `error_dict` wants
+                # a snippet for the 4xx message and would otherwise raise
+                # httpx.ResponseNotRead, which is a RuntimeError and therefore
+                # escapes the `except HTTPX_ERRORS` below rather than being
+                # converted. Only error responses are buffered, so the streaming
+                # guarantee that matters (a 200 PDF is never held in memory) is
+                # untouched, and an error body is small.
+                await response.aread()
             response.raise_for_status()
             if require_pdf:
                 content_type = response.headers.get("content-type", "")
