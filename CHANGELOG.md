@@ -23,7 +23,7 @@ grouped by milestone rather than per commit.
   DOI can list different author sets for the same work. These are properties of
   the upstream providers, but until now they were written down only in
   `CLAUDE.md` — a file users don't read — so anyone citing a result had no way
-  to know which fields to double-check. ([#70])
+  to know which fields to double-check. ([#73])
 
 - **Tool-layer tests for the three MCP tools that had none, and a CI coverage
   floor to stop it recurring.** `get_paper_references_count`, `search_wikipedia`
@@ -221,7 +221,7 @@ grouped by milestone rather than per commit.
   And **Crossref search does not warm what `get_paper_metadata` reads** — it
   warms the Crossref namespace while `resolve_metadata_source` sends plain DOIs
   to OpenAlex, so the "free cache hit" promise was wrong in `README.md` and in
-  the `instructions=` string every agent loads. ([#70])
+  the `instructions=` string every agent loads. ([#73])
 
 - **A test citation pointing at a class that does not exist, and five smaller
   doc defects.** `tests/test_manual.py::TestMarkdownImportSectionsIndex` was
@@ -231,7 +231,7 @@ grouped by milestone rather than per commit.
   `_SCHEMA_VERSION`, `search_cached_papers` claiming zero-score hits are dropped
   when FTS5 never returns them, the `add-provider` skill pointing at
   `crossref.py` as a template that `python-design.md` calls a counter-example,
-  and a stale "10x its search rate" left in a test docstring. ([#70])
+  and a stale "10x its search rate" left in a test docstring. ([#73])
 
 - **A second pass over every `.claude/rules/` file, one reviewer per file,
   reading each section against the source it covers.** The first audit fixed
@@ -250,7 +250,7 @@ grouped by milestone rather than per commit.
   (`max_pending` to `http.md`, the single-`SingleFlight` deadlock rule to
   `cache.md`), a circular `utils.md` ↔ `providers.md` cross-reference was cut,
   and the Crossref rate table that `crossref.py` and `tests/test_politeness.py`
-  both point at now actually exists in `providers.md`. ([#70])
+  both point at now actually exists in `providers.md`. ([#73])
 
 - **Test citations dropped from the rules layer, and the convention amended to
   match.** `python-design.md` prescribed `(Guarded by tests/…::test_y)` on every
@@ -258,7 +258,7 @@ grouped by milestone rather than per commit.
   the code it guards, and this layer had already shipped one pointing at a class
   that does not exist. The rules files now state the invariant and what breaks
   if you violate it. Citing a test in a *code* comment or docstring is still
-  fine — mutate the guarded line and watch it fail first. ([#70])
+  fine — mutate the guarded line and watch it fail first. ([#73])
 
 - **The `.claude/rules/` layer audited section by section against the code it
   describes, and roughly fifty wrong claims corrected.** Each file was read
@@ -294,7 +294,7 @@ grouped by milestone rather than per commit.
   allowlist; a sections-lock comment calling an LRU a FIFO; `_stats`' wiring
   list and `snapshot()` / `get_server_stats` docstrings, all three of which
   omitted `cache_write_failures`; and three past-tense rationales rewritten as
-  the invariant they were hiding. ([#70])
+  the invariant they were hiding. ([#73])
 
 - **The rules files trimmed by ~11% overall, and re-scoped where the split was
   wrong.** The dominant cost was prose restating the docstring of the module
@@ -305,14 +305,14 @@ grouped by milestone rather than per commit.
   file itself is edited, since its three anti-rot conventions are what govern
   them. `http.md` had stated "policy lives in `providers.md`, not here" and
   then carried three paragraphs of provider policy; that is now consistent.
-  ([#70])
+  ([#73])
 
 - **`_doi`'s load-bearing ordering invariant is now guarded.** `normalize`
   strips the `doi:` prefix *before* the URL handling because
   `"doi:https://doi.org/10.x/y"` occurs in the wild, but the property test's
   spelling list covered the prefix and the URL only separately. Both nested
   forms are now in it, mutation-verified: reordering the two steps fails the
-  test. ([#70])
+  test. ([#73])
 
 - **A transient network failure during an open-access PDF download was cached
   as permanent for 24 hours.** `_is_definitive_failure` asked
@@ -1393,4 +1393,4 @@ grouped by milestone rather than per commit.
 [#67]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/67
 [#68]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/68
 [#69]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/69
-[#70]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/70
+[#73]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/73
