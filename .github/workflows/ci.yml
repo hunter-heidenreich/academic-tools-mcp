@@ -39,5 +39,8 @@ jobs:
       - name: Type-check (mypy)
         run: uv run mypy
 
+      # The floor ratchets rather than stretches: the suite sits above it
+      # today, so this catches new code landing untested — which is how three
+      # MCP tools reached production with no tool-layer coverage at all.
       - name: Tests
-        run: uv run pytest -q
+        run: uv run pytest -q --cov=academic_tools_mcp --cov-report=term-missing --cov-fail-under=90

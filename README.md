@@ -250,6 +250,10 @@ uv sync                          # Install dependencies
 uv run pytest -v                 # Run all tests
 uv run pytest tests/test_bibtex.py -v   # Run one test file
 uv run pytest -k "test_particle" -v     # Run tests matching a pattern
+
+# Coverage, as CI runs it. CI gates at 90%; the flags are not in `addopts`
+# because a single-file run would then fail the floor.
+uv run pytest -q --cov=academic_tools_mcp --cov-report=term-missing --cov-fail-under=90
 ```
 
 ## Architecture

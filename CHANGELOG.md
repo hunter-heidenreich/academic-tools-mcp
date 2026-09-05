@@ -17,6 +17,30 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Tool-layer tests for the three MCP tools that had none, and a CI coverage
+  floor to stop it recurring.** `get_paper_references_count`, `search_wikipedia`
+  and `get_wikipedia_summary` were untested — the only occurrence of
+  `get_paper_references_count` anywhere under `tests/` was inside a docstring.
+  The providers beneath them were well covered; it was the `@mcp.tool` wrappers
+  that were not, which is where the response shapes agents branch on and the
+  `suggestion` recovery hints live. `tools/graph.py` and `tools/search.py` were
+  the two lowest-covered files in the tree at 75% and 85%, against 93% for the
+  providers they call.
+
+  `get_paper_references_count`'s partial-failure branch turned out to be the
+  only shape in the reference family exercised nowhere end-to-end: sibling
+  `get_paper_references` reports a failed source via `partial_failure` on the
+  winning page, while this tool reports it in place inside `sources`.
+
+  CI now runs the suite under `--cov-fail-under=90` (92.8% today, so it
+  ratchets rather than stretches). The flags are deliberately **not** in
+  `addopts`: applied to every invocation they also apply to
+  `pytest tests/test_bibtex.py`, a workflow the README documents, which reports
+  ~23% and would fail. `pyproject.toml` also gained a
+  `[tool.pytest.ini_options]` section — there was none — pinning `testpaths`
+  and `asyncio_mode = "strict"`, which was already the effective default and is
+  the reason every async test needs its own `@pytest.mark.asyncio`. ([#67])
+
 - **Tests for `_fast_extract`**, which was at 0% coverage — the only test
   mentioning it asserted on the command string built for it and never ran it.
   Its entire job is behaving correctly when things go wrong (pymupdf absent,
@@ -1165,3 +1189,4 @@ grouped by milestone rather than per commit.
 [#58]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/58
 [#65]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/65
 [#66]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/66
+[#67]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/67
