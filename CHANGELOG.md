@@ -15,6 +15,56 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Fixed
+
+- **arXiv served the wrong version's metadata and PDF bytes.** The cache key
+  stripped the version suffix (`2301.00001v2` → `2301.00001`) while the API
+  request kept it, so whichever version was fetched first won the shared key.
+  Every later version was a silent cache hit returning the first one's title,
+  abstract, and authors — and `download_pdf` handed back the first one's bytes
+  marked `cached: True`. `force_refresh` could not help: it invalidated that
+  same shared key. The version is now part of the key, so `2301.00001v1`,
+  `2301.00001v2`, and the bare `2301.00001` ("latest") are three distinct
+  entries. `search_arxiv` warms both the versioned and bare keys, since search
+  always returns the current version. ([#48])
+- **A zero-length HTTP 200 installed a permanent 0-byte PDF.** With no chunks
+  the streaming write loop never ran, the `%PDF-` sniff never fired, and the
+  atomic rename installed an empty file reported as a successful download.
+  Every downstream `dest.exists()` then treated it as cached forever and
+  `convert_paper` handed it to the converter. `stream_to_file` now rejects an
+  empty body, and the three native PDF providers plus `convert_paper` validate
+  cached files through the shared `_pdf_download.is_usable_pdf` (non-zero size
+  + `%PDF-` header) instead of a bare existence check — the guard that until
+  now only the manual-import and open-access paths used. ([#48])
+- **BibTeX author fields were never escaped**, so an author or organisation
+  containing `&`, `%`, `$`, `#`, or `_` (`AT&T Labs`, `Sanofi-Aventis R&D`, and
+  every OpenAlex org-authorship) produced a `.bib` that fails to compile with
+  *"Misplaced alignment tab character &"*. Title, journal, and DOI were escaped
+  from the start; the author path was not. DOIs interpolated into
+  `howpublished={\url{...}}` were also raw — an unescaped `%` there comments
+  out the rest of the file. `_escape_doi` now covers `{`, `}`, `\`, `$`, `~`,
+  and `^` as well, in a single pass so a backslash's own escape braces are not
+  re-escaped. ([#48])
+- **Two imported papers could silently overwrite each other's PDF.** Derived
+  paths used two different sanitizers: PDFs collapsed unsafe characters to `_`
+  (so `"a b"` and `"a_b"` became the same `a_b.pdf`) while markdown replaced
+  only `/` (so the same two kept separate `.md` files). The PDF and markdown
+  caches therefore disagreed about identity. All three derived paths — PDF,
+  markdown, and the sections key — now share one `papers.safe_stem`, which
+  percent-encodes rather than collapses and so is no longer lossy. ([#48])
+
+### Changed
+
+- **One-time cache filename migration.** Because `safe_stem` replaces two
+  earlier filename rules, cached PDFs and markdown whose identifier contains
+  characters outside `[A-Za-z0-9._-]` are renamed forward at server startup
+  (alongside the existing orphan-`.tmp` sweep). Ordinary arXiv IDs and DOIs are
+  unaffected — on a 7,000-file cache only 20 files move, all of them Elsevier
+  PII-style DOIs (`10.1016/s1359-6446(03)02831-9`) or freeform labels
+  (`google:wordpiece:2012`). Without the sweep those papers would report "not
+  converted yet" and re-run conversions that take tens of minutes. The sweep is
+  idempotent and never overwrites an existing file. ([#48])
+
 ### Added
 
 - **Continuous integration.** A GitHub Actions workflow now runs `ruff check`,
@@ -664,3 +714,4 @@ grouped by milestone rather than per commit.
 [#43]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/43
 [#44]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/44
 [#47]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/47
+[#48]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/48

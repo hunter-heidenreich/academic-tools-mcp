@@ -126,7 +126,12 @@ def _format_one_name(display_name: str) -> str:
     Organisational names (consortia, collaborations) are brace-wrapped so
     BibTeX treats them atomically rather than splitting off a fake surname.
     """
-    name = display_name.strip()
+    # Escape first, then split. Author display names carry LaTeX specials in
+    # practice ("AT&T Labs", "Sanofi-Aventis R&D", any OpenAlex org-authorship),
+    # and an unescaped `&` makes the whole .bib fail to compile. Escaping is
+    # safe to do before the split: it only rewrites punctuation, never the
+    # word boundaries the particle and surname logic below depends on.
+    name = _escape_bibtex(display_name.strip())
     if _ORG_RE.search(name):
         return f"{{{name}}}"
     parts = name.split()
@@ -181,12 +186,33 @@ def _escape_bibtex(s: str) -> str:
     return s
 
 
+# Per-character escapes for DOI suffixes. A single pass avoids the ordering
+# trap of chained str.replace: escaping "\\" first emits "\\textbackslash{}",
+# whose braces a later brace-pass would then escape again.
+_DOI_ESCAPES = {
+    "\\": r"\textbackslash{}",
+    "&": r"\&",
+    "%": r"\%",
+    "#": r"\#",
+    "_": r"\_",
+    "$": r"\$",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+
+
 def _escape_doi(s: str) -> str:
-    """Escape only the BibTeX-fatal characters in a DOI, leaving the DOI string
-    otherwise intact (no backslash mangling)."""
-    for ch in ("&", "%", "#", "_"):
-        s = s.replace(ch, "\\" + ch)
-    return s
+    """Escape the BibTeX-fatal characters in a DOI, leaving it otherwise intact.
+
+    Unlike ``_escape_bibtex`` this does not rewrite the string into prose — a
+    DOI must stay resolvable — so it touches only what would break the entry.
+    DOI suffixes are publisher-chosen and genuinely contain these characters;
+    an unescaped ``%`` comments out the rest of the file and an unmatched
+    ``{`` swallows it.
+    """
+    return "".join(_DOI_ESCAPES.get(ch, ch) for ch in s)
 
 
 def generate_bibtex(work: dict[str, Any]) -> str:
@@ -260,7 +286,9 @@ def generate_bibtex(work: dict[str, Any]) -> str:
             fields.append(("eprint", f"{{{arxiv_id}}}"))
             fields.append(("archiveprefix", "{arXiv}"))
         elif "openalex" in (ids.get("openalex", "") or ""):
-            fields.append(("howpublished", f"{{\\url{{{work.get('doi', '')}}}}}"))
+            fields.append(
+                ("howpublished", f"{{\\url{{{_escape_doi(work.get('doi', '') or '')}}}}}")
+            )
 
     # Format the entry
     field_str = ",\n".join(f"  {name}={value}" for name, value in fields)
@@ -387,7 +415,7 @@ def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
         fields.append(("publisher", f"{{{server_name}}}"))
         if doi:
             fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
-            fields.append(("howpublished", f"{{\\url{{https://doi.org/{doi}}}}}"))
+            fields.append(("howpublished", f"{{\\url{{https://doi.org/{_escape_doi(doi)}}}}}"))
 
     field_str = ",\n".join(f"  {name}={value}" for name, value in fields)
     return f"@{entry_type}{{{key},\n{field_str}\n}}"

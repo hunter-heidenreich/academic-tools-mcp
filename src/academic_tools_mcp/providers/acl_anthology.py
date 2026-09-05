@@ -172,7 +172,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     canonical = canonical_key(doi)
     dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(aid)
 
-    if not force_refresh and dest.exists():
+    if not force_refresh and _pdf_download.is_usable_pdf(dest):
         return {
             "anthology_id": aid,
             "pdf_url": pdf_url(aid),
@@ -186,7 +186,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
         # have just written the file. Skip the short-circuit under
         # force_refresh: the caller explicitly wants fresh bytes, and the
         # streaming download replaces dest atomically on success.
-        if not force_refresh and dest.exists():
+        if not force_refresh and _pdf_download.is_usable_pdf(dest):
             return {
                 "anthology_id": aid,
                 "pdf_url": pdf_url(aid),

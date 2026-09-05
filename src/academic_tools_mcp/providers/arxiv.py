@@ -7,7 +7,7 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import _clients, _http, _pdf_download, _singleflight, cache, config
+from .. import _clients, _http, _pdf_download, _singleflight, cache, config, papers
 from .._throttle import Throttle
 
 # Parsing the arXiv Atom feed can fail two ways: a malformed/truncated body
@@ -150,13 +150,35 @@ def _normalize_arxiv_id(arxiv_id: str) -> str:
 
 
 def canonical_arxiv_id(arxiv_id: str) -> str:
-    """Return a canonical arXiv ID for cache keying.
+    """Return a canonical arXiv ID for cache keying, **version included**.
 
-    Strips version suffix and lowercases so that v1/v2/latest share one
-    cache entry.
+    The version is part of a paper's identity, so it is part of the key. A
+    bare ``2301.00001`` means "whatever is current" and keys on the bare
+    form; an explicit ``2301.00001v2`` means that revision and keys on
+    ``2301.00001v2``.
+
+    This used to strip the version so v1/v2/latest shared one entry, which
+    silently served the wrong paper: the key was stripped but the *fetch*
+    (``_normalize_arxiv_id``) kept the version, so whichever version was
+    requested first won the shared key and every later version was a cache
+    hit returning the earlier one's title, abstract, and authors —
+    and ``download_pdf`` then handed back the earlier one's bytes marked
+    ``cached: True``. ``force_refresh`` could not help, because it
+    invalidated that same shared key.
+
+    Only lowercasing is applied (old-style IDs like ``math.GT/0309136``
+    vary in case upstream); the API request itself keeps the original case.
     """
-    bare = _normalize_arxiv_id(arxiv_id)
-    return re.sub(r"v\d+$", "", bare).lower()
+    return _normalize_arxiv_id(arxiv_id).lower()
+
+
+def base_arxiv_id(arxiv_id: str) -> str:
+    """Return the version-stripped ("latest") form of an arXiv ID.
+
+    This is the key a bare request uses. Kept separate from
+    ``canonical_arxiv_id`` so callers must say which they mean.
+    """
+    return re.sub(r"v\d+$", "", canonical_arxiv_id(arxiv_id))
 
 
 # ---------------------------------------------------------------------------
@@ -358,14 +380,19 @@ async def search_papers(
         raw_id = paper.get("id", "")
         if "/abs/" in raw_id:
             paper_id = raw_id.split("/abs/")[-1]
-            paper_canonical = canonical_arxiv_id(paper_id)
-            if (
-                cache.get(
-                    NAMESPACE, "papers", paper_canonical, max_age_seconds=_POSITIVE_TTL_SECONDS
-                )
-                is None
-            ):
-                cache.put(NAMESPACE, "papers", paper_canonical, paper)
+            # Search always returns the current version, so this entry is
+            # valid under *both* the versioned key (that exact revision) and
+            # the bare key (whatever is current). Warming only the versioned
+            # one would leave every bare lookup a miss.
+            keys = {canonical_arxiv_id(paper_id), base_arxiv_id(paper_id)}
+            for paper_canonical in keys:
+                if (
+                    cache.get(
+                        NAMESPACE, "papers", paper_canonical, max_age_seconds=_POSITIVE_TTL_SECONDS
+                    )
+                    is None
+                ):
+                    cache.put(NAMESPACE, "papers", paper_canonical, paper)
 
     return {
         "total_results": total_results,
@@ -374,8 +401,14 @@ async def search_papers(
 
 
 def _pdf_filename(canonical: str) -> str:
-    """Build a human-readable PDF filename from a canonical arXiv ID."""
-    return canonical.replace("/", "_") + ".pdf"
+    """Build a PDF filename from a canonical arXiv ID.
+
+    Routes through ``papers.safe_stem`` — the single sanitizer shared by the
+    PDF, markdown, and sections paths — so this provider can't disagree with
+    the others about which file belongs to which paper. Real arXiv ids are
+    ``[A-Za-z0-9./-]`` only, so they map to the same name as before.
+    """
+    return papers.safe_stem(canonical) + ".pdf"
 
 
 def pdf_path(arxiv_id: str) -> Path:
@@ -404,24 +437,16 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     canonical = canonical_arxiv_id(arxiv_id)
     dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
-    if not force_refresh and dest.exists():
-        return {
-            "path": str(dest),
-            "size_bytes": dest.stat().st_size,
-            "cached": True,
-        }
+    if not force_refresh and (hit := _pdf_download.cached_hit(dest)) is not None:
+        return hit
 
     async def _fetch() -> dict[str, Any]:
         # Re-check after winning the slot — a concurrent leader may have
         # just written the file. Skip the short-circuit under force_refresh:
         # the caller wants fresh bytes, and stream_to_file replaces dest
         # atomically on success.
-        if not force_refresh and dest.exists():
-            return {
-                "path": str(dest),
-                "size_bytes": dest.stat().st_size,
-                "cached": True,
-            }
+        if not force_refresh and (hit := _pdf_download.cached_hit(dest)) is not None:
+            return hit
 
         # Need the paper metadata to find the PDF URL
         paper = await get_paper(arxiv_id)

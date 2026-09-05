@@ -36,6 +36,48 @@ _DEFAULT_MAX_PDF_BYTES = 200_000_000
 _CHUNK_SIZE = 64 * 1024
 
 
+def is_usable_pdf(path: Path) -> bool:
+    """Whether an existing cached PDF should be trusted as a cache hit.
+
+    Rejects the leftovers an interrupted or degenerate download can leave
+    behind: a 0-byte file (an empty 200, a killed copy) and anything whose
+    first bytes are not the ``%PDF-`` magic number (an HTML landing page
+    saved under a .pdf name).
+
+    Every `dest.exists()` short-circuit in the PDF providers should route
+    through this instead. `exists()` alone is what let a 0-byte file be
+    served as ``cached: True`` forever and handed to the converter.
+
+    Not a validity proof — a file truncated after the header still passes.
+    That case is caught downstream by the converter failing, which is
+    recoverable; serving an empty file silently is not.
+    """
+    try:
+        if path.stat().st_size == 0:
+            return False
+        with path.open("rb") as f:
+            return f.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
+def cached_hit(dest: Path) -> dict[str, Any] | None:
+    """Return the standard cache-hit payload for ``dest``, or None.
+
+    ``None`` means "treat as a miss and re-download" — either the file is
+    absent or it failed ``is_usable_pdf``. Collapses the six copies of this
+    block across the three PDF providers (each had it twice: once up front
+    and once in the post-single-flight re-check).
+    """
+    try:
+        if not is_usable_pdf(dest):
+            return None
+        return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": True}
+    except OSError:
+        # Raced with an unlink between the check and the stat.
+        return None
+
+
 def resolve_max_pdf_bytes() -> int | None:
     """Resolve the MAX_PDF_BYTES env var.
 
@@ -170,6 +212,20 @@ async def stream_to_file(
                         }
                     f.write(chunk)
                     written += len(chunk)
+        if written == 0:
+            # A 200 with an empty body. Without this guard os.replace would
+            # install a 0-byte file as a successful download, every
+            # `dest.exists()` check downstream would treat it as cached
+            # forever, and convert_paper would hand it to the converter.
+            # (The %PDF- sniff above cannot catch this: with no chunks the
+            # loop body never runs.)
+            return {
+                "error": (
+                    f"{provider_label}: {url} returned an empty body "
+                    "(0 bytes) — nothing was cached."
+                ),
+                "retryable": True,
+            }
         os.replace(tmp_path, dest)
         return {"path": str(dest), "size_bytes": written, "cached": False}
     except _http.HTTPX_ERRORS as e:

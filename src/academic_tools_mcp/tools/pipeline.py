@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from .. import cache, manual, oa_download, papers
+from .. import _pdf_download, cache, manual, oa_download, papers
 from .._app import (
     _SECTION_HARNESS_CAP,
     ALLOW_OA_URL,
@@ -189,7 +189,9 @@ async def convert_paper(
     target = manual.resolve_target(identifier)
     pdf = target["pdf_path"]
 
-    if not pdf.exists():
+    if not _pdf_download.is_usable_pdf(pdf):
+        # Not just "absent": a 0-byte or non-%PDF- leftover must be treated
+        # as a miss too, rather than handed to the converter.
         return {
             "error": f"PDF not cached for: {identifier}. "
             "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section. "

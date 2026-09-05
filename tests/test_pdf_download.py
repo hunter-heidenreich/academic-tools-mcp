@@ -275,3 +275,106 @@ async def test_a_streaming_success_is_never_buffered(tmp_path):
 
     assert result["size_bytes"] == len(b"%PDF-1.4 real content")
     assert (tmp_path / "out.pdf").read_bytes() == b"%PDF-1.4 real content"
+
+
+class TestEmptyBodyRejected:
+    """A 200 with no body must not be installed as a successful download.
+
+    Regression: with no chunks the write loop never ran, the ``%PDF-`` sniff
+    never fired, and ``os.replace`` installed a 0-byte file returned as
+    ``{"size_bytes": 0, "cached": False}``. Every downstream ``dest.exists()``
+    then treated it as cached forever and convert_paper handed it to the
+    converter.
+    """
+
+    @pytest.mark.asyncio
+    async def test_zero_byte_response_errors_and_writes_nothing(self, tmp_path: Path):
+        dest = tmp_path / "empty.pdf"
+
+        # NB: _mock_stream_response does `chunks or [default]`, so an empty
+        # list would silently become the default body. Build it inline.
+        async def aiter_bytes(chunk_size):
+            return
+            yield  # pragma: no cover - makes this an async generator
+
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status = MagicMock()
+        response.aiter_bytes = aiter_bytes
+
+        @contextlib.asynccontextmanager
+        async def stream_cm():
+            yield response
+
+        client = MagicMock()
+        client.stream = MagicMock(return_value=stream_cm())
+
+        result = await _pdf_download.stream_to_file(
+            client,
+            "https://example.org/empty.pdf",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="arXiv",
+        )
+
+        assert "error" in result
+        assert "empty body" in result["error"]
+        assert result["retryable"] is True
+        assert not dest.exists(), "a 0-byte file was installed at the destination"
+        assert list(tmp_path.iterdir()) == [], "a temp file was left behind"
+
+    @pytest.mark.asyncio
+    async def test_nonempty_response_still_succeeds(self, tmp_path: Path):
+        dest = tmp_path / "ok.pdf"
+        client = MagicMock()
+        client.stream = MagicMock(return_value=_mock_stream_response(chunks=[b"%PDF-1.7\nbody"])())
+
+        result = await _pdf_download.stream_to_file(
+            client,
+            "https://example.org/ok.pdf",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="arXiv",
+        )
+
+        assert "error" not in result
+        assert result["size_bytes"] == len(b"%PDF-1.7\nbody")
+        assert dest.read_bytes().startswith(b"%PDF-")
+
+
+class TestIsUsablePdf:
+    def test_missing_file(self, tmp_path):
+        assert _pdf_download.is_usable_pdf(tmp_path / "nope.pdf") is False
+
+    def test_zero_byte_file(self, tmp_path):
+        p = tmp_path / "empty.pdf"
+        p.write_bytes(b"")
+        assert _pdf_download.is_usable_pdf(p) is False
+
+    def test_html_landing_page(self, tmp_path):
+        p = tmp_path / "landing.pdf"
+        p.write_bytes(b"<!DOCTYPE html><html>Paywall</html>")
+        assert _pdf_download.is_usable_pdf(p) is False
+
+    def test_real_pdf_header(self, tmp_path):
+        p = tmp_path / "real.pdf"
+        p.write_bytes(b"%PDF-1.4\n...")
+        assert _pdf_download.is_usable_pdf(p) is True
+
+    def test_directory_is_not_usable(self, tmp_path):
+        d = tmp_path / "adir.pdf"
+        d.mkdir()
+        assert _pdf_download.is_usable_pdf(d) is False
+
+
+class TestCachedHit:
+    def test_returns_none_for_zero_byte(self, tmp_path):
+        p = tmp_path / "empty.pdf"
+        p.write_bytes(b"")
+        assert _pdf_download.cached_hit(p) is None
+
+    def test_returns_payload_for_real_pdf(self, tmp_path):
+        p = tmp_path / "real.pdf"
+        p.write_bytes(b"%PDF-1.4\nxyz")
+        hit = _pdf_download.cached_hit(p)
+        assert hit == {"path": str(p), "size_bytes": 12, "cached": True}

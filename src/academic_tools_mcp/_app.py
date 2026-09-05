@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import _clients, cache
+from . import _clients, cache, papers
 from .providers import crossref
 
 
@@ -21,14 +21,16 @@ async def _lifespan(app: FastMCP):
     """Manage process-wide resources tied to the server's life.
 
     On startup: sweep ``.cache/`` for stale ``*.tmp`` files left behind
-    by killed writers from previous runs. Cheap (one rglob, no I/O on
-    files that don't match) and idempotent. New clients are pooled
-    lazily on first use, so we don't pre-build them here.
+    by killed writers from previous runs, then rename any cached PDF or
+    markdown still using a pre-``safe_stem`` filename so it isn't silently
+    orphaned. Both are cheap and idempotent. New clients are pooled lazily
+    on first use, so we don't pre-build them here.
 
     On shutdown: close every pooled httpx.AsyncClient so we don't leak
     sockets if the server is stopped while clients are idle.
     """
     cache.gc_orphan_tmp_files()
+    papers.migrate_legacy_stems()
     try:
         yield
     finally:
