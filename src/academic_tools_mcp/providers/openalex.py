@@ -18,8 +18,7 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable OpenAlex response.
 
-    Delegates to ``_http.parse_error_dict``, the single home for the
-    shape. Six providers carried byte-identical copies of this.
+    Delegates to ``_http.parse_error_dict``, the single home for the shape.
     """
     return _http.parse_error_dict("OpenAlex")
 
@@ -453,12 +452,9 @@ async def get_works_batch(
         for start in range(0, len(safe_misses), _BATCH_CHUNK_SIZE)
     ]
 
-    # Chunks and singleton fallbacks run concurrently. The provider's
-    # ``Throttle`` (_MAX_CONCURRENT=4) is what bounds real parallelism; the
-    # loop used to be a serial ``for ... await``, so 200 DOIs issued four
-    # chunk requests strictly one after another while three slots sat idle.
-    # return_exceptions=False is fine here: every task already converts its
-    # failures into error dicts.
+    # Chunks and singleton fallbacks run concurrently; the provider's
+    # ``Throttle`` is what bounds real parallelism. return_exceptions=False is
+    # fine here: every task already converts its failures into error dicts.
     results = await asyncio.gather(
         *(get_work(c, force_refresh=force_refresh) for c in unsafe_misses),
         *(_fetch_chunk(chunk, force_refresh=force_refresh) for chunk in chunks),

@@ -18,18 +18,10 @@ already on disk and the winners are re-read for snippets anyway, so
 storing it twice would be waste — this is what makes the database
 smaller than the JSON index it replaced, not larger.
 
-That JSON index held every document's full term-frequency map, in both a
-folded and an un-folded form, and was parsed into the heap in one go.
-Measured on a 3,732-paper corpus:
-
-    index size    193 MB  ->   84 MB
-    process RSS   933 MB  ->   20 MB
-    cold query   1308 ms  ->  1.3 ms
-
-It also rewrote all 193 MB whenever a single paper changed, and held a
-global lock across a full ``stat`` walk on every query. Refresh is now a
-per-document upsert keyed on ``(mtime_ns, size)``; the walk remains, but
-only changed files are re-read.
+Refresh is a per-document upsert keyed on ``(mtime_ns, size)``: the corpus
+walk remains, but only changed files are re-read and re-indexed. (The
+measurements behind the move off the previous JSON index are in
+``CHANGELOG.md`` — transcribing them here only gave two copies to disagree.)
 
 Two FTS tables, not one: ``normalize`` is a query-time flag in this API
 while diacritic folding is a build-time tokenizer option in FTS5, so the
@@ -455,9 +447,8 @@ def _connect() -> sqlite3.Connection:
 
     A connection per call: SQLite connections are not shareable across
     threads, and the tool layer dispatches searches through
-    ``asyncio.to_thread``. Opening is microseconds — the expensive thing
-    used to be parsing a 193 MB JSON blob into the heap, which is exactly
-    what this removes.
+    ``asyncio.to_thread``. Opening costs microseconds, so there is nothing to
+    amortise by holding one open.
     """
     path = _index_path()
     path.parent.mkdir(parents=True, exist_ok=True)

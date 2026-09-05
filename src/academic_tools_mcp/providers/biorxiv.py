@@ -34,8 +34,7 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable bioRxiv response.
 
-    Delegates to ``_http.parse_error_dict``, the single home for the
-    shape. Six providers carried byte-identical copies of this.
+    Delegates to ``_http.parse_error_dict``, the single home for the shape.
     """
     return _http.parse_error_dict("bioRxiv")
 
@@ -226,8 +225,7 @@ def _pick_latest_version(collection: list[dict[str, Any]]) -> dict[str, Any]:
 def _parse_paper(raw: dict[str, Any]) -> dict[str, Any]:
     """Convert a raw bioRxiv API entry into a normalized paper dict."""
     # `raw.get("server", "")` returns None when the key is present as JSON
-    # null, and None.lower() raises. Nine lines below, the `published` field
-    # already got this right — the omission here was accidental.
+    # null, and None.lower() raises — hence `or ""` rather than a default.
     server = (raw.get("server") or "").lower()
     if "medrxiv" in server:
         server = "medrxiv"

@@ -1,10 +1,8 @@
 """Per-provider persistent ``httpx.AsyncClient`` pool.
 
-Every API client used to create a fresh ``AsyncClient`` per request, which
-meant a TCP+TLS handshake on every call. With this pool, each provider
-gets one long-lived client that reuses keep-alive connections across all
-its calls. Latency win on multi-call sessions (browse a paper's 50
-references → 50 follow-up metadata lookups), no behavior change.
+Each provider gets one long-lived client that reuses keep-alive connections
+across all its calls, so a multi-call session (browse a paper's 50 references →
+50 follow-up metadata lookups) pays one TCP+TLS handshake rather than 50.
 
 A note on rate limits: pooling is orthogonal to throttling. Servers count
 *requests*, not connections, so reusing one socket vs. opening a fresh

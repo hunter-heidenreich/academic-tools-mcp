@@ -131,18 +131,17 @@ SECTION_MAX_CHARS = Annotated[
 ]
 
 
-# The pipeline stages an agent must run in order. Repeated verbatim in five
-# error messages before this constant existed.
+# The pipeline stages an agent must run in order. Single-homed: five error
+# messages quote it.
 PIPELINE_CHAIN = "download_pdf → convert_paper → get_paper_sections → get_paper_section"
 
 
 def not_converted_error(identifier: str) -> dict[str, Any]:
     """Uniform error for "this paper has no converted markdown yet".
 
-    Four tools produced this condition in two different shapes: three jammed
-    the recovery advice into the ``error`` string while ``find_in_paper``
-    split it into a proper ``suggestion`` key. Agents branch on ``suggestion``,
-    so the shape has to be the same everywhere.
+    Invariant: the recovery advice goes in ``suggestion``, never jammed into
+    the ``error`` string. Agents branch on ``suggestion``, so all four tools
+    that can produce this condition must emit the same shape.
     """
     return {
         "error": f"Paper not converted yet for: {identifier}.",
