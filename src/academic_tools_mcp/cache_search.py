@@ -36,7 +36,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from . import _textnorm, cache
+from . import _textnorm, cache, papers
 
 # Standard BM25 hyperparameters. k1 controls term-frequency saturation
 # (higher = more weight to repeated terms); b controls length
@@ -183,21 +183,20 @@ def _extract_title(markdown: str) -> str | None:
     return None
 
 
-def _section_for_offset(markdown: str, offset: int) -> str | None:
-    """Return the H1/H2 heading whose body contains ``offset``, or None.
+def _section_for_offset(markdown: str, offset: int) -> tuple[int | None, str | None]:
+    """Return ``(section_index, title)`` for a character offset.
 
-    Matches papers.parse_sections' notion of "section" — H1 and H2 both
-    open a new section, H3 doesn't. Used so a snippet hit can tell the
-    agent which section to chain into via get_paper_section.
+    Delegates to ``papers.section_at_offset`` so this agrees with what
+    ``get_paper_section`` will actually accept. It used to be a fourth
+    independent dialect that (a) lacked the empty-section filter, so it could
+    name a section the reader's index had dropped, and (b) returned only a
+    *title* — which ``get_paper_section`` rejects with "Ambiguous section
+    title" whenever a paper repeats a heading, as 10.9% of a real corpus does.
     """
-    current: str | None = None
-    for match in _HEADING_RE.finditer(markdown):
-        if match.start() > offset:
-            return current
-        level = len(match.group(1))
-        if level <= 2:
-            current = match.group(2).strip()
-    return current
+    found = papers.section_at_offset(markdown, offset)
+    if found is None:
+        return None, None
+    return found
 
 
 def _extract_snippet(
@@ -724,7 +723,10 @@ def search(
             continue
         title = _extract_title(text)
         snippet, snippet_offset = _extract_snippet(text, unique_query_terms, normalize=normalize)
-        section = _section_for_offset(text, snippet_offset) if snippet_offset is not None else None
+        if snippet_offset is not None:
+            section_index, section = _section_for_offset(text, snippet_offset)
+        else:
+            section_index, section = None, None
         canonical_id = _filename_to_canonical(doc["namespace"], doc["stem"])
         out.append(
             {
@@ -734,6 +736,11 @@ def search(
                 "title": title,
                 "snippet": snippet,
                 "section": section,
+                # The chainable handle. `section` is a title, and titles are
+                # not unique — get_paper_section rejects a repeated one with
+                # "Ambiguous section title". Pass this index instead.
+                "section_index": section_index,
+                "char_offset": snippet_offset,
                 "char_count": len(text),
             }
         )

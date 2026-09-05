@@ -30,6 +30,17 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **Section-boundary computation is single-homed.** It existed in four
+  places: `parse_sections`, `find_in_markdown` and `get_section_content` (the
+  latter two byte-identical), and `cache_search._section_for_offset` — a
+  fourth dialect over raw offsets that lacked the empty-section filter and so
+  could name a section the reader's index had already dropped.
+  `find_in_markdown`'s docstring already depended on two of them staying
+  identical "because both apply the same recipe", an invariant guarded by a
+  single test. All four now call `papers.section_boundaries`. Verified across
+  1,693 cached papers: zero disagreements between the index and the
+  reader. ([#54])
+
 - **Uniform "not converted yet" error.** Four tools produced this condition in
   two different shapes — three jammed the recovery advice into the `error`
   string while `find_in_paper` split it into a `suggestion` key. Agents branch
@@ -76,8 +87,26 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **The documented `search_cached_papers` → `get_paper_section` chain failed
+  for repeated headings.** Corpus search returned the matched section's
+  *title*, and the docstring told the agent to chain it into
+  `get_paper_section` — which rejects a repeated title as an ambiguous match.
+  Measured on a real 2,493-paper corpus, **271 (10.9%) have at least two
+  sections sharing a title**, so the documented workflow dead-ended roughly
+  one time in nine. Hits now carry `section_index` (and `char_offset`), and
+  the docstring directs chaining through the index. ([#54])
+- **A paper with no headings was indistinguishable from a one-section
+  paper.** Converter output without markdown headings — `pdftotext`'s layout
+  mode, notably — collapses to a single synthetic `"Preamble"` section, and
+  `get_paper_sections` reported that identically to a genuine one-section
+  paper. On a real corpus **every** single-section paper above 100 KB was this
+  case: theses and long preprints, where blind paging is the worst available
+  reading strategy. Responses now carry `sections_detected`, plus a
+  `sections_note` pointing at `find_in_paper` and at re-running with
+  `mode="full"`. Indices cached before this flag existed read as detected
+  rather than raising a false alarm. ([#54])
 - **A cancelled single-flight *follower* took down the leader.** The mirror of
-  the fix above, and the likelier direction: cancelling a task cancels the
+  the fix below, and the likelier direction: cancelling a task cancels the
   future it is suspended on, and for a follower that is the *shared* future.
   One follower giving up therefore cancelled the slot for everyone — the
   leader then called `set_result` on a cancelled future and raised
@@ -932,3 +961,4 @@ grouped by milestone rather than per commit.
 [#51]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/51
 [#52]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/52
 [#53]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/53
+[#54]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/54

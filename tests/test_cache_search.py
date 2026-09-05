@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from academic_tools_mcp import cache, cache_search, server
+from academic_tools_mcp import cache, cache_search, papers, server
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -128,22 +128,59 @@ class TestExtractTitle:
 
 
 class TestSectionForOffset:
+    """Returns ``(section_index, title)`` — the index is the chainable handle.
+
+    It used to return only a title, which ``get_paper_section`` rejects with
+    "Ambiguous section title" whenever a paper repeats a heading (10.9% of a
+    real corpus), and it was computed by a separate dialect that lacked the
+    empty-section filter, so it could name a section the reader's index had
+    already dropped.
+    """
+
     def test_returns_enclosing_h2(self):
         md = "## Intro\n\nfirst\n\n## Methods\n\nsecond chunk here\n"
-        # Offset inside "second chunk" must attribute to Methods.
         idx = md.index("second chunk")
-        assert cache_search._section_for_offset(md, idx) == "Methods"
+        assert cache_search._section_for_offset(md, idx) == (1, "Methods")
 
     def test_h3_does_not_open_new_section(self):
         # H3 is a sub-heading; it doesn't change which section we're in.
         md = "## Methods\n\n### Setup\n\ndetails go here\n"
-        idx = md.index("details")
-        assert cache_search._section_for_offset(md, idx) == "Methods"
+        assert cache_search._section_for_offset(md, md.index("details")) == (0, "Methods")
 
-    def test_offset_before_first_heading(self):
-        # Content before any heading isn't attributed to a section.
+    def test_offset_before_first_heading_is_the_preamble(self):
+        # Previously returned None, leaving a preamble hit with no navigation
+        # at all — even though get_section_content *does* expose that text as
+        # section 0. The two now agree.
         md = "Preface text\n\n## First\n\nbody\n"
-        assert cache_search._section_for_offset(md, 0) is None
+        assert cache_search._section_for_offset(md, 0) == (0, "Preamble")
+
+    def test_index_is_accepted_by_get_section_content(self):
+        # The whole point: whatever index comes back must be chainable.
+        md = "## Intro\n\nfirst\n\n## Methods\n\nsecond chunk here\n"
+        index, title = cache_search._section_for_offset(md, md.index("second chunk"))
+        got = papers.get_section_content(md, index)
+        assert "error" not in got
+        assert got["title"] == title
+
+    def test_repeated_titles_still_resolve_to_distinct_indices(self):
+        # The failure mode this exists to fix: two sections named "Results".
+        md = "## Results\n\nalpha here\n\n## Methods\n\nmid\n\n## Results\n\nbeta here\n"
+        first = cache_search._section_for_offset(md, md.index("alpha"))
+        second = cache_search._section_for_offset(md, md.index("beta"))
+        assert first[1] == second[1] == "Results"
+        assert first[0] != second[0]
+        # Chaining by title is what used to fail.
+        assert "error" in papers.get_section_content(md, "Results")
+        for index, _title in (first, second):
+            assert "error" not in papers.get_section_content(md, index)
+
+    def test_empty_sections_are_skipped_consistently(self):
+        # A heading with no body is dropped from the reader's index, so it
+        # must not be nameable here either.
+        md = "## Empty\n\n## Real\n\nactual body text\n"
+        index, title = cache_search._section_for_offset(md, md.index("actual"))
+        assert title == "Real"
+        assert papers.get_section_content(md, index)["title"] == "Real"
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +375,8 @@ class TestSearch:
             "title",
             "snippet",
             "section",
+            "section_index",
+            "char_offset",
             "char_count",
         }
         assert h["namespace"] == "arxiv"
@@ -732,11 +771,15 @@ class TestIncrementalIndex:
                 "title": "Some Paper",
                 "snippet": hits[0]["snippet"],
                 "section": "Methods",
+                "section_index": 1,
+                "char_offset": hits[0]["char_offset"],
                 "char_count": len(body),
             }
         ]
         assert hits[0]["score"] > 0
         assert "transformer applies attention" in hits[0]["snippet"]
+        # section_index must be the handle get_paper_section accepts.
+        assert papers.get_section_content(body, hits[0]["section_index"])["title"] == "Methods"
 
     def test_concurrent_searches_no_corruption(self, isolated_cache):
         for i in range(8):

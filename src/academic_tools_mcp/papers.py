@@ -460,6 +460,119 @@ _SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
 _SUB_LEVEL: int = 3
 
 
+# ---------------------------------------------------------------------------
+# Section boundaries — the single home
+# ---------------------------------------------------------------------------
+#
+# This computation existed in four places: parse_sections (its own line loop),
+# find_in_markdown and get_section_content (byte-identical copies), and
+# cache_search._section_for_offset (a fourth dialect over raw offsets, missing
+# the empty-section filter). find_in_markdown's docstring already depended on
+# two of them staying identical "because both apply the same recipe" — a
+# copy-paste invariant guarded by one test.
+#
+# The divergence was agent-visible: cache_search could name a section the
+# reader's index had dropped, and returned a *title* for the agent to chain
+# into get_paper_section — which fails outright when a paper repeats a
+# heading (10.9% of this corpus).
+
+
+class Section:
+    """One section's span in a markdown document.
+
+    ``start``/``end`` are line indices into ``markdown.split("\n")``; the
+    heading line itself is excluded, so ``lines[start:end]`` is the body.
+    """
+
+    __slots__ = ("title", "start", "end", "h3s")
+
+    def __init__(self, title: str, start: int, end: int, h3s: list[str]) -> None:
+        self.title = title
+        self.start = start
+        self.end = end
+        self.h3s = h3s
+
+    def body(self, lines: list[str]) -> str:
+        """The section's text, stripped — exactly what a reader receives."""
+        return "\n".join(lines[self.start : self.end]).strip()
+
+
+def section_boundaries(markdown: str) -> list[Section]:
+    """Split ``markdown`` into sections at H1/H2 headings.
+
+    H1 and H2 both open a section (converters disagree about which level is
+    the document title), H3 is collected as a sub-heading, H4+ are ignored.
+    Sections whose body is blank are dropped, so indices returned here are
+    the indices ``get_section_content`` accepts.
+    """
+    lines = markdown.split("\n")
+    spans: list[Section] = []
+    title = "Preamble"
+    start = 0
+    h3s: list[str] = []
+
+    for i, line in enumerate(lines):
+        m = _HEADING_RE.match(line)
+        if not m:
+            continue
+        level = len(m.group(1))
+        if level in _SECTION_LEVELS:
+            spans.append(Section(title, start, i, h3s))
+            title = m.group(2).strip()
+            start = i + 1
+            h3s = []
+        elif level == _SUB_LEVEL:
+            h3s.append(m.group(2).strip())
+
+    spans.append(Section(title, start, len(lines), h3s))
+    return [sp for sp in spans if sp.body(lines)]
+
+
+def has_detected_sections(markdown: str) -> bool:
+    """Whether any real H1/H2 heading was found.
+
+    A document with none collapses to a single synthetic "Preamble" section,
+    which is indistinguishable from a paper that genuinely has one section
+    unless callers are told. Converter output without markdown headings —
+    ``pdftotext``'s layout mode, notably — hits this, and it is concentrated
+    in the largest documents (theses), where navigation matters most.
+    """
+    # Iterate lines rather than finditer: _HEADING_RE is anchored with ^/$ but
+    # compiled without re.MULTILINE, so scanning the whole document would only
+    # ever match at position 0. Every other caller matches it per line.
+    return any(
+        (m := _HEADING_RE.match(line)) is not None and len(m.group(1)) in _SECTION_LEVELS
+        for line in markdown.split("\n")
+    )
+
+
+def section_at_offset(markdown: str, offset: int) -> tuple[int, str] | None:
+    """Return ``(section_index, title)`` for a character offset, or None.
+
+    The index is the one ``get_section_content`` accepts, so a corpus-search
+    hit can be chained straight into ``get_paper_section`` without going
+    through an ambiguous title.
+    """
+    if offset < 0:
+        return None
+    spans = section_boundaries(markdown)
+    if not spans:
+        return None
+
+    # Character offset -> line index, counting the "\n" split consumed.
+    line_no = markdown.count("\n", 0, min(offset, len(markdown)))
+    for index, sp in enumerate(spans):
+        if sp.start <= line_no < sp.end:
+            return index, sp.title
+    # Offsets inside a heading line fall between spans; attribute them to the
+    # section that heading opens, which is what a reader would expect.
+    for index, sp in enumerate(spans):
+        if line_no < sp.end:
+            return index, sp.title
+    last = len(spans) - 1
+    return last, spans[last].title
+
+
 def parse_sections(markdown: str) -> list[dict[str, Any]]:
     """Parse markdown into sections with sub-heading previews.
 
@@ -470,50 +583,17 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
     Content before the first section heading is captured as a "Preamble" section.
     """
     lines = markdown.split("\n")
-
-    sections: list[dict[str, Any]] = []
-    current_title = "Preamble"
-    current_h3s: list[str] = []
-    current_lines: list[str] = []
-
-    def _flush():
-        # Strip once and measure the stripped text: this is exactly what
-        # get_section_content returns and counts, so the index and the reader
-        # agree. They used to disagree — the index measured the unstripped
-        # join, inflating every section's estimate by its surrounding blank
-        # lines, and get_paper_sections summed the inflated variant.
-        content = "\n".join(current_lines).strip()
-        # Only add if there's meaningful content (not just whitespace)
-        if content:
-            sections.append(
-                {
-                    "index": len(sections),
-                    "title": current_title,
-                    "h3s": current_h3s[:],
-                    "approx_tokens": max(1, len(content) // _CHARS_PER_TOKEN),
-                }
-            )
-
-    for line in lines:
-        m = _HEADING_RE.match(line)
-        if m:
-            level = len(m.group(1))
-            title = m.group(2).strip()
-            if level in _SECTION_LEVELS:
-                _flush()
-                current_title = title
-                current_h3s = []
-                current_lines = []
-                continue
-            elif level == _SUB_LEVEL:
-                current_h3s.append(title)
-
-        current_lines.append(line)
-
-    # Flush the last section
-    _flush()
-
-    return sections
+    return [
+        {
+            "index": index,
+            "title": sp.title,
+            "h3s": list(sp.h3s),
+            # Measured on the stripped body — exactly what get_section_content
+            # returns and counts, so the index and the reader agree.
+            "approx_tokens": max(1, len(sp.body(lines)) // _CHARS_PER_TOKEN),
+        }
+        for index, sp in enumerate(section_boundaries(markdown))
+    ]
 
 
 # Snippet window around an in-paper match. ~60 chars on each side gives
@@ -564,18 +644,7 @@ def find_in_markdown(
         return [], False
 
     lines = markdown.split("\n")
-    boundaries: list[tuple[str, int, int]] = []
-    current_title = "Preamble"
-    current_start = 0
-    for i, line in enumerate(lines):
-        m = _HEADING_RE.match(line)
-        if m and len(m.group(1)) in _SECTION_LEVELS:
-            boundaries.append((current_title, current_start, i))
-            current_title = m.group(2).strip()
-            current_start = i + 1
-    boundaries.append((current_title, current_start, len(lines)))
-    # Drop empty sections so the indexing matches get_section_content.
-    boundaries = [(t, s, e) for t, s, e in boundaries if "\n".join(lines[s:e]).strip()]
+    boundaries = [(sp.title, sp.start, sp.end) for sp in section_boundaries(markdown)]
 
     if normalize:
         folded_query = _textnorm.fold(query)
@@ -659,20 +728,7 @@ def get_section_content(
 
     lines = markdown.split("\n")
 
-    boundaries: list[tuple[str, int, int]] = []
-    current_title = "Preamble"
-    current_start = 0
-
-    for i, line in enumerate(lines):
-        m = _HEADING_RE.match(line)
-        if m and len(m.group(1)) in _SECTION_LEVELS:
-            boundaries.append((current_title, current_start, i))
-            current_title = m.group(2).strip()
-            current_start = i + 1
-
-    boundaries.append((current_title, current_start, len(lines)))
-
-    boundaries = [(t, s, e) for t, s, e in boundaries if "\n".join(lines[s:e]).strip()]
+    boundaries = [(sp.title, sp.start, sp.end) for sp in section_boundaries(markdown)]
 
     if isinstance(section, int):
         if 0 <= section < len(boundaries):
@@ -758,12 +814,14 @@ async def _reparse_sections_locked(
     # conversion_mode so a re-parse doesn't lose the full-vs-fast provenance.
     recorded_mode = cached.get("conversion_mode") if cached is not None else None
 
-    def _read_and_parse() -> list[dict[str, Any]]:
-        return parse_sections(md_path.read_text(encoding="utf-8"))
+    def _read_and_parse() -> tuple[list[dict[str, Any]], bool]:
+        text = md_path.read_text(encoding="utf-8")
+        return parse_sections(text), has_detected_sections(text)
 
-    sections = await asyncio.to_thread(_read_and_parse)
+    sections, detected = await asyncio.to_thread(_read_and_parse)
     payload = {
         "sections": sections,
+        "sections_detected": detected,
         "markdown_checksum": current_checksum,
         "conversion_mode": recorded_mode,
     }
@@ -817,12 +875,14 @@ def _finalize_markdown(
     cache._atomic_write_text(md_path, markdown)
 
     sections = parse_sections(markdown)
+    detected = has_detected_sections(markdown)
     cache.put(
         namespace,
         "sections",
         sections_key(canonical),
         {
             "sections": sections,
+            "sections_detected": detected,
             "markdown_checksum": markdown_checksum(md_path),
             "conversion_mode": mode,
         },
@@ -830,6 +890,7 @@ def _finalize_markdown(
     return {
         "markdown_path": str(md_path),
         "sections": sections,
+        "sections_detected": detected,
         "cached": False,
         "conversion_mode": mode,
     }
@@ -866,6 +927,7 @@ async def _convert_fast(
                 cached_markdown = None
         if cached_markdown is not None:
             sections = parse_sections(cached_markdown)
+            detected = has_detected_sections(cached_markdown)
             # Preserve a recorded "full" mode: re-reading a full-quality
             # conversion through mode="fast" must not relabel it as degraded.
             existing = cache.get(namespace, "sections", sections_key(canonical))
@@ -877,6 +939,7 @@ async def _convert_fast(
                 sections_key(canonical),
                 {
                     "sections": sections,
+                    "sections_detected": detected,
                     "markdown_checksum": markdown_checksum(md_path),
                     "conversion_mode": mode_tag,
                 },
@@ -884,6 +947,7 @@ async def _convert_fast(
             return {
                 "markdown_path": str(md_path),
                 "sections": sections,
+                "sections_detected": detected,
                 "cached": True,
                 "conversion_mode": mode_tag,
             }
