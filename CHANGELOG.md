@@ -112,6 +112,28 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A transient network failure during an open-access PDF download was cached
+  as permanent for 24 hours.** `_is_definitive_failure` asked
+  `retryable is not True` — a denylist — and its docstring claimed this
+  "deliberately excludes a `retryable` transport error". It does not:
+  `_http.error_dict` sets `retryable` on exactly one of its six branches
+  (`LocalBackpressureError`). A timeout, a connection reset, a 503 and a 429
+  all arrive carrying no `retryable` key at all, so every one of them was
+  classified permanent and negative-cached, stranding the identifier behind a
+  stale "no open-access copy exists" until the TTL expired or the agent passed
+  `force_refresh`.
+
+  The predicate is now an **allowlist** on an explicit `retryable: False` and
+  lives in `_pdf_download`, beside the function whose error vocabulary it
+  reads — keeping the classifier apart from the producer is what let the two
+  drift. Pinned by a test that asserts those transport errors carry no flag,
+  so the premise can't silently change again. ([#65])
+
+- **`download_pdf`'s 404 now carries `retryable: False`.** It was the one
+  definitive branch with no flag, so the classifier above could not see it and
+  an agent could not tell a dead URL from a blipped one without parsing the
+  message. *This is a response-shape change.* ([#65])
+
 - **`unindexable` reported papers that the index had, in fact, indexed.** The
   probe asked `_tokenize` (ASCII-only) plus an FTS5 `MATCH` for the five ASCII
   vowels, so a paper in Japanese, Cyrillic or Greek was recorded as
@@ -1089,3 +1111,4 @@ grouped by milestone rather than per commit.
 [#55]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/55
 [#56]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/56
 [#58]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/58
+[#65]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/65

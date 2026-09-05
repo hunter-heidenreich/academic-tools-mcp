@@ -102,7 +102,7 @@ class TestStreamToFile:
             not_found_message="No PDF found.",
         )
 
-        assert result == {"error": "No PDF found."}
+        assert result == {"error": "No PDF found.", "retryable": False}
         assert not dest.exists()
         assert not list(tmp_path.glob("*.tmp"))
 
@@ -254,7 +254,7 @@ async def test_a_streaming_404_still_short_circuits_before_the_body_read(tmp_pat
     finally:
         await client.aclose()
 
-    assert result == {"error": "Open-access PDF not found"}
+    assert result == {"error": "Open-access PDF not found", "retryable": False}
 
 
 @pytest.mark.asyncio
@@ -378,3 +378,62 @@ class TestCachedHit:
         p.write_bytes(b"%PDF-1.4\nxyz")
         hit = _pdf_download.cached_hit(p)
         assert hit == {"path": str(p), "size_bytes": 12, "cached": True}
+
+
+class TestIsDefinitiveFailure:
+    """An allowlist, not a denylist — and the difference is a live bug class.
+
+    ``_http.error_dict`` sets ``retryable`` on ``LocalBackpressureError``
+    alone. Every other branch (429, 5xx, other 4xx, timeout, transport) says
+    "Transient — retry." in prose and carries no such key. A denylist
+    ("anything not marked retryable") therefore classifies all of them as
+    permanent and negative-caches them for the full TTL.
+    """
+
+    def test_an_explicit_non_retryable_error_counts(self):
+        assert _pdf_download.is_definitive_failure({"error": "gone", "retryable": False})
+
+    def test_an_explicit_retryable_error_does_not(self):
+        assert not _pdf_download.is_definitive_failure({"error": "blip", "retryable": True})
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            httpx.ReadTimeout("boom"),
+            httpx.ConnectError("boom"),
+            httpx.HTTPStatusError(
+                "x",
+                request=httpx.Request("GET", "http://x"),
+                response=httpx.Response(503, request=httpx.Request("GET", "http://x")),
+            ),
+            httpx.HTTPStatusError(
+                "x",
+                request=httpx.Request("GET", "http://x"),
+                response=httpx.Response(429, request=httpx.Request("GET", "http://x")),
+            ),
+        ],
+    )
+    def test_transport_errors_carry_no_retryable_key_and_must_not_count(self, exc):
+        from academic_tools_mcp import _http
+
+        result = _http.error_dict("Test", exc)
+        assert "retryable" not in result, "the premise of this test changed"
+        assert not _pdf_download.is_definitive_failure(result)
+
+    def test_a_size_cap_abort_does_not_count(self):
+        # Non-retryable, but a config choice a cap bump fixes — not a fact
+        # about the paper. Caching it would strand the caller behind a stale
+        # miss until the TTL expired.
+        assert not _pdf_download.is_definitive_failure(
+            {"error": "too big", "retryable": False, "max_bytes": 100}
+        )
+
+    def test_a_success_does_not_count(self):
+        assert not _pdf_download.is_definitive_failure({"path": "/x", "cached": False})
+
+    def test_a_404_from_stream_to_file_counts(self):
+        # The shape stream_to_file actually emits, so the classifier and the
+        # producer cannot drift apart on this one.
+        assert _pdf_download.is_definitive_failure(
+            {"error": "arXiv: PDF not found at http://x", "retryable": False}
+        )
