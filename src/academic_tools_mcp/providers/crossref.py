@@ -1,9 +1,11 @@
+import asyncio
+import time
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _doi, _http, _singleflight, cache, config
+from .. import _clients, _doi, _http, _singleflight, _useragent, cache, config
 from .._throttle import Throttle
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
@@ -25,12 +27,46 @@ def _parse_error_dict() -> dict[str, Any]:
     return _http.parse_error_dict("Crossref")
 
 
-# Rate limiting for the polite pool: max 10 req/sec, 3 concurrent.
-# Concurrency cap of 3 matches the polite-pool concurrency budget; gap
-# of 100ms gives 10 req/sec sustained. Gating lives in ``_throttle``.
-_MAX_CONCURRENT = 3
-_MIN_REQUEST_GAP = 0.1  # 100ms -> ~10 req/sec max
+# Crossref runs two service tiers, and which one we get depends on whether we
+# identify ourselves. The rate constants used to be hardcoded to the *polite*
+# tier unconditionally while the User-Agent carrying the mailto was set only
+# when CROSSREF_MAILTO was configured — so the documented default (an empty
+# .env; README: "Nothing is required to get started") requested at 2x the
+# public-pool rate, 3x its concurrency, and 10x its search rate, anonymously.
+#
+# Limits per Crossref's REST API docs, mirrored in .claude/rules/providers.md:
+#
+#            singles      search       concurrent
+#   polite   10 req/sec   3 req/sec    3
+#   public    5 req/sec   1 req/sec    1
+#
+# Search is rate-limited far more tightly than singleton lookups and used to
+# share the singles throttle entirely, so the search limit was never enforced
+# in either tier.
+_POLITE_MAX_CONCURRENT = 3
+_POLITE_REQUEST_GAP = 0.1  # 100ms -> 10 req/sec
+_POLITE_SEARCH_GAP = 0.334  # ~3 req/sec
+
+_PUBLIC_MAX_CONCURRENT = 1
+_PUBLIC_REQUEST_GAP = 0.2  # 200ms -> 5 req/sec
+_PUBLIC_SEARCH_GAP = 1.0  # 1 req/sec
+
 _MAX_PENDING = 5
+
+
+def in_polite_pool() -> bool:
+    """Whether a contact address is configured, admitting us to the polite pool."""
+    return bool(config.get("CROSSREF_MAILTO"))
+
+
+def _resolve_policy() -> tuple[int, float, float]:
+    """Return ``(max_concurrent, request_gap, search_gap)`` for the active tier."""
+    if in_polite_pool():
+        return _POLITE_MAX_CONCURRENT, _POLITE_REQUEST_GAP, _POLITE_SEARCH_GAP
+    return _PUBLIC_MAX_CONCURRENT, _PUBLIC_REQUEST_GAP, _PUBLIC_SEARCH_GAP
+
+
+_MAX_CONCURRENT, _MIN_REQUEST_GAP, _SEARCH_REQUEST_GAP = _resolve_policy()
 
 # Coalesces concurrent calls for the same canonical DOI so the unified
 # paper tools called in parallel don't all hit Crossref independently.
@@ -44,14 +80,14 @@ _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
 def _build_headers() -> dict[str, str]:
-    """Build request headers with polite pool mailto if configured."""
-    headers: dict[str, str] = {}
-    mailto = config.get("CROSSREF_MAILTO")
-    if mailto:
-        headers["User-Agent"] = (
-            f"academic-tools-mcp/1.0 (https://github.com/academic-tools-mcp; mailto:{mailto})"
-        )
-    return headers
+    """Build request headers, carrying the polite-pool mailto when configured.
+
+    The descriptive User-Agent is sent **unconditionally**. It used to be set
+    only when ``CROSSREF_MAILTO`` was present, so the default configuration
+    identified itself as ``python-httpx/x.y`` — while still requesting at the
+    polite-pool *rate*. See ``_resolve_policy`` for the matching fix.
+    """
+    return _useragent.headers(config.get("CROSSREF_MAILTO"))
 
 
 def _get_client():
@@ -76,6 +112,40 @@ _throttle = Throttle(
 async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
     """Execute a GET respecting Crossref's rate limit (see ``Throttle.get``)."""
     return await _throttle.get(client, url, **kwargs)
+
+
+# Search pacing rides *on top of* the shared throttle rather than using a
+# second Throttle: Crossref's concurrency budget covers all requests, so a
+# separate semaphore would let searches and singles together exceed it. The
+# lock serialises searches (they are rarely issued in parallel anyway) and
+# enforces the tighter search gap before handing off to the normal slot.
+_search_lock = asyncio.Lock()
+_last_search_time = 0.0
+
+
+def reset_search_pacing() -> None:
+    """Rebuild the search lock and clear its timestamp (test seam).
+
+    ``asyncio.Lock`` binds to the running event loop on first await, so a lock
+    left over from a previous loop raises "bound to a different event loop".
+    Mirrors ``Throttle.reset``.
+    """
+    global _search_lock, _last_search_time
+    _search_lock = asyncio.Lock()
+    _last_search_time = 0.0
+
+
+async def _throttled_search_get(
+    client: httpx.AsyncClient, url: str, **kwargs: Any
+) -> httpx.Response:
+    """Execute a search GET, honouring Crossref's tighter search rate limit."""
+    global _last_search_time
+    async with _search_lock:
+        elapsed = time.monotonic() - _last_search_time
+        if _last_search_time > 0 and elapsed < _SEARCH_REQUEST_GAP:
+            await asyncio.sleep(_SEARCH_REQUEST_GAP - elapsed)
+        _last_search_time = time.monotonic()
+    return await _throttled_get(client, url, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +193,7 @@ async def search_works(
 
     try:
         client = _get_client()
-        response = await _throttled_get(
+        response = await _throttled_search_get(
             client,
             f"{CROSSREF_BASE_URL}/works",
             params=params,
@@ -158,10 +228,20 @@ async def search_works(
         canonical = canonical_doi(doi)
         # TTL-aware (not cache.has) so a stale-but-present entry is refreshed
         # by fresher search data; mirrors arxiv.search_papers.
-        if cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS) is None:
+        if (
+            cache.get(
+                NAMESPACE,
+                "works",
+                canonical,
+                max_age_seconds=_POSITIVE_TTL_SECONDS,
+                count=False,
+            )
+            is None
+        ):
             cache.put(NAMESPACE, "works", canonical, item)
 
-    return {"items": items, "total_results": data["message"].get("total-results")}
+    total = message.get("total-results") if isinstance(message, dict) else None
+    return {"items": items, "total_results": total}
 
 
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:

@@ -48,6 +48,48 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Crossref was requesting at polite-pool rates without a polite-pool
+  identity.** The rate constants were hardcoded to the polite tier
+  unconditionally, while the `User-Agent` carrying `CROSSREF_MAILTO` was set
+  only when one was configured. So the documented default — an empty `.env`,
+  which the README calls a supported starting point — requested at **2x the
+  public-pool rate, 3x its concurrency, and 10x its search rate**, while
+  identifying itself as `python-httpx/x.y`. The tier is now resolved from
+  whether a contact address is present. Search is also paced separately
+  (Crossref limits it far more tightly than singleton lookups); it previously
+  shared the singles throttle, so the search limit was never enforced in
+  either pool. ([#50])
+- **Three providers and the open-access download path sent no `User-Agent` at
+  all.** `biorxiv`, `opencitations`, `acl_anthology` and `oa_download` passed
+  no headers, so they went out as `python-httpx/x.y` — the generic agent
+  several upstreams throttle hardest. ACL was the least polite configuration
+  in the tree: four parallel anonymous PDF pulls at zero gap from a nonprofit.
+  The four agents that *were* sent advertised
+  `https://github.com/academic-tools-mcp`, which does not exist, and a version
+  hardcoded to `1.0`. All eight now share one `_useragent` builder emitting the
+  real repository URL and the real package version. ([#50])
+- **`Retry-After` in HTTP-date form was silently discarded.** RFC 9110 permits
+  both a delay-seconds and an HTTP-date value, and Wikimedia- and
+  Cloudflare-fronted endpoints emit dates. Only the numeric form was parsed, so
+  a date fell back to our own backoff — as little as 1.0s against a server that
+  had just asked for minutes — and `retry_after_seconds` was omitted from the
+  error, leaving the agent no hint either. Both forms are now honoured, a naive
+  date is read as UTC rather than local time, and non-finite values are
+  rejected. ([#50])
+- **`retry_after_seconds` reached the agent unclamped.** The internal retry path
+  has always honoured a 600s ceiling, but the error dict surfaced the raw
+  header, so a misconfigured `Retry-After: 86400` told the agent to wait a
+  day. ([#50])
+- **Observability counters were wrong in both directions.** `http_calls` was
+  incremented once per throttle *slot*, but a slot issues up to
+  `retry_attempts` real requests — under-reporting actual outbound volume by up
+  to 3x for arXiv, which is exactly the number a politeness audit reads. And
+  because `cached_lookup` checks the cache twice (outer, then again inside the
+  single-flight slot), a single genuine miss registered **two** misses while a
+  hit registered one, making the reported hit rate systematically wrong.
+  Requests are now counted per outbound attempt, and `cache.get(count=False)`
+  suppresses counting for re-checks and cache-warming probes. ([#50])
+
 - **The same DOI could land under three different cache keys.** DOI
   normalization existed in six copies — four byte-identical — and only the two
   that had been improved (`manual`, `biorxiv`) handled `dx.doi.org` and a
@@ -754,3 +796,4 @@ grouped by milestone rather than per commit.
 [#47]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/47
 [#48]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/48
 [#49]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/49
+[#50]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/50

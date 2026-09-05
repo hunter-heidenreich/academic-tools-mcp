@@ -7,7 +7,7 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import _clients, _http, _pdf_download, _singleflight, cache, config, papers
+from .. import _clients, _http, _pdf_download, _singleflight, _useragent, cache, config, papers
 from .._throttle import Throttle
 
 # Parsing the arXiv Atom feed can fail two ways: a malformed/truncated body
@@ -74,12 +74,7 @@ def _build_headers() -> dict[str, str]:
     set, is appended as a contact so arXiv can reach the operator before
     tightening limits.
     """
-    user_agent = "academic-tools-mcp/1.0 (https://github.com/academic-tools-mcp"
-    mailto = config.get("ARXIV_MAILTO")
-    if mailto:
-        user_agent += f"; mailto:{mailto}"
-    user_agent += ")"
-    return {"User-Agent": user_agent}
+    return _useragent.headers(config.get("ARXIV_MAILTO"))
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -388,7 +383,11 @@ async def search_papers(
             for paper_canonical in keys:
                 if (
                     cache.get(
-                        NAMESPACE, "papers", paper_canonical, max_age_seconds=_POSITIVE_TTL_SECONDS
+                        NAMESPACE,
+                        "papers",
+                        paper_canonical,
+                        max_age_seconds=_POSITIVE_TTL_SECONDS,
+                        count=False,
                     )
                     is None
                 ):

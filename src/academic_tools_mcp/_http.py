@@ -24,6 +24,9 @@ Usage:
 
 import asyncio
 import json
+import math
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -94,19 +97,58 @@ def parse_error_dict(provider: str, *, detail: str = "could not be parsed") -> d
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
-    """Parse a numeric ``Retry-After`` value if the server sent one.
+    """Parse a ``Retry-After`` value, in either form RFC 9110 permits.
 
-    HTTP-date forms (``Retry-After: Wed, 21 Oct 2015 07:28:00 GMT``) are
-    not supported; we just return None and fall back to our own backoff.
+    Both the delay-seconds form (``Retry-After: 120``) and the HTTP-date form
+    (``Retry-After: Wed, 21 Oct 2015 07:28:00 GMT``) are valid, and
+    Wikimedia- and Cloudflare-fronted endpoints do emit dates. Only the
+    numeric form used to be parsed, so a date was silently discarded and
+    ``get_with_retry`` fell back to its own backoff — as little as 1.0s
+    against a server that had just asked us to wait minutes. That is the one
+    situation where being polite matters most: the server told us explicitly.
+
+    Returns ``None`` for a missing, unparseable, non-positive, or non-finite
+    value, in which case the caller's own backoff applies.
     """
     raw = response.headers.get("retry-after")
     if not raw:
         return None
+
+    raw = raw.strip()
+    value: float | None
     try:
         value = float(raw)
     except (TypeError, ValueError):
+        value = _retry_after_from_http_date(raw)
+    if value is None:
+        return None
+
+    if not math.isfinite(value):
+        # "inf"/"nan" parse as floats but are not a wait instruction.
         return None
     return value if value > 0 else None
+
+
+def _retry_after_from_http_date(raw: str) -> float | None:
+    """Seconds until an HTTP-date ``Retry-After``, or None if unparseable."""
+    try:
+        when = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        # RFC 9110 requires GMT; treat a naive value as UTC rather than
+        # local time, which would shift the wait by the host's offset.
+        when = when.replace(tzinfo=UTC)
+    return (when - datetime.now(UTC)).total_seconds()
+
+
+# Absolute ceiling on a single Retry-After sleep. We honour genuine
+# multi-minute cooldowns (max_attempts=2 means at most one sleep ever
+# happens), but a misconfigured ``Retry-After: 86400`` must not pin our
+# throttle for hours.
+_MAX_RETRY_AFTER_SECONDS = 600.0  # 10 minutes
 
 
 def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
@@ -150,7 +192,12 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
             }
             retry_after = _retry_after_seconds(exc.response)
             if retry_after is not None:
-                result["retry_after_seconds"] = retry_after
+                # Clamp before handing it to the agent. The internal retry
+                # path has honoured a _MAX_RETRY_AFTER_SECONDS ceiling all
+                # along, but this surfaced the raw header — so a
+                # misconfigured "Retry-After: 86400" told the agent to wait a
+                # day, contradicting the ceiling ten lines below.
+                result["retry_after_seconds"] = min(retry_after, _MAX_RETRY_AFTER_SECONDS)
             return result
         if 500 <= status < 600:
             return {
@@ -190,12 +237,6 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
 # (Request Timeout) and 425 (Too Early) are bundled in for completeness;
 # the rest are 429 + standard 5xx.
 _RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
-
-# Absolute ceiling on a single Retry-After sleep. We honour genuine
-# multi-minute cooldowns (max_attempts=2 means at most one sleep ever
-# happens), but a misconfigured ``Retry-After: 86400`` must not pin our
-# throttle for hours.
-_MAX_RETRY_AFTER_SECONDS = 600.0  # 10 minutes
 
 
 async def get_with_retry(
@@ -245,6 +286,12 @@ async def get_with_retry(
         # produce an absurd sleep. Factor is 1 on the first attempt, so the
         # default single-retry path is byte-for-byte unchanged.
         effective_backoff = min(backoff_seconds * (2 ** (attempt - 1)), _MAX_RETRY_AFTER_SECONDS)
+        if provider is not None:
+            # Counted per actual outbound request, not per throttle slot. A
+            # slot can issue up to max_attempts requests (3 for arXiv), so
+            # counting at slot entry under-reported real outbound volume by
+            # up to 3x — exactly the number a politeness audit reads.
+            _stats.incr(provider, "http_calls")
         try:
             response = await client.get(url, **kwargs)
         except (httpx.TimeoutException, httpx.RequestError):

@@ -13,9 +13,10 @@ per-provider code: see `_throttle.Throttle` and `cache.cached_lookup` in
 `.claude/rules/infrastructure.md`. A provider supplies only its *policy* and its
 *quirks*.
 
-- Persistent `httpx.AsyncClient` from `_clients.get_client(NAMESPACE, ...)`.
+- Persistent `httpx.AsyncClient` from `_clients.get_client(NAMESPACE, headers=_useragent.headers(<mailto>), ...)`. **Every provider passes headers.** Three (`biorxiv`, `opencitations`, `acl_anthology`) plus `oa_download` used to pass none, so they went out as `python-httpx/x.y` — the generic agent several upstreams throttle hardest, and the one that leaves an operator no way to reach us. `_useragent` is the single home for the string: `academic-tools-mcp/<real version> (+<real repo URL>[; mailto:...])`. Do not hand-roll a UA; four modules did, in four formats, advertising a URL that 404s and a version hardcoded to `1.0`.
+- DOI normalization comes from the shared `_doi` module (`normalize` / `canonical` / `looks_like_doi`), never a local copy. Six copies had accumulated, four byte-identical, and the two that had drifted forward were the only ones handling `dx.doi.org` and a case-insensitive `doi:` prefix.
 - A module-level `_throttle = Throttle(namespace=NAMESPACE, label=..., max_concurrent=_MAX_CONCURRENT, min_gap_seconds=_MIN_REQUEST_GAP, max_pending=_MAX_PENDING)`, exposed via thin `_throttled_get` (→ `_throttle.get`) and, in the PDF-downloading modules, `_request_slot` (→ `_throttle.slot`) wrappers. The `Throttle` does the three-layer gating + `_http.get_with_retry`; don't re-implement it.
-- `_MAX_CONCURRENT` per-provider (the policy constant passed to `Throttle`): arxiv=1 (single-connection rule), openalex=4, acl_anthology=4, crossref=3 (polite-pool concurrency budget), biorxiv=2, opencitations=2, wikipedia=2.
+- `_MAX_CONCURRENT` per-provider (the policy constant passed to `Throttle`): arxiv=1 (single-connection rule), openalex=4, acl_anthology=4, biorxiv=2, opencitations=2, wikipedia=2. crossref is **resolved from config** (3 polite / 1 public) rather than fixed — see below.
 - Module-level `_single_flight` instance, passed to `cache.cached_lookup`.
 - Each getter is `canonical = canonical_*(id)` → define an async `_fetch()` closure (the HTTP + parse + `cache.put`/`put_negative` body, holding the provider's quirks) → `return await cache.cached_lookup(single_flight=_single_flight, namespace=NAMESPACE, entity="<entity>", canonical=canonical, positive_ttl=_POSITIVE_TTL_SECONDS, fetch=_fetch, force_refresh=force_refresh, sf_key=...)`. `cached_lookup` owns the force_refresh-invalidate, the outer + in-slot cache re-checks, the single-flight coalescing, and the per-caller deep copy — the getter no longer hand-rolls any of it.
 - Pass a tuple `sf_key` when one canonical id has multiple sub-fetches (`("work", canonical)` / `("author", canonical)` for openalex; `("references", canonical)` / `("citations", canonical)` for opencitations); omit it to key on `canonical`.
@@ -51,19 +52,23 @@ DOI prefix `10.1101/` identifies all bioRxiv and medRxiv papers.
 
 ## crossref.py
 
-Crossref REST API (`api.crossref.org/works/{doi}`). DOI normalization. `_get_client()` bakes in polite-pool `User-Agent` with `mailto` (from `CROSSREF_MAILTO`). Rate limit ~10 req/sec (100ms gap). Cache namespace: `crossref/works`. Full work object cached; tool layer slices out reference list with pagination.
+Crossref REST API (`api.crossref.org/works/{doi}`). DOI normalization via the shared `_doi` module. `_get_client()` bakes in the shared `_useragent` header, always — with `mailto` (from `CROSSREF_MAILTO`) appended when configured. Cache namespace: `crossref/works`. Full work object cached; tool layer slices out reference list with pagination.
 
 **Search opportunistically warms the works cache** — each `search_works` hit with a DOI is written to `crossref/works/<canonical>` (only if not already present, so a richer pre-existing entry isn't clobbered). A subsequent `get_work(doi)` is a free cache hit.
 
 `get_work` takes `force_refresh` (mirrors `openalex.get_work`: invalidate both cache halves up front, skip the pre-slot checks) so the reference-graph tools can refresh both sources — the reference list grows as publishers re-deposit metadata.
 
-**Limits:** polite pool (with `CROSSREF_MAILTO`) — 10 req/sec singles, 3 req/sec search, 3 concurrent. Public pool (no mailto) — 5 req/sec singles, 1 req/sec search, 1 concurrent. Search uses `query.bibliographic` on `/works`, capped at 20 rows.
+**Limits — and the tier is chosen from config, not assumed.** Polite pool (with `CROSSREF_MAILTO`) — 10 req/sec singles, 3 req/sec search, 3 concurrent. Public pool (no mailto) — 5 req/sec singles, 1 req/sec search, 1 concurrent. `_resolve_policy()` picks the constants at import from `in_polite_pool()`; `_MAX_CONCURRENT` / `_MIN_REQUEST_GAP` / `_SEARCH_REQUEST_GAP` are its output, not literals. Changing `CROSSREF_MAILTO` requires a restart (same as `ENABLE_DEBUG_TOOLS`).
+
+The rate constants used to be hardcoded to the *polite* tier unconditionally while the `User-Agent` carrying the mailto was set only when one was configured — so the documented default (an empty `.env`) requested at 2× the public-pool rate, 3× its concurrency and 10× its search rate, anonymously. If you touch these constants, keep the two halves in lockstep: **the rate we take must follow the identity we send.**
+
+Search is paced separately (`_throttled_search_get`) because Crossref limits it far more tightly than singleton lookups; it used to share the singles throttle, so the search limit was never enforced in either tier. The search gate rides *on top of* the shared `Throttle` rather than owning a second one — Crossref's concurrency budget covers all requests, so a separate semaphore would let searches and singles together exceed it. Search uses `query.bibliographic` on `/works`, capped at 20 rows.
 
 ## opencitations.py
 
 OpenCitations Index API v2 (`api.opencitations.net/index/v2`). Outgoing references (`/references/doi:...`) and incoming citations (`/citations/doi:...`). Rate limit ~3 req/sec (334ms gap, 180/min) per OpenCitations policy. Parses space-delimited multi-ID strings (`omid:... doi:... openalex:... pmid:...`) via `_parse_ids()`. Cache namespaces: `opencitations/references`, `opencitations/citations`. Single-flight tuple-prefixed (`("references", canonical)` vs `("citations", canonical)`) — fetching both directions for one paper runs as two slots.
 
-**Parsing/encoding hardening (parity with crossref/openalex).** The bare DOI is percent-encoded into the `.../doi:{doi}` path via `quote(..., safe="/")` so reserved chars (`#`, `?`) can't truncate the request to the wrong record (the `doi:` scheme prefix and the DOI's own slash stay literal). A malformed/truncated 200 body raises `json.JSONDecodeError` — caught via `_PARSE_ERRORS` → `_parse_error_dict()` (`{error, retryable: True}`, a fresh dict each call) and **not** negative-cached, so a retry re-fetches. An anomalous 200 that isn't the expected list of records (dict / null / string) is treated identically rather than crashing the `_format_record` comprehension; non-dict items inside the list are skipped. `get_references` / `get_citations` are one-line wrappers over a shared `_fetch_direction(doi, *, kind, id_field, force_refresh)` — the two directions differ only by `kind` (the API path segment, cache entity, and result key: `"references"`/`"citations"`) and `id_field` (`"cited"`/`"citing"`). Both take `force_refresh` (threaded into `cached_lookup`) — the citation graph grows continuously, so an agent may want fresher coverage than the 7-day TTL.
+**Parsing/encoding hardening (parity with crossref/openalex — real as of the guard added to those two; it was aspirational before).** The bare DOI is percent-encoded into the `.../doi:{doi}` path via `quote(..., safe="/")` so reserved chars (`#`, `?`) can't truncate the request to the wrong record (the `doi:` scheme prefix and the DOI's own slash stay literal). A malformed/truncated 200 body raises `json.JSONDecodeError` — caught via `_PARSE_ERRORS` → `_parse_error_dict()` (`{error, retryable: True}`, a fresh dict each call) and **not** negative-cached, so a retry re-fetches. An anomalous 200 that isn't the expected list of records (dict / null / string) is treated identically rather than crashing the `_format_record` comprehension; non-dict items inside the list are skipped. `get_references` / `get_citations` are one-line wrappers over a shared `_fetch_direction(doi, *, kind, id_field, force_refresh)` — the two directions differ only by `kind` (the API path segment, cache entity, and result key: `"references"`/`"citations"`) and `id_field` (`"cited"`/`"citing"`). Both take `force_refresh` (threaded into `cached_lookup`) — the citation graph grows continuously, so an agent may want fresher coverage than the 7-day TTL.
 
 ## wikipedia.py
 
@@ -78,3 +83,37 @@ MediaWiki OpenSearch (`/w/api.php?action=opensearch`) for title search; Wikimedi
 PDF source for ACL Anthology papers. Resolves DOIs with prefix `10.18653/v1/` to Anthology IDs by stripping the prefix. Downloads camera-ready PDFs from `https://aclanthology.org/{id}.pdf`. No API, no auth, no documented rate limit — but routes through the same canonical pooled-client + retry + burst-cap shape as every other provider (`_MIN_REQUEST_GAP=0.0`, `_MAX_PENDING=5`, single-flight on canonical DOI). Cache namespace: `acl_anthology/pdfs`. PDF download timeout 60s. Feeds into `papers.py`.
 
 Coverage: all ACL-affiliated venues — ACL, EMNLP, NAACL, EACL, AACL, CoNLL, TACL, CL journal, *SEM, Findings, workshops.
+
+---
+
+## Politeness: what is enforced, and what is not
+
+Enforced per provider: the inter-start gap, the concurrency cap, the burst cap,
+`Retry-After` (both the delay-seconds **and** the HTTP-date form RFC 9110
+permits — Wikimedia- and Cloudflare-fronted endpoints emit dates), and a
+descriptive `User-Agent`.
+
+Two limits are real and deliberately **not** solved. State them rather than
+implying the caps are stronger than they are:
+
+- **Caps are per-process, not per-host.** `Throttle` holds a plain
+  `asyncio.Semaphore` in module state. Two server instances on one machine
+  (Claude Desktop *and* the CLI, a common setup) each get their own allowance,
+  so arXiv's documented "single connection" rule is honoured *per process* and
+  the host as a whole can double it. Fixing this needs a file-lock or a shared
+  token bucket; until then, `_MAX_CONCURRENT = 1` for arxiv is a
+  per-process claim.
+- **`max_pending` bounds queued *plus* in-flight callers**, not queued alone.
+  `slot()` increments `pending` before acquiring the semaphore, so with
+  `max_concurrent=4, max_pending=5` only one caller can actually be waiting
+  before the sixth is refused. The refusal is still correct backpressure; the
+  name just promises more headroom than it delivers.
+
+**Counter semantics.** `http_calls` is incremented in `_http.get_with_retry`,
+once per *actual outbound request*, and in `Throttle.slot(count_request=True)`
+for streaming downloads that bypass the retry helper. It used to be counted
+once per slot, which under-reported real volume by up to 3x for arXiv
+(`retry_attempts=3`) — the exact number a politeness audit reads. Likewise
+`cache.get(count=False)` suppresses hit/miss counting for `cached_lookup`'s
+in-slot re-check and for cache-warming probes, so one lookup registers one
+outcome.

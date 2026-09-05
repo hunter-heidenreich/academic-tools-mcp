@@ -216,10 +216,23 @@ class TestBuildHeaders:
         headers = crossref._build_headers()
         assert "mailto:test@example.com" in headers.get("User-Agent", "")
 
-    def test_empty_headers_without_mailto(self, monkeypatch):
+    def test_descriptive_ua_sent_without_mailto(self, monkeypatch):
+        # Previously this returned {} — so the default configuration went out
+        # as python-httpx/x.y while still requesting at the *polite-pool*
+        # rate. An identifiable client is the minimum Crossref asks for.
         monkeypatch.delenv("CROSSREF_MAILTO", raising=False)
         headers = crossref._build_headers()
-        assert headers == {}
+        assert headers["User-Agent"].startswith("academic-tools-mcp/")
+        assert "mailto:" not in headers["User-Agent"]
+
+    def test_ua_advertises_a_real_project_url(self, monkeypatch):
+        # The hand-rolled agent pointed at https://github.com/academic-tools-mcp,
+        # which does not exist — defeating the entire purpose of a contact URL.
+        monkeypatch.delenv("CROSSREF_MAILTO", raising=False)
+        assert (
+            "github.com/hunter-heidenreich/academic-tools-mcp"
+            in crossref._build_headers()["User-Agent"]
+        )
 
 
 # ---------------------------------------------------------------------------

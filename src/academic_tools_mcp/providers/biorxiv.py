@@ -4,10 +4,24 @@ from typing import Any
 
 import httpx
 
-from .. import _clients, _doi, _http, _pdf_download, _singleflight, cache, papers
+from .. import _clients, _doi, _http, _pdf_download, _singleflight, _useragent, cache, papers
 from .._throttle import Throttle
 
 NAMESPACE = "biorxiv"
+
+
+def _get_client():
+    """Return the persistent AsyncClient for bioRxiv calls.
+
+    The descriptive User-Agent is baked in at construction so every call
+    identifies this client. Previously no headers were passed here at all, so
+    requests went out as ``python-httpx/x.y`` — the generic agent several
+    upstreams throttle hardest, and the one that leaves an operator no way to
+    reach us.
+    """
+    return _clients.get_client(NAMESPACE, headers=_useragent.headers(), timeout=30.0)
+
+
 _BASE_URL = "https://api.biorxiv.org"
 
 # The bioRxiv details API returns JSON; a malformed/truncated 200 body raises
@@ -267,7 +281,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
     async def _fetch() -> dict[str, Any]:
         try:
-            client = _clients.get_client(NAMESPACE, timeout=30.0)
+            client = _get_client()
             # Try bioRxiv first
             url = f"{_BASE_URL}/details/biorxiv/{bare}/na/json"
             response = await _throttled_get(client, url)
@@ -381,7 +395,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
         if not pdf_url:
             return {"error": f"No PDF URL found for DOI: {doi}"}
 
-        client = _clients.get_client(NAMESPACE, timeout=30.0)
+        client = _get_client()
         return await _pdf_download.stream_to_file(
             client,
             pdf_url,

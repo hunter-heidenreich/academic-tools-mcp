@@ -89,11 +89,16 @@ class Throttle:
         self._lock = asyncio.Lock()
 
     @contextlib.asynccontextmanager
-    async def slot(self, url: str):
+    async def slot(self, url: str, *, count_request: bool = True):
         """Acquire the rate-limit slot for the lifetime of the with-block.
 
         Raises ``LocalBackpressureError`` past ``max_pending`` queued callers so
         a fan-out gets fast feedback instead of stacking behind the gap forever.
+
+        ``count_request`` records one ``http_calls``. It is the right unit for a
+        streaming PDF download, which holds the slot for exactly one request.
+        ``get`` passes ``False`` because ``get_with_retry`` counts each attempt
+        it actually makes — a slot can issue several.
         """
         if self.pending >= self.max_pending:
             _stats.incr(self.namespace, "backpressure_refusals")
@@ -112,7 +117,8 @@ class Throttle:
                         await asyncio.sleep(wait_seconds)
                     self.last_request_time = time.monotonic()
                 _stats.log_request(self.namespace, url, wait_seconds)
-                _stats.incr(self.namespace, "http_calls")
+                if count_request:
+                    _stats.incr(self.namespace, "http_calls")
                 yield
         finally:
             self.pending -= 1
@@ -123,7 +129,7 @@ class Throttle:
         ``backoff_seconds`` floors the retry sleep at the provider's own gap so
         a retry never violates the documented rate-limit policy.
         """
-        async with self.slot(url):
+        async with self.slot(url, count_request=False):
             return await _http.get_with_retry(
                 client,
                 url,
