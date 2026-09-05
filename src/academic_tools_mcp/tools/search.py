@@ -339,10 +339,16 @@ async def search_cached_papers(
         can't help
 
     Returns ``{query, result_count, results: [{namespace, canonical_id,
-    score, title, snippet, section, char_count}, ...]}``. ``snippet``
-    is a ~200-char window centred on the most-distinct cluster of
-    matching terms; ``section`` is the H2 the snippet falls under so
-    you can chain into get_paper_section(canonical_id, section).
+    score, title, snippet, section, section_index, char_offset,
+    char_count}, ...]}``. ``snippet`` is a ~200-char window centred on the
+    most-distinct cluster of matching terms.
+
+    Chain with **section_index**, not ``section``:
+    ``get_paper_section(canonical_id, section_index)``. ``section`` is the
+    heading's text, and headings repeat — roughly one paper in nine has two
+    sections with the same title, and passing a repeated title back is
+    rejected as an ambiguous match. ``section_index`` is unambiguous and is
+    computed with the same boundaries get_paper_section uses.
 
     Hits with score 0 (no query term appears) are dropped — empty
     results means the cache contains no relevant paper, not that the

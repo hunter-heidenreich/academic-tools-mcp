@@ -254,9 +254,14 @@ async def get_paper_sections(
     ``force_refresh=True`` drops the section index unconditionally so
     the next read re-parses the markdown.
 
-    Returns ``{total_sections, total_approx_tokens, sections}`` where each
-    section entry has ``{index, title, h3s, approx_tokens}`` — ``h3s`` is the
-    list of sub-headings under that section.
+    Returns ``{total_sections, total_approx_tokens, sections_detected,
+    sections}`` where each section entry has ``{index, title, h3s,
+    approx_tokens}`` — ``h3s`` is the list of sub-headings under that section.
+
+    ``sections_detected: false`` means the converted markdown had **no
+    headings at all**, so the single section returned is synthetic and its
+    title carries no meaning. A ``sections_note`` then explains what to do
+    instead. Do not read that case as "this paper has one section".
 
     Errors: not yet converted → guidance to run convert_paper.
     Next step: get_paper_section(identifier, index_or_title).
@@ -269,11 +274,30 @@ async def get_paper_sections(
         return not_converted_error(identifier)
 
     sections_list = sections_data.get("sections", [])
-    return {
+    # Older cached indices predate this flag; absent means "not recorded",
+    # which we report as detected rather than alarming about every one.
+    detected = sections_data.get("sections_detected", True)
+    response: dict[str, Any] = {
         "total_sections": len(sections_list),
         "total_approx_tokens": sum(s.get("approx_tokens", 0) for s in sections_list),
+        "sections_detected": detected,
         "sections": sections_list,
     }
+    if not detected:
+        # Without this an agent cannot tell "this paper has one section" from
+        # "no headings were found, so the whole document is one synthetic
+        # Preamble". The distinction matters most on the largest documents —
+        # every 100 KB+ single-section paper in a real corpus was this case,
+        # theses where blind paging is the worst possible reading strategy.
+        response["sections_note"] = (
+            "No headings were found in the converted markdown, so the whole "
+            "document is a single synthetic 'Preamble' section — this is not a "
+            "one-section paper. Section titles are unavailable; use "
+            "find_in_paper to locate content, or re-run convert_paper with "
+            "mode='full' if this was converted with mode='fast' (the fast "
+            "backend emits plain text with no headings)."
+        )
+    return response
 
 
 @mcp.tool(meta={"anthropic/maxResultSizeChars": _SECTION_HARNESS_CAP})
