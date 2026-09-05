@@ -375,7 +375,7 @@ async def search_cached_papers(
     rejected as an ambiguous match. ``section_index`` is unambiguous and is
     computed with the same boundaries get_paper_section uses.
 
-    Hits with score 0 (no query term appears) are dropped — empty
+    Only papers that actually match a query term are returned, so empty
     results means the cache contains no relevant paper, not that the
     search failed. Backed by a persistent incremental index: only papers
     that changed since the last search are re-tokenised, so repeat

@@ -71,7 +71,7 @@ class TestCrossrefPoolSelection:
     """Crossref runs two tiers and the rate we may use depends on whether we
     identify ourselves. The constants were hardcoded to the *polite* tier
     unconditionally while the mailto that earns it was optional, so an empty
-    .env requested at 2x the public rate, 3x its concurrency, 10x its search
+    .env requested at 2x the public rate, 3x its concurrency, 3x its search
     rate — anonymously.
 
     Documented limits (.claude/rules/providers.md):

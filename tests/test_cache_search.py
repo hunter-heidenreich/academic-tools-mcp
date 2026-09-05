@@ -278,13 +278,52 @@ class TestFilenameToCanonical:
             == "10.18653/v1/2023.acl-long.1"
         )
 
-    def test_manual_passes_through(self):
-        # Manual canonical IDs are arbitrary user input; we don't
-        # try to restore slashes, so the filename stem comes back as-is.
+    def test_manual_freeform_label_passes_through(self):
+        # A label that isn't DOI-shaped has no slash to restore.
         assert (
             cache_search._filename_to_canonical("manual", "my-imported-paper")
             == "my-imported-paper"
         )
+
+    def test_manual_publisher_doi_restores_slash(self):
+        # resolve_target sends every non-arXiv/bioRxiv/ACL DOI to the manual
+        # namespace, so most manual stems are publisher DOIs. The registrant is
+        # digits only, so the first "_" after it is unambiguously the slash —
+        # without restoring it the hit's canonical_id chains nowhere.
+        assert (
+            cache_search._filename_to_canonical("manual", "10.1038_s41586-021-03819-2")
+            == "10.1038/s41586-021-03819-2"
+        )
+
+    def test_manual_only_the_registrant_slash_is_restored(self):
+        # A suffix underscore is left alone: only the slash the registrant
+        # prefix introduced is decidable.
+        assert cache_search._filename_to_canonical("manual", "10.1234_a_b") == "10.1234/a_b"
+
+    def test_percent_escapes_are_decoded(self):
+        # safe_stem percent-encodes anything outside [A-Za-z0-9.-]; the
+        # inversion must decode it or the id doesn't round-trip.
+        stem = papers.safe_stem("10.1002/(sici)1097-0258")
+        assert cache_search._filename_to_canonical("manual", stem) == "10.1002/(sici)1097-0258"
+
+    def test_a_literal_percent_is_not_read_as_an_escape(self):
+        # safe_stem writes a literal "%" as "%25", so one unquote is its exact
+        # inverse and can't manufacture an escape that was never there.
+        stem = papers.safe_stem("10.1234/a%2fb")
+        assert cache_search._filename_to_canonical("manual", stem) == "10.1234/a%2fb"
+
+    def test_round_trips_every_namespace(self):
+        # The property that matters: safe_stem -> _filename_to_canonical is
+        # identity for the identifier shapes each namespace actually stores.
+        for ns, canonical in (
+            ("arxiv", "2301.00001"),
+            ("arxiv", "hep-th/9901001"),
+            ("biorxiv", "10.1101/2024.01.01.123"),
+            ("acl_anthology", "10.18653/v1/2023.acl-long.1"),
+            ("manual", "10.1038/s41586-021-03819-2"),
+            ("manual", "my-imported-paper"),
+        ):
+            assert cache_search._filename_to_canonical(ns, papers.safe_stem(canonical)) == canonical
 
 
 # ---------------------------------------------------------------------------

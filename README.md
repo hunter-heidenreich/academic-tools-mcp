@@ -141,7 +141,7 @@ Every tool above except `search_cached_papers` (which takes a query, not a paper
 | `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from whichever has more; pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
 | `get_paper_citations_count` | Number of incoming citations (OpenCitations) |
 | `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
-| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); each hit warms the works cache so a follow-up `get_paper_metadata(doi)` is free |
+| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); each hit warms the Crossref works cache, so a follow-up `get_paper_references(doi, source="crossref")` is free |
 
 For citations, follow the **count-then-page** pattern: call `get_paper_citations_count` first to see the total, then page through with `page` and `page_size`. For references the `source="auto"` default does the survey for you on the first call. Paginated responses include `_source` (on references) and `has_more` so agents know which shape to expect and when to stop. This prevents token blowouts on papers with long bibliographies or many citations.
 

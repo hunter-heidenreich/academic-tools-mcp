@@ -407,18 +407,21 @@ async def import_paper(
     # functions stay synchronous so their direct callers and tests are
     # unaffected; the boundary is here, matching get_paper_section and
     # find_in_paper.
+    # Invariant: both branches hold ``papers.sections_lock`` across the write.
+    # Each replaces the markdown / section-index pair that convert_pdf and the
+    # force_refresh cascade mutate under the same lock — the PDF branch via
+    # manual._invalidate_derived, which unlinks the markdown. Without it a
+    # concurrent reader can see a half-replaced state, or lose the file between
+    # its exists() check and its read.
+    target = manual.resolve_target(identifier)
     if ext == ".pdf":
-        return _strip_internal_paths(
-            await asyncio.to_thread(
-                manual.import_local_pdf, file_path, identifier, force_refresh=force_refresh
+        async with papers.sections_lock(target["namespace"], target["canonical"]):
+            return _strip_internal_paths(
+                await asyncio.to_thread(
+                    manual.import_local_pdf, file_path, identifier, force_refresh=force_refresh
+                )
             )
-        )
     if ext in _MARKDOWN_EXTS:
-        # Held across the write: import_markdown replaces the markdown and its
-        # section index, the same pair convert_pdf and the force_refresh
-        # cascade mutate under this lock. Without it an interleaved
-        # convert_paper can read a half-replaced state.
-        target = manual.resolve_target(identifier)
         async with papers.sections_lock(target["namespace"], target["canonical"]):
             result = _strip_internal_paths(
                 await asyncio.to_thread(

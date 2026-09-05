@@ -260,8 +260,9 @@ async def get_with_retry(
     provider's own throttle gap (``backoff_seconds`` is the floor), and a
     misconfigured ``Retry-After: 86400`` can't pin our throttle for hours.
 
-    Backoff grows exponentially across attempts: the sleep before attempt
-    *n* uses ``backoff_seconds * 2**(n-1)``. At the default ``max_attempts=2``
+    Backoff grows exponentially across attempts: the sleep *after* a failed
+    attempt *n* uses ``backoff_seconds * 2**(n-1)``, so the first retry
+    waits exactly ``backoff_seconds``. At the default ``max_attempts=2``
     only one sleep ever happens (factor ``2**0 = 1``), so single-retry
     providers are unchanged. A provider that opts into more attempts — e.g.
     arXiv, whose Fastly edge returns 429/503 with **no** ``Retry-After`` when

@@ -39,6 +39,7 @@ import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from . import _textnorm, cache, papers
 
@@ -123,7 +124,7 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 
 # Persistent index. Lives in a reserved double-underscore namespace dir
 # that _iter_markdown_files naturally skips (it has no ``markdown/``
-# subdir). Bump _INDEX_VERSION to force a full rebuild when the entry
+# subdir). Bump _SCHEMA_VERSION to force a full rebuild when the entry
 # schema or tokeniser changes. The lock serialises the load→refresh→save
 # critical section across the worker threads that search() runs in (it is
 # dispatched via asyncio.to_thread at the tool layer); BM25 scoring and
@@ -278,24 +279,25 @@ def _extract_snippet(
 # Filename → identifier inversion per namespace
 # ---------------------------------------------------------------------------
 
-# Each namespace stores markdown at canonical.replace("/", "_") + ".md".
-# Inverting that is namespace-specific because DOI suffixes can legitimately
-# contain underscores; we can only safely restore the slashes that the
-# known prefix introduced.
+# Each namespace stores markdown under papers.safe_stem(canonical) + ".md",
+# which maps "/" to "_" and percent-encodes everything else unsafe. Inverting
+# the "_" is namespace-specific because a DOI suffix can legitimately contain
+# one; we can only restore the slashes a known prefix introduced.
 _NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
     # bioRxiv DOIs are always "10.1101/<suffix>" — exactly one slash.
     "biorxiv": [("10.1101_", "10.1101/")],
     # ACL Anthology DOIs are always "10.18653/v1/<suffix>" — two slashes.
     "acl_anthology": [("10.18653_v1_", "10.18653/v1/")],
-    # Manual canonical IDs are arbitrary user input. We don't try to
-    # restore slashes here — the agent-visible identifier is whatever
-    # the user originally passed to import_paper, which was already
-    # lowercased by manual._canonical_key, so slash-bearing inputs
-    # will round-trip imperfectly. Calling get_paper_metadata on a
-    # manual identifier doesn't dispatch anywhere anyway, so the
-    # imperfection costs nothing in practice.
-    "manual": [],
 }
+
+# The manual namespace is where manual.resolve_target sends *every* DOI that
+# isn't arXiv/bioRxiv/ACL, so most of what lands there is a publisher DOI and
+# not the freeform label the name suggests. A DOI is "10.<registrant>/<suffix>"
+# and the registrant is digits only, so the first "_" after it is unambiguously
+# the slash — restoring it is what makes the returned canonical_id chainable
+# into get_paper_metadata. A suffix carrying further slashes still round-trips
+# imperfectly; freeform labels don't match and pass through.
+_MANUAL_DOI_STEM_RE = re.compile(r"^(10\.\d{4,})_")
 
 # Old-style arXiv IDs carry exactly one slash: "archive[.subject]/NNNNNNN"
 # (e.g. "hep-th/9901001", "cs/0501001", "math.GT/0309136"). canonical_arxiv_id
@@ -307,14 +309,26 @@ _ARXIV_OLDSTYLE_STEM_RE = re.compile(r"^([a-z][a-z.\-]*)_(\d{7})$")
 
 
 def _filename_to_canonical(namespace: str, stem: str) -> str:
-    """Invert ``canonical.replace("/", "_")`` for the given namespace.
+    """Invert ``papers.safe_stem`` for the given namespace.
 
     ``stem`` is the filename without the ``.md`` extension. Returns the
-    canonical form the original code would have used as a cache key.
+    canonical form the original code would have used as a cache key, so the
+    ``canonical_id`` on a hit chains into the paper tools.
+
+    Percent-decoding is unconditional and runs last: ``safe_stem`` encodes a
+    literal ``%`` as ``%25``, so a single ``unquote`` is its exact inverse and
+    can't manufacture an escape that wasn't one.
     """
+    return unquote(_restore_slashes(namespace, stem))
+
+
+def _restore_slashes(namespace: str, stem: str) -> str:
+    """Undo ``safe_stem``'s ``"/" -> "_"`` mapping, as far as it is decidable."""
     if namespace == "arxiv":
         m = _ARXIV_OLDSTYLE_STEM_RE.match(stem)
         return f"{m.group(1)}/{m.group(2)}" if m else stem
+    if namespace == "manual":
+        return _MANUAL_DOI_STEM_RE.sub(r"\1/", stem, count=1)
     repairs = _NAMESPACE_PREFIX_REPAIRS.get(namespace, [])
     for needle, replacement in repairs:
         if stem.startswith(needle):

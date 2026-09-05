@@ -49,9 +49,6 @@ def _canonical_key(identifier: str) -> str:
 _ARXIV_NEW_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
 _ARXIV_OLD_RE = re.compile(r"^[a-z-]+/\d{7}(v\d+)?$")
 
-# DOI shape: "10.<registrant>/<suffix>"
-_DOI_RE = re.compile(r"^10\.\d{4,}/\S+$")
-
 
 def _is_arxiv_identifier(normalized: str) -> bool:
     """Return True if *normalized* matches an arXiv ID shape."""
@@ -82,7 +79,9 @@ def resolve_metadata_source(identifier: str) -> str | None:
     if biorxiv.is_biorxiv_doi(normalized):
         return "biorxiv"
 
-    if _DOI_RE.match(normalized):
+    # Invariant: dispatch tests DOI shape with the same predicate that builds
+    # the cache key, so the two can never disagree about what is a DOI.
+    if _doi.looks_like_doi(normalized):
         return "openalex"
 
     return None

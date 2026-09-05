@@ -9,7 +9,7 @@ of; hypothesis covers the suffixes nobody did.
 from hypothesis import given
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi
+from academic_tools_mcp import _doi, manual
 
 # Registrant codes are `10.` followed by four or more digits; the suffix is
 # near-freeform but may not contain whitespace, and `?`/`#` would be read as
@@ -65,3 +65,14 @@ def test_doi_shape_survives_every_spelling(doi: str) -> None:
     assert _doi.looks_like_doi(doi)
     assert _doi.looks_like_doi(f"https://doi.org/{doi}")
     assert _doi.looks_like_doi(f"doi: {doi}")
+
+
+@given(dois)
+def test_dispatch_uses_the_same_shape_test_as_the_cache_key(doi: str) -> None:
+    """`resolve_metadata_source` routes on `looks_like_doi`, not a forked regex.
+
+    A second copy of the DOI pattern lets dispatch and caching disagree about
+    what a DOI is — one spelling routed to OpenAlex, another rejected outright.
+    """
+    for spelling in (doi, f"https://doi.org/{doi}", f"doi: {doi}", f"  {doi}  "):
+        assert manual.resolve_metadata_source(spelling) == "openalex", spelling

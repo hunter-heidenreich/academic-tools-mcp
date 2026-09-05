@@ -710,6 +710,31 @@ class TestImportPaperToolDoesNotBlockTheLoop:
             lock.release()
         assert "error" not in await task
 
+    @pytest.mark.asyncio
+    async def test_pdf_import_holds_the_sections_lock(self, tmp_path, monkeypatch):
+        """The PDF branch cascades through manual._invalidate_derived, which
+        unlinks the markdown — the same file _reparse_sections_locked reads
+        under this lock between its exists() check and its read."""
+        import asyncio
+
+        from academic_tools_mcp import cache, papers, server
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 body")
+        ident = "10.1234/locked-pdf-import"
+        target = manual.resolve_target(ident)
+
+        lock = papers.sections_lock(target["namespace"], target["canonical"])
+        await lock.acquire()
+        task = asyncio.create_task(server.import_paper(str(pdf), ident))
+        try:
+            await asyncio.sleep(0.05)
+            assert not task.done(), "import_paper proceeded without the sections lock"
+        finally:
+            lock.release()
+        assert "error" not in await task
+
 
 class TestImportPaperTool:
     @pytest.mark.asyncio

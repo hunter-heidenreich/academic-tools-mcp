@@ -882,7 +882,8 @@ def store_markdown_and_index(
     ``_reparse_sections_locked`` accepts an entry whose checksum matches, an
     imported heading-free paper was reported to the agent as
     ``sections_detected: true`` — the exact reading ``sections_note`` exists to
-    prevent. (Guarded by tests/test_manual.py::TestMarkdownImportSectionsIndex.)
+    prevent. (Guarded by tests/test_manual.py::TestImportMarkdown::
+    test_cached_sections_carry_every_key_a_conversion_writes.)
 
     ``mode`` is the provenance tag: ``"full"`` / ``"fast"`` for converter
     output, ``"imported"`` for a pre-converted file that never ran through one.
