@@ -26,3 +26,6 @@ coverage.xml
 
 # Secrets
 .env
+
+# macOS
+.DS_Store
