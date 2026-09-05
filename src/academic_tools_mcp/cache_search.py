@@ -526,15 +526,12 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     # from can never match. Recording *why* keeps such papers reportable
     # rather than merely absent.
     #
-    # The test must match ``unicode61``, which tokenises on Unicode character
-    # class — every letter and digit in every script. It previously asked
-    # ``_tokenize`` (ASCII-only) plus a MATCH for the five ASCII vowels, so a
-    # paper in Japanese or Cyrillic was reported unusable while FTS5 had in
-    # fact indexed it perfectly well. That was harmless only for as long as
-    # the query side was equally ASCII-biased; now that a non-Latin query
-    # reaches the index, the report was actively wrong — it told the agent to
-    # fall back to ``find_in_paper`` on a paper that ``search_cached_papers``
-    # would have found.
+    # The probe must agree with ``unicode61``, which tokenises on Unicode
+    # character class — every letter and digit in every script. An ASCII-biased
+    # test reports a Japanese or Cyrillic paper as unusable when FTS5 has
+    # indexed it perfectly well, and since a non-Latin query does reach the
+    # index, ``unindexable_note`` then tells the agent to fall back to
+    # ``find_in_paper`` on a paper ``search_cached_papers`` would have found.
     if _ALNUM_RE.search(text) is None:
         return "no_indexable_tokens"
     return None

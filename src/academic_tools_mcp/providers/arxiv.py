@@ -157,14 +157,12 @@ def canonical_arxiv_id(arxiv_id: str) -> str:
     form; an explicit ``2301.00001v2`` means that revision and keys on
     ``2301.00001v2``.
 
-    This used to strip the version so v1/v2/latest shared one entry, which
-    silently served the wrong paper: the key was stripped but the *fetch*
-    (``_normalize_arxiv_id``) kept the version, so whichever version was
-    requested first won the shared key and every later version was a cache
-    hit returning the earlier one's title, abstract, and authors —
-    and ``download_pdf`` then handed back the earlier one's bytes marked
-    ``cached: True``. ``force_refresh`` could not help, because it
-    invalidated that same shared key.
+    **Do not strip the version here.** The *fetch* (``_normalize_arxiv_id``)
+    keeps it, so a stripped key silently serves the wrong paper: whichever
+    version is requested first wins the shared entry and every later one is a
+    cache hit returning the earlier paper's title, abstract and authors, with
+    ``download_pdf`` handing back its bytes marked ``cached: True``.
+    ``force_refresh`` cannot rescue it — it invalidates that same shared key.
 
     Only lowercasing is applied (old-style IDs like ``math.GT/0309136``
     vary in case upstream); the API request itself keeps the original case.

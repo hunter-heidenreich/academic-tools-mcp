@@ -245,11 +245,11 @@ def _build_fast_converter_command(pdf_path: Path) -> str:
 # they ever reach a shell unquoted, dangerous (``$``, backtick, quotes, ...).
 # ``.``/``-`` are kept so dotted DOIs and arXiv-style ids round-trip unchanged.
 #
-# Unsafe characters are **percent-encoded**, not collapsed to ``_``. Collapsing
-# was lossy: ``"a b"`` and ``"a_b"`` mapped to the same ``a_b.pdf``, so two
-# distinct imported papers silently overwrote each other's PDF — while
-# ``markdown_path`` used a *different* rule (``/`` → ``_`` only) and kept them
-# apart, leaving the PDF and markdown caches disagreeing about identity.
+# Unsafe characters are **percent-encoded**, not collapsed to ``_``, because
+# collapsing is lossy: ``"a b"`` and ``"a_b"`` would map to one ``a_b.pdf`` and
+# two distinct imported papers would overwrite each other. Encoding is
+# injective, so the PDF, markdown and sections paths cannot disagree about
+# which file belongs to which paper.
 #
 # ``/`` keeps its historical ``_`` mapping rather than becoming ``%2F``: every
 # DOI and old-style arXiv id contains one, so encoding it would rename
@@ -1051,11 +1051,11 @@ async def _convert_fast(
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.CancelledError:
             # Client disconnect / tool-call cancellation / server shutdown.
-            # The `finally` below removes the extraction dir and releases the
-            # conversion lock, but nothing used to signal the subprocess — so a
-            # MinerU run kept pinning CPU/GPU with its output directory deleted
-            # underneath it, and the child was never reaped. Kill, then
-            # re-raise: cancellation is not an error to report to the caller.
+            # The `finally` below cleans up the extraction dir and the lock but
+            # does **not** signal the child — without this kill a converter run
+            # keeps pinning CPU/GPU with its output directory deleted underneath
+            # it, and is never reaped. Kill, then re-raise: cancellation is not
+            # an error to report to the caller.
             await _kill_process_group(proc)
             raise
         except TimeoutError:
@@ -1234,11 +1234,10 @@ async def convert_pdf(
             except asyncio.CancelledError:
                 # Client disconnect / tool-call cancellation / server shutdown.
                 # The `finally` below rmtree's the extraction dir and releases
-                # the global conversion lock, but nothing used to signal the
-                # subprocess — so a MinerU run kept pinning CPU/GPU with its
-                # output directory deleted underneath it, and the child was
-                # never reaped. Kill, then re-raise: cancellation is not an
-                # error to report to the caller.
+                # the global conversion lock but does **not** signal the child —
+                # without this kill a MinerU run keeps pinning CPU/GPU with its
+                # output directory deleted underneath it, and is never reaped.
+                # Kill, then re-raise: cancellation is not an error to report.
                 await _kill_process_group(proc)
                 raise
             except TimeoutError:
