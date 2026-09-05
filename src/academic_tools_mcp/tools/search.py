@@ -251,12 +251,10 @@ async def find_in_paper(
     # Read + scan off the event loop — a large converted paper's disk read and
     # a query with thousands of matches would each otherwise pin it.
     #
-    # Read UTF-8 explicitly: this was the one read path in the pipeline that
-    # relied on the host locale, so under LC_ALL=C (containers, systemd units)
-    # it raised UnicodeDecodeError straight out of the tool instead of
-    # returning the {error} contract. Its siblings — get_paper_section,
-    # _reparse_sections_locked, _convert_fast, import_markdown — were all
-    # explicit already.
+    # Encoding is explicit, as in every sibling read (get_paper_section,
+    # _reparse_sections_locked, _convert_fast, import_markdown). Relying on the
+    # host locale raises UnicodeDecodeError out of the tool under LC_ALL=C
+    # (containers, systemd units) instead of returning the {error} contract.
     def _read_and_scan() -> tuple[list[dict[str, Any]], bool]:
         markdown = md_path.read_text(encoding="utf-8")
         return papers.find_in_markdown(
@@ -401,18 +399,24 @@ async def search_cached_papers(
     nothing. There is no ``unindexable`` warning for this — those papers *are*
     indexed. Use find_in_paper for sub-phrase lookups in such a paper.
     """
+
     # Wrap the synchronous BM25 pass in to_thread so it doesn't pin the
     # event loop on a large corpus. Even at hundreds of papers this is
     # tens of milliseconds, but agents may run searches concurrently
     # with HTTP fetches and we shouldn't starve those.
-    results = await asyncio.to_thread(
-        cache_search.search,
-        query,
-        top_k=top_k,
-        namespace=namespace,
-        normalize=normalize,
-        force_refresh=force_refresh,
-    )
+    # One hop, not two: `search` refreshes the index, so `unindexable` reads
+    # the same warm state and skips its own corpus walk.
+    def _search_and_diagnose():
+        hits = cache_search.search(
+            query,
+            top_k=top_k,
+            namespace=namespace,
+            normalize=normalize,
+            force_refresh=force_refresh,
+        )
+        return hits, cache_search.unindexable(namespace, refresh=False)
+
+    results, skipped = await asyncio.to_thread(_search_and_diagnose)
     response: dict[str, Any] = {
         "query": query,
         "result_count": len(results),
@@ -423,7 +427,6 @@ async def search_cached_papers(
     # have no searchable terms, but silently, which left an agent no way to
     # learn that part of the corpus was never considered. Reported only when
     # non-empty so the common response stays lean.
-    skipped = await asyncio.to_thread(cache_search.unindexable, namespace)
     if skipped:
         response["unindexable_count"] = len(skipped)
         response["unindexable"] = skipped[:10]

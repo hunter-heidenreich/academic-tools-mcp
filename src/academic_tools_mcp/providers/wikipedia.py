@@ -30,8 +30,7 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable Wikipedia response.
 
-    Delegates to ``_http.parse_error_dict``, the single home for the
-    shape. Six providers carried byte-identical copies of this.
+    Delegates to ``_http.parse_error_dict``, the single home for the shape.
     """
     return _http.parse_error_dict("Wikipedia")
 

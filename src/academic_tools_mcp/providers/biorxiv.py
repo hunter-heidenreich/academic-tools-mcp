@@ -34,8 +34,7 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable bioRxiv response.
 
-    Delegates to ``_http.parse_error_dict``, the single home for the
-    shape. Six providers carried byte-identical copies of this.
+    Delegates to ``_http.parse_error_dict``, the single home for the shape.
     """
     return _http.parse_error_dict("bioRxiv")
 
@@ -195,13 +194,12 @@ def _collection_of(data: Any) -> list[dict[str, Any]] | None:
     whereas a garbled body says nothing about whether the DOI exists and must
     stay retryable.
 
-    ``data.get(...)`` raises AttributeError on a JSON ``null``/scalar body, and
-    a collection of non-dicts raises later inside ``_pick_latest_version``.
-    Neither AttributeError nor TypeError is in ``_PARSE_ERRORS`` or
-    ``HTTPX_ERRORS``, so both escaped the provider entirely rather than
-    surfacing as the uniform ``{error, retryable}`` contract. openalex,
-    opencitations and wikipedia already guarded this; bioRxiv and crossref
-    were the two that were missed.
+    The shape check is load-bearing, not defensive padding: ``data.get(...)``
+    raises AttributeError on a JSON ``null``/scalar body and a collection of
+    non-dicts raises inside ``_pick_latest_version``, and **neither
+    AttributeError nor TypeError is in ``_PARSE_ERRORS`` or ``HTTPX_ERRORS``**
+    — so an unguarded body escapes the provider entirely instead of surfacing
+    as the uniform ``{error, retryable}`` contract.
     """
     if not isinstance(data, dict):
         return None
@@ -226,8 +224,7 @@ def _pick_latest_version(collection: list[dict[str, Any]]) -> dict[str, Any]:
 def _parse_paper(raw: dict[str, Any]) -> dict[str, Any]:
     """Convert a raw bioRxiv API entry into a normalized paper dict."""
     # `raw.get("server", "")` returns None when the key is present as JSON
-    # null, and None.lower() raises. Nine lines below, the `published` field
-    # already got this right — the omission here was accidental.
+    # null, and None.lower() raises — hence `or ""` rather than a default.
     server = (raw.get("server") or "").lower()
     if "medrxiv" in server:
         server = "medrxiv"

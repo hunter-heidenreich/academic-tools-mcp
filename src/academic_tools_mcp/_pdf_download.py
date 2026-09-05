@@ -7,10 +7,9 @@ total bytes so a misrouted URL can't fill the disk. The slot acquisition
 is per-provider (different gap / concurrency caps), but the streaming +
 size-capping + atomic-rename logic is identical, so it lives here.
 
-Streaming (vs. the previous ``response.content`` + ``write_bytes`` path)
-matters for two reasons: peak memory stays at one chunk size instead of
-2× the PDF size, and the size cap fires partway through rather than
-after the entire response is already buffered in RAM.
+Streaming matters for two reasons: peak memory stays at one chunk size rather
+than 2× the PDF, and the size cap fires partway through rather than after the
+whole response is already buffered in RAM.
 """
 
 from __future__ import annotations

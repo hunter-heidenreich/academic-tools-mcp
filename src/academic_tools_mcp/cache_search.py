@@ -18,18 +18,10 @@ already on disk and the winners are re-read for snippets anyway, so
 storing it twice would be waste — this is what makes the database
 smaller than the JSON index it replaced, not larger.
 
-That JSON index held every document's full term-frequency map, in both a
-folded and an un-folded form, and was parsed into the heap in one go.
-Measured on a 3,732-paper corpus:
-
-    index size    193 MB  ->   84 MB
-    process RSS   933 MB  ->   20 MB
-    cold query   1308 ms  ->  1.3 ms
-
-It also rewrote all 193 MB whenever a single paper changed, and held a
-global lock across a full ``stat`` walk on every query. Refresh is now a
-per-document upsert keyed on ``(mtime_ns, size)``; the walk remains, but
-only changed files are re-read.
+Refresh is a per-document upsert keyed on ``(mtime_ns, size)``: the corpus
+walk remains, but only changed files are re-read and re-indexed. (The
+measurements behind the move off the previous JSON index are in
+``CHANGELOG.md`` — transcribing them here only gave two copies to disagree.)
 
 Two FTS tables, not one: ``normalize`` is a query-time flag in this API
 while diacritic folding is a build-time tokenizer option in FTS5, so the
@@ -191,11 +183,11 @@ def _section_for_offset(markdown: str, offset: int) -> tuple[int | None, str | N
     """Return ``(section_index, title)`` for a character offset.
 
     Delegates to ``papers.section_at_offset`` so this agrees with what
-    ``get_paper_section`` will actually accept. It used to be a fourth
-    independent dialect that (a) lacked the empty-section filter, so it could
-    name a section the reader's index had dropped, and (b) returned only a
-    *title* — which ``get_paper_section`` rejects with "Ambiguous section
-    title" whenever a paper repeats a heading, as 10.9% of a real corpus does.
+    ``get_paper_section`` will actually accept. A local reimplementation drifts
+    in two agent-visible ways: without the empty-section filter it names a
+    section the reader's index has dropped, and returning a *title* instead of
+    an index hits "Ambiguous section title" whenever a paper repeats a heading
+    — 10.9% of a real corpus.
     """
     found = papers.section_at_offset(markdown, offset)
     if found is None:
@@ -455,9 +447,8 @@ def _connect() -> sqlite3.Connection:
 
     A connection per call: SQLite connections are not shareable across
     threads, and the tool layer dispatches searches through
-    ``asyncio.to_thread``. Opening is microseconds — the expensive thing
-    used to be parsing a 193 MB JSON blob into the heap, which is exactly
-    what this removes.
+    ``asyncio.to_thread``. Opening costs microseconds, so there is nothing to
+    amortise by holding one open.
     """
     path = _index_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -535,15 +526,12 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     # from can never match. Recording *why* keeps such papers reportable
     # rather than merely absent.
     #
-    # The test must match ``unicode61``, which tokenises on Unicode character
-    # class — every letter and digit in every script. It previously asked
-    # ``_tokenize`` (ASCII-only) plus a MATCH for the five ASCII vowels, so a
-    # paper in Japanese or Cyrillic was reported unusable while FTS5 had in
-    # fact indexed it perfectly well. That was harmless only for as long as
-    # the query side was equally ASCII-biased; now that a non-Latin query
-    # reaches the index, the report was actively wrong — it told the agent to
-    # fall back to ``find_in_paper`` on a paper that ``search_cached_papers``
-    # would have found.
+    # The probe must agree with ``unicode61``, which tokenises on Unicode
+    # character class — every letter and digit in every script. An ASCII-biased
+    # test reports a Japanese or Cyrillic paper as unusable when FTS5 has
+    # indexed it perfectly well, and since a non-Latin query does reach the
+    # index, ``unindexable_note`` then tells the agent to fall back to
+    # ``find_in_paper`` on a paper ``search_cached_papers`` would have found.
     if _ALNUM_RE.search(text) is None:
         return "no_indexable_tokens"
     return None
@@ -617,7 +605,7 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
 
 
 def unindexable(
-    namespace: str | None = None, *, force_refresh: bool = False
+    namespace: str | None = None, *, force_refresh: bool = False, refresh: bool = True
 ) -> list[dict[str, Any]]:
     """Papers present on disk that the index could not use.
 
@@ -628,8 +616,14 @@ def unindexable(
     searchable terms — but silently so, which is not: an agent asking "which
     paper mentioned X?" has no way to learn that part of the corpus was never
     considered. Surfaced through ``search_cached_papers``.
+
+    ``refresh=False`` skips the corpus walk, for a caller that has just run
+    ``search`` and so already has an index in step with the disk. The walk is
+    an ``os.scandir`` over every cached markdown file; running it twice per
+    tool call buys nothing.
     """
-    _refresh_index(force_refresh=force_refresh)
+    if refresh:
+        _refresh_index(force_refresh=force_refresh)
     con = _connect()
     try:
         sql = "SELECT ns, stem, unindexable FROM files WHERE unindexable IS NOT NULL"
@@ -704,9 +698,9 @@ def _snippet_terms(query: str, *, normalize: bool) -> set[str]:
     word-boundary regex ("transformer." never matches), but its ASCII-only
     pattern mangles anything else: "Gutiérrez" becomes ``guti``/``rrez``,
     neither of which appears in the text, and a wholly non-Latin query
-    becomes nothing at all. Both cases used to centre the snippet on the
-    document head and report no section, so a hit the index found perfectly
-    well came back unnavigable.
+    becomes nothing at all. Either case alone centres the snippet on the
+    document head and reports no section, so a hit the index found perfectly
+    well comes back unnavigable.
 
     The raw words are transformed the way ``_extract_snippet`` expects them:
     folded when ``normalize``, then lowercased. For an ordinary ASCII query
@@ -750,12 +744,9 @@ def search(
     section. Every returned hit matched at least one query term and scores
     above zero; higher is better.
 
-    **Scores are corpus-global.** ``namespace`` filters which documents come
-    back, but term rarity is computed over the whole index rather than the
-    filtered subset, so a paper's score no longer changes depending on how
-    you filtered. (The previous implementation scoped corpus statistics to
-    the filter, which made the same paper score differently in a filtered and
-    an unfiltered search.)
+    **Scores are corpus-global.** ``namespace`` selects which documents come
+    back, not how they rank: term rarity is computed over the whole index, so
+    one paper scores identically in a filtered and an unfiltered search.
 
     ``normalize=True`` folds diacritics on both sides, so "cafe" and "café"
     rank identically. Folding is a build-time property of an FTS5 tokenizer
@@ -828,12 +819,11 @@ def search(
             {
                 "namespace": row["ns"],
                 "canonical_id": _filename_to_canonical(row["ns"], row["stem"]),
-                # 6 decimals, not 3: FTS5 returns a very small positive
-                # score when a term's IDF is degenerate (it appears in
-                # every document of a small corpus). Rounding to 3 crushed
-                # those to 0.0 and broke the invariant that any returned
-                # hit scores above zero. Real-corpus scores are 0.9-4, so
-                # readability is unaffected.
+                # Invariant: every returned hit scores above zero. 6 decimals
+                # rather than 3 because FTS5 returns a very small positive
+                # score for a degenerate IDF (a term in every document of a
+                # small corpus), and 3 rounds those to 0.0. Real-corpus scores
+                # are 0.9-4, so readability is unaffected.
                 "score": round(score, 6),
                 "title": title,
                 "snippet": snippet,

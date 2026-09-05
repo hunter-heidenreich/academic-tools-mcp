@@ -32,8 +32,7 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable OpenCitations response.
 
-    Delegates to ``_http.parse_error_dict``, the single home for the
-    shape. Six providers carried byte-identical copies of this.
+    Delegates to ``_http.parse_error_dict``, the single home for the shape.
     """
     return _http.parse_error_dict("OpenCitations")
 
@@ -80,10 +79,9 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
 def _normalize_doi(doi: str) -> str:
     """Normalize a DOI to bare form (e.g., 10.1234/example).
 
-    Thin wrapper over :mod:`_doi`, which is the single home for this logic.
-    Six copies had drifted; only two of them handled ``dx.doi.org`` and a
-    case-insensitive ``doi:`` prefix, so the same paper could land under
-    three different cache keys depending on which tool the agent called.
+    Thin wrapper over :mod:`_doi`, the single home for this logic. Never add a
+    local copy: divergent normalization lands one paper under several cache
+    keys, chosen by whichever tool the agent happened to call first.
     """
     return _doi.normalize(doi)
 

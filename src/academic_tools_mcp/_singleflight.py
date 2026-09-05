@@ -58,22 +58,22 @@ class SingleFlight:
         waiter for ``key`` sees the same outcome. The next call (after the
         future is dropped) re-runs the factory — failure is not cached.
 
-        **Leader cancellation does not cancel the followers.** If the leader's
-        task is cancelled — an agent's tool call times out, say — its own
-        lifetime ended, but the followers' did not; propagating the
-        ``CancelledError`` to them used to fail unrelated calls for no reason.
-        A follower that is not itself being cancelled takes over as the new
+        **Leader cancellation must not cancel the followers.** If the leader's
+        task is cancelled — an agent's tool call times out, say — its lifetime
+        ended, but the followers' did not, so propagating the
+        ``CancelledError`` to them fails unrelated calls for no reason. A
+        follower that is not itself being cancelled takes over as the new
         leader and runs the factory instead.
 
-        **Nor does follower cancellation reach the leader.** Cancelling a task
-        cancels the future it is suspended on, and for a follower that future
-        is the *shared* one — so one follower giving up used to cancel the slot
-        out from under everybody. The leader then called ``set_result`` on a
-        cancelled future (``InvalidStateError``, raised into the leader's own
-        caller in place of its perfectly good result), and any remaining
-        follower saw the cancellation and redundantly re-ran the factory,
-        defeating the coalescing this class exists for. Followers await through
-        ``asyncio.shield`` so their cancellation stays their own.
+        **Nor may follower cancellation reach the leader**, which is what the
+        ``asyncio.shield`` below is for. Cancelling a task cancels the future it
+        is suspended on, and for a follower that future is the *shared* one, so
+        an unshielded follower giving up cancels the slot out from under
+        everybody: the leader then calls ``set_result`` on a cancelled future
+        (``InvalidStateError``, raised into its own caller in place of a
+        perfectly good result), and every remaining follower sees the
+        cancellation and redundantly re-runs the factory — defeating the
+        coalescing this class exists for.
         """
         for _ in range(_MAX_TAKEOVERS):
             existing = self._inflight.get(key)

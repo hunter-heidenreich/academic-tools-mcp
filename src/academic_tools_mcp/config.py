@@ -1,12 +1,10 @@
 """Environment configuration, loaded from ``.env`` plus the real environment.
 
-The ``.env`` file used to be resolved as ``<package>/../../../.env`` — correct
-for a source checkout (``src/academic_tools_mcp/`` → project root) and
-meaningless from ``site-packages``, where it points somewhere inside the
-virtualenv. That silently disabled every env var for an installed wheel, which
-is a supported mode: ``pyproject.toml`` ships an ``academic-tools-mcp`` console
-script and ``.env.example`` explicitly tells operators to set ``CACHE_DIR``
-"when running from an installed wheel".
+Resolution must work from an installed wheel, not only a source checkout — the
+package ships an ``academic-tools-mcp`` console script and ``.env.example``
+tells operators to set ``CACHE_DIR`` for exactly that case. A single
+``<package>/../../../.env`` rule points inside the virtualenv from
+``site-packages`` and silently disables every env var there.
 
 Candidates are tried in order and the first that exists wins:
 

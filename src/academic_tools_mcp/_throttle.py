@@ -50,8 +50,7 @@ class Throttle:
     """Per-provider request pacing: burst cap, concurrency cap, inter-start gap.
 
     Owns the mutable runtime state (``pending``, ``last_request_time``, and the
-    loop-bound semaphore/lock) so a provider module no longer carries it as
-    module-level globals. Construct one per provider; share it across that
+    loop-bound semaphore/lock). Construct one per provider; share it across that
     provider's getters and PDF downloads.
     """
 

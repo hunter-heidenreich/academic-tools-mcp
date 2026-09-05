@@ -168,11 +168,11 @@ def pdf_path(identifier: str) -> Path:
 def _looks_like_cached_pdf(path: Path) -> bool:
     """Whether an existing cached PDF should be trusted as a hit.
 
-    Thin alias for ``_pdf_download.is_usable_pdf``, which is now the single
-    home for this check — the three native PDF providers and
-    ``convert_paper`` guard on it too, so the rule cannot drift between the
-    imported and downloaded paths. Kept as a name because callers and tests
-    in this module read better with the local spelling.
+    Thin alias for ``_pdf_download.is_usable_pdf``, the single home for this
+    check — the native PDF providers and ``convert_paper`` guard on it too, so
+    the rule cannot drift between the imported and downloaded paths. Kept as a
+    name because callers and tests in this module read better with the local
+    spelling.
     """
     return _pdf_download.is_usable_pdf(path)
 

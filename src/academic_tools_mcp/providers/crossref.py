@@ -21,18 +21,19 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable Crossref response.
 
-    Delegates to ``_http.parse_error_dict``, the single home for the
-    shape. Six providers carried byte-identical copies of this.
+    Delegates to ``_http.parse_error_dict``, the single home for the shape.
     """
     return _http.parse_error_dict("Crossref")
 
 
 # Crossref runs two service tiers, and which one we get depends on whether we
-# identify ourselves. The rate constants used to be hardcoded to the *polite*
-# tier unconditionally while the User-Agent carrying the mailto was set only
-# when CROSSREF_MAILTO was configured — so the documented default (an empty
-# .env; README: "Nothing is required to get started") requested at 2x the
-# public-pool rate, 3x its concurrency, and 10x its search rate, anonymously.
+# identify ourselves.
+#
+# **The rate we take must follow the identity we send.** Never hardcode these
+# constants: the polite figures against an anonymous User-Agent means the
+# documented default (an empty .env; README: "Nothing is required to get
+# started") requests at 2x the public-pool rate, 3x its concurrency and 10x
+# its search rate, without identifying itself.
 #
 # Limits per Crossref's REST API docs, mirrored in .claude/rules/providers.md:
 #
@@ -40,9 +41,9 @@ def _parse_error_dict() -> dict[str, Any]:
 #   polite   10 req/sec   3 req/sec    3
 #   public    5 req/sec   1 req/sec    1
 #
-# Search is rate-limited far more tightly than singleton lookups and used to
-# share the singles throttle entirely, so the search limit was never enforced
-# in either tier.
+# Search is rate-limited far more tightly than singleton lookups, so it is
+# paced separately (`_throttled_search_get`). Sharing the singles throttle
+# leaves the search limit unenforced in both tiers.
 _POLITE_MAX_CONCURRENT = 3
 _POLITE_REQUEST_GAP = 0.1  # 100ms -> 10 req/sec
 _POLITE_SEARCH_GAP = 0.334  # ~3 req/sec
@@ -82,10 +83,10 @@ _POSITIVE_TTL_SECONDS = 30 * 86400.0
 def _build_headers() -> dict[str, str]:
     """Build request headers, carrying the polite-pool mailto when configured.
 
-    The descriptive User-Agent is sent **unconditionally**. It used to be set
-    only when ``CROSSREF_MAILTO`` was present, so the default configuration
-    identified itself as ``python-httpx/x.y`` — while still requesting at the
-    polite-pool *rate*. See ``_resolve_policy`` for the matching fix.
+    The descriptive User-Agent is sent **unconditionally**; the mailto is what
+    is conditional. Gating the whole header on ``CROSSREF_MAILTO`` would leave
+    the default configuration identifying as ``python-httpx/x.y``. See
+    ``_resolve_policy`` — the rate we take must follow the identity we send.
     """
     return _useragent.headers(config.get("CROSSREF_MAILTO"))
 
@@ -156,10 +157,9 @@ async def _throttled_search_get(
 def _normalize_doi(doi: str) -> str:
     """Normalize a DOI to bare form (e.g., 10.1234/example).
 
-    Thin wrapper over :mod:`_doi`, which is the single home for this logic.
-    Six copies had drifted; only two of them handled ``dx.doi.org`` and a
-    case-insensitive ``doi:`` prefix, so the same paper could land under
-    three different cache keys depending on which tool the agent called.
+    Thin wrapper over :mod:`_doi`, the single home for this logic. Never add a
+    local copy: divergent normalization lands one paper under several cache
+    keys, chosen by whichever tool the agent happened to call first.
     """
     return _doi.normalize(doi)
 

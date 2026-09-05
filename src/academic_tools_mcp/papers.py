@@ -245,11 +245,11 @@ def _build_fast_converter_command(pdf_path: Path) -> str:
 # they ever reach a shell unquoted, dangerous (``$``, backtick, quotes, ...).
 # ``.``/``-`` are kept so dotted DOIs and arXiv-style ids round-trip unchanged.
 #
-# Unsafe characters are **percent-encoded**, not collapsed to ``_``. Collapsing
-# was lossy: ``"a b"`` and ``"a_b"`` mapped to the same ``a_b.pdf``, so two
-# distinct imported papers silently overwrote each other's PDF — while
-# ``markdown_path`` used a *different* rule (``/`` → ``_`` only) and kept them
-# apart, leaving the PDF and markdown caches disagreeing about identity.
+# Unsafe characters are **percent-encoded**, not collapsed to ``_``, because
+# collapsing is lossy: ``"a b"`` and ``"a_b"`` would map to one ``a_b.pdf`` and
+# two distinct imported papers would overwrite each other. Encoding is
+# injective, so the PDF, markdown and sections paths cannot disagree about
+# which file belongs to which paper.
 #
 # ``/`` keeps its historical ``_`` mapping rather than becoming ``%2F``: every
 # DOI and old-style arXiv id contains one, so encoding it would rename
@@ -464,17 +464,13 @@ _SUB_LEVEL: int = 3
 # Section boundaries — the single home
 # ---------------------------------------------------------------------------
 #
-# This computation existed in four places: parse_sections (its own line loop),
-# find_in_markdown and get_section_content (byte-identical copies), and
-# cache_search._section_for_offset (a fourth dialect over raw offsets, missing
-# the empty-section filter). find_in_markdown's docstring already depended on
-# two of them staying identical "because both apply the same recipe" — a
-# copy-paste invariant guarded by one test.
-#
-# The divergence was agent-visible: cache_search could name a section the
-# reader's index had dropped, and returned a *title* for the agent to chain
-# into get_paper_section — which fails outright when a paper repeats a
-# heading (10.9% of this corpus).
+# Four readers depend on these boundaries agreeing: parse_sections,
+# find_in_markdown, get_section_content and cache_search._section_for_offset.
+# They must all come from here — a second implementation is agent-visible, not
+# merely untidy. Drop the empty-section filter and a search hit names a section
+# the reader's index does not have; return a title instead of an index and the
+# agent's chain into get_paper_section dies on "Ambiguous section title"
+# whenever a paper repeats a heading, which 10.9% of a real corpus does.
 
 
 class Section:
@@ -1010,8 +1006,9 @@ async def _convert_fast(
         try:
             cmd = _build_fast_converter_command(pdf_path)
         except ConverterTemplateError as e:
-            # This builder used to sit outside any try, so a malformed
-            # PDF_FAST_CONVERTER escaped convert_paper as a raw exception.
+            # Invariant: a malformed PDF_FAST_CONVERTER surfaces as
+            # {error, retryable: False}, never a raised exception. The builder
+            # must stay inside this try.
             return {
                 "error": str(e),
                 "retryable": False,
@@ -1050,11 +1047,11 @@ async def _convert_fast(
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.CancelledError:
             # Client disconnect / tool-call cancellation / server shutdown.
-            # The `finally` below removes the extraction dir and releases the
-            # conversion lock, but nothing used to signal the subprocess — so a
-            # MinerU run kept pinning CPU/GPU with its output directory deleted
-            # underneath it, and the child was never reaped. Kill, then
-            # re-raise: cancellation is not an error to report to the caller.
+            # The `finally` below cleans up the extraction dir and the lock but
+            # does **not** signal the child — without this kill a converter run
+            # keeps pinning CPU/GPU with its output directory deleted underneath
+            # it, and is never reaped. Kill, then re-raise: cancellation is not
+            # an error to report to the caller.
             await _kill_process_group(proc)
             raise
         except TimeoutError:
@@ -1233,11 +1230,10 @@ async def convert_pdf(
             except asyncio.CancelledError:
                 # Client disconnect / tool-call cancellation / server shutdown.
                 # The `finally` below rmtree's the extraction dir and releases
-                # the global conversion lock, but nothing used to signal the
-                # subprocess — so a MinerU run kept pinning CPU/GPU with its
-                # output directory deleted underneath it, and the child was
-                # never reaped. Kill, then re-raise: cancellation is not an
-                # error to report to the caller.
+                # the global conversion lock but does **not** signal the child —
+                # without this kill a MinerU run keeps pinning CPU/GPU with its
+                # output directory deleted underneath it, and is never reaped.
+                # Kill, then re-raise: cancellation is not an error to report.
                 await _kill_process_group(proc)
                 raise
             except TimeoutError:
@@ -1257,17 +1253,14 @@ async def convert_pdf(
                 }
 
             if proc.returncode != 0:
-                # Converter output may include binary noise on crashes;
-                # replace undecodable bytes rather than raising
-                # UnicodeDecodeError ourselves. stderr is listed last because
-                # it is where a converter puts its actual error, and only the
-                # tail of this string is shown.
+                # Invariant: stderr is captured on its own pipe and appended
+                # last, so a converter that logs progress to stdout cannot push
+                # its real error out of the 500-char tail. Never merge the two
+                # with `2>&1`. (Guarded by
+                # tests/test_failure_modes.py::TestConverterSubprocessPlumbing.)
                 #
-                # The command used to be wrapped as `{cmd} 2>&1`, which merged
-                # stderr into stdout and left the stderr pipe permanently
-                # empty — so this concatenation always appended nothing, and
-                # a converter that logs progress to stdout could push its real
-                # error out of the 500-char tail.
+                # Undecodable bytes are replaced rather than raising: a crashing
+                # converter can emit binary noise.
                 output = (stdout or b"").decode("utf-8", errors="replace") + (stderr or b"").decode(
                     "utf-8", errors="replace"
                 )

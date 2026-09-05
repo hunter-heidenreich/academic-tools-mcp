@@ -77,6 +77,41 @@ grouped by milestone rather than per commit.
   download holds its slot for the whole transfer — so a per-host cap would let
   a 20-publisher walk open 40 parallel streams. ([#68])
 
+- **Source comments state the invariant they protect, not the regression that
+  produced them.** Roughly 35 sites across 18 files carried past-tense prose —
+  "the command used to be wrapped as `2>&1`", "six providers carried
+  byte-identical copies", "the previous implementation scoped corpus
+  statistics to the filter". That is what `CHANGELOG.md` and
+  `git log -S "<phrase>"` are for, and prose about deleted code outlives the
+  code and then misleads: `_pdf_download.cached_hit` claimed to have
+  "collapsed the six copies of this block" while two remained inline, and a
+  benchmark table in `cache_search.py` disagreed with this file's copy of the
+  same measurements on **every** row (84 vs 165 MB, 20 vs 43 MB, 1.3 vs
+  40 ms), having also labelled ranking cost as cold-query time.
+
+  Deletions where the rule is legible from the code beneath; rewrites as
+  `Invariant: … (guarded by tests/…)` where a test pins it, each citation
+  verified by mutating the guarded line and watching that test fail; and
+  present-tense trims where the warning is load-bearing and genuinely not
+  inferable — Crossref's rate/identity lockstep, arXiv's version-in-the-cache-key,
+  the single-flight shield, the converter process-group kill. Test docstrings
+  are left alone: a regression test's purpose *is* the regression.
+  `.claude/rules/python-design.md` gains a "don't transcribe history" clause so
+  this doesn't grow back. ([#69])
+
+- **Two passthrough wrappers that existed only as test seams are gone.**
+  `tools/paper._fetch_work` had *no* test patching it at all, and
+  `_app._fetch_crossref_work` had 17 — which is 17 tests reaching through a
+  layer of production code to patch a one-line delegate. Tool modules now call
+  `crossref.get_work` / `openalex.get_work` directly and tests patch the
+  provider, so `.claude/rules/server.md` no longer has to explain why call
+  sites route through `_app`. ([#69])
+
+- **`search_cached_papers` opened the search index once, not twice.** It ran
+  `search` and `unindexable` as two separate `asyncio.to_thread` hops, each
+  refreshing the index with a full `os.scandir` walk of the corpus and opening
+  its own connection. They now share one hop and one refresh. ([#69])
+
 - **The keyword search index moved from a single JSON file to SQLite FTS5.**
   The old index held every document's full term-frequency map, in both a
   folded and an un-folded form, and parsed the whole thing into the heap on
@@ -1237,3 +1272,4 @@ grouped by milestone rather than per commit.
 [#66]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/66
 [#67]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/67
 [#68]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/68
+[#69]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/69

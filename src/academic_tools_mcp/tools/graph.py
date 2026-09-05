@@ -3,7 +3,6 @@
 import asyncio
 from typing import Any
 
-from .. import _app
 from .._app import (
     DOI,
     FORCE_REFRESH,
@@ -13,7 +12,7 @@ from .._app import (
     _enrich_error,
     mcp,
 )
-from ..providers import opencitations
+from ..providers import crossref, opencitations
 
 # Auto source-selection bias. Crossref entries carry structured
 # bibliographic metadata (author/title/year/journal/DOI); OpenCitations
@@ -41,12 +40,12 @@ def _source_error(result: dict[str, Any]) -> dict[str, Any]:
 
     Forwards the whole structured signal, not just the message string, so an
     agent can tell a transient failure from a definitive one *and* act on it.
-
-    The forwarded set used to be only ``error`` / ``retryable`` / ``suggestion``,
-    which dropped exactly the fields that make the distinction actionable:
-    ``retry_after_seconds`` (how long to wait), ``backpressure`` and
-    ``max_concurrency`` (that we refused locally, and how much parallelism is
-    safe), and ``not_found`` (definitively absent vs. transiently unavailable).
+    Each key in ``_FORWARDED_ERROR_KEYS`` earns its place: ``retryable`` (is it
+    worth retrying), ``retry_after_seconds`` (how long to wait),
+    ``backpressure`` + ``max_concurrency`` (we refused locally, and how much
+    parallelism is safe), ``not_found`` (definitively absent vs. transiently
+    unavailable), ``suggestion`` (what to do instead). Trimming the set to just
+    the message strands the agent with a failure it cannot classify.
     """
     return {k: result[k] for k in _FORWARDED_ERROR_KEYS if k in result}
 
@@ -90,7 +89,7 @@ async def get_paper_references_count(
     opencitations: {count: M} | {error, suggestion?}}}``. Partial-failure
     tolerant: if one source errors the other's count is still reported.
     """
-    cr_task = _app._fetch_crossref_work(doi, force_refresh=force_refresh)
+    cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_result, oc_result = await asyncio.gather(cr_task, oc_task)
 
@@ -192,7 +191,7 @@ async def get_paper_references(
     hints for transient failures.
     """
     if source == "crossref":
-        work = await _app._fetch_crossref_work(doi, force_refresh=force_refresh)
+        work = await crossref.get_work(doi, force_refresh=force_refresh)
         if "error" in work:
             return _enrich_error(
                 work,
@@ -223,7 +222,7 @@ async def get_paper_references(
 
     # Survey both. The fetches are cached so a follow-up page-1 call with
     # the same DOI doesn't re-fetch.
-    cr_task = _app._fetch_crossref_work(doi, force_refresh=force_refresh)
+    cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_work, oc_data = await asyncio.gather(cr_task, oc_task)
 

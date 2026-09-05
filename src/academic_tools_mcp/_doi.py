@@ -1,22 +1,16 @@
-"""Shared DOI normalization.
+"""Shared DOI normalization — the single home. **Never add a local copy.**
 
-Six copies of this logic had accumulated — ``providers/crossref``,
-``providers/opencitations``, ``providers/openalex``, ``providers/acl_anthology``,
-``providers/biorxiv``, and ``manual`` — four of them byte-identical. The two
-that had been improved (``manual``, ``biorxiv``) were the only ones that
-handled ``dx.doi.org`` and a case-insensitive ``doi:`` prefix, so the same
-paper could land under three different cache keys depending on which tool the
-agent called first, and two of those keys built malformed upstream URLs:
+Divergent normalization is not a cosmetic problem. It lands one paper under
+several cache keys depending on which tool the agent called first, and a key
+that is not a bare DOI builds a malformed upstream URL:
 
-    openalex.canonical_doi("https://dx.doi.org/10.1234/x")
-        -> "https://dx.doi.org/10.1234/x"      (fetched as /works/doi:https://...)
-    openalex.canonical_doi("DOI:10.1234/x")    -> "doi:10.1234/x"
+    canonical_doi("https://dx.doi.org/10.1234/x")   must not stay a URL
+        (openalex would fetch it as /works/doi:https://...)
+    canonical_doi("DOI:10.1234/x")                  must not keep the prefix
+    normalize("doi: 10.1234/x")                     must re-strip the space,
+        or the result fails the DOI regex and the agent is told the
+        identifier is unrecognised
 
-All six also sliced the ``doi:`` prefix without re-stripping, so a pasted
-``"doi: 10.1234/x"`` became ``" 10.1234/x"``, failed the DOI regex, and was
-reported to the agent as an unknown identifier.
-
-This module is the single home, carrying the union of what those six did.
 Per-provider *policy* (which prefix a URL path needs, whether an ID is an
 Anthology ID) stays in the provider — only the normalization is shared.
 """

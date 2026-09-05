@@ -13,7 +13,6 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from . import _clients, cache, papers
-from .providers import crossref
 
 
 @asynccontextmanager
@@ -131,18 +130,17 @@ SECTION_MAX_CHARS = Annotated[
 ]
 
 
-# The pipeline stages an agent must run in order. Repeated verbatim in five
-# error messages before this constant existed.
+# The pipeline stages an agent must run in order. Single-homed: five error
+# messages quote it.
 PIPELINE_CHAIN = "download_pdf → convert_paper → get_paper_sections → get_paper_section"
 
 
 def not_converted_error(identifier: str) -> dict[str, Any]:
     """Uniform error for "this paper has no converted markdown yet".
 
-    Four tools produced this condition in two different shapes: three jammed
-    the recovery advice into the ``error`` string while ``find_in_paper``
-    split it into a proper ``suggestion`` key. Agents branch on ``suggestion``,
-    so the shape has to be the same everywhere.
+    Invariant: the recovery advice goes in ``suggestion``, never jammed into
+    the ``error`` string. Agents branch on ``suggestion``, so all four tools
+    that can produce this condition must emit the same shape.
     """
     return {
         "error": f"Paper not converted yet for: {identifier}.",
@@ -190,11 +188,11 @@ def _first(value: Any) -> Any:
 
 
 # Canonical fallback order for a Crossref work's publication date. Prefers the
-# formally-issued/published dates; `posted` (preprint date, present on every
-# bioRxiv DOI and other preprint-only records) is the last resort so a record
-# carrying only `posted` still yields a year. Shared by paper.py's metadata
-# formatting and search.py's triage-hit year extraction so the two can't drift
-# (they previously disagreed on whether `posted` counted).
+# formally-issued/published dates; `posted` (the preprint date, present on
+# every bioRxiv DOI and other preprint-only records) is the last resort so a
+# record carrying only `posted` still yields a year. Single-homed: paper.py's
+# metadata formatting and search.py's triage-hit year extraction both read it,
+# and a second copy would let them disagree about whether `posted` counts.
 _CROSSREF_DATE_KEYS = ("issued", "published-print", "published-online", "published", "posted")
 
 
@@ -383,11 +381,6 @@ PAGE = Annotated[
     int,
     Field(description="Page number, starting at 1.", ge=1),
 ]
-
-
-async def _fetch_crossref_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """Fetch a work from Crossref and return it, or propagate an error dict."""
-    return await crossref.get_work(doi, force_refresh=force_refresh)
 
 
 REF_SOURCE = Annotated[
