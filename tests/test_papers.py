@@ -1182,7 +1182,7 @@ class TestConverterCommandQuoting:
 
 
 class TestSafeStem:
-    """``_safe_stem`` maps a canonical id to a filesystem/shell-safe stem."""
+    """``safe_stem`` maps a canonical id to a filesystem/shell-safe stem."""
 
     def test_strips_shell_metacharacters(self):
         stem = papers.safe_stem('x"$(touch pwned)`id`;rm -rf /|y')
@@ -1218,9 +1218,9 @@ class TestSafeStem:
     def test_keeps_normal_doi_and_arxiv_ids(self):
         # Normal identifiers are unchanged except for the legacy / -> _ map,
         # so existing cache filenames don't churn.
-        assert papers._safe_stem("10.1101/2021.01.01.123") == "10.1101_2021.01.01.123"
-        assert papers._safe_stem("2301.00001v2") == "2301.00001v2"
-        assert papers._safe_stem("hep-th/9901001") == "hep-th_9901001"
+        assert papers.safe_stem("10.1101/2021.01.01.123") == "10.1101_2021.01.01.123"
+        assert papers.safe_stem("2301.00001v2") == "2301.00001v2"
+        assert papers.safe_stem("hep-th/9901001") == "hep-th_9901001"
 
 
 # ---------------------------------------------------------------------------

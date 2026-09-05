@@ -152,7 +152,7 @@ def _pdf_filename(canonical: str) -> str:
     Dotted/hyphenated DOIs and arXiv ids are unaffected (``.``/``-`` are kept),
     so normal identifiers map to the same name as before.
     """
-    return papers._safe_stem(canonical) + ".pdf"
+    return papers.safe_stem(canonical) + ".pdf"
 
 
 def _manual_pdf_path(canonical: str) -> Path:

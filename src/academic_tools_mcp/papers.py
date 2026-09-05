@@ -275,10 +275,6 @@ def safe_stem(canonical: str) -> str:
     )
 
 
-# Back-compat alias: this module and its tests grew up with the private name.
-_safe_stem = safe_stem
-
-
 # A stem that already contains only ``safe_stem`` output characters is either
 # native-safe or already migrated. Re-running ``safe_stem`` on it would encode
 # its own ``%`` escapes (``a%20b`` -> ``a%2520b``), so the sweep must test this
@@ -375,7 +371,7 @@ def _make_extraction_dir(canonical: str) -> Path:
     can't collide. The caller is responsible for removing it (``convert_pdf``
     does so in a ``finally``).
     """
-    return Path(tempfile.mkdtemp(prefix=f"pdf-convert-{_safe_stem(canonical)}-"))
+    return Path(tempfile.mkdtemp(prefix=f"pdf-convert-{safe_stem(canonical)}-"))
 
 
 def markdown_checksum(md_path: Path) -> str:
