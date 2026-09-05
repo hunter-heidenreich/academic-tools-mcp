@@ -17,6 +17,7 @@ from .._app import (
     _enrich_error,
     _first,
     mcp,
+    not_converted_error,
 )
 from ..providers import arxiv, crossref, wikipedia
 
@@ -245,11 +246,7 @@ async def find_in_paper(
     md_path = papers.markdown_path(target["namespace"], target["canonical"])
 
     if not md_path.exists():
-        return {
-            "error": f"Paper not converted yet for: {identifier}.",
-            "suggestion": "Run the pipeline first: download_pdf → convert_paper, "
-            "then find_in_paper / get_paper_sections / get_paper_section.",
-        }
+        return not_converted_error(identifier)
 
     # Read off the event loop alongside the regex pass — a large converted
     # paper's disk read would otherwise block other concurrent fetches.

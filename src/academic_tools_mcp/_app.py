@@ -131,6 +131,37 @@ SECTION_MAX_CHARS = Annotated[
 ]
 
 
+# The pipeline stages an agent must run in order. Repeated verbatim in five
+# error messages before this constant existed.
+PIPELINE_CHAIN = "download_pdf → convert_paper → get_paper_sections → get_paper_section"
+
+
+def not_converted_error(identifier: str) -> dict[str, Any]:
+    """Uniform error for "this paper has no converted markdown yet".
+
+    Four tools produced this condition in two different shapes: three jammed
+    the recovery advice into the ``error`` string while ``find_in_paper``
+    split it into a proper ``suggestion`` key. Agents branch on ``suggestion``,
+    so the shape has to be the same everywhere.
+    """
+    return {
+        "error": f"Paper not converted yet for: {identifier}.",
+        "suggestion": f"Run the pipeline first: {PIPELINE_CHAIN}.",
+    }
+
+
+def pdf_not_cached_error(identifier: str) -> dict[str, Any]:
+    """Uniform error for "no usable PDF is cached for this paper"."""
+    return {
+        "error": f"PDF not cached for: {identifier}.",
+        "suggestion": (
+            f"Run the pipeline first: {PIPELINE_CHAIN}. For PDFs outside "
+            "arXiv/bioRxiv/ACL, fetch the file yourself and hand it to "
+            "import_paper (accepts .pdf or .md/.markdown)."
+        ),
+    }
+
+
 def _enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
     """Add a suggestion to an error dict if one isn't already present."""
     if "error" in result and "suggestion" not in result:
@@ -373,19 +404,6 @@ REF_SOURCE = Annotated[
         "Crossref/PubMed/DataCite/OpenAIRE/JaLC — may have entries Crossref lacks. "
         "Call get_paper_references_count first only if you want to compare "
         "coverage explicitly before paginating."
-    ),
-]
-
-CITATION_SOURCE = Annotated[
-    Literal["auto", "opencitations"],
-    Field(
-        description="Which citation source to page through. "
-        "OpenCitations is currently the only provider for incoming "
-        "citations (no Crossref equivalent), so 'auto' and "
-        "'opencitations' behave identically. The parameter is "
-        "reserved so a future second source can be added without a "
-        "breaking change — pin source='opencitations' explicitly if "
-        "your code path must always use it."
     ),
 ]
 

@@ -20,6 +20,8 @@ from .._app import (
     SECTIONS_FORCE_REFRESH,
     _enrich_error,
     mcp,
+    not_converted_error,
+    pdf_not_cached_error,
 )
 from ..providers import acl_anthology, arxiv, biorxiv
 
@@ -133,10 +135,13 @@ async def download_pdf(
     import_paper(file_path, identifier) with the same identifier always
     works and deduplicates with the rest of the pipeline.
 
-    Skips download if already cached unless ``force_refresh=True``. Note
-    that re-downloading the PDF does NOT invalidate any already-converted
-    markdown — pass ``force_refresh=True`` to convert_paper too if you
-    want the next conversion to pick up the new file.
+    Skips download if already cached unless ``force_refresh=True``.
+    ``force_refresh=True`` **cascades**: when the PDF is actually
+    re-downloaded, the cached markdown and section index for that paper are
+    dropped automatically, so the next ``convert_paper`` picks up the new
+    bytes. You do not need to pass ``force_refresh`` to ``convert_paper`` as
+    well. The response reports this as
+    ``cascaded_invalidated: ["markdown", "sections"]``.
 
     Next step: convert_paper → get_paper_sections → get_paper_section.
     """
@@ -192,12 +197,7 @@ async def convert_paper(
     if not _pdf_download.is_usable_pdf(pdf):
         # Not just "absent": a 0-byte or non-%PDF- leftover must be treated
         # as a miss too, rather than handed to the converter.
-        return {
-            "error": f"PDF not cached for: {identifier}. "
-            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section. "
-            "For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself and "
-            "hand it to import_paper (accepts .pdf or .md/.markdown)."
-        }
+        return pdf_not_cached_error(identifier)
 
     result = await papers.convert_pdf(
         pdf,
@@ -255,7 +255,8 @@ async def get_paper_sections(
     the next read re-parses the markdown.
 
     Returns ``{total_sections, total_approx_tokens, sections}`` where each
-    section entry has ``{index, title, preview, approx_tokens}``.
+    section entry has ``{index, title, h3s, approx_tokens}`` — ``h3s`` is the
+    list of sub-headings under that section.
 
     Errors: not yet converted → guidance to run convert_paper.
     Next step: get_paper_section(identifier, index_or_title).
@@ -265,10 +266,7 @@ async def get_paper_sections(
         target["namespace"], target["canonical"], force_refresh=force_refresh
     )
     if sections_data is None:
-        return {
-            "error": f"Paper not converted yet for: {identifier}. "
-            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
-        }
+        return not_converted_error(identifier)
 
     sections_list = sections_data.get("sections", [])
     return {
@@ -306,10 +304,7 @@ async def get_paper_section(
     md_path = papers.markdown_path(target["namespace"], target["canonical"])
 
     if not md_path.exists():
-        return {
-            "error": f"Paper not converted yet for: {identifier}. "
-            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
-        }
+        return not_converted_error(identifier)
 
     try:
         section_key: int | str = int(section)
@@ -328,10 +323,7 @@ async def get_paper_section(
     try:
         return await asyncio.to_thread(_read_and_extract)
     except FileNotFoundError:
-        return {
-            "error": f"Paper not converted yet for: {identifier}. "
-            "Pipeline: download_pdf → convert_paper → get_paper_sections → get_paper_section."
-        }
+        return not_converted_error(identifier)
 
 
 _MARKDOWN_EXTS = {".md", ".markdown"}

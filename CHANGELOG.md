@@ -24,6 +24,28 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **Uniform "not converted yet" error.** Four tools produced this condition in
+  two different shapes — three jammed the recovery advice into the `error`
+  string while `find_in_paper` split it into a `suggestion` key. Agents branch
+  on `suggestion`, so the shape now comes from one builder. ([#51])
+- **Removed the `CITATION_SOURCE` parameter type.** It described a `source`
+  parameter that `get_paper_citations` does not have and nothing referenced it;
+  `.claude/rules/server.md` documented the phantom parameter too. ([#51])
+- **Deleted the duplicated `_first` / `_crossref_date`.** `_app.py`'s comment
+  explains the shared version exists "so the two can't drift" — while
+  `tools/paper.py` carried its own copies, and `server.md` documented a third
+  date-key ordering. ([#51])
+- **README brought back in line with the code.** It was last touched before the
+  `providers/` + `tools/` refactor and claimed positive cache entries never
+  expire, directly contradicting the per-provider TTL table in `CLAUDE.md`. Also
+  adds `search_cached_papers`, `convert_paper(mode="fast")`,
+  `download_pdf(allow_oa_url=True)`, and the seven undocumented environment
+  variables. ([#51])
+- **Every source module now routes to a rule file.** `oa_download.py`,
+  `_fast_extract.py` and `_textnorm.py` appeared in no `paths:` frontmatter, so
+  editing them loaded no module rule despite `CLAUDE.md` promising per-module
+  detail lives in `.claude/rules/`. ([#51])
+
 - **`get_works_batch` rejoins the shared getter protocol.** It had no
   single-flight at all, so two concurrent `get_papers_metadata` calls with
   overlapping DOI lists both issued full batch GETs; chunks are now coalesced
@@ -47,6 +69,38 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **`download_pdf`'s docstring told the agent the opposite of what the code
+  does.** It stated that re-downloading does *not* invalidate converted
+  markdown and that `force_refresh` must be passed to `convert_paper` too —
+  but the cascade has been implemented all along, and both `_app.py`'s server
+  instructions and `.claude/rules/server.md` describe it correctly. The one
+  string the model actually reads at call time was the only wrong one, and it
+  induced a redundant multi-minute conversion. ([#51])
+- **`get_paper_sections` documented a field that does not exist.** Section
+  entries were described as `{index, title, preview, approx_tokens}`; there is
+  no `preview` key anywhere in the source — the field is `h3s`. `convert_paper`
+  described the same objects correctly. ([#51])
+- **`force_refresh` never reached the Crossref fallback.**
+  `get_paper_metadata(doi, force_refresh=True, fallback_crossref=True)` served
+  a stale cached Crossref record. `_fetch_crossref_work` has always accepted
+  and forwarded `force_refresh` — the graph tools pass it — but this call site
+  dropped it, in the one path that exists specifically for brand-new
+  DOIs. ([#51])
+- **Multi-source errors lost their retry payload.** `_source_error` forwarded
+  only `error` / `retryable` / `suggestion`, discarding `retry_after_seconds`,
+  `backpressure`, `max_concurrency` and `not_found` — exactly the fields that
+  let an agent tell a definitive miss from a transient one and act on it,
+  which is what the helper's own docstring says it exists to preserve. ([#51])
+- **`.env` was silently ignored for an installed wheel.** The path was resolved
+  as `<package>/../../../.env`, which is the project root from a source
+  checkout and meaningless from `site-packages` — so every environment variable
+  was dropped in a mode the project explicitly supports (`pyproject.toml` ships
+  a console script; `.env.example` tells operators to set `CACHE_DIR` "when
+  running from an installed wheel"). Resolution now tries
+  `ACADEMIC_TOOLS_ENV_FILE`, the project root, `$PWD/.env`, then
+  `$XDG_CONFIG_HOME/academic-tools-mcp/.env`; source checkouts are
+  unchanged. ([#51])
 
 - **Crossref was requesting at polite-pool rates without a polite-pool
   identity.** The rate constants were hardcoded to the polite tier
@@ -797,3 +851,4 @@ grouped by milestone rather than per commit.
 [#48]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/48
 [#49]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/49
 [#50]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/50
+[#51]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/51

@@ -38,7 +38,7 @@ class TestCrossrefFallbackOn404:
         async def fake_openalex(doi, **kwargs):
             return _openalex_404(doi)
 
-        async def fake_crossref(doi):
+        async def fake_crossref(doi, **kwargs):
             return dict(_CROSSREF_WORK)
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
@@ -67,7 +67,7 @@ class TestCrossrefFallbackOn404:
         async def fake_openalex(doi, **kwargs):
             return _openalex_404(doi)
 
-        async def fake_crossref(doi):
+        async def fake_crossref(doi, **kwargs):
             nonlocal called
             called = True
             return dict(_CROSSREF_WORK)
@@ -93,7 +93,7 @@ class TestCrossrefFallbackOn404:
             # Shape of a transient error from _http.error_dict — no not_found.
             return {"error": "OpenAlex server error (HTTP 503). Transient — retry."}
 
-        async def fake_crossref(doi):
+        async def fake_crossref(doi, **kwargs):
             nonlocal called
             called = True
             return dict(_CROSSREF_WORK)
@@ -114,7 +114,7 @@ class TestCrossrefFallbackOn404:
         async def fake_openalex(doi, **kwargs):
             return _openalex_404(doi)
 
-        async def fake_crossref(doi):
+        async def fake_crossref(doi, **kwargs):
             return {"error": f"No work found on Crossref for DOI: {doi}"}
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
@@ -245,3 +245,49 @@ class TestCrossrefDateHelper:
         assert _crossref_date({"issued": {"date-parts": []}}) == (None, None)
         assert _crossref_date({"issued": {"date-parts": [[None]]}}) == (None, None)
         assert _crossref_date({}) == (None, None)
+
+
+class TestFallbackHonoursForceRefresh:
+    """``fallback_crossref`` exists for brand-new DOIs — exactly where a stale
+    cached Crossref record is most likely and least useful. The call site
+    silently dropped ``force_refresh`` even though ``_fetch_crossref_work``
+    has always accepted and forwarded it (the graph tools pass it).
+    """
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_reaches_crossref(self, monkeypatch):
+        seen: dict[str, object] = {}
+
+        async def fake_openalex(doi, **kwargs):
+            return {"error": "No work found", "not_found": True}
+
+        async def fake_crossref(doi, **kwargs):
+            seen["force_refresh"] = kwargs.get("force_refresh")
+            return {"DOI": doi, "title": ["T"], "type": "journal-article"}
+
+        monkeypatch.setattr(openalex, "get_work", fake_openalex)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
+
+        await server.get_paper_metadata(
+            "10.1234/brand-new", force_refresh=True, fallback_crossref=True
+        )
+
+        assert seen["force_refresh"] is True
+
+    @pytest.mark.asyncio
+    async def test_default_does_not_force_refresh(self, monkeypatch):
+        seen: dict[str, object] = {}
+
+        async def fake_openalex(doi, **kwargs):
+            return {"error": "No work found", "not_found": True}
+
+        async def fake_crossref(doi, **kwargs):
+            seen["force_refresh"] = kwargs.get("force_refresh")
+            return {"DOI": doi, "title": ["T"], "type": "journal-article"}
+
+        monkeypatch.setattr(openalex, "get_work", fake_openalex)
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
+
+        await server.get_paper_metadata("10.1234/x", fallback_crossref=True)
+
+        assert seen["force_refresh"] is False

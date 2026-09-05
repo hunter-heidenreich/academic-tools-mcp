@@ -15,7 +15,9 @@ from .._app import (
     FORCE_REFRESH,
     PAPER_ID,
     _arxiv_id_from_entry,
+    _crossref_date,
     _enrich_error,
+    _first,
     mcp,
 )
 from ..bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
@@ -183,39 +185,6 @@ def _format_openalex_via_biorxiv(
     return base
 
 
-def _first(value: Any) -> Any:
-    """First element of a list, else the value itself (or None for empties).
-
-    Crossref returns several scalar-ish fields (title, container-title) as
-    single-element lists, so unwrap them to match the OpenAlex shape.
-    """
-    if isinstance(value, list):
-        return value[0] if value else None
-    return value
-
-
-def _crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
-    """Extract (year, ISO-date) from a Crossref work's date-parts.
-
-    Crossref dates are ``{"date-parts": [[year, month, day]]}`` with month
-    and day optional. Prefers ``issued`` (the canonical publication date),
-    falling back to print/online dates. Returns the year and, when month
-    (and optionally day) are present, a zero-padded ISO string.
-    """
-    for key in ("issued", "published-print", "published-online", "published", "posted"):
-        parts = (work.get(key) or {}).get("date-parts") or [[]]
-        first = parts[0] if parts else []
-        if first and isinstance(first[0], int):
-            year = first[0]
-            iso = f"{year:04d}"
-            if len(first) >= 2 and isinstance(first[1], int):
-                iso += f"-{first[1]:02d}"
-                if len(first) >= 3 and isinstance(first[2], int):
-                    iso += f"-{first[2]:02d}"
-            return year, iso
-    return None, None
-
-
 def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
     """Format a raw Crossref work object into the unified metadata shape.
 
@@ -341,11 +310,14 @@ async def get_paper_metadata(
     # OpenAlex definitive 404 + opt-in Crossref fallback (Crossref often indexes
     # new/niche DOIs ahead of OpenAlex). Inspect the raw, un-enriched error here
     # — that's why _fetch_source doesn't attach the suggestion itself. Crossref
-    # has its own cache and no force_refresh knob; force_refresh applied to the
-    # OpenAlex lookup above. If Crossref also misses, fall through to the
+    # force_refresh is threaded into the fallback too: this path exists for
+    # brand-new DOIs, which is exactly where a stale cached Crossref record is
+    # most likely and least useful. (_fetch_crossref_work has always accepted
+    # and forwarded force_refresh — the graph tools pass it — this one call
+    # site silently dropped it.) If Crossref also misses, fall through to the
     # OpenAlex error below.
     if source == "openalex" and obj.get("not_found") and fallback_crossref:
-        cr = await _app._fetch_crossref_work(identifier)
+        cr = await _app._fetch_crossref_work(identifier, force_refresh=force_refresh)
         if "error" not in cr:
             return _format_crossref_metadata(cr, crossref.canonical_doi(identifier))
 

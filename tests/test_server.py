@@ -1091,3 +1091,38 @@ class TestMetadataHintsCentralized:
                 assert result["suggestion"] == expected_hint, (
                     f"{tool.__name__}({identifier!r}) must use the shared hint constant"
                 )
+
+
+class TestSourceErrorForwarding:
+    """``_source_error`` embeds a provider error inside a multi-source
+    response. It used to keep only error/retryable/suggestion, dropping
+    exactly the fields that make the distinction actionable.
+    """
+
+    def test_forwards_retry_after_and_backpressure(self):
+        from academic_tools_mcp.tools import graph
+
+        out = graph._source_error(
+            {
+                "error": "Local backpressure: ...",
+                "retryable": True,
+                "backpressure": True,
+                "max_concurrency": 5,
+                "retry_after_seconds": 0.5,
+            }
+        )
+        assert out["retry_after_seconds"] == 0.5
+        assert out["backpressure"] is True
+        assert out["max_concurrency"] == 5
+
+    def test_forwards_not_found_so_definitive_is_distinguishable(self):
+        from academic_tools_mcp.tools import graph
+
+        out = graph._source_error({"error": "No work found", "not_found": True})
+        assert out["not_found"] is True
+
+    def test_drops_unrelated_payload(self):
+        from academic_tools_mcp.tools import graph
+
+        out = graph._source_error({"error": "x", "results": [1, 2, 3], "doi": "10.1/x"})
+        assert out == {"error": "x"}

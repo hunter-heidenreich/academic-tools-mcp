@@ -16,7 +16,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
 | [Wikipedia](https://www.wikipedia.org/) | Article search, summaries, page existence checks | Optional email (for User-Agent) |
 
-All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry, and definitive 404s are negative-cached for 24 hours so retry-happy agents don't burn rate budget on guaranteed misses.
+All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry honouring `Retry-After`, and definitive 404s are negative-cached (24h; 1h for arXiv/bioRxiv, whose identifiers go live mid-session) so retry-happy agents don't burn rate budget on guaranteed misses.
 
 ## Setup
 
@@ -37,11 +37,21 @@ All configuration is via environment variables in `.env`. Nothing is required to
 |----------|----------|-------------|
 | `OPENALEX_API_KEY` | No | Free API key from [openalex.org](https://openalex.org/settings/api) |
 | `OPENALEX_MAILTO` | No | Your email — gets you into the [polite pool](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication#the-polite-pool) (faster) |
-| `CROSSREF_MAILTO` | No | Your email — gets you into the Crossref polite pool (10 req/sec vs 5) |
+| `CROSSREF_MAILTO` | No | Your email — joins the Crossref [polite pool](https://www.crossref.org/documentation/retrieve-metadata/rest-api/). Not just a courtesy: the client picks its rate limits from whether this is set (10 req/sec singles / 3 search / 3 concurrent with it; 5 / 1 / 1 without). |
+| `ARXIV_MAILTO` | No | Your email, appended to the arXiv User-Agent. A descriptive agent is sent either way — arXiv's edge throttles generic library agents far harder. |
+| `CACHE_DIR` | No | Where the on-disk cache lives (default: `.cache/` beside the project). Set it when running from an installed wheel. |
+| `ACADEMIC_TOOLS_ENV_FILE` | No | Explicit path to the `.env` to load, overriding the search order |
+| `MAX_PDF_BYTES` | No | Cap on a single PDF download (default `200000000` ≈ 200 MB). `none` / `off` / `0` disables. |
 | `WIKIPEDIA_MAILTO` | No | Your email — required by [Wikimedia policy](https://meta.wikimedia.org/wiki/User-Agent_policy) for the User-Agent header |
 | `PDF_CONVERTER` | No | PDF-to-markdown backend: `mineru` (default), `marker`, or a custom command (see [PDF Pipeline](#pdf-pipeline)) |
 | `PDF_CONVERTER_VENV` | No | Path to a virtualenv to activate before running the converter (e.g. `~/.venvs/mineru`) |
 | `PDF_CONVERT_TIMEOUT` | No | Hard timeout for a single PDF→markdown conversion in seconds (default `1800` = 30 min). Set to `none` / `off` / `disabled` to disable. |
+| `PDF_FAST_CONVERTER` | No | Backend for `convert_paper(mode="fast")`: `pdftotext` (default, needs poppler-utils), `pymupdf` (needs the `fast` extra), or a custom command |
+| `PDF_FAST_CONVERT_TIMEOUT` | No | Hard timeout for a fast extraction in seconds (default `120`) |
+| `DEBUG_REQUESTS` | No | `1` logs every throttled GET to **stderr** (never stdout — that's the JSON-RPC stream). Re-read per call, so it can be flipped without a restart. |
+| `ENABLE_DEBUG_TOOLS` | No | `1` registers a `get_server_stats` tool exposing per-provider counters. Off by default so agents don't see operational data. Read at import — needs a restart. |
+
+`.env` is looked for in order: `ACADEMIC_TOOLS_ENV_FILE`, the project root (source checkouts), `$PWD/.env`, then `$XDG_CONFIG_HOME/academic-tools-mcp/.env` (falling back to `~/.config`). Real environment variables always win over the file.
 
 ## Usage
 
@@ -107,6 +117,11 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 | `get_paper_sections` | Section index with titles, sub-heading previews, token counts |
 | `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
 | `find_in_paper` | Substring (or whole-word) search inside one converted paper. Returns each hit's section + char offset + ~120-char snippet. Char offsets align with `get_paper_section`'s stripped text so you can chain straight to the surrounding context. |
+| `search_cached_papers` | BM25 keyword search across **every** converted paper in the local cache. Answers "which paper mentioned X?"; pair it with `find_in_paper` for "where in that paper?". |
+
+`convert_paper(mode="fast")` runs a lightweight text-only extractor (`PDF_FAST_CONVERTER`, default `pdftotext`) outside the global conversion lock — seconds instead of minutes, but no tables, equations, figures, or real headings. Use it for triage; re-run in full mode when you need structure.
+
+`download_pdf` natively handles arXiv, bioRxiv/medRxiv, and ACL Anthology. For any other publisher DOI it refuses by default rather than fetching arbitrary URLs; `download_pdf(doi, allow_oa_url=True)` opts into a narrow exception that fetches **only** the open-access PDF URL OpenAlex already surfaces for that work — never a caller-supplied URL.
 
 All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, fetch the PDF yourself and hand it to `import_paper` — see [Manual import](#manual-import) below.
 
@@ -211,13 +226,28 @@ API responses and downloaded files are cached under `.cache/`:
   manual/sections/         # Section indices (JSON)
 ```
 
-Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp file + `os.replace`) so a crash mid-write can't leave a corrupt entry; corrupt entries from earlier versions self-heal on read. Positive entries have no expiration — delete `.cache/` to start fresh. **Negative entries** (definitive 404s) live in a sibling `_neg/` subdirectory under each entity with a 24-hour TTL, so retry-happy agents don't repeatedly hit the network for known-bad identifiers but newly-registered DOIs still surface within a day.
+Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp file + `os.replace`) so a crash mid-write can't leave a corrupt entry; corrupt entries from earlier versions self-heal on read.
+
+**Positive entries expire per provider**, so a long session doesn't serve stale data:
+
+| Provider | Positive TTL | Negative TTL | Why |
+|----------|--------------|--------------|-----|
+| arxiv | 14d | 1h | New versions land under a new key; preprint IDs go live mid-session. |
+| biorxiv | 7d | 1h | `published_doi` appears asynchronously once a preprint is published. |
+| openalex (works, authors) | 30d | 24h | Citation counts, topics, h-index all drift. |
+| crossref | 30d | 24h | Reference lists grow as publishers re-deposit metadata. |
+| opencitations | 7d | 24h | The citation graph grows continuously. |
+| wikipedia | 30d | 24h | Articles change as they're edited. |
+
+Eviction is mtime-based and self-healing: an over-age entry is unlinked on read. **Negative entries** (definitive 404s) live in a sibling `_neg/` subdirectory so a known-bad identifier doesn't burn rate budget on every retry, while a newly-registered DOI still surfaces within the TTL. `force_refresh=True` drops both halves and re-fetches.
+
+Downloaded PDFs, converted markdown, and section indices have **no** expiry — they're derived from bytes that don't change. `.cache/` therefore grows without bound; prune it by hand if it gets large.
 
 ## Development
 
 ```bash
 uv sync                          # Install dependencies
-uv run pytest -v                 # Run all tests (485 tests)
+uv run pytest -v                 # Run all tests
 uv run pytest tests/test_bibtex.py -v   # Run one test file
 uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ```
@@ -225,25 +255,40 @@ uv run pytest -k "test_particle" -v     # Run tests matching a pattern
 ## Architecture
 
 ```
-server.py (21 MCP tools; FastMCP lifespan closes pooled clients on shutdown)
+server.py            thin entry: re-exports mcp + tools, registers the
+  │                  optional debug tool
   │
-  ├── API clients          openalex.py, arxiv.py, biorxiv.py,
-  │                        crossref.py, opencitations.py, wikipedia.py,
-  │                        acl_anthology.py
+  ├── _app.py        FastMCP instance, lifespan, shared Annotated param types
+  ├── tools/         21 @mcp.tool functions, split by job
+  │                    paper.py     metadata / authors / abstract / bibtex
+  │                    pipeline.py  download → convert → sections → section
+  │                    graph.py     references and citations
+  │                    search.py    arXiv / Crossref / Wikipedia / local corpus
   │
-  ├── PDF + content        manual.py         (local-file import)
-  │                        papers.py         (PDF → markdown → sections;
-  │                                           global single-conversion lock;
-  │                                           in-paper find_in_markdown)
-  │                        cache_search.py   (BM25 over cached markdown)
-  │                        bibtex.py         (BibTeX generation)
-  │                        _pdf_download.py  (streaming download helper)
+  ├── providers/     seven API clients, all the same shape
+  │                    openalex.py  arxiv.py     biorxiv.py   crossref.py
+  │                    opencitations.py  wikipedia.py  acl_anthology.py
+  │
+  ├── PDF + content  manual.py         local-file import + identifier dispatch
+  │                  papers.py         PDF → markdown → sections; global
+  │                                    single-conversion lock; find_in_markdown
+  │                  cache_search.py   BM25 over cached markdown
+  │                  bibtex.py         BibTeX generation
+  │                  _pdf_download.py  streaming download + size cap
+  │                  oa_download.py    gated open-access fetch for generic DOIs
+  │                  _fast_extract.py  bundled pymupdf text extractor
   │
   └── Shared infrastructure (every API client routes through these)
-        _http.py           one-shot retry, structured errors, backpressure
-        _clients.py        per-provider pooled httpx.AsyncClient
-        _singleflight.py   concurrent same-key callers coalesce to one fetch
-        cache.py           atomic file cache with negative-cache (24h TTL)
+        _http.py          retry honouring Retry-After, structured errors
+        _throttle.py      burst cap → concurrency cap → inter-start gap
+        _clients.py       per-provider pooled httpx.AsyncClient
+        _singleflight.py  concurrent same-key callers coalesce to one fetch
+        cache.py          atomic file cache, per-provider TTLs, negative cache
+        _doi.py           DOI normalization (one home, seven callers)
+        _useragent.py     the outbound User-Agent (one home, eight clients)
+        _stats.py         per-provider counters, DEBUG_REQUESTS logging
+        _textnorm.py      offset-preserving case folding
+        config.py         .env + environment resolution
 ```
 
 **Key design decisions:**
@@ -253,9 +298,10 @@ server.py (21 MCP tools; FastMCP lifespan closes pooled clients on shutdown)
 - **Batch where it matters.** `get_papers_metadata` collapses N parallel singletons into one HTTP call per 50 OpenAlex DOIs (`/works?filter=doi:...|...`) plus concurrent fan-out for arXiv / bioRxiv — designed for reference-graph enrichment.
 - **One API hit per entity.** All tools for a given DOI share one cached response. Concurrent same-key callers are coalesced by single-flight to one fetch.
 - **Per-provider concurrency.** Each provider has its own concurrency cap (arxiv=1 single-connection rule, openalex=4, crossref=3, etc.) — multiple GETs run in flight up to the cap while a brief gap-lock enforces inter-start spacing. Reference-graph traversals are dramatically faster than the previous serialise-everything model.
-- **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry that honours `Retry-After` (capped) before surfacing to the agent.
+- **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry honouring `Retry-After` in either form RFC 9110 permits — delay-seconds or HTTP-date — capped at 10 minutes, before surfacing to the agent.
 - **Burst caps with structured backpressure.** Each provider refuses to stack more than 5 concurrent callers behind its rate-limit gap. The 6th gets `{error, retryable: True, backpressure: True}` immediately so the agent learns to slow down rather than waiting silently.
-- **Negative caching for definitive 404s.** Known-bad identifiers are cached for 24h so retries don't burn rate budget; transient errors are NOT cached.
+- **Negative caching for definitive 404s.** Known-bad identifiers are cached (24h; 1h for arXiv/bioRxiv) so retries don't burn rate budget; transient errors are NOT cached.
+- **The rate we take follows the identity we send.** Crossref publishes two service tiers; the client picks its limits from whether `CROSSREF_MAILTO` is configured rather than assuming the polite tier. Every provider sends a descriptive `User-Agent` naming the project and its repository, with a contact address appended when one is set.
 - **Streaming PDF downloads with size guard.** PDFs stream chunked to a temp file with atomic rename — peak memory = 64 KiB, not 2× the PDF — and abort mid-stream if `MAX_PDF_BYTES` (default 200 MB) is exceeded. Force-refresh cascades: re-downloading drops the cached markdown + sections so the next conversion picks up the new bytes.
 - **Single-conversion lock for PDFs.** At most one PDF→markdown subprocess runs at a time across the whole server; concurrent callers get a `busy` error with what's running and how long it's been going.
 - **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching. `get_paper_references(source="auto")` does the survey for you.
