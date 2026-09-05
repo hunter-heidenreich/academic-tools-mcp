@@ -21,6 +21,24 @@ import asyncio
 from collections.abc import Awaitable, Callable, Hashable
 from typing import Any
 
+# Bound on how many times a caller will take over from a cancelled leader
+# before just running the factory itself. Only reachable if leaders are being
+# cancelled repeatedly; exists so this can never spin.
+_MAX_TAKEOVERS = 3
+
+
+def _self_is_cancelling() -> bool:
+    """Whether the *current* task is the one being cancelled.
+
+    ``Task.cancelling()`` counts pending cancellation requests against this
+    task (the 3.11 cancel/uncancel protocol). It distinguishes "someone
+    cancelled me" from "I observed a CancelledError that belongs to another
+    task's future" — which is exactly the case a single-flight follower hits
+    when its leader is cancelled.
+    """
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
 
 class SingleFlight:
     """Coalesce concurrent calls keyed by a hashable identifier.
@@ -39,17 +57,58 @@ class SingleFlight:
         If ``factory`` raises or returns an error result, every concurrent
         waiter for ``key`` sees the same outcome. The next call (after the
         future is dropped) re-runs the factory — failure is not cached.
-        """
-        existing = self._inflight.get(key)
-        if existing is not None:
-            return await existing
 
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future[Any] = loop.create_future()
+        **Leader cancellation does not cancel the followers.** If the leader's
+        task is cancelled — an agent's tool call times out, say — its own
+        lifetime ended, but the followers' did not; propagating the
+        ``CancelledError`` to them used to fail unrelated calls for no reason.
+        A follower that is not itself being cancelled takes over as the new
+        leader and runs the factory instead.
+
+        **Nor does follower cancellation reach the leader.** Cancelling a task
+        cancels the future it is suspended on, and for a follower that future
+        is the *shared* one — so one follower giving up used to cancel the slot
+        out from under everybody. The leader then called ``set_result`` on a
+        cancelled future (``InvalidStateError``, raised into the leader's own
+        caller in place of its perfectly good result), and any remaining
+        follower saw the cancellation and redundantly re-ran the factory,
+        defeating the coalescing this class exists for. Followers await through
+        ``asyncio.shield`` so their cancellation stays their own.
+        """
+        for _ in range(_MAX_TAKEOVERS):
+            existing = self._inflight.get(key)
+            if existing is None:
+                return await self._lead(key, factory)
+            try:
+                # shield: cancelling this task must cancel our *view* of the
+                # shared future, never the shared future itself.
+                return await asyncio.shield(existing)
+            except asyncio.CancelledError:
+                if _self_is_cancelling():
+                    # Our own task is being cancelled — that is ours to honour.
+                    raise
+                # The leader was cancelled, not us. Loop round and take over.
+                continue
+        # Pathological: leaders kept getting cancelled. Run it ourselves
+        # rather than spinning.
+        return await factory()
+
+    async def _lead(self, key: Hashable, factory: Callable[[], Awaitable[Any]]) -> Any:
+        """Own the in-flight slot for ``key`` and run the factory."""
+        # get_running_loop, not get_event_loop: we are inside a coroutine, so
+        # a running loop is guaranteed, and get_event_loop is deprecated here
+        # (it would create or fetch a loop for the thread when none is
+        # running, which is never what this wants).
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self._inflight[key] = future
         try:
             result = await factory()
-            future.set_result(result)
+            # Defence in depth: shield keeps followers from cancelling this
+            # future, but setting a result on an already-resolved future is an
+            # InvalidStateError that would replace the leader's answer with a
+            # crash. Never worth risking for a branch this cheap.
+            if not future.done():
+                future.set_result(result)
             return result
         except BaseException as exc:
             # Surface the failure to every waiter, not just the leader.

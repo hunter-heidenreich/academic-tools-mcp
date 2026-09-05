@@ -1612,3 +1612,56 @@ class TestMigrateLegacyStems:
     def test_ignores_unrelated_entities(self, tmp_path):
         self._seed(tmp_path, "openalex", "works", ["some(thing)"])
         assert papers.migrate_legacy_stems() == 0
+
+
+class TestApproxTokensAgreeAcrossTools:
+    """``get_paper_sections`` and ``get_paper_section`` reported different
+    ``approx_tokens`` for the same section.
+
+    ``parse_sections`` measured the *unstripped* line join, so every estimate
+    was inflated by the section's surrounding blank lines, and
+    ``get_paper_sections``' ``total_approx_tokens`` summed the inflated
+    variant. ``get_section_content`` measured the stripped text it actually
+    returns. Existing tests only asserted the value was positive.
+    """
+
+    MARKDOWN = (
+        "# Paper\n\n"
+        "## Introduction\n\n\n\n"
+        "Some introductory prose that runs on for a little while.\n\n\n\n"
+        "## Methods\n\n"
+        "We did the following things in a reasonably long paragraph.\n\n\n\n\n"
+        "## Results\n\n"
+        "It worked.\n\n\n"
+    )
+
+    def test_every_section_agrees(self):
+        sections = papers.parse_sections(self.MARKDOWN)
+        assert sections, "fixture produced no sections"
+        for entry in sections:
+            content = papers.get_section_content(self.MARKDOWN, entry["index"])
+            assert entry["approx_tokens"] == content["approx_tokens"], (
+                f"section {entry['index']} ({entry['title']!r}) disagrees"
+            )
+
+    def test_agrees_when_looked_up_by_title(self):
+        sections = papers.parse_sections(self.MARKDOWN)
+        for entry in sections:
+            content = papers.get_section_content(self.MARKDOWN, entry["title"])
+            assert entry["approx_tokens"] == content["approx_tokens"]
+
+    def test_index_total_matches_the_sum_of_the_parts(self):
+        sections = papers.parse_sections(self.MARKDOWN)
+        index_total = sum(s["approx_tokens"] for s in sections)
+        read_total = sum(
+            papers.get_section_content(self.MARKDOWN, s["index"])["approx_tokens"] for s in sections
+        )
+        assert index_total == read_total
+
+    def test_trailing_blank_lines_do_not_inflate_the_estimate(self):
+        lean = "## A\n\nbody text here\n"
+        padded = "## A\n\nbody text here\n\n\n\n\n\n\n\n\n\n"
+        assert (
+            papers.parse_sections(lean)[0]["approx_tokens"]
+            == papers.parse_sections(padded)[0]["approx_tokens"]
+        )

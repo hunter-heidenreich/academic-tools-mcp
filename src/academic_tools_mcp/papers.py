@@ -477,9 +477,14 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
     current_lines: list[str] = []
 
     def _flush():
-        content = "\n".join(current_lines)
+        # Strip once and measure the stripped text: this is exactly what
+        # get_section_content returns and counts, so the index and the reader
+        # agree. They used to disagree — the index measured the unstripped
+        # join, inflating every section's estimate by its surrounding blank
+        # lines, and get_paper_sections summed the inflated variant.
+        content = "\n".join(current_lines).strip()
         # Only add if there's meaningful content (not just whitespace)
-        if content.strip():
+        if content:
             sections.append(
                 {
                     "index": len(sections),
