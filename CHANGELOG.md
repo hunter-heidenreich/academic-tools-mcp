@@ -112,6 +112,36 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A full disk turned a successful fetch into an uncaught exception.**
+  `cache.put` runs inside every provider's `fetch` closure *after* the network
+  request already succeeded, so an `OSError` there (ENOSPC, read-only mount,
+  quota) threw away data we had just paid an HTTP request for and propagated
+  out of the tool instead of the `{error}` contract. `put` and `put_negative`
+  now return whether the write landed and absorb `OSError`, so the caller
+  serves its answer uncached; the failure is counted as
+  `cache_write_failures` for the operator. Genuine programming errors still
+  propagate. ([#56])
+- **An empty conversion produced the literal error `out of range (0--1)`.**
+  A converter can exit 0 having written an empty markdown file — a 0-page PDF,
+  an image-only scan — and every section read then fell through to the range
+  check and emitted that. It now says the markdown is empty and suggests the
+  likely cause (no extractable text layer). ([#56])
+- **The converter's stderr was captured inconsistently.** The command was run
+  as `{cmd} 2>&1` with `stderr=PIPE`, which was worse than merely redundant:
+  `;` and `&&` bind tighter than the redirect, so streams were merged only for
+  a *single-command* converter. With `PDF_CONVERTER_VENV` set — making the
+  command `source ... && {cmd}` — the redirect attached to whatever the last
+  command happened to be. Whether a converter's error reached the agent
+  depended on the shape of the operator's converter string. The redirect is
+  gone; stderr is captured on its own pipe and appended last, so a converter
+  that keeps logging after it fails can no longer push its own error out of
+  the 500-character window. ([#56])
+- **Which markdown file became the paper was nondeterministic.** MinerU emits
+  several `.md` files per run, and both the exact-stem lookup and the
+  fallback used `list(glob(...))[0]` — filesystem order. Both are now sorted,
+  the fallback by depth then name, so a top-level output beats one nested in
+  a subdirectory. ([#56])
+
 - **Namespace-filtered search no longer changes a paper's score.** Corpus
   statistics were scoped to the filtered subset, so the same paper scored
   differently in a filtered and an unfiltered search. Term rarity is now
@@ -1007,3 +1037,4 @@ grouped by milestone rather than per commit.
 [#53]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/53
 [#54]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/54
 [#55]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/55
+[#56]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/56

@@ -335,11 +335,30 @@ def _atomic_copy(src: Path, dst: Path) -> None:
         raise
 
 
-def put(namespace: str, entity: str, identifier: str, data: dict[str, Any]) -> None:
-    """Store a response in the cache. Atomic via _atomic_write_json."""
+def put(namespace: str, entity: str, identifier: str, data: dict[str, Any]) -> bool:
+    """Store a response in the cache. Atomic via ``_atomic_write_json``.
+
+    Returns whether the write landed. **A failed write is not an error the
+    caller should propagate**: every provider calls this from inside its
+    ``fetch`` closure *after* the network request already succeeded, so
+    raising on a full or read-only disk threw away data we had just paid an
+    HTTP request for, and surfaced as an uncaught ``OSError`` out of an MCP
+    tool rather than the ``{error}`` contract. Serving the response uncached
+    is strictly better: the agent gets its answer and the next call simply
+    re-fetches.
+
+    Genuine programming errors still propagate — only ``OSError`` is
+    absorbed, and the failure is counted so an operator can see it.
+    """
     final_path = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     payload = json.dumps(data, ensure_ascii=False, indent=2)
-    _atomic_write_json(final_path, payload)
+    try:
+        _atomic_write_json(final_path, payload)
+    except OSError:
+        # ENOSPC, EROFS, EACCES, EDQUOT, a name too long...
+        _stats.incr(namespace, "cache_write_failures")
+        return False
+    return True
 
 
 def has(namespace: str, entity: str, identifier: str) -> bool:
@@ -412,14 +431,24 @@ def put_negative(
     data: dict[str, Any],
     *,
     ttl_seconds: float = _DEFAULT_NEG_TTL_SECONDS,
-) -> None:
-    """Store a negative result with a TTL. Atomic via _atomic_write_json.
+) -> bool:
+    """Store a negative result with a TTL. Atomic via ``_atomic_write_json``.
 
     ``data`` should be the error payload the caller would otherwise return
     directly (e.g. ``{"error": "No paper found for arXiv ID: X"}``). An
     ``_expires_at`` field is added; everything else is preserved verbatim.
+
+    Returns whether the write landed. Like ``put``, a write failure is
+    absorbed rather than raised: the caller is about to return a perfectly
+    good "not found" and should not turn that into an exception because the
+    disk is full. The only cost of not caching it is a repeat lookup.
     """
     final_path = _neg_path(namespace, entity, identifier)
     entry = {**data, "_expires_at": time.time() + ttl_seconds}
     payload = json.dumps(entry, ensure_ascii=False, indent=2)
-    _atomic_write_json(final_path, payload)
+    try:
+        _atomic_write_json(final_path, payload)
+    except OSError:
+        _stats.incr(namespace, "cache_write_failures")
+        return False
+    return True
