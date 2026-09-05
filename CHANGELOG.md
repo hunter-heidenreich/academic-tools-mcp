@@ -112,6 +112,24 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`unindexable` reported papers that the index had, in fact, indexed.** The
+  probe asked `_tokenize` (ASCII-only) plus an FTS5 `MATCH` for the five ASCII
+  vowels, so a paper in Japanese, Cyrillic or Greek was recorded as
+  `no_indexable_tokens` even though `unicode61` tokenises on Unicode character
+  class and had indexed it perfectly well. Harmless only while the query side
+  was equally ASCII-biased; once a non-Latin query could reach the index the
+  report became actively misleading, telling the agent via `unindexable_note`
+  to fall back to `find_in_paper` on a paper `search_cached_papers` would have
+  found. The probe now tests for any Unicode letter or digit, so it catches
+  what it was meant to — empty and punctuation-only files — and nothing else.
+  The index schema version is bumped so rows carrying a stale flag are
+  recomputed rather than lingering behind the `(mtime, size)` signal. ([#58])
+
+  `unicode61` still does not segment CJK: a run delimited by whitespace or
+  punctuation is a single token, so CJK papers are findable by whole runs but
+  not by sub-phrases. That is the documented trade from the FTS5 move
+  (`trigram` measured 842 MB against 165 MB) and is now pinned by a test.
+
 - **A non-Latin query returned nothing, though the index held the term.**
   Moving to FTS5 ([#55]) left `search_cached_papers` gating on `_tokenize` —
   an ASCII-only regex from when this module built its own index. A query of
@@ -122,14 +140,14 @@ grouped by milestone rather than per commit.
   itself. Accented and non-Latin hits also resolve a `section_index` again
   rather than centring on the document head — `_tokenize` mangles "Gutiérrez"
   into `guti`/`rrez`, neither of which occurs in the text, so the hit came back
-  unnavigable. ([#57])
+  unnavigable. ([#56])
 
 - **Stopwords leaked into the FTS5 MATCH expression.** Building it from raw
   words ([#55]) dropped the stopword and single-character filter along with
   the ASCII one. FTS5 indexes the raw markdown under `unicode61`, which strips
   neither, so `search("the transformer")` OR-ed in a term matching essentially
   every document and returned papers with no connection to the query.
-  `_query_words` keeps that filter; only the ASCII word-splitting is gone. ([#57])
+  `_query_words` keeps that filter; only the ASCII word-splitting is gone. ([#56])
 
 - **`.claude/rules/pipeline.md` still documented the deleted JSON search
   index** — `index.json`, `_INDEX_MEMO`, `_index_sig`, `_load_index`,
@@ -142,7 +160,7 @@ grouped by milestone rather than per commit.
   (k1=1.5 → FTS5's 1.2) and the chain-by-title advice [#54] superseded.
   `tests/conftest.py` likewise still monkeypatched `_INDEX_MEMO` /
   `_INDEX_MEMO_SIG` with `raising=False`, which had quietly become a no-op.
-  ([#57])
+  ([#56])
 
 - **A full disk turned a successful fetch into an uncaught exception.**
   `cache.put` runs inside every provider's `fetch` closure *after* the network
@@ -1070,4 +1088,4 @@ grouped by milestone rather than per commit.
 [#54]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/54
 [#55]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/55
 [#56]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/56
-[#57]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/57
+[#58]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/58

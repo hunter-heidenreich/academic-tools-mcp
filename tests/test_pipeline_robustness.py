@@ -177,9 +177,14 @@ class TestFindInPaperReadHardening:
 
 
 class TestUnindexableDocumentsAreReported:
-    """The tokeniser is ASCII-only, so a paper in a non-Latin script produced
-    no terms, was dropped from the index, and became permanently invisible to
-    search_cached_papers — with no error and no diagnostic.
+    """A document FTS5 derives no terms from can never match, so it is
+    recorded with a reason rather than being silently absent from the corpus.
+
+    "No terms" means what ``unicode61`` means by it — no letter or digit in
+    any script. The probe used to ask an ASCII-only tokeniser plus a MATCH for
+    the five ASCII vowels, which reported a Japanese or Cyrillic paper as
+    unusable when FTS5 had indexed it perfectly well. See
+    ``TestNonLatinDocumentsAreIndexedNotReported``.
     """
 
     @pytest.fixture
@@ -188,14 +193,16 @@ class TestUnindexableDocumentsAreReported:
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "english.md").write_text("# A\n\nTransformer attention.\n", encoding="utf-8")
-        (md / "japanese.md").write_text("# 注意機構\n\n注意力機構の研究。\n", encoding="utf-8")
-        (md / "russian.md").write_text("# Сети\n\nнейронных сетей.\n", encoding="utf-8")
+        # Genuinely tokenless: punctuation and symbols carry no letters or
+        # digits in any script, so unicode61 finds nothing to index.
+        (md / "punctuation.md").write_text("# ---\n\n... !!! ??? ***\n", encoding="utf-8")
+        (md / "emoji.md").write_text("# \U0001f642\n\n\U0001f600 \U0001f389\n", encoding="utf-8")
         return md
 
-    def test_non_latin_documents_are_recorded_not_dropped(self, corpus):
+    def test_tokenless_documents_are_recorded_not_dropped(self, corpus):
         reported = cache_search.unindexable()
         stems = {r["stem"] for r in reported}
-        assert stems == {"japanese", "russian"}
+        assert stems == {"punctuation", "emoji"}
         assert all(r["reason"] == "no_indexable_tokens" for r in reported)
 
     def test_indexable_documents_are_not_reported(self, corpus):
@@ -214,7 +221,7 @@ class TestUnindexableDocumentsAreReported:
         result = await search_tools.search_cached_papers("transformer")
 
         assert result["unindexable_count"] == 2
-        assert {r["stem"] for r in result["unindexable"]} == {"japanese", "russian"}
+        assert {r["stem"] for r in result["unindexable"]} == {"punctuation", "emoji"}
         assert "find_in_paper" in result["unindexable_note"]
 
     @pytest.mark.asyncio
@@ -229,15 +236,76 @@ class TestUnindexableDocumentsAreReported:
         assert "unindexable_count" not in result
         assert "unindexable_note" not in result
 
+    def test_an_empty_document_is_reported(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        md = tmp_path / "manual" / "markdown"
+        md.mkdir(parents=True)
+        (md / "blank.md").write_text("", encoding="utf-8")
+        assert {r["stem"] for r in cache_search.unindexable()} == {"blank"}
+
     def test_a_document_that_becomes_indexable_is_promoted(self, corpus):
         assert len(cache_search.unindexable()) == 2
-        (corpus / "japanese.md").write_text(
-            "# 注意機構\n\nattention mechanism study.\n", encoding="utf-8"
+        (corpus / "punctuation.md").write_text(
+            "# Title\n\nattention mechanism study.\n", encoding="utf-8"
         )
         reported = cache_search.unindexable()
-        assert {r["stem"] for r in reported} == {"russian"}
-        assert "japanese" in {h["canonical_id"] for h in cache_search.search("attention")}
+        assert {r["stem"] for r in reported} == {"emoji"}
+        assert "punctuation" in {h["canonical_id"] for h in cache_search.search("attention")}
 
     def test_a_deleted_document_is_pruned_from_the_report(self, corpus):
-        (corpus / "japanese.md").unlink()
-        assert {r["stem"] for r in cache_search.unindexable()} == {"russian"}
+        (corpus / "punctuation.md").unlink()
+        assert {r["stem"] for r in cache_search.unindexable()} == {"emoji"}
+
+
+class TestNonLatinDocumentsAreIndexedNotReported:
+    """A paper in a non-Latin script is indexed, searchable, and not reported.
+
+    ``unicode61`` tokenises on Unicode character class, so Cyrillic, Greek and
+    CJK text all produce terms. The old probe called them ``no_indexable_tokens``
+    anyway, and once a non-Latin *query* could reach the index that report
+    became actively misleading: ``unindexable_note`` told the agent to fall
+    back to ``find_in_paper`` on a paper ``search_cached_papers`` would find.
+    """
+
+    @pytest.fixture
+    def corpus(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        md = tmp_path / "manual" / "markdown"
+        md.mkdir(parents=True)
+        (md / "russian.md").write_text("# Сети\n\nнейронных сетей.\n", encoding="utf-8")
+        (md / "greek.md").write_text("# Δίκτυα\n\nνευρωνικά δίκτυα.\n", encoding="utf-8")
+        (md / "japanese.md").write_text("# 研究\n\n用語 注意力機構 が現れる。\n", encoding="utf-8")
+        return md
+
+    def test_none_are_reported_unindexable(self, corpus):
+        assert cache_search.unindexable() == []
+
+    @pytest.mark.parametrize(
+        ("query", "expected"),
+        [("нейронных", "russian"), ("νευρωνικά", "greek"), ("注意力機構", "japanese")],
+    )
+    def test_each_is_findable_in_its_own_script(self, corpus, query, expected):
+        assert [h["canonical_id"] for h in cache_search.search(query)] == [expected]
+
+    @pytest.mark.asyncio
+    async def test_the_tool_reports_no_gap(self, corpus):
+        result = await search_tools.search_cached_papers("нейронных")
+
+        assert result["result_count"] == 1
+        assert "unindexable_count" not in result
+        assert "unindexable_note" not in result
+
+    def test_cjk_matches_whole_runs_not_substrings(self, tmp_path, monkeypatch):
+        # A documented limit of ``unicode61``, not a defect: it does not
+        # segment CJK, so a run delimited by whitespace or punctuation is one
+        # token. Pinned so a future tokenizer change is a deliberate choice.
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        md = tmp_path / "manual" / "markdown"
+        md.mkdir(parents=True)
+        (md / "run.md").write_text("# 研究\n\n注意力機構の研究。\n", encoding="utf-8")
+
+        assert [h["canonical_id"] for h in cache_search.search("注意力機構の研究")] == ["run"]
+        # A substring of that run does not match, and the paper is still not
+        # reported unindexable — it has terms, just not this one.
+        assert cache_search.search("注意力機構") == []
+        assert cache_search.unindexable() == []
