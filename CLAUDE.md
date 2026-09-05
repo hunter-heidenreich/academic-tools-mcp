@@ -61,7 +61,8 @@ server.py (thin entry: re-exports mcp + tools; registers debug tool)
   │     papers.py           (PDF → markdown → sections, global convert lock,
   │                          find_in_markdown for in-paper search)
   │     bibtex.py           (BibTeX generation)
-  │     cache_search.py     (BM25 keyword search across cached markdown)
+  │     cache_search.py     (BM25 keyword search across cached markdown,
+  │                          SQLite FTS5 index at __search_index__/index.db)
   │     _pdf_download.py    (streaming download helper: chunked write,
   │                          atomic rename, MAX_PDF_BYTES cap, opt-in
   │                          %PDF- content guard)
@@ -131,7 +132,7 @@ Eviction is mtime-based and self-healing — `cache.get(..., max_age_seconds=N)`
 
 ## Observability
 
-`_stats.py` collects per-provider counters (`cache_hits`, `cache_misses`, `negative_hits`, `http_calls`, `http_retries`, `backpressure_refusals`) plus a live `in_flight` sample. Counters are cumulative since process start (or last `_stats.reset()`). **Not exposed as an MCP tool** — operational data is for the operator, not the agent.
+`_stats.py` collects per-provider counters (`cache_hits`, `cache_misses`, `negative_hits`, `http_calls`, `http_retries`, `backpressure_refusals`, `cache_write_failures`) plus a live `in_flight` sample. Counters are cumulative since process start (or last `_stats.reset()`). **Not exposed as an MCP tool** — operational data is for the operator, not the agent.
 
 - **`DEBUG_REQUESTS=1`** (also `true` / `yes` / `on`) — logs each throttled GET to **stderr** as `[academic-tools] {provider} GET {url} (throttle wait Xs)`. MCP servers speak JSON-RPC on stdout, so anything written there would corrupt the protocol stream. Re-read every call so an operator can flip the flag without restarting.
 - **`ENABLE_DEBUG_TOOLS=1`** — registers a `get_server_stats` MCP tool returning `_stats.snapshot()`. Read at module import time, so flipping it requires a server restart. **Off by default** — agents would otherwise see operational data and might branch on it. Use `ENABLE_DEBUG_TOOLS=1 uv run python -m academic_tools_mcp.server` when you want to inspect counters from inside Claude Code without dropping into a Python REPL.
