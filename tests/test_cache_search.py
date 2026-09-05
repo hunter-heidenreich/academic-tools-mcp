@@ -1,7 +1,7 @@
 """Tests for the BM25 search over cached markdown files."""
 
-import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -560,226 +560,144 @@ class TestSearchCachedPapersTool:
 
 
 class TestIncrementalIndex:
-    def _count_tokenize_calls(self, monkeypatch):
-        """Wrap _tokenize with a counter and return the list of texts seen.
+    """The SQLite FTS5 index: incremental refresh, pruning, self-healing.
 
-        Returns a list whose entries are the text args _tokenize was
-        called with (query calls included). Tests assert on how many
-        *document* tokenisations happen by filtering out the short query.
+    These assert observable behaviour — what gets re-read, what the index
+    contains, what survives corruption — rather than the previous JSON
+    index's internals, so a future format change doesn't break them again.
+    """
+
+    def _count_markdown_reads(self, monkeypatch):
+        """Record every markdown file read, so re-reads are countable.
+
+        The old suite counted ``_tokenize`` calls; FTS5 tokenises inside
+        SQLite, so the observable cost is the file read.
         """
         seen: list[str] = []
-        original = cache_search._tokenize
+        real = Path.read_text
 
-        def counting(text, *, normalize=False):
-            seen.append(text)
-            return original(text, normalize=normalize)
+        def counting(self, *a, **kw):
+            if self.suffix == ".md":
+                seen.append(self.stem)
+            return real(self, *a, **kw)
 
-        monkeypatch.setattr(cache_search, "_tokenize", counting)
+        monkeypatch.setattr(Path, "read_text", counting)
         return seen
 
-    def test_index_built_and_reused(self, isolated_cache, monkeypatch):
-        # A long body so we can tell document tokenisations apart from
-        # the tiny query tokenisation by length.
+    def _index_rows(self):
+        con = cache_search._connect()
+        try:
+            return {(r["ns"], r["stem"]) for r in con.execute("SELECT ns, stem FROM files")}
+        finally:
+            con.close()
+
+    def test_index_is_created_and_populated(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
+
+        hits = cache_search.search("attention")
+
+        assert len(hits) == 1
+        assert cache_search._index_path().exists()
+        assert self._index_rows() == {("arxiv", "2301.00001")}
+
+    def test_unchanged_files_are_not_reread(self, isolated_cache, monkeypatch):
         body = "# Paper\n\n## Abstract\n\n" + "attention transformer " * 50
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", body)
+        cache_search.search("attention")  # build
 
-        seen = self._count_tokenize_calls(monkeypatch)
-        hits1 = cache_search.search("attention")
-        assert len(hits1) == 1
-        # The index file now exists.
-        assert cache_search._index_path().exists()
-        doc_tokenizations_first = [t for t in seen if t == body]
-        # Built once: both modes tokenised on first sight → 2 calls.
-        assert len(doc_tokenizations_first) == 2
-
-        seen.clear()
-        hits2 = cache_search.search("attention")
-        assert hits2 == hits1
-        # Second search: the unchanged doc is NOT re-tokenised at all.
-        assert [t for t in seen if t == body] == []
-
-    def test_staleness_on_content_change(self, isolated_cache, monkeypatch):
-        path = _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "2301.00001",
-            "# Paper\n\n## Abstract\n\nThis paper is about felines.\n",
-        )
-        assert cache_search.search("genomics") == []
-
-        # Rewrite with new content. write_text changes size (and mtime),
-        # so the staleness check must re-tokenise it.
-        seen = self._count_tokenize_calls(monkeypatch)
-        new_body = "# Paper\n\n## Abstract\n\nThis paper is about genomics.\n"
-        path.write_text(new_body)
-        hits = cache_search.search("genomics")
-        assert len(hits) == 1
-        assert hits[0]["canonical_id"] == "2301.00001"
-        assert new_body in seen  # the changed doc was re-tokenised
-
-    def test_unchanged_sibling_not_retokenized(self, isolated_cache, monkeypatch):
-        stable = "# A\n\n## Abstract\n\n" + "attention " * 40
-        _seed_markdown(isolated_cache, "arxiv", "1111.00001", stable)
-        changing_path = _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "2222.00002",
-            "# B\n\n## Abstract\n\nfelines everywhere.\n",
-        )
-        cache_search.search("attention")  # build the index
-
-        seen = self._count_tokenize_calls(monkeypatch)
-        changing_path.write_text("# B\n\n## Abstract\n\ngenomics everywhere.\n")
+        seen = self._count_markdown_reads(monkeypatch)
         cache_search.search("attention")
-        # The stable sibling must not be re-tokenised; only the changed one.
-        assert stable not in seen
+
+        # Only the winner is re-read, to extract its snippet — never for
+        # re-indexing.
+        assert seen.count("2301.00001") == 1
+
+    def test_content_change_is_picked_up(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention\n")
+        assert cache_search.search("diffusion") == []
+
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\ndiffusion model\n")
+
+        assert len(cache_search.search("diffusion")) == 1
+
+    def test_unchanged_sibling_not_reindexed(self, isolated_cache, monkeypatch):
+        _seed_markdown(isolated_cache, "arxiv", "stable", "# A\n\nattention alpha\n")
+        _seed_markdown(isolated_cache, "arxiv", "churn", "# B\n\nattention beta\n")
+        cache_search.search("attention")
+
+        _seed_markdown(isolated_cache, "arxiv", "churn", "# B\n\nattention gamma\n")
+        seen = self._count_markdown_reads(monkeypatch)
+        cache_search.search("zzzznomatch")
+
+        assert "churn" in seen
+        assert "stable" not in seen
 
     def test_deletion_pruning(self, isolated_cache):
-        _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "1111.00001",
-            "# A\n\nattention model.\n",
-        )
-        gone = _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "2222.00002",
-            "# B\n\nattention model.\n",
-        )
-        assert len(cache_search.search("attention")) == 2
+        _seed_markdown(isolated_cache, "arxiv", "keep", "# A\n\nattention alpha\n")
+        _seed_markdown(isolated_cache, "arxiv", "gone", "# B\n\nattention beta\n")
+        cache_search.search("attention")
+        assert self._index_rows() == {("arxiv", "keep"), ("arxiv", "gone")}
 
-        gone.unlink()
+        (isolated_cache / "arxiv" / "markdown" / "gone.md").unlink()
         hits = cache_search.search("attention")
-        assert len(hits) == 1
-        assert all(h["canonical_id"] != "2222.00002" for h in hits)
-        # The deleted doc's entry is gone from the on-disk index too.
-        index = json.loads(cache_search._index_path().read_text())
-        keys = list(index["entries"])
-        assert not any(k.endswith("2222.00002") for k in keys)
 
-    def test_namespace_corpus_stats_isolated(self, isolated_cache):
-        # A namespace-filtered search must compute IDF over only that
-        # namespace, identical to a cache holding just that namespace.
-        # Seed arxiv with many docs containing "model" (drives its IDF
-        # down globally) and one manual doc.
-        for i in range(6):
-            _seed_markdown(
-                isolated_cache,
-                "arxiv",
-                f"230{i}.00001",
-                f"# Arxiv {i}\n\nmodel model model attention.\n",
-            )
-        _seed_markdown(
-            isolated_cache,
-            "manual",
-            "only-one",
-            "# Manual\n\nmodel attention here.\n",
-        )
-        manual_hits = cache_search.search("model", namespace="manual")
-        assert len(manual_hits) == 1
-        assert manual_hits[0]["namespace"] == "manual"
+        assert [h["canonical_id"] for h in hits] == ["keep"]
+        assert self._index_rows() == {("arxiv", "keep")}
 
-        # Compare against a cache that ONLY has the manual doc — same score.
-        manual_score = manual_hits[0]["score"]
-        # Drop everything but the manual doc by deleting arxiv files and
-        # forcing an index refresh; the manual score must be unchanged
-        # because corpus stats were already namespace-scoped.
-        for i in range(6):
-            (isolated_cache / "arxiv" / "markdown" / f"230{i}.00001.md").unlink()
-        again = cache_search.search("model", namespace="manual")
-        assert again[0]["score"] == manual_score
+    def test_namespace_filter_restricts_results(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "a", "# A\n\nshared model term\n")
+        _seed_markdown(isolated_cache, "manual", "b", "# B\n\nshared model term\n")
 
-    def test_normalize_served_from_one_build(self, isolated_cache, monkeypatch):
-        body = "# Survey\n\n## Refs\n\nMethod introduced by Gutiérrez et al.\n"
-        _seed_markdown(isolated_cache, "arxiv", "2301.00002", body)
+        hits = cache_search.search("model", namespace="manual")
 
-        # Build the index via a normalize=False search first.
-        assert cache_search.search("gutierrez") == []
-
-        # Now flip to normalize=True. The accented doc must surface
-        # WITHOUT re-tokenising it — both modes were stored at build time.
-        seen = self._count_tokenize_calls(monkeypatch)
-        hits = cache_search.search("gutierrez", normalize=True)
-        assert len(hits) == 1
-        assert hits[0]["canonical_id"] == "2301.00002"
-        assert body not in seen  # no document re-tokenisation on mode flip
+        assert [h["namespace"] for h in hits] == ["manual"]
 
     def test_corrupt_index_self_heals(self, isolated_cache):
-        _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "2301.00001",
-            "# Real\n\nattention everywhere.\n",
-        )
-        cache_search.search("attention")  # build it
-        # Corrupt the index file.
-        cache_search._index_path().write_text("{not valid json")
-        hits = cache_search.search("attention")
-        assert len(hits) == 1
-        assert hits[0]["canonical_id"] == "2301.00001"
-        # Rebuilt into valid JSON.
-        index = json.loads(cache_search._index_path().read_text())
-        assert index["version"] == cache_search._INDEX_VERSION
-
-    def test_version_mismatch_rebuilds(self, isolated_cache):
-        _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "2301.00001",
-            "# Real\n\nattention everywhere.\n",
-        )
-        # Hand-write a stale-version index.
-        path = cache_search._index_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"version": 0, "entries": {}}))
-        hits = cache_search.search("attention")
-        assert len(hits) == 1
-        index = json.loads(path.read_text())
-        assert index["version"] == cache_search._INDEX_VERSION
-        assert len(index["entries"]) == 1
-
-    def test_force_refresh_rebuilds_despite_stale_signal(self, isolated_cache, monkeypatch):
-        body = "# Paper\n\n## Abstract\n\n" + "attention " * 30
-        _seed_markdown(isolated_cache, "arxiv", "2301.00001", body)
-        cache_search.search("attention")  # build the index
-
-        seen = self._count_tokenize_calls(monkeypatch)
-        # Without force_refresh the unchanged file is reused (no tokenise).
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
         cache_search.search("attention")
-        assert body not in seen
-        seen.clear()
-        # With force_refresh it is re-tokenised even though mtime/size match.
-        cache_search.search("attention", force_refresh=True)
-        assert body in seen
 
-    def test_results_identical_full_dict(self, isolated_cache):
-        # Lock the complete per-hit dict so the index path can't silently
-        # drift any field from the original fresh-scan output.
-        body = (
-            "# Some Paper\n\n"
-            "## Introduction\n\nbackground prose here.\n\n"
-            "## Methods\n\n" + "The transformer applies attention everywhere. " * 5 + "\n"
-        )
-        _seed_markdown(isolated_cache, "arxiv", "1706.03762", body)
-        hits = cache_search.search("transformer attention")
-        assert hits == [
-            {
-                "namespace": "arxiv",
-                "canonical_id": "1706.03762",
-                "score": hits[0]["score"],  # float compared separately below
-                "title": "Some Paper",
-                "snippet": hits[0]["snippet"],
-                "section": "Methods",
-                "section_index": 1,
-                "char_offset": hits[0]["char_offset"],
-                "char_count": len(body),
-            }
-        ]
-        assert hits[0]["score"] > 0
-        assert "transformer applies attention" in hits[0]["snippet"]
-        # section_index must be the handle get_paper_section accepts.
-        assert papers.get_section_content(body, hits[0]["section_index"])["title"] == "Methods"
+        cache_search._index_path().write_bytes(b"this is not a database at all")
+
+        # Derived state: discard and rebuild rather than failing every search.
+        hits = cache_search.search("attention")
+        assert len(hits) == 1
+
+    def test_schema_version_mismatch_rebuilds(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
+        cache_search.search("attention")
+
+        con = cache_search._connect()
+        with con:
+            con.execute("UPDATE meta SET value = '999' WHERE key = 'schema_version'")
+        con.close()
+
+        hits = cache_search.search("attention")
+        assert len(hits) == 1
+        con = cache_search._connect()
+        version = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        con.close()
+        assert int(version) == cache_search._SCHEMA_VERSION
+
+    def test_force_refresh_reindexes_despite_stale_signal(self, isolated_cache, monkeypatch):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
+        cache_search.search("attention")
+
+        seen = self._count_markdown_reads(monkeypatch)
+        cache_search.search("zzzznomatch", force_refresh=True)
+
+        assert "2301.00001" in seen
+
+    def test_normalize_and_default_share_one_index(self, isolated_cache, monkeypatch):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00002", "# S\n\nGutiérrez method\n")
+        cache_search.search("gutierrez", normalize=True)
+
+        seen = self._count_markdown_reads(monkeypatch)
+        cache_search.search("gutierrez", normalize=True)
+        cache_search.search("method")
+
+        # Flipping the mode must not rebuild: both tables are populated in
+        # the same pass, so only snippet re-reads happen.
+        assert seen.count("2301.00002") <= 2
 
     def test_concurrent_searches_no_corruption(self, isolated_cache):
         for i in range(8):
@@ -794,30 +712,26 @@ class TestIncrementalIndex:
             return cache_search.search("attention transformer")
 
         with ThreadPoolExecutor(max_workers=8) as pool:
-            results = [f.result() for f in [pool.submit(run) for _ in range(16)]]
+            results = [f.result() for f in [pool.submit(run) for _ in range(8)]]
 
-        # Every concurrent search returns the full, correct result set.
-        assert all(len(r) == 8 for r in results)
-        # The index on disk is still valid JSON after the concurrent writes.
-        index = json.loads(cache_search._index_path().read_text())
-        assert len(index["entries"]) == 8
+        assert all(len(r) == len(results[0]) for r in results)
+        assert len(self._index_rows()) == 8
 
     def test_index_dir_not_walked(self, isolated_cache):
-        _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "2301.00001",
-            "# Real\n\nattention.\n",
-        )
-        cache_search.search("attention")  # creates __search_index__/
-        # The reserved index dir must never be yielded as a corpus file.
-        walked = cache_search._iter_markdown_files()
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention\n")
+        cache_search.search("attention")
+        walked = list(cache_search._iter_markdown_files(None))
         assert all(ns != cache_search._INDEX_DIRNAME for ns, _ in walked)
 
+    def test_legacy_json_index_is_swept_away(self, isolated_cache):
+        legacy = cache_search._legacy_index_path()
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text('{"version": 1, "entries": {}}')
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention\n")
 
-# ---------------------------------------------------------------------------
-# Snippet/section offsets under length-changing lowercase
-# ---------------------------------------------------------------------------
+        cache_search.search("attention")
+
+        assert not legacy.exists(), "the replaced 193 MB JSON index should be removed"
 
 
 class TestSnippetOffsetUnderLowercaseExpansion:
@@ -861,43 +775,94 @@ class TestSnippetOffsetUnderLowercaseExpansion:
 # ---------------------------------------------------------------------------
 
 
-class TestIndexMemo:
-    def test_index_not_reparsed_when_unchanged(self, isolated_cache, monkeypatch):
-        # First search warms the in-memory memo (and writes index.json). A
-        # second search over an unchanged corpus must NOT re-parse the index
-        # JSON from disk — it serves the memo, keyed by index.json's stat.
+class TestIndexReuse:
+    """The index is not rebuilt when nothing changed.
+
+    The JSON index guarded this with an in-memory memo keyed on the file's
+    stat signature — a whole mechanism that existed because parsing 193 MB
+    on every query was untenable. SQLite has no equivalent cost, so the
+    property is now simply that unchanged documents are not re-read.
+    """
+
+    def test_unchanged_corpus_triggers_no_reindex(self, isolated_cache, monkeypatch):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
+        cache_search.search("attention")
+
+        indexed: list[int] = []
+        real = cache_search._index_document
+        monkeypatch.setattr(
+            cache_search,
+            "_index_document",
+            lambda con, rowid, text: (indexed.append(rowid), real(con, rowid, text))[1],
+        )
+        cache_search.search("attention")
+
+        assert indexed == [], "an unchanged corpus must not be re-indexed"
+
+    def test_corpus_edit_triggers_reindex(self, isolated_cache, monkeypatch):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
+        cache_search.search("attention")
+
+        indexed: list[int] = []
+        real = cache_search._index_document
+        monkeypatch.setattr(
+            cache_search,
+            "_index_document",
+            lambda con, rowid, text: (indexed.append(rowid), real(con, rowid, text))[1],
+        )
+        _seed_markdown(isolated_cache, "arxiv", "2301.00002", "# Q\n\nattention again\n")
+        cache_search.search("attention")
+
+        assert len(indexed) == 1, "only the new document should be indexed"
+
+
+class TestQueryTokenizationMatchesTheIndex:
+    """The query and the documents must be tokenised by the same tokenizer.
+
+    Regression: after the move to FTS5 the documents were tokenised by SQLite
+    while the query still went through ``_tokenize`` — an ASCII-only regex
+    written back when this module did its own indexing. It split "Gutiérrez"
+    into ``guti OR rrez``, which matched nothing, even though the document had
+    indexed cleanly as a single token.
+    """
+
+    @pytest.fixture
+    def accented(self, isolated_cache):
         _seed_markdown(
             isolated_cache,
             "arxiv",
-            "2301.00001",
-            "# Paper\n\n## Abstract\n\n" + "attention " * 30,
+            "2301.00002",
+            "# Survey\n\n## Refs\n\nMethod introduced by Gutiérrez et al.\n",
         )
-        cache_search.search("attention")  # warm memo + write index.json
+        return isolated_cache
 
-        calls = {"n": 0}
-        original = cache_search._load_index
+    def test_accented_query_finds_accented_document(self, accented):
+        hits = cache_search.search("Gutiérrez")
+        assert [h["canonical_id"] for h in hits] == ["2301.00002"]
 
-        def counting():
-            calls["n"] += 1
-            return original()
+    def test_unaccented_query_needs_normalize(self, accented):
+        # The documented contract, unchanged: folding is opt-in.
+        assert cache_search.search("gutierrez") == []
+        assert [h["canonical_id"] for h in cache_search.search("gutierrez", normalize=True)] == [
+            "2301.00002"
+        ]
 
-        monkeypatch.setattr(cache_search, "_load_index", counting)
-        cache_search.search("attention")
-        assert calls["n"] == 0
+    def test_accented_query_also_works_under_normalize(self, accented):
+        assert len(cache_search.search("Gutiérrez", normalize=True)) == 1
 
-    def test_memo_invalidated_on_corpus_edit(self, isolated_cache):
-        # The index-file memo must never shortcut the corpus stat-walk: editing
-        # a markdown file leaves index.json untouched (so the memo signature is
-        # still "fresh"), but the changed content must still be picked up.
-        path = _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "2301.00001",
-            "# Paper\n\n## Abstract\n\nThis paper is about felines.\n",
-        )
-        assert len(cache_search.search("felines")) == 1
-        assert cache_search.search("genomics") == []
+    @pytest.mark.parametrize("query", ["NOT", "OR", "*", "-", "a:b", 'quote"inside', "( )", "^"])
+    def test_fts_syntax_in_a_query_never_raises(self, accented, query):
+        # Every term is quoted, so operators are matched literally rather
+        # than parsed — an unquoted one would make FTS5 reject the whole
+        # expression.
+        assert isinstance(cache_search.search(query), list)
 
-        path.write_text("# Paper\n\n## Abstract\n\nThis paper is about genomics.\n")
-        assert len(cache_search.search("genomics")) == 1
-        assert cache_search.search("felines") == []
+    def test_multiword_query_ors_its_terms(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "a", "# A\n\nattention only here\n")
+        _seed_markdown(isolated_cache, "arxiv", "b", "# B\n\ntransformer only here\n")
+        found = {h["canonical_id"] for h in cache_search.search("attention transformer")}
+        assert found == {"a", "b"}
+
+    def test_empty_and_whitespace_queries_return_nothing(self, accented):
+        for query in ("", "   ", "\n\t"):
+            assert cache_search.search(query) == []

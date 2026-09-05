@@ -30,6 +30,31 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **The keyword search index moved from a single JSON file to SQLite FTS5.**
+  The old index held every document's full term-frequency map, in both a
+  folded and an un-folded form, and parsed the whole thing into the heap on
+  first use. Measured on a 3,732-paper corpus:
+
+  | | before | after |
+  |---|---|---|
+  | index on disk | 193 MB | 165 MB |
+  | process RSS after first search | **933 MB** | **43 MB** |
+  | first search in a fresh process | **1308 ms** | **40 ms** |
+  | one new paper | rewrote all 193 MB | one row |
+  | ranking cost within a query | ~1300 ms | **1.3 ms** |
+
+  The index is **contentless** (`content=''`): it stores postings, never the
+  text. The markdown is already on disk and the top hits are re-read for
+  snippets anyway, so not storing it twice is what makes the database smaller
+  than the JSON it replaces rather than larger.
+
+  Two FTS tables, not one: `normalize` is a query-time flag in this API while
+  diacritic folding is a build-time tokenizer option in FTS5, so the index
+  carries a folded and an un-folded table and the flag selects between them.
+  That keeps the parameter's meaning exactly rather than silently redefining
+  it. Migration is automatic — the database is built on first search (~7s for
+  3,700 papers) and the old `index.json` is deleted. ([#55])
+
 - **Section-boundary computation is single-homed.** It existed in four
   places: `parse_sections`, `find_in_markdown` and `get_section_content` (the
   latter two byte-identical), and `cache_search._section_for_offset` — a
@@ -86,6 +111,25 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **Namespace-filtered search no longer changes a paper's score.** Corpus
+  statistics were scoped to the filtered subset, so the same paper scored
+  differently in a filtered and an unfiltered search. Term rarity is now
+  computed over the whole index; `namespace` selects which documents come
+  back, not how they are ranked. ([#55])
+- **A hit whose term appears in every document is no longer reported as
+  score 0.0.** Scores are rounded to 6 decimals rather than 3 — FTS5 returns
+  a very small positive score when a term's IDF is degenerate, and rounding
+  to 3 crushed it to zero, breaking the invariant that every returned hit
+  scores above zero. ([#55])
+- **An accented query matches an accented document again.** The move to FTS5
+  briefly left the query and the documents tokenised by different tokenizers —
+  SQLite indexed "Gutiérrez" as one token while the query still went through
+  the module's ASCII-only regex, which split it into `guti OR rrez` and
+  matched nothing. Queries are now tokenised by FTS5, the same way the corpus
+  is. Folding remains opt-in via `normalize`, unchanged. ([#55])
+- **Equal-scoring hits are ordered deterministically** by `(namespace,
+  canonical_id)` again, rather than by insertion order into the index. ([#55])
 
 - **The documented `search_cached_papers` → `get_paper_section` chain failed
   for repeated headings.** Corpus search returned the matched section's
@@ -962,3 +1006,4 @@ grouped by milestone rather than per commit.
 [#52]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/52
 [#53]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/53
 [#54]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/54
+[#55]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/55
