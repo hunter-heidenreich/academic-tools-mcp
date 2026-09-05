@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import _clients, _pdf_download, _singleflight, _useragent, cache, manual
+from . import _clients, _pdf_download, _singleflight, _useragent, manual
 from ._throttle import Throttle
 from .providers import openalex
 
@@ -43,14 +43,24 @@ def _get_client():
 
 
 # Conservative concurrency: OA URLs hit arbitrary publisher domains, not a
-# single API with a documented budget, so we keep simultaneous fetches low
-# to avoid hammering any one host. No inter-start gap (hosts differ), but
-# the burst cap and pooled connection still apply — the same robustness
-# primitives every other provider gets.
+# single API with a documented budget. The cap stays *global* rather than
+# per-host because it bounds our own egress — sockets, file descriptors, and
+# (since stream_to_file holds the slot for the whole stream) simultaneous
+# in-flight downloads. Per-host concurrency would let a 20-publisher reference
+# walk open 40 parallel PDF streams, which is a resource bug on our side no
+# matter how polite it is to each publisher.
 _MAX_CONCURRENT = 2
-# No inter-start gap (each URL is a different host); kept at 0 so the shared
-# Throttle's gap-lock never sleeps. The gating mechanism lives in ``_throttle``.
-_MIN_REQUEST_GAP = 0.0
+
+# One request per second, **per publisher host** (``per_host=True`` below).
+# This was 0.0 on the reasoning that every OA URL is a different host — an
+# assumption, not a fact: the URLs come from OpenAlex, and a reference walk
+# through one journal resolves many DOIs to the same domain, which then got
+# fetched back-to-back with no gap at all. 1 req/s/host is the conventional
+# Crawl-delay and matches wikipedia's gap, the most conservative we use for a
+# host we actually have a relationship with; publishers are less friendly than
+# a preprint server and PDF fetches are far heavier than JSON. Paced per host,
+# so a walk spanning several publishers still runs at the concurrency cap.
+_MIN_REQUEST_GAP = 1.0
 _MAX_PENDING = 5
 
 # Coalesces concurrent download_pdf calls for the same paper.
@@ -76,17 +86,13 @@ _IMPORT_SUGGESTION = (
 )
 
 
-def _cached_hit(dest: Path) -> dict[str, Any]:
-    """Build the ``cached: True`` response for an existing on-disk PDF."""
-    return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": True}
-
-
 _throttle = Throttle(
     namespace=NAMESPACE,
     label="OA download",
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
+    per_host=True,
 )
 
 
@@ -158,37 +164,21 @@ async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[
     via single-flight.
     """
     target = manual.resolve_target(identifier)
-    canonical = target["canonical"]
     dest = Path(target["pdf_path"])
 
-    if force_refresh:
-        cache.invalidate(NAMESPACE, _NEG_ENTITY, canonical)
-    else:
-        # A 0-byte / pre-header leftover from an interrupted write is treated as
-        # a miss (mirrors the manual import path), not served as a stale hit.
-        if manual._looks_like_cached_pdf(dest):
-            return _cached_hit(dest)
-        neg = cache.get_negative(NAMESPACE, _NEG_ENTITY, canonical)
-        if neg is not None:
-            return neg
-
     async def _fetch() -> dict[str, Any]:
-        # Re-check after acquiring the slot — a concurrent leader may have just
-        # written the file or recorded a definitive failure. Skip under
-        # force_refresh: the caller wants fresh bytes, and stream_to_file
-        # replaces dest atomically.
-        if not force_refresh:
-            if manual._looks_like_cached_pdf(dest):
-                return _cached_hit(dest)
-            neg = cache.get_negative(NAMESPACE, _NEG_ENTITY, canonical)
-            if neg is not None:
-                return neg
+        return await _resolve_and_download(identifier, dest, force_refresh=force_refresh)
 
-        result = await _resolve_and_download(identifier, dest, force_refresh=force_refresh)
-        if _pdf_download.is_definitive_failure(result):
-            cache.put_negative(
-                NAMESPACE, _NEG_ENTITY, canonical, result, ttl_seconds=_NEG_TTL_SECONDS
-            )
-        return result
-
-    return await _single_flight.do(canonical, _fetch)
+    # The negative half lives under this module's own namespace while the PDF
+    # lands in ``manual`` — the artifact is shared with manual import, but the
+    # "no OA copy exists" verdict is specific to this path.
+    return await _pdf_download.cached_download(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity=_NEG_ENTITY,
+        canonical=target["canonical"],
+        dest=dest,
+        fetch=_fetch,
+        neg_ttl=_NEG_TTL_SECONDS,
+        force_refresh=force_refresh,
+    )

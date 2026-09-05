@@ -314,7 +314,8 @@ class TestOaDownload:
         anyway: the predicate asked ``retryable is not True``, and
         ``_http.error_dict`` sets ``retryable`` on backpressure alone — so a
         timeout, a connection error, a 5xx and a 429 all arrived with no
-        ``retryable`` key and were classified permanent."""
+        ``retryable`` key and were classified permanent. The predicate is now
+        an allowlist (``retryable is False``)."""
         import httpx
 
         resolves = 0

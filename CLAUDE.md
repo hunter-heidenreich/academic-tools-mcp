@@ -65,7 +65,7 @@ These surface through `get_paper_metadata` / `get_paper_authors` and are propert
 
 ## Cache TTLs
 
-Per-provider `_POSITIVE_TTL_SECONDS` constants (grep `providers/`) so a long session sees fresh data without a manual cache wipe; eviction is mtime-based and self-healing. Negatives default to 24h, with **arxiv/biorxiv overriding to 1h** because preprint identifiers go live mid-session. **`force_refresh=True`** drops both halves via `cache.invalidate(...)` and re-fetches — the way to beat the 7-day OpenCitations TTL when the citation graph has grown. See `.claude/rules/infrastructure.md` and `.claude/rules/providers.md` for the per-provider rationale.
+Per-provider `_POSITIVE_TTL_SECONDS` constants (grep `providers/`) so a long session sees fresh data without a manual cache wipe; eviction is mtime-based and self-healing. Negatives default to 24h, with **arxiv/biorxiv overriding to 1h** because preprint identifiers go live mid-session. PDF downloads negative-cache their definitive failures too, under a `downloads` entity per provider namespace — the classifier (`_pdf_download.is_definitive_failure`) is an **allowlist** on an explicit `retryable: False`, since `_http.error_dict` leaves that key off every transient branch. **`force_refresh=True`** drops both halves via `cache.invalidate(...)` and re-fetches — the way to beat the 7-day OpenCitations TTL when the citation graph has grown. See `.claude/rules/infrastructure.md` and `.claude/rules/providers.md` for the per-provider rationale.
 
 ## Observability
 

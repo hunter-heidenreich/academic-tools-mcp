@@ -451,6 +451,50 @@ class TestBatchNegativeCaching:
         assert cache.get_negative("openalex", "works", "10.1234/b") is None
 
 
+class TestBatchErrorDictsAreNotAliased:
+    """``dict.fromkeys(chunk, _parse_error_dict())`` put ONE dict object behind
+    up to 50 keys, so a caller mutating its own error corrupted the other 49.
+
+    Nothing was visibly broken — the sole consumer happens to shallow-copy
+    before mutating — but that copy was load-bearing without saying so, and
+    ``get_works_batch`` is public. It also contradicted
+    ``_http.parse_error_dict``'s documented "a new dict each call".
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_parse_failure_yields_independent_dicts(self, monkeypatch):
+        _install_throttled_get(monkeypatch, _BAD_JSON)
+
+        out = await openalex.get_works_batch(["10.1234/a", "10.1234/b"])
+
+        assert out["10.1234/a"] is not out["10.1234/b"]
+        out["10.1234/a"]["suggestion"] = "mine"
+        assert "suggestion" not in out["10.1234/b"]
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_yields_independent_dicts(self, monkeypatch):
+        import httpx
+
+        async def exploding_get(url, **kwargs):
+            raise httpx.ConnectError("boom")
+
+        monkeypatch.setattr(openalex, "_throttled_get", exploding_get)
+
+        out = await openalex.get_works_batch(["10.1234/a", "10.1234/b"])
+
+        assert out["10.1234/a"] is not out["10.1234/b"]
+        out["10.1234/a"]["retryable"] = "mutated"
+        assert out["10.1234/b"].get("retryable") != "mutated"
+
+    @pytest.mark.asyncio
+    async def test_a_non_dict_body_yields_independent_dicts(self, monkeypatch):
+        _install_throttled_get(monkeypatch, [])
+
+        out = await openalex.get_works_batch(["10.1234/a", "10.1234/b"])
+
+        assert out["10.1234/a"] is not out["10.1234/b"]
+
+
 class TestBatchSingleFlight:
     """Overlapping concurrent batches must coalesce into one HTTP call.
 

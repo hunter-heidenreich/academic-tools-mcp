@@ -62,6 +62,11 @@ _single_flight = _singleflight.SingleFlight()
 # and the agent shouldn't have to wait a day to see it.
 _NEG_TTL_SECONDS = 3600.0
 
+# Definitive PDF-download failures share that 1h TTL: a preprint whose PDF is
+# not yet rendered is the same "live in an hour" case as one whose record is
+# not yet minted.
+_NEG_ENTITY = "downloads"
+
 # Positive cache TTL. The published_doi field appears asynchronously
 # when a preprint becomes a journal article — a 7-day TTL guarantees
 # the agent sees that transition within a week without re-fetching the
@@ -375,29 +380,21 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     canonical = canonical_key(doi)
     dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
-    if not force_refresh and (hit := _pdf_download.cached_hit(dest)) is not None:
-        return hit
-
     async def _fetch() -> dict[str, Any]:
-        # Re-check after winning the slot — a concurrent leader may have
-        # just written the file. Skip the short-circuit under force_refresh:
-        # the caller wants fresh bytes, and stream_to_file replaces dest
-        # atomically on success.
-        if not force_refresh and (hit := _pdf_download.cached_hit(dest)) is not None:
-            return hit
-
-        # Need paper metadata to get the PDF URL
-        paper = await get_paper(doi)
+        # Need paper metadata to get the PDF URL. force_refresh is threaded
+        # through so a forced re-download doesn't build its URL from the stale
+        # version number it was asked to replace.
+        paper = await get_paper(doi, force_refresh=force_refresh)
         if "error" in paper:
             return paper
 
         pdf_url = paper.get("pdf_url")
         if not pdf_url:
-            return {"error": f"No PDF URL found for DOI: {doi}"}
+            # Definitive: the record exists but carries no PDF URL.
+            return {"error": f"No PDF URL found for DOI: {doi}", "retryable": False}
 
-        client = _get_client()
         return await _pdf_download.stream_to_file(
-            client,
+            _get_client(),
             pdf_url,
             dest,
             slot_factory=lambda: _request_slot(pdf_url),
@@ -409,4 +406,14 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     # Tuple-keyed so this slot is distinct from get_paper's (keyed on the
     # bare canonical id): _fetch calls get_paper, which would otherwise
     # await this very slot's future and deadlock.
-    return await _single_flight.do(("pdf", canonical), _fetch)
+    return await _pdf_download.cached_download(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity=_NEG_ENTITY,
+        canonical=canonical,
+        dest=dest,
+        fetch=_fetch,
+        neg_ttl=_NEG_TTL_SECONDS,
+        force_refresh=force_refresh,
+        sf_key=("pdf", canonical),
+    )

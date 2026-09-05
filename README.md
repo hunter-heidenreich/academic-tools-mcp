@@ -221,6 +221,7 @@ API responses and downloaded files are cached under `.cache/`:
   opencitations/references/# OpenCitations reference lists (JSON)
   opencitations/citations/ # OpenCitations citation lists (JSON)
   wikipedia/summaries/     # Wikipedia page summaries (JSON)
+  <namespace>/downloads/_neg/  # Definitive PDF-download failures (TTL below)
   manual/pdfs/             # Manually imported PDFs
   manual/markdown/         # Converted markdown
   manual/sections/         # Section indices (JSON)
@@ -238,6 +239,8 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 | crossref | 30d | 24h | Reference lists grow as publishers re-deposit metadata. |
 | opencitations | 7d | 24h | The citation graph grows continuously. |
 | wikipedia | 30d | 24h | Articles change as they're edited. |
+
+**PDF downloads** negative-cache definitive failures too, under a `downloads` entity in each provider's namespace: arxiv / biorxiv 1h (they render PDFs lazily, so a just-announced paper's PDF can 404 for minutes), acl_anthology and the open-access path 24h (static files — a 404 means a wrong ID or a closed-access paper). The PDF itself never expires.
 
 Eviction is mtime-based and self-healing: an over-age entry is unlinked on read. **Negative entries** (definitive 404s) live in a sibling `_neg/` subdirectory so a known-bad identifier doesn't burn rate budget on every retry, while a newly-registered DOI still surfaces within the TTL. `force_refresh=True` drops both halves and re-fetches.
 
@@ -278,7 +281,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
   │                                    single-conversion lock; find_in_markdown
   │                  cache_search.py   BM25 over cached markdown (SQLite FTS5)
   │                  bibtex.py         BibTeX generation
-  │                  _pdf_download.py  streaming download + size cap
+  │                  _pdf_download.py  streaming download, size cap, cached-download protocol
   │                  oa_download.py    gated open-access fetch for generic DOIs
   │                  _fast_extract.py  bundled pymupdf text extractor
   │
@@ -301,10 +304,10 @@ server.py            thin entry: re-exports mcp + tools, registers the
 - **One tool per job, auto-routed.** The four core paper tools (`get_paper_metadata`, `get_paper_authors`, `get_paper_abstract`, `get_paper_bibtex`) dispatch on identifier shape rather than forcing the agent to pick between arXiv/bioRxiv/OpenAlex families. Provider-native fields are preserved and tagged with `_source`.
 - **Batch where it matters.** `get_papers_metadata` collapses N parallel singletons into one HTTP call per 50 OpenAlex DOIs (`/works?filter=doi:...|...`) plus concurrent fan-out for arXiv / bioRxiv — designed for reference-graph enrichment.
 - **One API hit per entity.** All tools for a given DOI share one cached response. Concurrent same-key callers are coalesced by single-flight to one fetch.
-- **Per-provider concurrency.** Each provider has its own concurrency cap (arxiv=1, per its single-connection rule; openalex=4; crossref resolved from config, see below) — multiple GETs run in flight up to the cap while a brief gap-lock enforces inter-start spacing. Reference-graph traversals are dramatically faster than the previous serialise-everything model.
+- **Per-provider concurrency, and per-host pacing where the host isn't fixed.** Each provider has its own concurrency cap (arxiv=1, per its single-connection rule; openalex=4; crossref resolved from config, see below) — multiple GETs run in flight up to the cap while a brief gap-lock enforces inter-start spacing. The open-access download path is the one client whose URLs are publisher CDNs rather than a single API, so it paces at 1 request/second **per host**: a reference walk through one journal resolves many DOIs to the same domain, and a global gap would either under-pace that or needlessly throttle unrelated publishers.
 - **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry honouring `Retry-After` in either form RFC 9110 permits — delay-seconds or HTTP-date — capped at 10 minutes, before surfacing to the agent. arXiv retries twice instead of once: its edge returns 429/503 with no `Retry-After`, and a single retry tends to land in the same cooldown.
 - **Burst caps with structured backpressure.** Each provider refuses to stack more than 5 concurrent callers behind its rate-limit gap. The 6th gets `{error, retryable: True, backpressure: True}` immediately so the agent learns to slow down rather than waiting silently.
-- **Negative caching for definitive 404s.** Known-bad identifiers are cached (24h; 1h for arXiv/bioRxiv) so retries don't burn rate budget; transient errors are NOT cached.
+- **Negative caching for definitive 404s.** Known-bad identifiers are cached (24h; 1h for arXiv/bioRxiv) so retries don't burn rate budget — for PDF downloads as well as metadata, so a paper whose PDF 404s doesn't re-hit the upstream on every call. Transient errors are **not** cached: the classifier is an allowlist keyed on an explicit `retryable: False`, because a timeout and a 5xx carry no such flag and a "not marked retryable" test would cache exactly the failures that resolve on retry.
 - **The rate we take follows the identity we send.** Crossref publishes two service tiers; the client picks its limits from whether `CROSSREF_MAILTO` is configured rather than assuming the polite tier. Every provider sends a descriptive `User-Agent` naming the project and its repository, with a contact address appended when one is set.
 - **Streaming PDF downloads with size guard.** PDFs stream chunked to a temp file with atomic rename — peak memory = 64 KiB, not 2× the PDF — and abort mid-stream if `MAX_PDF_BYTES` (default 200 MB) is exceeded. Force-refresh cascades: re-downloading drops the cached markdown + sections so the next conversion picks up the new bytes.
 - **Single-conversion lock for PDFs.** At most one PDF→markdown subprocess runs at a time across the whole server; concurrent callers get a `busy` error with what's running and how long it's been going.

@@ -34,10 +34,16 @@ import asyncio
 import contextlib
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from . import _http, _stats
+
+# Cap on the per-host last-start map (``per_host=True`` only). Publisher
+# domains seen in one session number in the tens; this is far above that and
+# bounds a pathological walk.
+_MAX_TRACKED_HOSTS = 512
 
 
 class Throttle:
@@ -58,12 +64,20 @@ class Throttle:
         min_gap_seconds: float,
         max_pending: int = 5,
         retry_attempts: int = 2,
+        per_host: bool = False,
     ) -> None:
         self.namespace = namespace
         self.label = label
         self.max_concurrent = max_concurrent
         self.min_gap_seconds = min_gap_seconds
         self.max_pending = max_pending
+        # Pace by request host rather than one global timestamp. Opt-in, for a
+        # client whose URLs are not a single API: ``oa_download`` resolves DOIs
+        # to arbitrary publisher CDNs, and a reference walk through one journal
+        # lands many of them on the same domain. The seven API providers each
+        # talk to exactly one host, where a per-host map would be a dict of
+        # size one — they keep the single timestamp.
+        self.per_host = per_host
         # Total attempts (1 original + N-1 retries) for ``get``. Default 2 = one
         # transparent retry; a provider behind a flakier edge (arXiv's Fastly
         # 429/503-without-Retry-After) raises it so ``get_with_retry``'s
@@ -71,8 +85,45 @@ class Throttle:
         self.retry_attempts = retry_attempts
         self.pending = 0
         self.last_request_time: float = 0.0
+        self._host_last_start: dict[str, float] = {}
         self._sem = asyncio.Semaphore(max_concurrent)
         self._lock = asyncio.Lock()
+
+    def _last_start(self, key: str) -> float:
+        if not self.per_host:
+            return self.last_request_time
+        return self._host_last_start.get(key, 0.0)
+
+    def _record_start(self, key: str, when: float) -> None:
+        if not self.per_host:
+            self.last_request_time = when
+            return
+        self._host_last_start[key] = when
+        self._prune_hosts(when)
+
+    def _prune_hosts(self, now: float) -> None:
+        """Bound the per-host map. Called under ``_lock``, per_host mode only.
+
+        An entry older than ``min_gap_seconds`` can never produce a wait — the
+        gap check treats a missing host exactly like an expired one — so the
+        age sweep is semantics-preserving rather than a heuristic. This is why
+        it needs none of ``papers.sections_lock``'s machinery: that skips
+        currently-held entries because evicting a held lock destroys mutual
+        exclusion a live writer depends on, and a timestamp has no such hazard.
+
+        If everything is still inside the window (a fan-out wider than the
+        cap), drop the oldest — they are nearest expiry, and the cost is at
+        most one request starting early.
+        """
+        if len(self._host_last_start) <= _MAX_TRACKED_HOSTS:
+            return
+        cutoff = now - self.min_gap_seconds
+        self._host_last_start = {h: t for h, t in self._host_last_start.items() if t > cutoff}
+        overflow = len(self._host_last_start) - _MAX_TRACKED_HOSTS
+        if overflow > 0:
+            oldest = sorted(self._host_last_start.items(), key=lambda kv: kv[1])[:overflow]
+            for host, _ in oldest:
+                del self._host_last_start[host]
 
     def reset(self) -> None:
         """Zero the runtime counters and rebuild the loop-bound primitives.
@@ -85,6 +136,7 @@ class Throttle:
         """
         self.pending = 0
         self.last_request_time = 0.0
+        self._host_last_start = {}
         self._sem = asyncio.Semaphore(self.max_concurrent)
         self._lock = asyncio.Lock()
 
@@ -108,14 +160,28 @@ class Throttle:
         self.pending += 1
         try:
             async with self._sem:
+                # Netloc is case-insensitive per RFC 3986 and OpenAlex-supplied
+                # URLs are inconsistently cased; the port stays in the key,
+                # since one host on two ports is two services.
+                key = urlsplit(url).netloc.lower() if self.per_host else ""
                 async with self._lock:
                     now = time.monotonic()
-                    elapsed = now - self.last_request_time
+                    last = self._last_start(key)
                     wait_seconds = 0.0
-                    if self.last_request_time > 0 and elapsed < self.min_gap_seconds:
-                        wait_seconds = self.min_gap_seconds - elapsed
-                        await asyncio.sleep(wait_seconds)
-                    self.last_request_time = time.monotonic()
+                    if last > 0 and now - last < self.min_gap_seconds:
+                        wait_seconds = self.min_gap_seconds - (now - last)
+                    # Reserve the instant we are about to start at *before*
+                    # releasing the lock, so a concurrent caller for this key
+                    # paces against the slot we just took rather than the
+                    # previous one. This is what lets the sleep happen outside
+                    # the lock: holding it across the sleep would serialise
+                    # unrelated hosts and make per-host pacing pointless.
+                    # Acquisition order is unchanged (asyncio.Lock is FIFO) and
+                    # reserved starts stay spaced by exactly min_gap_seconds,
+                    # so observable pacing is identical when per_host is off.
+                    self._record_start(key, now + wait_seconds)
+                if wait_seconds:
+                    await asyncio.sleep(wait_seconds)
                 _stats.log_request(self.namespace, url, wait_seconds)
                 if count_request:
                     _stats.incr(self.namespace, "http_calls")

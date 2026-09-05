@@ -42,6 +42,13 @@ _single_flight = _singleflight.SingleFlight()
 # PDF downloads are larger than a metadata call; use a generous timeout.
 _PDF_TIMEOUT_SECONDS = 60.0
 
+# Definitive download failures are negative-cached so a retrying agent doesn't
+# re-hit the CDN on every call. 24h: these are static camera-ready files, so a
+# 404 means the Anthology ID is wrong or the paper is not posted yet — neither
+# resolves in minutes, unlike the preprint servers' 1h.
+_NEG_ENTITY = "downloads"
+_NEG_TTL_SECONDS = 24 * 60 * 60
+
 _throttle = Throttle(
     namespace=NAMESPACE,
     label="ACL Anthology",
@@ -180,36 +187,12 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     if aid is None:
         return {"error": f"Not an ACL Anthology DOI: {doi}"}
 
-    canonical = canonical_key(doi)
     dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(aid)
-
-    if not force_refresh and _pdf_download.is_usable_pdf(dest):
-        return {
-            "anthology_id": aid,
-            "pdf_url": pdf_url(aid),
-            "path": str(dest),
-            "size_bytes": dest.stat().st_size,
-            "cached": True,
-        }
+    url = pdf_url(aid)
 
     async def _fetch() -> dict[str, Any]:
-        # Re-check after acquiring the slot — a concurrent leader may
-        # have just written the file. Skip the short-circuit under
-        # force_refresh: the caller explicitly wants fresh bytes, and the
-        # streaming download replaces dest atomically on success.
-        if not force_refresh and _pdf_download.is_usable_pdf(dest):
-            return {
-                "anthology_id": aid,
-                "pdf_url": pdf_url(aid),
-                "path": str(dest),
-                "size_bytes": dest.stat().st_size,
-                "cached": True,
-            }
-
-        url = pdf_url(aid)
-        client = _get_client()
-        result = await _pdf_download.stream_to_file(
-            client,
+        return await _pdf_download.stream_to_file(
+            _get_client(),
             url,
             dest,
             slot_factory=lambda: _request_slot(url),
@@ -217,14 +200,19 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             timeout=_PDF_TIMEOUT_SECONDS,
             not_found_message=f"PDF not found on ACL Anthology for: {aid}",
         )
-        if "error" in result:
-            return result
-        # Add ACL-specific provenance fields on top of the helper's
-        # canonical {path, size_bytes, cached} payload.
-        return {
-            "anthology_id": aid,
-            "pdf_url": url,
-            **result,
-        }
 
-    return await _single_flight.do(canonical, _fetch)
+    # ``extra_fields`` puts the ACL provenance on the cached hit and the fresh
+    # success alike. The two branches used to be hand-copied blocks that also
+    # called ``dest.stat()`` outside any try, so a concurrent unlink between
+    # the usability check and the stat raised OSError out of this function.
+    return await _pdf_download.cached_download(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity=_NEG_ENTITY,
+        canonical=canonical_key(doi),
+        dest=dest,
+        fetch=_fetch,
+        neg_ttl=_NEG_TTL_SECONDS,
+        force_refresh=force_refresh,
+        extra_fields={"anthology_id": aid, "pdf_url": url},
+    )

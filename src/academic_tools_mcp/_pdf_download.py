@@ -15,15 +15,16 @@ after the entire response is already buffered in RAM.
 
 from __future__ import annotations
 
+import copy
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from . import _http, config
+from . import _http, _singleflight, cache, config
 
 # Default cap. 200 MB is large enough for legitimate physics surveys and
 # image-heavy biology preprints while still short-circuiting "10 GB book
@@ -65,9 +66,12 @@ def cached_hit(dest: Path) -> dict[str, Any] | None:
     """Return the standard cache-hit payload for ``dest``, or None.
 
     ``None`` means "treat as a miss and re-download" — either the file is
-    absent or it failed ``is_usable_pdf``. Collapses the six copies of this
-    block across the three PDF providers (each had it twice: once up front
-    and once in the post-single-flight re-check).
+    absent or it failed ``is_usable_pdf``.
+
+    The payload is fixed at ``{path, size_bytes, cached}``. A provider that
+    decorates its response passes ``extra_fields`` to :func:`cached_download`
+    rather than building its own variant, so its cached and fresh branches
+    cannot disagree about the extra keys.
     """
     try:
         if not is_usable_pdf(dest):
@@ -275,3 +279,96 @@ async def stream_to_file(
             pass
         except OSError:
             pass
+
+
+async def cached_download(
+    *,
+    single_flight: _singleflight.SingleFlight,
+    namespace: str,
+    entity: str,
+    canonical: str,
+    dest: Path,
+    fetch: Callable[[], Awaitable[dict[str, Any]]],
+    neg_ttl: float,
+    force_refresh: bool = False,
+    sf_key: Any = None,
+    extra_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the shared cached-download protocol around a provider's ``fetch``.
+
+    The file-on-disk sibling of :func:`cache.cached_lookup`, and named to match
+    it. Every ``download_pdf`` shares this exact shape; it lives here once so
+    the ordering can't drift between the four of them:
+
+      1. ``force_refresh`` -> invalidate the negative entry, then always fetch.
+      2. Otherwise short-circuit on a usable cached PDF, then on a negative
+         entry.
+      3. Coalesce concurrent callers for ``sf_key`` (default ``canonical``) via
+         single-flight; **inside** the slot, re-check both so a follower picks
+         up the leader's just-written file instead of re-downloading.
+
+    ``fetch`` resolves the URL and streams it — the provider's quirks
+    (arXiv/bioRxiv awaiting their own ``get_paper`` first, OpenAlex resolution
+    for the open-access path) all live in that closure.
+
+    **The positive half has no TTL, because it is not a cache record.**
+    ``stream_to_file``'s ``os.replace`` *is* the write, so the file is the
+    entry and ``is_usable_pdf`` is its freshness rule. Only the negative half
+    is a JSON record, which is why ``neg_ttl`` is required rather than
+    defaulted: each provider must state its own policy the way ``positive_ttl``
+    makes it state one for metadata.
+
+    **Artifact before negative, and that ordering is load-bearing.** A
+    ``force_refresh`` that 404s writes a negative entry while a perfectly good
+    PDF is still on disk (``stream_to_file`` only replaces ``dest`` on
+    success). Checking the file first is what keeps the next plain call serving
+    that PDF rather than the stale error.
+
+    **``force_refresh`` never unlinks the PDF** — it drops only the negative
+    entry. A failed refresh therefore leaves the caller with the copy they
+    already had.
+
+    ``extra_fields`` merges constant provenance into every *successful*
+    payload, cached and fresh alike, so a provider that decorates its response
+    (ACL's ``anthology_id`` / ``pdf_url``) cannot have its two branches
+    disagree. Errors are returned undecorated.
+
+    Each caller receives an independent deep copy: single-flight followers
+    share the leader's object, and ``tools/pipeline`` writes
+    ``cascaded_invalidated`` into the dict it gets back.
+    """
+
+    def _decorate(result: dict[str, Any]) -> dict[str, Any]:
+        if extra_fields and "error" not in result:
+            return {**extra_fields, **result}
+        return result
+
+    if force_refresh:
+        cache.invalidate(namespace, entity, canonical)
+    else:
+        hit = cached_hit(dest)
+        if hit is not None:
+            return _decorate(hit)
+        neg = cache.get_negative(namespace, entity, canonical)
+        if neg is not None:
+            return neg
+
+    async def _runner() -> dict[str, Any]:
+        # Re-check inside the slot: a leader for this key may have written the
+        # file (or recorded a definitive failure) while a follower was
+        # suspended at the outer check. Skipped under force_refresh — the
+        # caller wants fresh bytes.
+        if not force_refresh:
+            hit = cached_hit(dest)
+            if hit is not None:
+                return _decorate(hit)
+            neg = cache.get_negative(namespace, entity, canonical)
+            if neg is not None:
+                return neg
+        result = await fetch()
+        if is_definitive_failure(result):
+            cache.put_negative(namespace, entity, canonical, result, ttl_seconds=neg_ttl)
+        return _decorate(result)
+
+    result = await single_flight.do(sf_key if sf_key is not None else canonical, _runner)
+    return copy.deepcopy(result)

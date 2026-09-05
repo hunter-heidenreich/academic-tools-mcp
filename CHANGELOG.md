@@ -54,6 +54,29 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **Open-access PDF downloads are paced at one request per second, per
+  publisher host.** They previously had no inter-start gap at all, on the
+  reasoning that "every URL is a different host" — an assumption, not a fact.
+  The URLs come from OpenAlex, so a reference walk through one journal
+  resolves many DOIs to the same domain, which then got fetched back-to-back
+  at the one provider with no documented budget and no relationship to trade
+  on. `_throttle.Throttle` gained an opt-in `per_host=True` keying the gap by
+  `urlsplit(url).netloc`; only this path uses it, and the seven API clients
+  keep their single global timestamp.
+
+  The gap-lock now **reserves** a caller's start instant and sleeps outside the
+  lock rather than holding it across the sleep. Without that, one host's wait
+  blocks an unrelated host from even computing its own, collapsing the
+  effective rate back to one global gap and making per-host pacing pointless —
+  pinned by a test asserting a fresh host is not delayed behind a paced one.
+  Observable pacing in global mode is unchanged: `asyncio.Lock` is FIFO and
+  reserved starts stay spaced by exactly `min_gap_seconds`.
+
+  `max_concurrent` stays global in both modes. It bounds *our* egress —
+  sockets, file descriptors, and simultaneous in-flight streams, since a PDF
+  download holds its slot for the whole transfer — so a per-host cap would let
+  a 20-publisher walk open 40 parallel streams. ([#68])
+
 - **The keyword search index moved from a single JSON file to SQLite FTS5.**
   The old index held every document's full term-frequency map, in both a
   folded and an un-folded form, and parsed the whole thing into the heap on
@@ -157,6 +180,29 @@ grouped by milestone rather than per commit.
   definitive branch with no flag, so the classifier above could not see it and
   an agent could not tell a dead URL from a blipped one without parsing the
   message. *This is a response-shape change.* ([#65])
+
+- **A PDF that 404s re-hit the upstream on every `download_pdf` call.** Only
+  the open-access path negative-cached its download failures; arXiv, bioRxiv
+  and ACL Anthology cached nothing, so a withdrawn paper or a wrong Anthology
+  ID cost a request every single time an agent retried. All four now share
+  `_pdf_download.cached_download` — the file-artifact sibling of
+  `cache.cached_lookup` — with per-provider TTLs: 1h for the preprint servers,
+  which render PDFs lazily, and 24h for the static CDNs. ([#68])
+
+- **A raced unlink during an ACL download could raise `OSError` out of the
+  tool.** Its two cache-hit branches were hand-copied blocks calling
+  `dest.stat()` outside any `try`, so a concurrent deletion between the
+  usability check and the stat escaped the module's uniform `{error}`
+  contract. Both branches now come from the shared helper — which also makes
+  the `anthology_id` / `pdf_url` provenance identical on the cached and fresh
+  paths by construction rather than by two copies happening to agree. ([#68])
+
+- **Every DOI in a failed OpenAlex batch chunk shared one error object.**
+  `dict.fromkeys(chunk, _parse_error_dict())` put a single dict behind up to 50
+  keys, against `parse_error_dict`'s documented "a new dict each call" and
+  `cached_lookup`'s deep-copy discipline. Nothing was visibly broken — the sole
+  consumer happens to shallow-copy before mutating — but that copy was
+  load-bearing without saying so, and `get_works_batch` is public. ([#68])
 
 - **An imported markdown paper with no headings was reported as having
   sections.** `get_paper_sections` answers `sections_detected: false` when the
@@ -1190,3 +1236,4 @@ grouped by milestone rather than per commit.
 [#65]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/65
 [#66]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/66
 [#67]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/67
+[#68]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/68

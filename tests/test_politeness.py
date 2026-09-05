@@ -293,3 +293,35 @@ class TestStatsAccuracy:
 
 async def _noop_sleep(_seconds):
     return None
+
+
+class TestOaDownloadPacesPerPublisher:
+    """OA URLs are resolved from OpenAlex and point at arbitrary publisher
+    domains. The gap was 0.0, justified as "every URL is a different host" —
+    an assumption, not a fact: a reference walk through one journal resolves
+    many DOIs to the same domain, which then got fetched back-to-back with no
+    pacing at all, at the one provider with no documented budget and no
+    relationship to trade on.
+    """
+
+    def test_paces_per_host_at_no_worse_than_one_per_second(self):
+        assert oa_download._throttle.per_host is True
+        assert oa_download._MIN_REQUEST_GAP >= 1.0
+
+    def test_concurrency_stays_global(self):
+        # max_concurrent bounds *our* egress — sockets, fds, and simultaneous
+        # in-flight streams (stream_to_file holds the slot for the whole
+        # download). Making it per-host would let a 20-publisher walk open 40
+        # parallel streams, however polite that is to each publisher.
+        assert oa_download._MAX_CONCURRENT <= 4
+
+    @pytest.mark.parametrize(
+        ("name", "module"),
+        [(n, m) for n, m in _ALL_CLIENTS if n != "oa_download"],
+    )
+    def test_api_providers_stay_globally_paced(self, name, module):
+        # per_host is for a client whose URLs are not one API. Each of these
+        # talks to exactly one host, where the map would be a dict of size one
+        # — and opting one in would silently widen its documented rate the day
+        # it gained a second hostname.
+        assert module._throttle.per_host is False, f"{name} should not be per-host paced"

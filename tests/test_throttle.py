@@ -162,3 +162,157 @@ async def test_get_threads_retry_attempts_into_get_with_retry(monkeypatch):
 def test_retry_attempts_defaults_to_two():
     """The default is one transparent retry (1 original + 1)."""
     assert _make().retry_attempts == 2
+
+
+# ---------------------------------------------------------------------------
+# Per-host pacing (opt-in)
+# ---------------------------------------------------------------------------
+#
+# For a client whose URLs are not one API. `oa_download` resolves DOIs to
+# arbitrary publisher CDNs, and a reference walk through one journal lands many
+# of them on the same domain — which a single global timestamp either paces far
+# too loosely (gap 0) or paces every unrelated host for (one global gap).
+# Verified here once rather than per provider.
+
+
+@pytest.mark.asyncio
+async def test_per_host_gap_delays_a_repeat_host():
+    t = _make(min_gap_seconds=0.05, per_host=True)
+    start = time.monotonic()
+    async with t.slot("http://a.example/one"):
+        pass
+    async with t.slot("http://a.example/two"):
+        pass
+    # Keyed on netloc, not the whole URL: two paths on one host share pacing.
+    assert time.monotonic() - start >= 0.05
+
+
+@pytest.mark.asyncio
+async def test_per_host_gap_does_not_delay_a_different_host():
+    t = _make(min_gap_seconds=0.20, per_host=True)
+    start = time.monotonic()
+    async with t.slot("http://a.example/one"):
+        pass
+    async with t.slot("http://b.example/one"):
+        pass
+    assert time.monotonic() - start < 0.20
+
+
+@pytest.mark.asyncio
+async def test_global_mode_still_delays_across_hosts():
+    # Pins that the seven API providers did NOT change: with per_host off, two
+    # distinct hosts still pace against one timestamp.
+    t = _make(min_gap_seconds=0.05)
+    start = time.monotonic()
+    async with t.slot("http://a.example/one"):
+        pass
+    async with t.slot("http://b.example/one"):
+        pass
+    assert time.monotonic() - start >= 0.05
+
+
+@pytest.mark.asyncio
+async def test_concurrent_distinct_hosts_do_not_serialise():
+    """The acceptance criterion for the reservation design.
+
+    ``slot`` reserves its start instant under the lock and sleeps outside it.
+    Holding the lock across the sleep instead would make host A's wait block
+    host B's lock acquisition, collapsing the effective rate back to
+    1/min_gap globally — at which point ``per_host`` buys nothing over just
+    setting a global gap. This test fails under that arrangement.
+    """
+    t = _make(max_concurrent=4, min_gap_seconds=0.30, per_host=True)
+
+    # Prime only the slow host, so it owes a full gap while the other is
+    # brand new and owes nothing.
+    async with t.slot("http://slow.example/x"):
+        pass
+
+    latencies: dict[str, float] = {}
+
+    async def touch(host: str) -> None:
+        began = time.monotonic()
+        async with t.slot(f"http://{host}.example/x"):
+            latencies[host] = time.monotonic() - began
+
+    await asyncio.gather(touch("slow"), touch("fresh"))
+
+    # The unrelated host must not queue behind the sleeper. Under
+    # sleep-inside-lock it cannot even compute its own wait until the slow
+    # host's 0.3s sleep releases the shared lock.
+    assert latencies["slow"] >= 0.25
+    assert latencies["fresh"] < 0.10, (
+        f"an unrelated host waited {latencies['fresh']:.2f}s behind a paced one"
+    )
+
+
+@pytest.mark.asyncio
+async def test_netloc_key_is_case_insensitive():
+    # RFC 3986 makes netloc case-insensitive, and OpenAlex-supplied URLs are
+    # inconsistently cased — treating them as two hosts would halve the gap.
+    t = _make(min_gap_seconds=0.05, per_host=True)
+    start = time.monotonic()
+    async with t.slot("http://A.Example/one"):
+        pass
+    async with t.slot("http://a.example/two"):
+        pass
+    assert time.monotonic() - start >= 0.05
+
+
+@pytest.mark.asyncio
+async def test_port_is_part_of_the_host_key():
+    # One host on two ports is two services.
+    t = _make(min_gap_seconds=0.20, per_host=True)
+    start = time.monotonic()
+    async with t.slot("http://a.example:8080/one"):
+        pass
+    async with t.slot("http://a.example:9090/one"):
+        pass
+    assert time.monotonic() - start < 0.20
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_per_host_state():
+    t = _make(min_gap_seconds=0.01, per_host=True)
+    async with t.slot("http://a.example/one"):
+        pass
+    assert t._host_last_start
+
+    t.reset()
+
+    assert t._host_last_start == {}
+    assert t.last_request_time == 0.0
+
+
+@pytest.mark.asyncio
+async def test_host_map_is_bounded_by_the_age_sweep():
+    from academic_tools_mcp._throttle import _MAX_TRACKED_HOSTS
+
+    # gap 0 means every recorded start is instantly older than the window, so
+    # the sweep can drop all of them — the cheap, exact case.
+    t = _make(min_gap_seconds=0.0, per_host=True)
+    for i in range(_MAX_TRACKED_HOSTS + 50):
+        async with t.slot(f"http://h{i}.example/x"):
+            pass
+
+    assert len(t._host_last_start) <= _MAX_TRACKED_HOSTS
+
+
+@pytest.mark.asyncio
+async def test_host_map_is_bounded_even_when_every_entry_is_fresh():
+    # A gap wide enough that nothing has expired: the sweep drops nothing, so
+    # the oldest-first fallback is what has to hold the cap. Those entries are
+    # nearest expiry anyway, so at worst one request starts early.
+    from academic_tools_mcp._throttle import _MAX_TRACKED_HOSTS
+
+    t = _make(min_gap_seconds=3600.0, per_host=True)
+    # Populate directly: taking real slots would sleep for an hour apiece.
+    now = time.monotonic()
+    for i in range(_MAX_TRACKED_HOSTS + 50):
+        t._host_last_start[f"h{i}.example"] = now + i
+    t._prune_hosts(now + _MAX_TRACKED_HOSTS + 50)
+
+    assert len(t._host_last_start) <= _MAX_TRACKED_HOSTS
+    # The newest survive; the oldest are the ones dropped.
+    assert "h0.example" not in t._host_last_start
+    assert f"h{_MAX_TRACKED_HOSTS + 49}.example" in t._host_last_start

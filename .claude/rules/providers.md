@@ -21,6 +21,7 @@ per-provider code: see `_throttle.Throttle` and `cache.cached_lookup` in
 - Each getter is `canonical = canonical_*(id)` → define an async `_fetch()` closure (the HTTP + parse + `cache.put`/`put_negative` body, holding the provider's quirks) → `return await cache.cached_lookup(single_flight=_single_flight, namespace=NAMESPACE, entity="<entity>", canonical=canonical, positive_ttl=_POSITIVE_TTL_SECONDS, fetch=_fetch, force_refresh=force_refresh, sf_key=...)`. `cached_lookup` owns the force_refresh-invalidate, the outer + in-slot cache re-checks, the single-flight coalescing, and the per-caller deep copy — the getter no longer hand-rolls any of it.
 - Pass a tuple `sf_key` when one canonical id has multiple sub-fetches (`("work", canonical)` / `("author", canonical)` for openalex; `("references", canonical)` / `("citations", canonical)` for opencitations); omit it to key on `canonical`.
 - Inside `_fetch`: on definitive 404, write the error dict to negative cache before returning; on a transient parse failure return `_parse_error_dict()` and cache nothing.
+- **The PDF-downloading providers route `download_pdf` through `_pdf_download.cached_download`** the way getters route through `cache.cached_lookup` — see `.claude/rules/infrastructure.md`. Definitive download failures are negative-cached under entity `downloads` in the provider's own namespace; `_NEG_TTL_SECONDS` is the per-provider policy. arxiv and biorxiv reuse their 1h metadata negative TTL (arXiv renders PDFs lazily, so a just-announced paper's PDF can 404 for minutes; bioRxiv is the same "live in an hour" case), acl_anthology declares 24h (static camera-ready CDN — a 404 means a wrong ID or a paper not yet posted). Only `oa_download` cached download failures before; the three native providers cached nothing, so a PDF that 404s re-hit the upstream on every call forever.
 
 **Parsing and encoding hardening — the shared contract.** Every client holds these; the per-provider sections below note only where one differs.
 
@@ -40,7 +41,7 @@ Both `get_work` and `get_author` take `force_refresh`, and `get_author`'s 404 ca
 
 **Limits:** singleton lookups (ID/DOI/ORCID) are free and unlimited. Search (1000/day), List+filter (10000/day), Content download (100/day) are not currently used.
 
-**Batch fetch:** `get_works_batch(dois, *, force_refresh=False)` collapses N cache-miss DOIs into ⌈N/50⌉ HTTP calls via `/works?filter=doi:DOI1|DOI2|...`. Cached entries (positive or negative) are served without a network call. Each fetched work is written to the singleton cache, so a follow-up `get_work(doi)` is a free hit. DOIs requested but missing from the response are negative-cached the same way singleton 404s are. A DOI containing OpenAlex filter metacharacters (`|` = OR, `,` = AND) would corrupt the OR-joined filter, so it is split out and resolved individually through `get_work` (the encoded singleton path) instead. A parse failure or non-dict body on the batch GET maps every DOI in that chunk to a retryable `_parse_error_dict()` (not negative-cached); non-dict items inside `results` are skipped. Used by `server.get_papers_metadata` for reference-graph enrichment.
+**Batch fetch:** `get_works_batch(dois, *, force_refresh=False)` collapses N cache-miss DOIs into ⌈N/50⌉ HTTP calls via `/works?filter=doi:DOI1|DOI2|...`. Cached entries (positive or negative) are served without a network call. Each fetched work is written to the singleton cache, so a follow-up `get_work(doi)` is a free hit. DOIs requested but missing from the response are negative-cached the same way singleton 404s are. A DOI containing OpenAlex filter metacharacters (`|` = OR, `,` = AND) would corrupt the OR-joined filter, so it is split out and resolved individually through `get_work` (the encoded singleton path) instead. A parse failure or non-dict body on the batch GET maps every DOI in that chunk to a retryable `_parse_error_dict()` (not negative-cached); non-dict items inside `results` are skipped. Those per-chunk errors are built **one fresh dict per key** — `dict.fromkeys` aliased a single object across up to 50 keys, so a caller mutating its own error corrupted the other 49. `_fetch_chunk` deliberately does **not** deep-copy its single-flight result the way `cached_lookup` does: per-key freshness removes the aliasing hazard, the works themselves are read-only to every consumer, and copying fifty full work objects per batch to guard a mutation that doesn't happen is the wrong trade. Used by `server.get_papers_metadata` for reference-graph enrichment.
 
 ## arxiv.py
 
@@ -107,7 +108,10 @@ Coverage: all ACL-affiliated venues — ACL, EMNLP, NAACL, EACL, AACL, CoNLL, TA
 Enforced per provider: the inter-start gap, the concurrency cap, the burst cap,
 `Retry-After` (both the delay-seconds **and** the HTTP-date form RFC 9110
 permits — Wikimedia- and Cloudflare-fronted endpoints emit dates), and a
-descriptive `User-Agent`.
+descriptive `User-Agent`. `oa_download` additionally paces **per host**
+(`Throttle(per_host=True)`), because its URLs are publisher CDNs rather than
+one API and a reference walk through a single journal lands many of them on
+one domain.
 
 Two limits are real and deliberately **not** solved. State them rather than
 implying the caps are stronger than they are:
