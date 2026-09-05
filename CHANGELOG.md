@@ -202,6 +202,64 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Four defects a second, per-file audit of `.claude/rules/` turned up in the
+  code itself.** Each surfaced as a rules claim that was wrong because the code
+  was wrong. **Dispatch had forked the DOI regex**: `manual._DOI_RE` was
+  byte-identical to `_doi._DOI_RE` and `resolve_metadata_source` routed on it,
+  leaving `_doi.looks_like_doi` with no caller in `src/` — so the property test
+  added earlier in this branch pinned a symbol nothing used, and editing either
+  pattern would have desynced dispatch from caching. **`import_paper` skipped
+  the sections lock on its PDF branch**, where `manual._invalidate_derived`
+  unlinks the markdown in a worker thread, so a concurrent reader could lose the
+  file between its `exists()` check and its read — `_reparse_sections_locked`'s
+  docstring claims every unlinker holds that lock, and now they do.
+  **`search_cached_papers` returned `canonical_id`s that chained nowhere**: every
+  non-arXiv/bioRxiv/ACL DOI lands in the `manual` namespace, whose filename
+  inversion passed publisher DOIs straight through as
+  `10.1038_s41586-021-03819-2`; the registrant slash is decidable (the registrant
+  is digits only) and percent-escapes are now decoded, which no namespace did.
+  And **Crossref search does not warm what `get_paper_metadata` reads** — it
+  warms the Crossref namespace while `resolve_metadata_source` sends plain DOIs
+  to OpenAlex, so the "free cache hit" promise was wrong in `README.md` and in
+  the `instructions=` string every agent loads. ([#70])
+
+- **A test citation pointing at a class that does not exist, and five smaller
+  doc defects.** `tests/test_manual.py::TestMarkdownImportSectionsIndex` was
+  cited in `papers.py` and in `pipeline.md`; nothing by that name is in the
+  repo. Also `get_with_retry`'s docstring saying "the sleep before attempt *n*"
+  when the sleep runs after it, a comment naming `_INDEX_VERSION` for
+  `_SCHEMA_VERSION`, `search_cached_papers` claiming zero-score hits are dropped
+  when FTS5 never returns them, the `add-provider` skill pointing at
+  `crossref.py` as a template that `python-design.md` calls a counter-example,
+  and a stale "10x its search rate" left in a test docstring. ([#70])
+
+- **A second pass over every `.claude/rules/` file, one reviewer per file,
+  reading each section against the source it covers.** The first audit fixed
+  claims; this one fixed the claims the first audit made *and* the shape of the
+  files. Wrong claims corrected include: `cache.md` calling `cached_lookup` the
+  only home for the force_refresh ordering when `openalex.get_works_batch`
+  open-codes it; `http.md`'s backoff formula off by one against the test that
+  pins it; `pdf-download.md` calling `cached_download` identical to
+  `cached_lookup` when it deliberately skips the in-slot re-check under
+  `force_refresh`; `providers.md` undercounting the unquoted request paths and
+  attributing `_throttled_get` to a PDF-only provider; `python-design.md` citing
+  `follow_published` as a flag that leaves the response shape unchanged, which
+  is the one flag that doesn't; `server.md` naming a shared formatter the batch
+  path bypasses; `utils.md` naming two wrapper functions that don't exist.
+  Mechanism invariants were moved to the module that implements them
+  (`max_pending` to `http.md`, the single-`SingleFlight` deadlock rule to
+  `cache.md`), a circular `utils.md` ↔ `providers.md` cross-reference was cut,
+  and the Crossref rate table that `crossref.py` and `tests/test_politeness.py`
+  both point at now actually exists in `providers.md`. ([#70])
+
+- **Test citations dropped from the rules layer, and the convention amended to
+  match.** `python-design.md` prescribed `(Guarded by tests/…::test_y)` on every
+  invariant; in practice a `::TestClass::test_method` node ID churns faster than
+  the code it guards, and this layer had already shipped one pointing at a class
+  that does not exist. The rules files now state the invariant and what breaks
+  if you violate it. Citing a test in a *code* comment or docstring is still
+  fine — mutate the guarded line and watch it fail first. ([#70])
+
 - **The `.claude/rules/` layer audited section by section against the code it
   describes, and roughly fifty wrong claims corrected.** Each file was read
   beside every source file its `paths:` frontmatter covers. The claims that
