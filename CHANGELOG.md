@@ -13,6 +13,36 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
+## [Unreleased]
+
+### Added
+
+- **Continuous integration.** A GitHub Actions workflow now runs `ruff check`,
+  `ruff format --check`, `mypy`, and the full test suite on every push to `main`
+  and every pull request, against Python 3.11 and 3.13. All four gates were
+  already green locally; CI pins that bar rather than chasing it. ([#47])
+
+### Fixed
+
+- **Tests can no longer write to the real cache or reach the network.** Two
+  autouse fixtures were added to `tests/conftest.py`. The first points
+  `cache._CACHE_ROOT` at each test's private `tmp_path`: 12 of the 28 test
+  modules never patched it themselves, so a single missed monkeypatch wrote
+  into the operator's real `.cache/` (which reaches tens of GB on a working
+  install). The second blocks outbound socket connections to anything but
+  loopback, so a stubbed-out client that is missed fails loudly instead of
+  silently spending polite-pool budget against a live API. Tests that need a
+  different cache layout still override the root; the 52 now-redundant
+  per-test patches were removed. ([#47])
+- **`papers`' module-level conversion state is reset between tests.**
+  `_global_convert_lock`, `_current_conversion`, and `_section_locks` leaked
+  across tests, and only one test module reset them locally. The lock binds to
+  the running event loop the first time it is *contended*, so a stale lock was
+  a latent "bound to a different event loop" failure — masked today only by
+  `convert_pdf`'s `if _global_convert_lock.locked()` short-circuit, which means
+  the lock is never actually contended. That accident is no longer
+  load-bearing. ([#47])
+
 ## [2026.09.04] — 2026-09-04
 
 ### Fixed
@@ -633,3 +663,4 @@ grouped by milestone rather than per commit.
 [#41]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/41
 [#43]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/43
 [#44]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/44
+[#47]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/47
