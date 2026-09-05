@@ -78,6 +78,28 @@ def cached_hit(dest: Path) -> dict[str, Any] | None:
         return None
 
 
+def is_definitive_failure(result: dict[str, Any]) -> bool:
+    """Whether a download result is permanent and paper-intrinsic.
+
+    Only these are worth negative-caching. **This is an allowlist — an explicit
+    ``retryable: False`` and nothing else.** A denylist ("anything not marked
+    retryable") reads as equivalent and is not: ``_http.error_dict`` tags only
+    ``LocalBackpressureError`` with ``retryable``, so a timeout, a 5xx and a 429
+    all arrive carrying no ``retryable`` key at all. Under a denylist every one
+    of them is classified permanent and cached for the full TTL — precisely the
+    failures that resolve themselves on retry.
+
+    A ``MAX_PDF_BYTES`` abort is excluded despite being non-retryable: it is a
+    config choice a cap bump fixes, not a fact about the paper, and caching it
+    would strand the caller behind a stale miss.
+
+    Lives here, beside ``stream_to_file``, because it classifies the error
+    vocabulary that function produces. Keeping the classifier apart from the
+    producer is what let the two drift.
+    """
+    return "error" in result and result.get("retryable") is False and "max_bytes" not in result
+
+
 def resolve_max_pdf_bytes() -> int | None:
     """Resolve the MAX_PDF_BYTES env var.
 
@@ -138,7 +160,7 @@ async def stream_to_file(
 
     Returns ``{path, size_bytes, cached: False}`` on success or a
     structured error dict on failure (transport error, 404, size cap
-    exceeded, not-a-PDF). 404 → ``{error}``. Cap exceeded →
+    exceeded, not-a-PDF). 404 → ``{error, retryable: False}``. Cap exceeded →
     ``{error, retryable: False, max_bytes}``.
     """
     max_bytes = resolve_max_pdf_bytes()
@@ -157,7 +179,14 @@ async def stream_to_file(
     try:
         async with slot_factory(), client.stream("GET", url, timeout=timeout) as response:
             if response.status_code == 404:
-                return {"error": (not_found_message or f"{provider_label}: PDF not found at {url}")}
+                # ``retryable: False`` so ``is_definitive_failure`` can classify
+                # it. Every other definitive branch below already carries the
+                # flag; this one was the outlier, which also left an agent
+                # unable to tell a dead URL from a blipped one.
+                return {
+                    "error": (not_found_message or f"{provider_label}: PDF not found at {url}"),
+                    "retryable": False,
+                }
             if response.status_code >= 400:
                 # Read the body before raising. This is a streaming response, so
                 # its content is not available until aread(); `error_dict` wants

@@ -309,6 +309,59 @@ class TestOaDownload:
         assert _oa_dest().read_bytes() == b"%PDF-1.4 fresh"
 
     @pytest.mark.asyncio
+    async def test_a_transport_error_is_not_negative_cached(self, monkeypatch):
+        """A timeout is not a fact about the paper. It was cached for 24h
+        anyway: the predicate asked ``retryable is not True``, and
+        ``_http.error_dict`` sets ``retryable`` on backpressure alone — so a
+        timeout, a connection error, a 5xx and a 429 all arrived with no
+        ``retryable`` key and were classified permanent."""
+        import httpx
+
+        resolves = 0
+
+        async def counting_get_work(doi, **kwargs):
+            nonlocal resolves
+            resolves += 1
+            return {"best_oa_location": {"pdf_url": "http://x/p.pdf"}}
+
+        monkeypatch.setattr(openalex, "get_work", counting_get_work)
+        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+
+        class ExplodingClient:
+            def stream(self, *_args, **_kwargs):
+                raise httpx.ReadTimeout("boom")
+
+        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: ExplodingClient())
+
+        first = await oa_download.download_pdf(_DOI)
+        assert "error" in first
+        assert "timed out" in first["error"]
+
+        # The second call must re-resolve and re-attempt, not serve a cached
+        # verdict that the paper has no open-access copy.
+        second = await oa_download.download_pdf(_DOI)
+        assert "error" in second
+        assert resolves == 2, "a transient failure was negative-cached"
+
+    @pytest.mark.asyncio
+    async def test_a_definitive_failure_is_still_negative_cached(self, monkeypatch):
+        """The allowlist must not swing the other way: a real "no OA copy"
+        verdict still short-circuits, so a retrying agent doesn't re-resolve
+        OpenAlex on every call."""
+        resolves = 0
+
+        async def counting_get_work(doi, **kwargs):
+            nonlocal resolves
+            resolves += 1
+            return {"open_access": {"is_oa": False, "oa_status": "closed"}}
+
+        monkeypatch.setattr(openalex, "get_work", counting_get_work)
+
+        assert "error" in await oa_download.download_pdf(_DOI)
+        assert "error" in await oa_download.download_pdf(_DOI)
+        assert resolves == 1, "a definitive miss should be served from the negative cache"
+
+    @pytest.mark.asyncio
     async def test_zero_byte_cached_file_is_a_miss(self, monkeypatch):
         # A 0-byte leftover from an interrupted write must not be served as a
         # cache hit — it's re-downloaded like the manual import path does.
