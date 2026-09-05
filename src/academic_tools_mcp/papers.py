@@ -275,10 +275,6 @@ def safe_stem(canonical: str) -> str:
     )
 
 
-# Back-compat alias: this module and its tests grew up with the private name.
-_safe_stem = safe_stem
-
-
 # A stem that already contains only ``safe_stem`` output characters is either
 # native-safe or already migrated. Re-running ``safe_stem`` on it would encode
 # its own ``%`` escapes (``a%20b`` -> ``a%2520b``), so the sweep must test this
@@ -375,7 +371,7 @@ def _make_extraction_dir(canonical: str) -> Path:
     can't collide. The caller is responsible for removing it (``convert_pdf``
     does so in a ``finally``).
     """
-    return Path(tempfile.mkdtemp(prefix=f"pdf-convert-{_safe_stem(canonical)}-"))
+    return Path(tempfile.mkdtemp(prefix=f"pdf-convert-{safe_stem(canonical)}-"))
 
 
 def markdown_checksum(md_path: Path) -> str:
@@ -401,8 +397,8 @@ def sections_key(canonical: str) -> str:
 
 # Per-paper async lock so two concurrent reads of the same paper don't both
 # re-parse the markdown and race to write the sections cache. We cap the
-# dict at ``_SECTION_LOCKS_MAX`` and evict the oldest entries (FIFO via
-# OrderedDict.move_to_end on touch) so a long-running session that touches
+# dict at ``_SECTION_LOCKS_MAX`` and evict least-recently-used first
+# (OrderedDict.move_to_end on touch) so a long-running session that touches
 # thousands of papers doesn't slowly grow this map without bound. Eviction
 # only drops locks that are not currently held — a held lock means a
 # coroutine is mid-section-cache write and dropping it would let a racing
@@ -886,7 +882,8 @@ def store_markdown_and_index(
     ``_reparse_sections_locked`` accepts an entry whose checksum matches, an
     imported heading-free paper was reported to the agent as
     ``sections_detected: true`` — the exact reading ``sections_note`` exists to
-    prevent. (Guarded by tests/test_manual.py::TestMarkdownImportSectionsIndex.)
+    prevent. (Guarded by tests/test_manual.py::TestImportMarkdown::
+    test_cached_sections_carry_every_key_a_conversion_writes.)
 
     ``mode`` is the provenance tag: ``"full"`` / ``"fast"`` for converter
     output, ``"imported"`` for a pre-converted file that never ran through one.

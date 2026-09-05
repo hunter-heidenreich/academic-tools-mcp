@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **A `Known upstream limitations` section in the README.** OpenAlex drops or
+  mangles diacritics in author names, reports an author's *current* affiliation
+  rather than their affiliation at publication time, and arXiv and the published
+  DOI can list different author sets for the same work. These are properties of
+  the upstream providers, but until now they were written down only in
+  `CLAUDE.md` — a file users don't read — so anyone citing a result had no way
+  to know which fields to double-check. ([#73])
+
 - **Tool-layer tests for the three MCP tools that had none, and a CI coverage
   floor to stop it recurring.** `get_paper_references_count`, `search_wikipedia`
   and `get_wikipedia_summary` were untested — the only occurrence of
@@ -193,6 +201,118 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **Four defects a second, per-file audit of `.claude/rules/` turned up in the
+  code itself.** Each surfaced as a rules claim that was wrong because the code
+  was wrong. **Dispatch had forked the DOI regex**: `manual._DOI_RE` was
+  byte-identical to `_doi._DOI_RE` and `resolve_metadata_source` routed on it,
+  leaving `_doi.looks_like_doi` with no caller in `src/` — so the property test
+  added earlier in this branch pinned a symbol nothing used, and editing either
+  pattern would have desynced dispatch from caching. **`import_paper` skipped
+  the sections lock on its PDF branch**, where `manual._invalidate_derived`
+  unlinks the markdown in a worker thread, so a concurrent reader could lose the
+  file between its `exists()` check and its read — `_reparse_sections_locked`'s
+  docstring claims every unlinker holds that lock, and now they do.
+  **`search_cached_papers` returned `canonical_id`s that chained nowhere**: every
+  non-arXiv/bioRxiv/ACL DOI lands in the `manual` namespace, whose filename
+  inversion passed publisher DOIs straight through as
+  `10.1038_s41586-021-03819-2`; the registrant slash is decidable (the registrant
+  is digits only) and percent-escapes are now decoded, which no namespace did.
+  And **Crossref search does not warm what `get_paper_metadata` reads** — it
+  warms the Crossref namespace while `resolve_metadata_source` sends plain DOIs
+  to OpenAlex, so the "free cache hit" promise was wrong in `README.md` and in
+  the `instructions=` string every agent loads. ([#73])
+
+- **A test citation pointing at a class that does not exist, and five smaller
+  doc defects.** `tests/test_manual.py::TestMarkdownImportSectionsIndex` was
+  cited in `papers.py` and in `pipeline.md`; nothing by that name is in the
+  repo. Also `get_with_retry`'s docstring saying "the sleep before attempt *n*"
+  when the sleep runs after it, a comment naming `_INDEX_VERSION` for
+  `_SCHEMA_VERSION`, `search_cached_papers` claiming zero-score hits are dropped
+  when FTS5 never returns them, the `add-provider` skill pointing at
+  `crossref.py` as a template that `python-design.md` calls a counter-example,
+  and a stale "10x its search rate" left in a test docstring. ([#73])
+
+- **A second pass over every `.claude/rules/` file, one reviewer per file,
+  reading each section against the source it covers.** The first audit fixed
+  claims; this one fixed the claims the first audit made *and* the shape of the
+  files. Wrong claims corrected include: `cache.md` calling `cached_lookup` the
+  only home for the force_refresh ordering when `openalex.get_works_batch`
+  open-codes it; `http.md`'s backoff formula off by one against the test that
+  pins it; `pdf-download.md` calling `cached_download` identical to
+  `cached_lookup` when it deliberately skips the in-slot re-check under
+  `force_refresh`; `providers.md` undercounting the unquoted request paths and
+  attributing `_throttled_get` to a PDF-only provider; `python-design.md` citing
+  `follow_published` as a flag that leaves the response shape unchanged, which
+  is the one flag that doesn't; `server.md` naming a shared formatter the batch
+  path bypasses; `utils.md` naming two wrapper functions that don't exist.
+  Mechanism invariants were moved to the module that implements them
+  (`max_pending` to `http.md`, the single-`SingleFlight` deadlock rule to
+  `cache.md`), a circular `utils.md` ↔ `providers.md` cross-reference was cut,
+  and the Crossref rate table that `crossref.py` and `tests/test_politeness.py`
+  both point at now actually exists in `providers.md`. ([#73])
+
+- **Test citations dropped from the rules layer, and the convention amended to
+  match.** `python-design.md` prescribed `(Guarded by tests/…::test_y)` on every
+  invariant; in practice a `::TestClass::test_method` node ID churns faster than
+  the code it guards, and this layer had already shipped one pointing at a class
+  that does not exist. The rules files now state the invariant and what breaks
+  if you violate it. Citing a test in a *code* comment or docstring is still
+  fine — mutate the guarded line and watch it fail first. ([#73])
+
+- **The `.claude/rules/` layer audited section by section against the code it
+  describes, and roughly fifty wrong claims corrected.** Each file was read
+  beside every source file its `paths:` frontmatter covers. The claims that
+  would have talked a reader into breaking working code:
+
+  `cache.md` said every `_singleflight.do` call routes through `cached_lookup`
+  and is therefore deep-copied — `openalex._fetch_chunk` calls it directly and
+  skips the copy on purpose. `pipeline.md` said `store_markdown_and_index()` is
+  the only place a sections-cache entry is assembled; there are three writers,
+  and the paragraph's stated consequence contradicted the same file six lines
+  down. `http.md` called the per-host map sweep "exact rather than heuristic",
+  which describes one of `_prune_hosts`' two branches and argues the other —
+  the one a test exists for — is dead code. `providers.md` said a DOI missing
+  from a batch response is negative-cached like a singleton 404, omitting the
+  `trustworthy` gate that keeps a truncated page from poisoning a live DOI for
+  the full TTL. `python-design.md` cited hypothesis property tests for
+  `lower_with_map` offsets and BibTeX escaping that do not exist, so an agent
+  reading it would believe those invariants were already pinned. `server.md`
+  described `_escape_doi` as handling four characters with no backslash
+  mangling — it handles ten including `\` — and phrased the `source="auto"`
+  page-1 restriction as advice when it is a hard error. `utils.md` called
+  `config.get` the only accessor, which would have an agent remove the
+  deliberate `os.environ` seam in `_stats`. `pdf-download.md` enumerated
+  `stream_to_file`'s error vocabulary without the `retryable: True` empty-body
+  branch, the exact case its allowlist exists to protect.
+
+  The same audit corrected the source comments the files had drifted from:
+  two referencing `cache.has`, deleted earlier in this branch; `crossref.py`'s
+  "10x its search rate" (it is 3x); `arxiv.py`'s positive-TTL comment claiming
+  the canonical key strips the version suffix, which the function twenty lines
+  below explicitly does not; `get_with_retry`'s "any 5xx", against an explicit
+  allowlist; a sections-lock comment calling an LRU a FIFO; `_stats`' wiring
+  list and `snapshot()` / `get_server_stats` docstrings, all three of which
+  omitted `cache_write_failures`; and three past-tense rationales rewritten as
+  the invariant they were hiding. ([#73])
+
+- **The rules files trimmed by ~11% overall, and re-scoped where the split was
+  wrong.** The dominant cost was prose restating the docstring of the module
+  the file loads for — a rules file loads *because* you opened that module, so
+  its docstrings are already on screen. `oa_download.py` moved from
+  `pipeline.md` to `pdf-download.md`, whose protocol it uses and whose guidance
+  it could not previously see; `python-design.md` now also loads when a rules
+  file itself is edited, since its three anti-rot conventions are what govern
+  them. `http.md` had stated "policy lives in `providers.md`, not here" and
+  then carried three paragraphs of provider policy; that is now consistent.
+  ([#73])
+
+- **`_doi`'s load-bearing ordering invariant is now guarded.** `normalize`
+  strips the `doi:` prefix *before* the URL handling because
+  `"doi:https://doi.org/10.x/y"` occurs in the wild, but the property test's
+  spelling list covered the prefix and the URL only separately. Both nested
+  forms are now in it, mutation-verified: reordering the two steps fails the
+  test. ([#73])
 
 - **A transient network failure during an open-access PDF download was cached
   as permanent for 24 hours.** `_is_definitive_failure` asked
@@ -1273,3 +1393,4 @@ grouped by milestone rather than per commit.
 [#67]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/67
 [#68]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/68
 [#69]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/69
+[#73]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/73

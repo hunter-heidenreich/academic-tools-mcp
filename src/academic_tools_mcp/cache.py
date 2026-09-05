@@ -27,9 +27,9 @@ def _resolve_cache_root() -> Path:
 
 # Default cache root lives next to the project unless CACHE_DIR overrides it.
 #
-# Growth: the cache has NO global size or count bound. Bounding happens two
-# ways only — on-read TTL eviction (``get(..., max_age_seconds=N)`` unlinks
-# over-age entries) and the orphan ``.tmp`` sweep below. Entries that are
+# Growth: the cache has NO global size or count bound. The only eviction is
+# on-read TTL (``get(..., max_age_seconds=N)`` unlinks over-age entries); the
+# orphan ``.tmp`` sweep below bounds leakage, not size. Entries that are
 # never re-read with a ``max_age_seconds`` therefore persist indefinitely;
 # operators prune ``.cache/`` manually if it grows too large.
 _CACHE_ROOT = _resolve_cache_root()
@@ -359,12 +359,6 @@ def put(namespace: str, entity: str, identifier: str, data: dict[str, Any]) -> b
         _stats.incr(namespace, "cache_write_failures")
         return False
     return True
-
-
-def has(namespace: str, entity: str, identifier: str) -> bool:
-    """Check if a cached response exists."""
-    path = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
-    return path.exists()
 
 
 # ---------------------------------------------------------------------------

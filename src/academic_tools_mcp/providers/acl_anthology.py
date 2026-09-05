@@ -150,12 +150,12 @@ def pdf_url(anthology_id: str) -> str:
 def _pdf_filename(anthology_id: str) -> str:
     """Build a filesystem/shell-safe PDF filename from an Anthology ID.
 
-    Routes through ``papers._safe_stem`` (same as the manual import path) so
+    Routes through ``papers.safe_stem`` (same as the manual import path) so
     the filename — which reaches the ``bash -c`` converter — can't carry shell
     metacharacters. Real Anthology IDs are ``[A-Za-z0-9.-]`` only, so they map
     to the same name as before (no cache migration); ``/`` still folds to ``_``.
     """
-    return papers._safe_stem(anthology_id) + ".pdf"
+    return papers.safe_stem(anthology_id) + ".pdf"
 
 
 def pdf_path(doi: str) -> Path:

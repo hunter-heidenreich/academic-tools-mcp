@@ -18,6 +18,14 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 
 All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry honouring `Retry-After`, and definitive 404s are negative-cached (24h; 1h for arXiv/bioRxiv, whose identifiers go live mid-session) so retry-happy agents don't burn rate budget on guaranteed misses.
 
+## Known upstream limitations
+
+These are properties of the upstream providers rather than of this server, which does not attempt to paper over them. Treat them as caveats when citing a result.
+
+- **Diacritics are dropped or mangled** in OpenAlex author names (`Alan Aspuru-Guzik` for `Alán Aspuru-Guzik`). Verify spellings against the publisher's page before quoting a name.
+- **Affiliations are current, not paper-time.** OpenAlex reports where an author works *now*, not where they were when the paper was published — the gap widens for older papers.
+- **Preprint and published author lists diverge.** arXiv and the published DOI can list different author sets for the same work. `get_paper_metadata(doi, follow_published=True)` chains a bioRxiv preprint to its journal version, but only once OpenAlex has indexed that version; until then the response carries `followed_published: false` so you can tell you are looking at preprint-era metadata.
+
 ## Setup
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
@@ -133,7 +141,7 @@ Every tool above except `search_cached_papers` (which takes a query, not a paper
 | `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from whichever has more; pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
 | `get_paper_citations_count` | Number of incoming citations (OpenCitations) |
 | `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
-| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); each hit warms the works cache so a follow-up `get_paper_metadata(doi)` is free |
+| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); each hit warms the Crossref works cache, so a follow-up `get_paper_references(doi, source="crossref")` is free |
 
 For citations, follow the **count-then-page** pattern: call `get_paper_citations_count` first to see the total, then page through with `page` and `page_size`. For references the `source="auto"` default does the survey for you on the first call. Paginated responses include `_source` (on references) and `has_more` so agents know which shape to expect and when to stop. This prevents token blowouts on papers with long bibliographies or many citations.
 

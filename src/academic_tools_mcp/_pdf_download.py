@@ -182,10 +182,10 @@ async def stream_to_file(
     try:
         async with slot_factory(), client.stream("GET", url, timeout=timeout) as response:
             if response.status_code == 404:
-                # ``retryable: False`` so ``is_definitive_failure`` can classify
-                # it. Every other definitive branch below already carries the
-                # flag; this one was the outlier, which also left an agent
-                # unable to tell a dead URL from a blipped one.
+                # Invariant: every definitive branch carries
+                # ``retryable: False`` so ``is_definitive_failure`` can
+                # classify it and an agent can tell a dead URL from a
+                # blipped one.
                 return {
                     "error": (not_found_message or f"{provider_label}: PDF not found at {url}"),
                     "retryable": False,

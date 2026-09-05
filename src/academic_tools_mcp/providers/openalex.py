@@ -98,8 +98,9 @@ def _build_params() -> dict[str, str]:
 def _build_headers() -> dict[str, str]:
     """Build the User-Agent header for OpenAlex's polite pool.
 
-    Falls back to a generic UA when no mailto is configured. Without a
-    mailto, OpenAlex still serves requests but at the public-pool rate.
+    The descriptive UA is sent either way; the mailto is what joins the
+    polite pool. Without one, OpenAlex still serves requests at the
+    public-pool rate.
     """
     return _useragent.headers(config.get("OPENALEX_MAILTO"))
 
@@ -265,9 +266,14 @@ _BATCH_CHUNK_SIZE = 50
 def _canonical_from_response_doi(work_doi: str | None) -> str | None:
     """Return the canonical lowercase bare DOI from an OpenAlex work doi.
 
-    OpenAlex returns DOIs as ``https://doi.org/10.1234/foo``; we cache
-    by bare lowercase form. Used to map batch responses back to the
-    canonical keys we asked for.
+    OpenAlex returns DOIs as ``https://doi.org/10.1234/foo``; we cache by
+    bare lowercase form. Used to map batch responses back to the canonical
+    keys we asked for.
+
+    Deliberately *not* ``_doi.canonical``: that strips a ``doi.org`` URL only
+    when the path matches its DOI shape, so a registrant it does not
+    recognise would come back as the full URL and fail to match the key we
+    asked for. This side must strip unconditionally.
     """
     if not work_doi:
         return None

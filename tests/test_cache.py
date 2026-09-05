@@ -22,13 +22,6 @@ def test_get_miss(tmp_path, monkeypatch):
     assert cache.get("openalex", "works", "nonexistent") is None
 
 
-def test_has(tmp_path, monkeypatch):
-    assert cache.has("openalex", "works", "10.1234/test") is False
-
-    cache.put("openalex", "works", "10.1234/test", {"title": "Test"})
-    assert cache.has("openalex", "works", "10.1234/test") is True
-
-
 def test_namespacing(tmp_path, monkeypatch):
     cache.put("openalex", "works", "key1", {"source": "openalex"})
     cache.put("arxiv", "papers", "key1", {"source": "arxiv"})

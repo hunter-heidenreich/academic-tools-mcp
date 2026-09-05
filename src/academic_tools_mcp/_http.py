@@ -191,11 +191,10 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
             }
             retry_after = _retry_after_seconds(exc.response)
             if retry_after is not None:
-                # Clamp before handing it to the agent. The internal retry
-                # path has honoured a _MAX_RETRY_AFTER_SECONDS ceiling all
-                # along, but this surfaced the raw header — so a
-                # misconfigured "Retry-After: 86400" told the agent to wait a
-                # day, contradicting the ceiling ten lines below.
+                # Invariant: the hint we hand the agent honours the same
+                # _MAX_RETRY_AFTER_SECONDS ceiling as the internal retry path,
+                # so a misconfigured "Retry-After: 86400" can't tell the agent
+                # to wait a day. Change one, change both.
                 result["retry_after_seconds"] = min(retry_after, _MAX_RETRY_AFTER_SECONDS)
             return result
         if 500 <= status < 600:
@@ -249,10 +248,10 @@ async def get_with_retry(
 ) -> httpx.Response:
     """Issue a GET with transparent retries on transient failure.
 
-    Transient = httpx network/timeout exception, 408/425/429, or any 5xx
-    response. All other outcomes (200, 4xx other than the above) are
-    returned as-is on the first attempt — the caller's ``raise_for_status``
-    or status-code branch handles them.
+    Transient = httpx network/timeout exception, or a status in
+    ``_RETRYABLE_STATUSES`` — an explicit allowlist, *not* every 5xx. All
+    other outcomes are returned as-is on the first attempt; the caller's
+    ``raise_for_status`` or status-code branch handles them.
 
     On 429 (and 503) we honour ``Retry-After`` when present. The actual
     sleep is ``min(max(Retry-After, effective_backoff), _MAX_RETRY_AFTER_SECONDS)``,
@@ -261,8 +260,9 @@ async def get_with_retry(
     provider's own throttle gap (``backoff_seconds`` is the floor), and a
     misconfigured ``Retry-After: 86400`` can't pin our throttle for hours.
 
-    Backoff grows exponentially across attempts: the sleep before attempt
-    *n* uses ``backoff_seconds * 2**(n-1)``. At the default ``max_attempts=2``
+    Backoff grows exponentially across attempts: the sleep *after* a failed
+    attempt *n* uses ``backoff_seconds * 2**(n-1)``, so the first retry
+    waits exactly ``backoff_seconds``. At the default ``max_attempts=2``
     only one sleep ever happens (factor ``2**0 = 1``), so single-retry
     providers are unchanged. A provider that opts into more attempts — e.g.
     arXiv, whose Fastly edge returns 429/503 with **no** ``Retry-After`` when
