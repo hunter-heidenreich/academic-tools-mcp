@@ -1,3 +1,5 @@
+"""Crossref client. Title search and metadata, with a tighter pace for search."""
+
 import asyncio
 import time
 from typing import Any
@@ -91,7 +93,7 @@ def _build_headers() -> dict[str, str]:
     return _useragent.headers(config.get("CROSSREF_MAILTO"))
 
 
-def _get_client():
+def _get_client() -> httpx.AsyncClient:
     """Return the persistent AsyncClient for Crossref calls.
 
     The polite-pool User-Agent header is baked into the client at
@@ -131,7 +133,7 @@ def reset_search_pacing() -> None:
     left over from a previous loop raises "bound to a different event loop".
     Mirrors ``Throttle.reset``.
     """
-    global _search_lock, _last_search_time
+    global _search_lock, _last_search_time  # noqa: PLW0603 — process-wide search throttle
     _search_lock = asyncio.Lock()
     _last_search_time = 0.0
 
@@ -140,7 +142,7 @@ async def _throttled_search_get(
     client: httpx.AsyncClient, url: str, **kwargs: Any
 ) -> httpx.Response:
     """Execute a search GET, honouring Crossref's tighter search rate limit."""
-    global _last_search_time
+    global _last_search_time  # noqa: PLW0603 — process-wide search throttle
     async with _search_lock:
         elapsed = time.monotonic() - _last_search_time
         if _last_search_time > 0 and elapsed < _SEARCH_REQUEST_GAP:

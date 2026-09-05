@@ -1156,7 +1156,7 @@ class TestFetchSourceDispatch:
             return {"error": "boom"}
 
         monkeypatch.setattr(openalex, "get_work", fake)
-        source, cid, obj = await paper._fetch_source("10.1234/x")
+        source, _, obj = await paper._fetch_source("10.1234/x")
         assert source == "openalex"
         assert obj == {"error": "boom"}  # no suggestion attached by _fetch_source
 

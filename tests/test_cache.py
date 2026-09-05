@@ -270,7 +270,7 @@ def test_concurrent_writers_dont_corrupt_file(tmp_path, monkeypatch):
         try:
             for _ in range(20):
                 cache.put("ns", "ent", "shared", {"writer": i, "payload": "x" * 500})
-        except BaseException as e:  # pragma: no cover - surfaced via assert
+        except BaseException as e:  # noqa: BLE001 # pragma: no cover - surfaced via assert
             errors.append(e)
 
     threads = [threading.Thread(target=writer, args=(i,)) for i in range(8)]

@@ -367,9 +367,14 @@ async def get_papers_metadata(
     async def _singleton_one(slot: int, ident: str) -> None:
         # arXiv / bioRxiv fetch as concurrent singletons. The dispatch loop
         # routes OpenAlex to the batch and unknown ids never reach here, so
-        # _fetch_source resolves to a real provider (assert documents that).
+        # _fetch_source always resolves to a real provider.
         source, canonical, obj = await _fetch_source(ident, force_refresh=force_refresh)
-        assert source is not None
+        if source is None:
+            # Unreachable through the loop below; if it ever happens, obj is
+            # already the unknown-identifier error, so pass it straight out
+            # instead of indexing _METADATA_HINT_BY_SOURCE with None.
+            results[slot] = {"_input": ident, **obj}
+            return
         if "error" in obj:
             results[slot] = {
                 "_input": ident,

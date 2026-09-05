@@ -406,7 +406,7 @@ async def search_cached_papers(
     # with HTTP fetches and we shouldn't starve those.
     # One hop, not two: `search` refreshes the index, so `unindexable` reads
     # the same warm state and skips its own corpus walk.
-    def _search_and_diagnose():
+    def _search_and_diagnose() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         hits = cache_search.search(
             query,
             top_k=top_k,

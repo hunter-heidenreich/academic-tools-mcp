@@ -1,5 +1,8 @@
+"""arXiv client: Atom search and metadata, keyed by canonical (versionless) ID."""
+
 import re
 import xml.etree.ElementTree as ET
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
 
@@ -107,7 +110,7 @@ _throttle = Throttle(
 )
 
 
-def _request_slot(url: str):
+def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
     """arXiv's rate-limit slot (see ``Throttle.slot``).
 
     Kept as a module-level wrapper so the streaming PDF download's

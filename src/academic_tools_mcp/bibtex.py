@@ -1,3 +1,5 @@
+"""BibTeX rendering: citation keys, name formatting and LaTeX escaping."""
+
 import re
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -65,15 +67,20 @@ _ORG_RE = re.compile(
 
 
 def _fold_translit(s: str) -> str:
-    """ASCII-fold for key generation: transliterate non-decomposables, then
-    NFKD-fold to strip diacritics. Case preserved (callers lowercase)."""
+    """ASCII-fold a string for citation-key generation.
+
+    Transliterates non-decomposables, then NFKD-folds to strip diacritics.
+    Case is preserved (callers lowercase).
+    """
     return fold(s.translate(_TRANSLIT))
 
 
 def _key_token(s: str) -> str:
-    """Reduce a string to a BibTeX-key-safe token: ASCII-folded, lowercased,
-    stripped to ``[a-z0-9]`` (drops apostrophes, hyphens, periods, spaces, and
-    any surviving non-ASCII)."""
+    """Reduce a string to a BibTeX-key-safe token.
+
+    ASCII-folded, lowercased and stripped to ``[a-z0-9]`` — apostrophes,
+    hyphens, periods, spaces and any surviving non-ASCII all go.
+    """
     return re.sub(r"[^a-z0-9]", "", _fold_translit(s).lower())
 
 
@@ -182,8 +189,7 @@ def _escape_bibtex(s: str) -> str:
     for ch, repl in _ESCAPE_SIMPLE.items():
         s = s.replace(ch, repl)
     s = s.replace("~", r"\textasciitilde{}")
-    s = s.replace("^", r"\textasciicircum{}")
-    return s
+    return s.replace("^", r"\textasciicircum{}")
 
 
 # Per-character escapes for DOI suffixes. A single pass avoids the ordering

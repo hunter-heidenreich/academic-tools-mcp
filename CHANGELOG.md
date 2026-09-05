@@ -62,6 +62,18 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **The ruff rule set went from 8 rule families to 38.** Every added rule is one
+  the codebase already satisfied or was made to satisfy here, so each is a
+  ratchet against regressions rather than a backlog; `ANN`/`D`/`S` hold for
+  `src/` only, since `tests/` is ~2k bare asserts and undocumented fixtures by
+  design. The visible effects on the code: 15 `try`/`except`/`pass` blocks became
+  `contextlib.suppress`, 16 private helpers gained return annotations, and 8
+  modules and 3 packages gained docstrings. Every entry in `ignore` now carries
+  the reason it is there, and the one-off exceptions (`crossref`'s
+  search-throttle globals, the f-string FTS query, one async `timeout`
+  parameter) carry a per-site `noqa` instead, so new occurrences still get
+  flagged. ([#74])
+
 - **Open-access PDF downloads are paced at one request per second, per
   publisher host.** They previously had no inter-start gap at all, on the
   reasoning that "every URL is a different host" — an assumption, not a fact.
@@ -201,6 +213,14 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **`get_papers_metadata` no longer depends on an `assert` for a correctness
+  guard.** The arXiv/bioRxiv fan-out asserted that its identifier resolved to a
+  real provider; under `python -O` that assert is stripped, and a `None` source
+  would have fallen into a hint lookup as an opaque `KeyError` instead of an
+  error an agent can read. The path is unreachable through the dispatch loop
+  either way — but it is now an explicit guard that passes through the
+  unknown-identifier error `_fetch_source` already returns. ([#74])
 
 - **Four defects a second, per-file audit of `.claude/rules/` turned up in the
   code itself.** Each surfaced as a rules claim that was wrong because the code
@@ -1394,3 +1414,4 @@ grouped by milestone rather than per commit.
 [#68]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/68
 [#69]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/69
 [#73]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/73
+[#74]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/74

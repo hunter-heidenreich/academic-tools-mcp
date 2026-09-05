@@ -66,7 +66,7 @@ def _headers() -> dict[str, str]:
     return {"User-Agent": _build_user_agent()}
 
 
-def _get_client():
+def _get_client() -> httpx.AsyncClient:
     """Return the persistent AsyncClient for Wikipedia calls.
 
     The User-Agent header (with mailto when configured) is baked in at

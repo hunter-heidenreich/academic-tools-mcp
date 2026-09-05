@@ -43,25 +43,12 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/academic_tools_mcp"]
 
-# --- Test runner ---------------------------------------------------------------
-# There was no pytest configuration at all; these pin what was previously
-# implicit defaults so an upstream change can't move them silently.
-#
-# The coverage floor is deliberately NOT in `addopts`. Applied to every
-# invocation it also applies to `pytest tests/test_bibtex.py` — a workflow the
-# README documents — which reports ~23% and fails. It lives in the CI step,
-# where the whole suite always runs.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Strict is pytest-asyncio's default today, but it is the reason every async
-# test carries an explicit @pytest.mark.asyncio. Pin it rather than inherit it.
 asyncio_mode = "strict"
-
-# --- Lint / format / type-check ------------------------------------------------
-# Style is enforced by tooling, not by rules prose: ruff formats + lints, mypy
-# type-checks. The .claude/rules/ files carry *design* judgment (layering,
-# single-responsibility contracts) that a linter can't express. See
-# .claude/rules/python-design.md.
+# The coverage floor lives in the CI step, not `addopts`: applied to every
+# invocation it also fails `pytest tests/test_bibtex.py`, a workflow the README
+# documents.
 
 [tool.ruff]
 line-length = 100
@@ -69,25 +56,48 @@ target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-# Conservative, high-signal set: pyflakes (F), pycodestyle (E/W), isort (I),
-# pyupgrade (UP), flake8-bugbear (B), flake8-comprehensions (C4), flake8-simplify
-# (SIM). E501 is off — the formatter wraps code; long docstrings/URLs are fine.
-select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
-# E501: formatter wraps code; long docstrings/URLs are fine.
-# SIM105 (contextlib.suppress) / SIM108 (force ternary): readability-subjective
-# and fight this codebase's deliberate try/except/pass + explicit if/else style.
-ignore = ["E501", "SIM105", "SIM108"]
+# Every selected rule already passes, so each is a ratchet, not a backlog.
+# ANN/D/S hold for `src` only — see per-file-ignores; tests are ~2k bare asserts
+# and undocumented fixtures by design. Left out on purpose: TID252 (intra-package
+# relative imports are the house style), PLC0415 (lazy imports keep optional/slow
+# deps off the import path), PLR2004 + PLR09xx, EM/TRY003, FBT (these bools are
+# the MCP tool signatures agents call), COM812/Q (the formatter's job).
+select = [
+    "A", "ANN", "ASYNC", "B", "BLE", "C4", "D", "DTZ", "E", "EXE", "F", "FA",
+    "FLY", "FURB", "G", "I", "ICN", "INT", "ISC", "LOG", "N", "PGH", "PIE", "PLE",
+    "PLW", "PTH", "RET", "RSE", "RUF", "S", "SIM", "SLOT", "T10", "T20", "TC",
+    "UP", "W", "YTT",
+]
+ignore = [
+    "ANN401",   # **kwargs on the provider fetchers is genuinely dynamic
+    "ASYNC240", # sync local-FS Path calls in async defs are deliberate; no trio/anyio here
+    "D403",     # would "fix" arXiv/bioRxiv to ArXiv/BioRxiv
+    "E501",     # the formatter wraps code; long docstrings/URLs are fine
+    "ISC001",   # conflicts with the formatter
+    "PTH105",   # os.replace is the named guarantee in README + .claude/rules, not a stylistic slip
+    "RUF001",   # ambiguous unicode is the domain here: author diacritics
+    "RUF002",
+    "RUF003",
+    "SIM108",   # long ternaries read worse than the explicit if/else
+    "TC001",    # TC001-003 want imports deferred into TYPE_CHECKING blocks. httpx is
+    "TC002",    # loaded at runtime by _clients regardless and the rest is stdlib, so
+    "TC003",    # it buys no import time. The rest of TC guards the blocks themselves.
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-# Tests lean on fixtures and broad asserts; relax bugbear there.
-"tests/**" = ["B011"]
+"tests/**" = ["ANN", "B011", "D", "S"]
+# Both write to stderr on purpose: stdout is the JSON-RPC channel.
+"src/academic_tools_mcp/_fast_extract.py" = ["T201"]
+"src/academic_tools_mcp/_stats.py" = ["T201"]
 
 [tool.mypy]
 python_version = "3.11"
 files = ["src/academic_tools_mcp"]
-# Pragmatic, not strict: this is an existing untyped-in-places codebase, so we
-# check what's annotated and ignore third-party stubs rather than gate the whole
-# tree. Tighten incrementally.
+# Pragmatic, not strict: check what's annotated, ignore third-party stubs.
+# Tighten incrementally.
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_redundant_casts = true

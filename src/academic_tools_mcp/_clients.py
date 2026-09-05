@@ -15,6 +15,7 @@ sockets close cleanly on shutdown.
 """
 
 import asyncio
+import contextlib
 from typing import Any
 
 import httpx
@@ -99,13 +100,10 @@ async def aclose_all() -> None:
         return
 
     async def _close(client: httpx.AsyncClient) -> None:
-        try:
+        # Shutdown is best-effort; one stuck client must not stop the others.
+        # asyncio.CancelledError is a BaseException and so propagates, which is
+        # correct — a cancelled shutdown should not be silently completed.
+        with contextlib.suppress(Exception):
             await asyncio.wait_for(client.aclose(), timeout=_ACLOSE_TIMEOUT_SECONDS)
-        except Exception:
-            # Shutdown is best-effort; one stuck client must not stop the
-            # others. asyncio.CancelledError is a BaseException and so
-            # propagates, which is correct — a cancelled shutdown should not
-            # be silently completed.
-            pass
 
     await asyncio.gather(*(_close(c) for c in clients))

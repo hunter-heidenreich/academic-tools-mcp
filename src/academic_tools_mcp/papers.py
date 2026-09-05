@@ -19,6 +19,7 @@ on the next call.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import os
 import re
@@ -352,14 +353,10 @@ async def _kill_process_group(proc: "asyncio.subprocess.Process") -> None:
     """
     if proc.returncode is not None:
         return
-    try:
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
-    try:
+    with contextlib.suppress(TimeoutError, ProcessLookupError):
         await asyncio.wait_for(proc.wait(), timeout=5.0)
-    except (TimeoutError, ProcessLookupError):
-        pass
 
 
 def _make_extraction_dir(canonical: str) -> Path:
@@ -470,15 +467,16 @@ _SUB_LEVEL: int = 3
 
 
 class Section:
-    """One section's span in a markdown document.
+    r"""One section's span in a markdown document.
 
     ``start``/``end`` are line indices into ``markdown.split("\n")``; the
     heading line itself is excluded, so ``lines[start:end]`` is the body.
     """
 
-    __slots__ = ("title", "start", "end", "h3s")
+    __slots__ = ("end", "h3s", "start", "title")
 
     def __init__(self, title: str, start: int, end: int, h3s: list[str]) -> None:
+        """Bind the heading title, its body span and any h3 subheadings."""
         self.title = title
         self.start = start
         self.end = end
@@ -602,7 +600,7 @@ def find_in_markdown(
     whole_words: bool = False,
     normalize: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Scan markdown for occurrences of ``query`` and return per-hit context.
+    r"""Scan markdown for occurrences of ``query`` and return per-hit context.
 
     Each hit carries the section title, section index (matching what
     ``get_paper_section`` exposes), the character offset within that
@@ -846,10 +844,10 @@ async def _reparse_sections_locked(
 async def get_or_parse_sections(
     namespace: str, canonical: str, *, force_refresh: bool = False
 ) -> dict[str, Any] | None:
-    """Public sections accessor: read the cache, re-parsing the markdown if the
-    section index is missing or its checksum drifted.
+    """Public sections accessor: read the cache, re-parsing when it drifted.
 
-    Acquires the per-paper ``sections_lock`` and delegates to
+    Re-parses the markdown if the section index is missing or its checksum
+    no longer matches. Acquires the per-paper ``sections_lock`` and delegates to
     ``_reparse_sections_locked``. Returns the sections payload
     (``{sections, markdown_checksum, conversion_mode}``) or ``None`` when the
     paper isn't converted (no markdown on disk). ``force_refresh=True`` drops
@@ -1175,7 +1173,7 @@ async def convert_pdf(
         return _busy_error(pdf_size_mb)
 
     async with _global_convert_lock:
-        global _current_conversion
+        global _current_conversion  # noqa: PLW0603 — the gate is process-wide by design
         _current_conversion = {
             "namespace": namespace,
             "canonical": canonical,

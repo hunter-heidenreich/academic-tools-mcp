@@ -114,6 +114,7 @@ class TestExtraction:
             [sys.executable, "-m", "academic_tools_mcp._fast_extract", str(pdf)],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert proc.returncode == 0
         assert "Module entry point works" in proc.stdout
@@ -129,6 +130,7 @@ class TestExtraction:
             [sys.executable, "-m", "academic_tools_mcp._fast_extract", str(pdf)],
             capture_output=True,
             text=True,
+            check=False,
         )
         assert proc.returncode == 0
         assert "Schrodinger" in proc.stdout

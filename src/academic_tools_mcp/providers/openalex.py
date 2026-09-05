@@ -1,6 +1,10 @@
+"""OpenAlex client: works, authors, topics and the batched multi-work fetch."""
+
 import asyncio
 from typing import Any
 from urllib.parse import quote
+
+import httpx
 
 from .. import _clients, _doi, _http, _singleflight, _useragent, cache, config
 from .._throttle import Throttle
@@ -105,7 +109,7 @@ def _build_headers() -> dict[str, str]:
     return _useragent.headers(config.get("OPENALEX_MAILTO"))
 
 
-def _get_client():
+def _get_client() -> httpx.AsyncClient:
     """Return the persistent AsyncClient for OpenAlex calls."""
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
@@ -119,7 +123,7 @@ _throttle = Throttle(
 )
 
 
-async def _throttled_get(url: str, **kwargs: Any):
+async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
     """Execute a GET respecting OpenAlex's rate limit (see ``Throttle.get``).
 
     Url-only signature (unlike the other providers' ``client, url`` form): it
@@ -136,9 +140,7 @@ def _normalize_author_id(author_id: str) -> str:
       - Full OpenAlex URL: https://openalex.org/A5023888391
       - ORCID URL: https://orcid.org/0000-0001-6187-6610
     """
-    if author_id.startswith("https://openalex.org/"):
-        author_id = author_id[len("https://openalex.org/") :]
-    return author_id
+    return author_id.removeprefix("https://openalex.org/")
 
 
 def canonical_author_id(author_id: str) -> str:

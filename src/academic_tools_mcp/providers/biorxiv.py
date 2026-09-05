@@ -1,4 +1,7 @@
+"""bioRxiv/medRxiv client. One API, two servers, distinguished by DOI prefix."""
+
 import re
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +13,7 @@ from .._throttle import Throttle
 NAMESPACE = "biorxiv"
 
 
-def _get_client():
+def _get_client() -> httpx.AsyncClient:
     """Return the persistent AsyncClient for bioRxiv calls.
 
     The descriptive User-Agent is baked in at construction so every call
@@ -82,7 +85,7 @@ _throttle = Throttle(
 )
 
 
-def _request_slot(url: str):
+def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
     """bioRxiv's rate-limit slot (see ``Throttle.slot``).
 
     Kept module-level so the streaming PDF download's ``slot_factory`` lambda
@@ -156,8 +159,8 @@ def _parse_authors(author_str: str) -> list[dict[str, str]]:
     if not author_str:
         return authors
 
-    for part in author_str.split(";"):
-        part = part.strip()
+    for raw_part in author_str.split(";"):
+        part = raw_part.strip()
         if not part:
             continue
         # "Last, First M." -> {"name": "First M. Last"}

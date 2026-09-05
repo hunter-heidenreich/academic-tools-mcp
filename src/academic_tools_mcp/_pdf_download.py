@@ -14,6 +14,7 @@ whole response is already buffered in RAM.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import os
 import tempfile
@@ -132,7 +133,7 @@ async def stream_to_file(
     *,
     slot_factory: Callable[[], Any],
     provider_label: str,
-    timeout: float = 60.0,
+    timeout: float = 60.0,  # noqa: ASYNC109 — httpx's own timeout, not a cancel scope
     not_found_message: str | None = None,
     require_pdf: bool = False,
 ) -> dict[str, Any]:
@@ -268,10 +269,8 @@ async def stream_to_file(
         # the temp on any non-success path; on success os.replace
         # already moved it so the unlink is a no-op.
         if not fd_handed_off:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
         try:
             tmp_path.unlink()
         except FileNotFoundError:
