@@ -28,14 +28,14 @@ Generic file-based JSON cache under `.cache/<provider>/<entity>/`. Files are SHA
 - **Negative cache** (`get_negative` / `put_negative`) lives in a sibling `_neg/` subdirectory under each entity. Default 24h TTL on negatives; arxiv/biorxiv override to 1h via per-module `_NEG_TTL_SECONDS` because preprint identifiers go live mid-session.
 - **Positive TTL eviction** — `cache.get(..., max_age_seconds=N)` unlinks entries older than N seconds (by mtime) and returns `None`.
 - **`cache.invalidate(namespace, entity, identifier)`** drops both halves at once — used by `force_refresh=True`.
-- **`cache.cache_dir(namespace, entity)`** — public (the PDF-handling modules `providers/*.download_pdf`, `manual`, `papers` build canonical file paths under it). Returns `.cache/<namespace>/<entity>/`.
+- **`cache.cache_dir` is public on purpose** — the PDF-handling modules (`providers/*.download_pdf`, `manual`, `papers`) build canonical file paths under it. Everything else in `cache.py` is reached through `get`/`put`/`cached_lookup`.
 - **Orphan `.tmp` sweep** — `cache.gc_orphan_tmp_files()` walks `.cache/` for `*.tmp` files older than 1h. Called from FastMCP lifespan startup; never touches files newer than the cutoff so it can't race a live writer.
 
 Cache contents are agnostic to provider — scales to new providers by namespace.
 
 ### `cached_lookup` — the shared cached-getter protocol
 
-`cache.cached_lookup(*, single_flight, namespace, entity, canonical, positive_ttl, fetch, force_refresh=False, sf_key=None)` is the one home for the protocol every provider getter (`arxiv.get_paper`, `openalex.get_work`/`get_author`, `crossref.get_work`, `biorxiv.get_paper`, `opencitations._fetch_direction`, `wikipedia.get_summary`) used to hand-roll:
+`cache.cached_lookup` is the one home for the protocol every provider getter (`arxiv.get_paper`, `openalex.get_work`/`get_author`, `crossref.get_work`, `biorxiv.get_paper`, `opencitations._fetch_direction`, `wikipedia.get_summary`) used to hand-roll:
 
 1. `force_refresh` → `invalidate` both halves, then always fetch.
 2. otherwise check positive cache (TTL-aware) then negative cache, short-circuit on a hit.
@@ -60,14 +60,13 @@ Shared HTTP utilities used by every API client.
 - `HTTPX_ERRORS` — tuple of `httpx.HTTPStatusError`, `TimeoutException`, `RequestError`, plus `LocalBackpressureError`. Every client wraps its request block in `try/except _http.HTTPX_ERRORS`.
 - `error_dict(provider, exc)` — converts exceptions to `{error, retry_after_seconds?, retryable?, backpressure?}` dicts with provider-aware messages.
 - `LocalBackpressureError(provider, pending, max_pending, min_gap_seconds=0.0)` — raised by `Throttle.slot` when `pending >= max_pending` (default 5). Surfaces as `{error, retryable: True, backpressure: True, max_concurrency, retry_after_seconds?}`. `retry_after_seconds` only appears when the provider has a documented gap (omitted for ACL Anthology where `min_gap_seconds=0`).
-- `get_with_retry(client, url, *, max_attempts=2, backoff_seconds=1.0, provider=None, **kwargs)` — issues a GET with transparent retries on transient failure (timeouts, network errors, 408/425/429, 5xx). Backoff grows **exponentially** across attempts: the sleep before attempt *n* is `backoff_seconds * 2**(n-1)`, so at the default `max_attempts=2` only one sleep happens (factor 1 — single-retry providers are byte-for-byte unchanged), while a provider that raises `max_attempts` (arXiv) gets a widening gap. On 429/503 honours `Retry-After`. Actual sleep is `min(max(retry_after, effective_backoff), _MAX_RETRY_AFTER_SECONDS)` — `backoff_seconds` (the provider's own throttle gap) is the floor, and `_MAX_RETRY_AFTER_SECONDS` (600s / 10 min) is an absolute ceiling so a genuine multi-minute cooldown is respected while a misconfigured huge `Retry-After` (or runaway exponential growth) can't pin the throttle for hours. When `provider` is passed, retries are recorded in `_stats`. `max_attempts` is set per provider by `Throttle.get` (from `Throttle.retry_attempts`).
+- `get_with_retry` — issues a GET with transparent retries on transient failure (timeouts, network errors, 408/425/429, 5xx). Backoff grows **exponentially** across attempts: the sleep before attempt *n* is `backoff_seconds * 2**(n-1)`, so at the default `max_attempts=2` only one sleep happens (factor 1 — single-retry providers are byte-for-byte unchanged), while a provider that raises `max_attempts` (arXiv) gets a widening gap. On 429/503 honours `Retry-After`. Actual sleep is `min(max(retry_after, effective_backoff), _MAX_RETRY_AFTER_SECONDS)` — `backoff_seconds` (the provider's own throttle gap) is the floor, and `_MAX_RETRY_AFTER_SECONDS` (600s / 10 min) is an absolute ceiling so a genuine multi-minute cooldown is respected while a misconfigured huge `Retry-After` (or runaway exponential growth) can't pin the throttle for hours. When `provider` is passed, retries are recorded in `_stats`. `max_attempts` is set per provider by `Throttle.get` (from `Throttle.retry_attempts`).
 
 ## _stats.py
 
 Per-provider counters (`cache_hits`, `cache_misses`, `negative_hits`, `http_calls`, `http_retries`, `backpressure_refusals`, `cache_write_failures`) plus a live `in_flight` sample drawn from each provider module's `_throttle.pending`.
 
-- `_stats.snapshot()` returns `{providers: {arxiv: {...}, openalex: {...}, ...}}`.
-- `_stats.reset()` zeroes cumulative counters (used by the test fixture).
+- `_stats.reset()` zeroes the cumulative counters; the conftest fixture calls it between tests.
 - Wired into `cache.get`/`get_negative` and `Throttle.slot` (`http_calls` after the gap clears, `backpressure_refusals` on burst-cap refusal).
 - **`DEBUG_REQUESTS`** flag (`1`/`true`/`yes`/`on`) makes each throttled GET log `[academic-tools] {provider} GET {url} (throttle wait Xs)` to **stderr** (not stdout — MCP speaks JSON-RPC there). Re-read every call so an operator can flip the flag without restarting.
 
@@ -126,6 +125,6 @@ The gating behaviour is verified once in `tests/test_throttle.py` (gap, concurre
 
 Shared streaming-download helper used by `arxiv.download_pdf`, `biorxiv.download_pdf`, and `acl_anthology.download_pdf`. The slot acquisition is per-provider (different gap / concurrency caps), but the streaming + size-capping + atomic-rename logic is identical and lives here.
 
-- **`stream_to_file(client, url, dest, *, slot_factory, provider_label, timeout=60.0, not_found_message=None)`** — opens `client.stream("GET", ...)` inside the provider's slot, writes 64 KiB chunks to a sibling `.tmp` file via `mkstemp`, and `os.replace`s into place on success. Peak memory = one chunk, not the whole PDF (the previous `response.content` + `write_bytes` path peaked at 2× PDF size).
+- **`stream_to_file`** — opens `client.stream("GET", ...)` inside the provider's slot, writes 64 KiB chunks to a sibling `.tmp` file via `mkstemp`, and `os.replace`s into place on success. Peak memory = one chunk, not the whole PDF (the previous `response.content` + `write_bytes` path peaked at 2× PDF size).
 - **MAX_PDF_BYTES cap** — `resolve_max_pdf_bytes()` reads `MAX_PDF_BYTES` env var (default 200_000_000; `none`/`off`/`disabled`/`0` disables). A download that would exceed the cap is aborted mid-stream with `{error, retryable: False, max_bytes}`; the partial temp is unlinked, dest is never created. Fires *during* the download so a misrouted URL can't fill the disk before any size check.
 - **Cleanup** — every non-success path (404, transport error, size cap, exception) unlinks the temp file. The fd is closed manually if we never reached `os.fdopen` (early-return before the write loop). Success paths leave `tmp_path.unlink()` as a no-op because `os.replace` already moved the file.
