@@ -84,17 +84,31 @@ async def aclose_all() -> None:
     shutdown can't see a half-closed client (it would build a new one
     instead, which is fine — that one will leak, but only briefly).
 
-    Each ``aclose`` is bounded by ``_ACLOSE_TIMEOUT_SECONDS``: a wedged
-    socket on one provider must not block shutdown on the others, and
-    must not pin the FastMCP lifespan. Timeout falls through silently
-    (the socket gets reaped when the process exits).
+    Closes are issued **concurrently**. Each is bounded by
+    ``_ACLOSE_TIMEOUT_SECONDS``, and closing serially meant those bounds
+    added up: eight pooled clients with wedged sockets took up to 40s to shut
+    down — exactly the lifespan-pinning the per-client timeout was added to
+    prevent. Run together, the worst case is one timeout.
+
+    Timeouts and transport errors fall through silently (the socket gets
+    reaped when the process exits). ``CancelledError`` is deliberately **not**
+    swallowed: it is a ``BaseException``, so the previous
+    ``except (TimeoutError, Exception)`` never caught it anyway — that tuple
+    was also redundant, since ``Exception`` already covers ``TimeoutError``.
     """
     clients = list(_clients.values())
     _clients.clear()
-    for client in clients:
+    if not clients:
+        return
+
+    async def _close(client: httpx.AsyncClient) -> None:
         try:
             await asyncio.wait_for(client.aclose(), timeout=_ACLOSE_TIMEOUT_SECONDS)
-        except (TimeoutError, Exception):
-            # Shutdown is best-effort; do not let one stuck client
-            # block the others from closing.
+        except Exception:
+            # Shutdown is best-effort; one stuck client must not stop the
+            # others. asyncio.CancelledError is a BaseException and so
+            # propagates, which is correct — a cancelled shutdown should not
+            # be silently completed.
             pass
+
+    await asyncio.gather(*(_close(c) for c in clients))

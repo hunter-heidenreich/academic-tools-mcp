@@ -206,3 +206,120 @@ async def test_tuple_keys_are_independent_namespaces():
     release.set()
     assert await twork == "work-data"
     assert work_calls == 1
+
+
+class TestLeaderCancellationDoesNotCancelFollowers:
+    """A cancelled leader used to cancel every follower with it.
+
+    The leader's task ending — an agent's tool call timing out, say — says
+    nothing about the followers' lifetimes, but ``except BaseException`` set
+    the ``CancelledError`` on the shared future, so unrelated concurrent calls
+    for the same key failed for no reason.
+    """
+
+    @pytest.mark.asyncio
+    async def test_follower_takes_over_and_succeeds(self):
+        sf = SingleFlight()
+        started = asyncio.Event()
+        runs = 0
+
+        async def factory():
+            nonlocal runs
+            runs += 1
+            started.set()
+            await asyncio.sleep(3600)
+            return "leader"
+
+        async def quick_factory():
+            nonlocal runs
+            runs += 1
+            return "taken-over"
+
+        leader = asyncio.create_task(sf.do("k", factory))
+        await started.wait()
+
+        follower = asyncio.create_task(sf.do("k", quick_factory))
+        await asyncio.sleep(0)  # let the follower attach to the future
+
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+
+        assert await follower == "taken-over"
+        assert runs == 2
+
+    @pytest.mark.asyncio
+    async def test_follower_that_is_itself_cancelled_still_raises(self):
+        sf = SingleFlight()
+        started = asyncio.Event()
+
+        async def factory():
+            started.set()
+            await asyncio.sleep(3600)
+
+        leader = asyncio.create_task(sf.do("k", factory))
+        await started.wait()
+        follower = asyncio.create_task(sf.do("k", factory))
+        await asyncio.sleep(0)
+
+        follower.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await follower
+
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+
+    @pytest.mark.asyncio
+    async def test_real_errors_still_propagate_to_followers(self):
+        # Only *cancellation* is leader-local; a genuine failure is shared,
+        # exactly as before this change.
+        sf = SingleFlight()
+        calls = 0
+        release = asyncio.Event()
+
+        class Boom(Exception):
+            pass
+
+        async def failing():
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            raise Boom("upstream exploded")
+
+        tasks = [asyncio.create_task(sf.do("k", failing)) for _ in range(4)]
+        await _drain()
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert calls == 1, "the failure must be shared, not re-run"
+        assert all(isinstance(r, Boom) for r in results)
+        assert all(r is results[0] for r in results)
+
+    @pytest.mark.asyncio
+    async def test_slot_is_released_after_takeover(self):
+        sf = SingleFlight()
+        started = asyncio.Event()
+
+        async def hang():
+            started.set()
+            await asyncio.sleep(3600)
+
+        leader = asyncio.create_task(sf.do("k", hang))
+        await started.wait()
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+
+        assert sf._inflight == {}, "in-flight slot leaked after cancellation"
+
+    @pytest.mark.asyncio
+    async def test_uses_the_running_loop(self):
+        # get_event_loop is deprecated inside a coroutine; it would create or
+        # fetch a thread loop when none is running, which is never wanted here.
+        sf = SingleFlight()
+
+        async def factory():
+            return "v"
+
+        assert await sf.do("k", factory) == "v"

@@ -17,6 +17,12 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Tests for `_fast_extract`**, which was at 0% coverage — the only test
+  mentioning it asserted on the command string built for it and never ran it.
+  Its entire job is behaving correctly when things go wrong (pymupdf absent,
+  PDF corrupt, wrong argv), so none of that was exercised. Now 95% under CI's
+  `--all-extras`, including a real `python -m` round trip. ([#53])
+
 - **Continuous integration.** A GitHub Actions workflow now runs `ruff check`,
   `ruff format --check`, `mypy`, and the full test suite on every push to `main`
   and every pull request, against Python 3.11 and 3.13. All four gates were
@@ -69,6 +75,33 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **`approx_tokens` disagreed between the two tools that report it.**
+  `get_paper_sections` measured the *unstripped* line join, so every section's
+  estimate was inflated by its surrounding blank lines and
+  `total_approx_tokens` summed the inflated variant, while
+  `get_paper_section` measured the stripped text it actually returns. An agent
+  budgeting context from the index got a different number than the read
+  produced. The index now measures what the reader receives. (Section indices
+  already cached keep their old estimates until the paper is re-converted; the
+  values are estimates, so no cache invalidation is forced.) ([#53])
+- **A cancelled single-flight leader cancelled every follower with it.** The
+  leader's task ending — an agent's tool call timing out, say — says nothing
+  about the followers' lifetimes, but the shared future carried the
+  `CancelledError` to all of them, failing unrelated concurrent calls for the
+  same key. A follower that is not itself being cancelled now takes over and
+  runs the factory. Genuine failures are still shared, unchanged.
+  `SingleFlight` also used `asyncio.get_event_loop()` inside a coroutine
+  (deprecated, and it fetches or creates a thread loop when none is running);
+  it now uses `get_running_loop`. ([#53])
+- **Pooled clients are closed concurrently on shutdown.** `aclose_all` closed
+  them one at a time, each bounded by its own 5s timeout, so eight wedged
+  sockets could take up to 40 seconds — exactly the lifespan-pinning the
+  per-client timeout was added to prevent. Its `except (TimeoutError,
+  Exception)` was also redundant (`Exception` already covers `TimeoutError`)
+  and implied it handled `CancelledError`, which is a `BaseException` and was
+  never caught; cancellation now propagates deliberately, so a cancelled
+  shutdown is not reported as a clean one. ([#53])
 
 - **A cancelled conversion orphaned the converter process.** `convert_pdf` and
   `_convert_fast` caught only `TimeoutError`, so on `asyncio.CancelledError`
@@ -886,3 +919,4 @@ grouped by milestone rather than per commit.
 [#50]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/50
 [#51]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/51
 [#52]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/52
+[#53]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/53
