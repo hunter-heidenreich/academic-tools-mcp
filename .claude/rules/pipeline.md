@@ -3,6 +3,9 @@ paths:
   - "src/academic_tools_mcp/papers.py"
   - "src/academic_tools_mcp/manual.py"
   - "src/academic_tools_mcp/cache_search.py"
+  - "src/academic_tools_mcp/_fast_extract.py"
+  - "src/academic_tools_mcp/_textnorm.py"
+  - "src/academic_tools_mcp/oa_download.py"
 ---
 
 # PDF + content pipeline

@@ -23,14 +23,32 @@ from ..providers import opencitations
 _CROSSREF_HYSTERESIS = 1.2
 
 
+# Structured fields worth forwarding from a provider error into a
+# multi-source response. Everything an agent might branch on.
+_FORWARDED_ERROR_KEYS = (
+    "error",
+    "retryable",
+    "suggestion",
+    "retry_after_seconds",
+    "backpressure",
+    "max_concurrency",
+    "not_found",
+)
+
+
 def _source_error(result: dict[str, Any]) -> dict[str, Any]:
     """Lean copy of a provider error dict for embedding in a multi-source response.
 
-    Forwards the structured signal — ``error`` plus ``retryable`` /
-    ``suggestion`` when present — instead of just the message string, so an
-    agent can still tell a transient failure from a definitive one.
+    Forwards the whole structured signal, not just the message string, so an
+    agent can tell a transient failure from a definitive one *and* act on it.
+
+    The forwarded set used to be only ``error`` / ``retryable`` / ``suggestion``,
+    which dropped exactly the fields that make the distinction actionable:
+    ``retry_after_seconds`` (how long to wait), ``backpressure`` and
+    ``max_concurrency`` (that we refused locally, and how much parallelism is
+    safe), and ``not_found`` (definitively absent vs. transiently unavailable).
     """
-    return {k: result[k] for k in ("error", "retryable", "suggestion") if k in result}
+    return {k: result[k] for k in _FORWARDED_ERROR_KEYS if k in result}
 
 
 def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:

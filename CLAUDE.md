@@ -69,7 +69,10 @@ server.py (thin entry: re-exports mcp + tools; registers debug tool)
   │                          via OpenAlex-surfaced oa_url → manual ns)
   │
   └── Shared infrastructure (every API client routes through these)
-        _http.py            (retry helper, error normalization, backpressure error)
+        _http.py            (retry helper honouring Retry-After in both RFC
+                             9110 forms, error normalization, backpressure)
+        _doi.py             (DOI normalization — one home, seven callers)
+        _useragent.py       (outbound User-Agent — one home, eight clients)
         _throttle.py        (Throttle: burst cap + concurrency sem + inter-start gap)
         _clients.py         (pooled httpx.AsyncClient per provider)
         _singleflight.py    (request coalescing)
@@ -81,9 +84,10 @@ server.py (thin entry: re-exports mcp + tools; registers debug tool)
 
 Per-module deep detail (atomic writes, throttle/backpressure semantics, single-flight slot rules, per-provider quirks, PDF subprocess gating, server tool shapes and error contracts) lives in `.claude/rules/` and loads only when Claude touches the matching file:
 
-- `.claude/rules/infrastructure.md` — `cache.py`, `_http.py`, `_throttle.py`, `_clients.py`, `_singleflight.py`, `_stats.py`, `config.py`
+- `.claude/rules/python-design.md` — layering and single-responsibility contracts; applies to **every** file under `src/`
+- `.claude/rules/infrastructure.md` — `cache.py`, `_http.py`, `_throttle.py`, `_clients.py`, `_singleflight.py`, `_stats.py`, `config.py`, `_doi.py`, `_useragent.py`
 - `.claude/rules/providers.md` — all seven API clients (`providers/*.py`)
-- `.claude/rules/pipeline.md` — `papers.py`, `manual.py`, `cache_search.py`
+- `.claude/rules/pipeline.md` — `papers.py`, `manual.py`, `cache_search.py`, `oa_download.py`, `_pdf_download.py`, `_fast_extract.py`, `_textnorm.py`
 - `.claude/rules/server.md` — `server.py`, `_app.py`, `tools/*.py`, `bibtex.py`
 
 ## Cross-cutting design decisions

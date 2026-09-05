@@ -8,6 +8,8 @@ paths:
   - "src/academic_tools_mcp/_stats.py"
   - "src/academic_tools_mcp/_pdf_download.py"
   - "src/academic_tools_mcp/config.py"
+  - "src/academic_tools_mcp/_useragent.py"
+  - "src/academic_tools_mcp/_doi.py"
 ---
 
 # Shared infrastructure
