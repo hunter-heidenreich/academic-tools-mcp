@@ -404,6 +404,135 @@ class TestReferencesAutoSource:
         assert called is False, "page>1 auto must not survey either provider"
 
 
+class TestReferencesCount:
+    """`get_paper_references_count` surveys both providers in parallel so an
+    agent can compare coverage before committing to one for pagination.
+
+    Its partial-failure branch is the only shape in the graph family that no
+    other test exercises end-to-end: `get_paper_references` reports a failed
+    source through `partial_failure` on the winning page, while this tool
+    reports it in place, inside `sources`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reports_both_counts(self, monkeypatch):
+        async def fake_cr(doi, **kwargs):
+            return {"reference": [{"DOI": "10.1/a"}, {"DOI": "10.1/b"}]}
+
+        async def fake_oc(doi, **kwargs):
+            return {"references": [{"doi": "10.2/a"}], "count": 1}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references_count("10.x/x")
+
+        assert result["doi"] == "10.x/x"
+        assert result["sources"]["crossref"] == {"count": 2}
+        assert result["sources"]["opencitations"] == {"count": 1}
+
+    @pytest.mark.asyncio
+    async def test_a_work_with_no_reference_list_counts_zero(self, monkeypatch):
+        # Crossref omits `reference` entirely when the publisher deposited
+        # none — that is a count of 0, not an error.
+        async def fake_cr(doi, **kwargs):
+            return {"DOI": "10.x/x"}
+
+        async def fake_oc(doi, **kwargs):
+            return {"references": [], "count": 0}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references_count("10.x/x")
+
+        assert result["sources"]["crossref"] == {"count": 0}
+        assert result["sources"]["opencitations"] == {"count": 0}
+
+    @pytest.mark.asyncio
+    async def test_one_source_failing_does_not_hide_the_other(self, monkeypatch):
+        async def fake_cr(doi, **kwargs):
+            return {"error": "Crossref timed out", "retryable": True}
+
+        async def fake_oc(doi, **kwargs):
+            return {"references": [{"doi": "10.2/a"}], "count": 1}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references_count("10.x/x")
+
+        assert result["sources"]["opencitations"] == {"count": 1}
+        assert result["sources"]["crossref"]["retryable"] is True
+        assert "count" not in result["sources"]["crossref"]
+
+    @pytest.mark.asyncio
+    async def test_structured_error_fields_are_forwarded_not_flattened(self, monkeypatch):
+        # The survey exists so an agent can choose a source. A bare message
+        # can't distinguish "transiently unavailable" from "definitively
+        # absent", so the whole structured signal rides along.
+        async def fake_cr(doi, **kwargs):
+            return {
+                "error": "Local backpressure",
+                "retryable": True,
+                "backpressure": True,
+                "max_concurrency": 3,
+                "retry_after_seconds": 0.1,
+            }
+
+        async def fake_oc(doi, **kwargs):
+            return {"error": "No references found", "not_found": True}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references_count("10.x/x")
+
+        cr = result["sources"]["crossref"]
+        assert cr["backpressure"] is True
+        assert cr["max_concurrency"] == 3
+        assert cr["retry_after_seconds"] == 0.1
+        assert result["sources"]["opencitations"]["not_found"] is True
+
+    @pytest.mark.asyncio
+    async def test_both_failing_still_reports_per_source(self, monkeypatch):
+        # Unlike get_paper_references, this tool has no page to return, so a
+        # double failure is not a top-level error — it is two error entries.
+        async def fake_cr(doi, **kwargs):
+            return {"error": "Crossref down"}
+
+        async def fake_oc(doi, **kwargs):
+            return {"error": "OpenCitations down"}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references_count("10.x/x")
+
+        assert "error" not in result
+        assert result["sources"]["crossref"]["error"] == "Crossref down"
+        assert result["sources"]["opencitations"]["error"] == "OpenCitations down"
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_reaches_both_providers(self, monkeypatch):
+        seen: dict[str, bool] = {}
+
+        async def fake_cr(doi, *, force_refresh=False):
+            seen["crossref"] = force_refresh
+            return {"reference": []}
+
+        async def fake_oc(doi, *, force_refresh=False):
+            seen["opencitations"] = force_refresh
+            return {"references": [], "count": 0}
+
+        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        await server.get_paper_references_count("10.x/x", force_refresh=True)
+
+        assert seen == {"crossref": True, "opencitations": True}
+
+
 # ---------------------------------------------------------------------------
 # Slim search hits: author_count lets the agent decide whether to paginate
 # ---------------------------------------------------------------------------

@@ -42,6 +42,20 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/academic_tools_mcp"]
 
+# --- Test runner ---------------------------------------------------------------
+# There was no pytest configuration at all; these pin what was previously
+# implicit defaults so an upstream change can't move them silently.
+#
+# The coverage floor is deliberately NOT in `addopts`. Applied to every
+# invocation it also applies to `pytest tests/test_bibtex.py` — a workflow the
+# README documents — which reports ~23% and fails. It lives in the CI step,
+# where the whole suite always runs.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Strict is pytest-asyncio's default today, but it is the reason every async
+# test carries an explicit @pytest.mark.asyncio. Pin it rather than inherit it.
+asyncio_mode = "strict"
+
 # --- Lint / format / type-check ------------------------------------------------
 # Style is enforced by tooling, not by rules prose: ruff formats + lints, mypy
 # type-checks. The .claude/rules/ files carry *design* judgment (layering,

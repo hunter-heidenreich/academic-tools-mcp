@@ -480,3 +480,132 @@ class TestGetSummaryForceRefresh:
         # force_refresh drops the cached entry and re-fetches.
         await wikipedia.get_summary("Photosynthesis", force_refresh=True)
         assert calls == 2
+
+
+# ---------------------------------------------------------------------------
+# The MCP tool layer
+# ---------------------------------------------------------------------------
+#
+# Everything above covers the provider. These cover the two @mcp.tool wrappers,
+# which own a contract the provider does not: the response shape agents branch
+# on, and the `suggestion` attached to an error. Both had no coverage at all.
+
+
+class TestWikipediaTools:
+    @pytest.mark.asyncio
+    async def test_search_reports_result_count_alongside_the_hits(self, monkeypatch):
+        # Every search-list tool reports result_count = len(results). Wikipedia
+        # has no upstream-total concept, so it carries no total_results — an
+        # agent branching on that difference needs the absence to be reliable.
+        from academic_tools_mcp import server
+
+        async def fake_search(query, limit=5):
+            return {"results": [{"title": "Photosynthesis", "url": "https://en.wikipedia.org/x"}]}
+
+        monkeypatch.setattr(wikipedia, "search", fake_search)
+
+        result = await server.search_wikipedia("photosynthesis")
+
+        assert result["query"] == "photosynthesis"
+        assert result["result_count"] == 1
+        assert result["results"][0]["title"] == "Photosynthesis"
+        assert "total_results" not in result
+
+    @pytest.mark.asyncio
+    async def test_search_passes_the_limit_through(self, monkeypatch):
+        from academic_tools_mcp import server
+
+        seen: dict[str, int] = {}
+
+        async def fake_search(query, limit=5):
+            seen["limit"] = limit
+            return {"results": []}
+
+        monkeypatch.setattr(wikipedia, "search", fake_search)
+
+        result = await server.search_wikipedia("x", limit=3)
+
+        assert seen["limit"] == 3
+        assert result["result_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_search_error_gains_a_recovery_suggestion(self, monkeypatch):
+        from academic_tools_mcp import server
+
+        async def fake_search(query, limit=5):
+            return {"error": "Wikipedia rate limit (HTTP 429)."}
+
+        monkeypatch.setattr(wikipedia, "search", fake_search)
+
+        result = await server.search_wikipedia("x")
+
+        assert "error" in result
+        assert "retry" in result["suggestion"]
+        assert "result_count" not in result
+
+    @pytest.mark.asyncio
+    async def test_summary_passes_the_provider_payload_through(self, monkeypatch):
+        # This tool deliberately does not slice: the provider already returns
+        # a lean record, so re-shaping here would be a second place to drift.
+        from academic_tools_mcp import server
+
+        payload = {
+            "title": "Photosynthesis",
+            "description": "Biological process",
+            "extract": "A process used by plants.",
+            "url": "https://en.wikipedia.org/wiki/Photosynthesis",
+            "type": "standard",
+            "pageid": 24544,
+        }
+
+        async def fake_summary(title, *, force_refresh=False):
+            return dict(payload)
+
+        monkeypatch.setattr(wikipedia, "get_summary", fake_summary)
+
+        assert await server.get_wikipedia_summary("Photosynthesis") == payload
+
+    @pytest.mark.asyncio
+    async def test_summary_surfaces_a_disambiguation_page_as_such(self, monkeypatch):
+        # `type` is how an agent tells "here is the article" from "pick one of
+        # these", so it must survive the tool boundary.
+        from academic_tools_mcp import server
+
+        async def fake_summary(title, *, force_refresh=False):
+            return {"title": "Mercury", "type": "disambiguation", "extract": "May refer to..."}
+
+        monkeypatch.setattr(wikipedia, "get_summary", fake_summary)
+
+        result = await server.get_wikipedia_summary("Mercury")
+
+        assert result["type"] == "disambiguation"
+
+    @pytest.mark.asyncio
+    async def test_summary_error_points_at_the_search_tool(self, monkeypatch):
+        from academic_tools_mcp import server
+
+        async def fake_summary(title, *, force_refresh=False):
+            return {"error": "No Wikipedia page found for: Xyzzy", "not_found": True}
+
+        monkeypatch.setattr(wikipedia, "get_summary", fake_summary)
+
+        result = await server.get_wikipedia_summary("Xyzzy")
+
+        assert result["not_found"] is True
+        assert "search_wikipedia" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_summary_threads_force_refresh(self, monkeypatch):
+        from academic_tools_mcp import server
+
+        seen: dict[str, bool] = {}
+
+        async def fake_summary(title, *, force_refresh=False):
+            seen["force_refresh"] = force_refresh
+            return {"title": title}
+
+        monkeypatch.setattr(wikipedia, "get_summary", fake_summary)
+
+        await server.get_wikipedia_summary("Photosynthesis", force_refresh=True)
+
+        assert seen["force_refresh"] is True
