@@ -814,3 +814,53 @@ class TestIndexReuse:
         cache_search.search("attention")
 
         assert len(indexed) == 1, "only the new document should be indexed"
+
+
+class TestQueryTokenizationMatchesTheIndex:
+    """The query and the documents must be tokenised by the same tokenizer.
+
+    Regression: after the move to FTS5 the documents were tokenised by SQLite
+    while the query still went through ``_tokenize`` — an ASCII-only regex
+    written back when this module did its own indexing. It split "Gutiérrez"
+    into ``guti OR rrez``, which matched nothing, even though the document had
+    indexed cleanly as a single token.
+    """
+
+    @pytest.fixture
+    def accented(self, isolated_cache):
+        _seed_markdown(
+            isolated_cache, "arxiv", "2301.00002",
+            "# Survey\n\n## Refs\n\nMethod introduced by Gutiérrez et al.\n",
+        )
+        return isolated_cache
+
+    def test_accented_query_finds_accented_document(self, accented):
+        hits = cache_search.search("Gutiérrez")
+        assert [h["canonical_id"] for h in hits] == ["2301.00002"]
+
+    def test_unaccented_query_needs_normalize(self, accented):
+        # The documented contract, unchanged: folding is opt-in.
+        assert cache_search.search("gutierrez") == []
+        assert [h["canonical_id"] for h in cache_search.search("gutierrez", normalize=True)] == [
+            "2301.00002"
+        ]
+
+    def test_accented_query_also_works_under_normalize(self, accented):
+        assert len(cache_search.search("Gutiérrez", normalize=True)) == 1
+
+    @pytest.mark.parametrize("query", ["NOT", "OR", "*", "-", "a:b", 'quote"inside', "( )", "^"])
+    def test_fts_syntax_in_a_query_never_raises(self, accented, query):
+        # Every term is quoted, so operators are matched literally rather
+        # than parsed — an unquoted one would make FTS5 reject the whole
+        # expression.
+        assert isinstance(cache_search.search(query), list)
+
+    def test_multiword_query_ors_its_terms(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "a", "# A\n\nattention only here\n")
+        _seed_markdown(isolated_cache, "arxiv", "b", "# B\n\ntransformer only here\n")
+        found = {h["canonical_id"] for h in cache_search.search("attention transformer")}
+        assert found == {"a", "b"}
+
+    def test_empty_and_whitespace_queries_return_nothing(self, accented):
+        for query in ("", "   ", "\n\t"):
+            assert cache_search.search(query) == []

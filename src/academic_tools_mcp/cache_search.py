@@ -624,14 +624,35 @@ def unindexable(
     return [{"namespace": r["ns"], "stem": r["stem"], "reason": r["unindexable"]} for r in rows]
 
 
-def _fts_query(tokens: set[str]) -> str:
-    """Build an FTS5 MATCH expression OR-ing the query's terms.
+# Query words for the MATCH expression. Deliberately *not* ``_tokenize``:
+# that regex was written to tokenise documents back when this module did its
+# own indexing, and it splits on any non-ASCII character. FTS5 now tokenises
+# the documents itself, so feeding it ``_tokenize``'s output made the two
+# sides disagree — "Gutiérrez" became ``guti OR rrez`` and matched nothing,
+# even though the document indexed cleanly as one token. Split on whitespace
+# and let FTS5 apply the same tokenizer to the query that it applied to the
+# corpus.
+_QUERY_SPLIT_RE = re.compile(r"\s+")
 
-    Every token is double-quoted so FTS5 treats it as a literal string
-    rather than syntax — an unquoted ``NOT``, ``OR``, ``*`` or ``-`` in a
-    user query would otherwise be parsed as an operator, or raise.
+
+def _fts_query(query: str) -> str:
+    """Build an FTS5 MATCH expression OR-ing the query's words.
+
+    Each word is double-quoted so FTS5 treats it as a literal phrase rather
+    than syntax — an unquoted ``NOT``, ``OR``, ``*``, ``-`` or ``:`` in a
+    user query would otherwise be parsed as an operator, or raise. Inside a
+    quoted phrase only ``"`` is special, and it is escaped by doubling.
     """
-    return " OR ".join('"' + t.replace('"', '""') + '"' for t in sorted(tokens))
+    words = [w for w in _QUERY_SPLIT_RE.split(query.strip()) if w]
+    quoted = []
+    for word in words:
+        escaped = word.replace('"', '""')
+        # A word that tokenises to nothing (pure punctuation) would make FTS5
+        # reject the whole expression.
+        if not escaped.strip('"'):
+            continue
+        quoted.append(f'"{escaped}"')
+    return " OR ".join(dict.fromkeys(quoted))
 
 
 def search(
@@ -697,7 +718,7 @@ def search(
         f"FROM {table} JOIN files f ON f.rowid = {table}.rowid "
         f"WHERE {table} MATCH ?"
     )
-    params: list[Any] = [_fts_query(set(query_tokens))]
+    params: list[Any] = [_fts_query(query)]
     if namespace is not None:
         sql += " AND f.ns = ?"
         params.append(namespace)

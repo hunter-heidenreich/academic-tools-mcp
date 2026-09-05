@@ -122,6 +122,12 @@ grouped by milestone rather than per commit.
   a very small positive score when a term's IDF is degenerate, and rounding
   to 3 crushed it to zero, breaking the invariant that every returned hit
   scores above zero. ([#55])
+- **An accented query matches an accented document again.** The move to FTS5
+  briefly left the query and the documents tokenised by different tokenizers —
+  SQLite indexed "Gutiérrez" as one token while the query still went through
+  the module's ASCII-only regex, which split it into `guti OR rrez` and
+  matched nothing. Queries are now tokenised by FTS5, the same way the corpus
+  is. Folding remains opt-in via `normalize`, unchanged. ([#55])
 - **Equal-scoring hits are ordered deterministically** by `(namespace,
   canonical_id)` again, rather than by insertion order into the index. ([#55])
 
