@@ -741,12 +741,9 @@ def search(
     section. Every returned hit matched at least one query term and scores
     above zero; higher is better.
 
-    **Scores are corpus-global.** ``namespace`` filters which documents come
-    back, but term rarity is computed over the whole index rather than the
-    filtered subset, so a paper's score no longer changes depending on how
-    you filtered. (The previous implementation scoped corpus statistics to
-    the filter, which made the same paper score differently in a filtered and
-    an unfiltered search.)
+    **Scores are corpus-global.** ``namespace`` selects which documents come
+    back, not how they rank: term rarity is computed over the whole index, so
+    one paper scores identically in a filtered and an unfiltered search.
 
     ``normalize=True`` folds diacritics on both sides, so "cafe" and "café"
     rank identically. Folding is a build-time property of an FTS5 tokenizer
@@ -819,12 +816,11 @@ def search(
             {
                 "namespace": row["ns"],
                 "canonical_id": _filename_to_canonical(row["ns"], row["stem"]),
-                # 6 decimals, not 3: FTS5 returns a very small positive
-                # score when a term's IDF is degenerate (it appears in
-                # every document of a small corpus). Rounding to 3 crushed
-                # those to 0.0 and broke the invariant that any returned
-                # hit scores above zero. Real-corpus scores are 0.9-4, so
-                # readability is unaffected.
+                # Invariant: every returned hit scores above zero. 6 decimals
+                # rather than 3 because FTS5 returns a very small positive
+                # score for a degenerate IDF (a term in every document of a
+                # small corpus), and 3 rounds those to 0.0. Real-corpus scores
+                # are 0.9-4, so readability is unaffected.
                 "score": round(score, 6),
                 "title": title,
                 "snippet": snippet,

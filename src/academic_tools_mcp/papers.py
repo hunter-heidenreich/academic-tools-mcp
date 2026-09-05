@@ -1010,8 +1010,9 @@ async def _convert_fast(
         try:
             cmd = _build_fast_converter_command(pdf_path)
         except ConverterTemplateError as e:
-            # This builder used to sit outside any try, so a malformed
-            # PDF_FAST_CONVERTER escaped convert_paper as a raw exception.
+            # Invariant: a malformed PDF_FAST_CONVERTER surfaces as
+            # {error, retryable: False}, never a raised exception. The builder
+            # must stay inside this try.
             return {
                 "error": str(e),
                 "retryable": False,
@@ -1257,17 +1258,14 @@ async def convert_pdf(
                 }
 
             if proc.returncode != 0:
-                # Converter output may include binary noise on crashes;
-                # replace undecodable bytes rather than raising
-                # UnicodeDecodeError ourselves. stderr is listed last because
-                # it is where a converter puts its actual error, and only the
-                # tail of this string is shown.
+                # Invariant: stderr is captured on its own pipe and appended
+                # last, so a converter that logs progress to stdout cannot push
+                # its real error out of the 500-char tail. Never merge the two
+                # with `2>&1`. (Guarded by
+                # tests/test_failure_modes.py::TestConverterSubprocessPlumbing.)
                 #
-                # The command used to be wrapped as `{cmd} 2>&1`, which merged
-                # stderr into stdout and left the stderr pipe permanently
-                # empty — so this concatenation always appended nothing, and
-                # a converter that logs progress to stdout could push its real
-                # error out of the 500-char tail.
+                # Undecodable bytes are replaced rather than raising: a crashing
+                # converter can emit binary noise.
                 output = (stdout or b"").decode("utf-8", errors="replace") + (stderr or b"").decode(
                     "utf-8", errors="replace"
                 )

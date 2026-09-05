@@ -251,12 +251,10 @@ async def find_in_paper(
     # Read + scan off the event loop — a large converted paper's disk read and
     # a query with thousands of matches would each otherwise pin it.
     #
-    # Read UTF-8 explicitly: this was the one read path in the pipeline that
-    # relied on the host locale, so under LC_ALL=C (containers, systemd units)
-    # it raised UnicodeDecodeError straight out of the tool instead of
-    # returning the {error} contract. Its siblings — get_paper_section,
-    # _reparse_sections_locked, _convert_fast, import_markdown — were all
-    # explicit already.
+    # Encoding is explicit, as in every sibling read (get_paper_section,
+    # _reparse_sections_locked, _convert_fast, import_markdown). Relying on the
+    # host locale raises UnicodeDecodeError out of the tool under LC_ALL=C
+    # (containers, systemd units) instead of returning the {error} contract.
     def _read_and_scan() -> tuple[list[dict[str, Any]], bool]:
         markdown = md_path.read_text(encoding="utf-8")
         return papers.find_in_markdown(

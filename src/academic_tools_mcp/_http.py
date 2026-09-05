@@ -99,13 +99,12 @@ def parse_error_dict(provider: str, *, detail: str = "could not be parsed") -> d
 def _retry_after_seconds(response: httpx.Response) -> float | None:
     """Parse a ``Retry-After`` value, in either form RFC 9110 permits.
 
-    Both the delay-seconds form (``Retry-After: 120``) and the HTTP-date form
-    (``Retry-After: Wed, 21 Oct 2015 07:28:00 GMT``) are valid, and
-    Wikimedia- and Cloudflare-fronted endpoints do emit dates. Only the
-    numeric form used to be parsed, so a date was silently discarded and
-    ``get_with_retry`` fell back to its own backoff — as little as 1.0s
-    against a server that had just asked us to wait minutes. That is the one
-    situation where being polite matters most: the server told us explicitly.
+    **Both forms must parse.** The delay-seconds form (``Retry-After: 120``)
+    and the HTTP-date form (``Retry-After: Wed, 21 Oct 2015 07:28:00 GMT``) are
+    equally valid, and Wikimedia- and Cloudflare-fronted endpoints do emit
+    dates. Dropping either silently falls back to our own backoff — as little
+    as 1.0s against a server that just asked for minutes, in the one situation
+    where politeness matters most: it told us explicitly.
 
     Returns ``None`` for a missing, unparseable, non-positive, or non-finite
     value, in which case the caller's own backoff applies.

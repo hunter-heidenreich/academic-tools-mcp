@@ -194,13 +194,12 @@ def _collection_of(data: Any) -> list[dict[str, Any]] | None:
     whereas a garbled body says nothing about whether the DOI exists and must
     stay retryable.
 
-    ``data.get(...)`` raises AttributeError on a JSON ``null``/scalar body, and
-    a collection of non-dicts raises later inside ``_pick_latest_version``.
-    Neither AttributeError nor TypeError is in ``_PARSE_ERRORS`` or
-    ``HTTPX_ERRORS``, so both escaped the provider entirely rather than
-    surfacing as the uniform ``{error, retryable}`` contract. openalex,
-    opencitations and wikipedia already guarded this; bioRxiv and crossref
-    were the two that were missed.
+    The shape check is load-bearing, not defensive padding: ``data.get(...)``
+    raises AttributeError on a JSON ``null``/scalar body and a collection of
+    non-dicts raises inside ``_pick_latest_version``, and **neither
+    AttributeError nor TypeError is in ``_PARSE_ERRORS`` or ``HTTPX_ERRORS``**
+    — so an unguarded body escapes the provider entirely instead of surfacing
+    as the uniform ``{error, retryable}`` contract.
     """
     if not isinstance(data, dict):
         return None

@@ -41,12 +41,12 @@ def _source_error(result: dict[str, Any]) -> dict[str, Any]:
 
     Forwards the whole structured signal, not just the message string, so an
     agent can tell a transient failure from a definitive one *and* act on it.
-
-    The forwarded set used to be only ``error`` / ``retryable`` / ``suggestion``,
-    which dropped exactly the fields that make the distinction actionable:
-    ``retry_after_seconds`` (how long to wait), ``backpressure`` and
-    ``max_concurrency`` (that we refused locally, and how much parallelism is
-    safe), and ``not_found`` (definitively absent vs. transiently unavailable).
+    Each key in ``_FORWARDED_ERROR_KEYS`` earns its place: ``retryable`` (is it
+    worth retrying), ``retry_after_seconds`` (how long to wait),
+    ``backpressure`` + ``max_concurrency`` (we refused locally, and how much
+    parallelism is safe), ``not_found`` (definitively absent vs. transiently
+    unavailable), ``suggestion`` (what to do instead). Trimming the set to just
+    the message strands the agent with a failure it cannot classify.
     """
     return {k: result[k] for k in _FORWARDED_ERROR_KEYS if k in result}
 

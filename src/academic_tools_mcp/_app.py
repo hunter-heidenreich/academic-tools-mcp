@@ -189,11 +189,11 @@ def _first(value: Any) -> Any:
 
 
 # Canonical fallback order for a Crossref work's publication date. Prefers the
-# formally-issued/published dates; `posted` (preprint date, present on every
-# bioRxiv DOI and other preprint-only records) is the last resort so a record
-# carrying only `posted` still yields a year. Shared by paper.py's metadata
-# formatting and search.py's triage-hit year extraction so the two can't drift
-# (they previously disagreed on whether `posted` counted).
+# formally-issued/published dates; `posted` (the preprint date, present on
+# every bioRxiv DOI and other preprint-only records) is the last resort so a
+# record carrying only `posted` still yields a year. Single-homed: paper.py's
+# metadata formatting and search.py's triage-hit year extraction both read it,
+# and a second copy would let them disagree about whether `posted` counts.
 _CROSSREF_DATE_KEYS = ("issued", "published-print", "published-online", "published", "posted")
 
 
