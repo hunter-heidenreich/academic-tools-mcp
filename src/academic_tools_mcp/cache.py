@@ -361,12 +361,6 @@ def put(namespace: str, entity: str, identifier: str, data: dict[str, Any]) -> b
     return True
 
 
-def has(namespace: str, entity: str, identifier: str) -> bool:
-    """Check if a cached response exists."""
-    path = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
-    return path.exists()
-
-
 # ---------------------------------------------------------------------------
 # Negative cache (TTL-bounded)
 # ---------------------------------------------------------------------------
