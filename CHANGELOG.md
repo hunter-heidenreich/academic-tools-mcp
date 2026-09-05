@@ -17,6 +17,18 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **A unit-test file for the shared DOI normalizer, which had none.** `_doi`
+  was covered only by property tests and, transitively, by five provider
+  wrappers that each re-derived the same six examples. Neither side of the
+  four-digit registrant boundary was asserted anywhere, `looks_like_doi` had no
+  direct negative case, and nothing pinned which near-miss spellings
+  (`info:doi/`, `DOI 10.x/y`, prose punctuation) are deliberately rejected.
+  `tests/test_doi.py` covers those, and the three identical provider wrapper
+  test blocks collapse into one parametrized test asserting *delegation* —
+  which is the actual invariant — instead of re-deriving the behaviour three
+  times. `cache_search` now builds its filename-stem regex from the exported
+  `_doi.REGISTRANT_PATTERN` rather than a second spelling of it. ([#77])
+
 - **A `Known upstream limitations` section in the README.** OpenAlex drops or
   mangles diacritics in author names, reports an author's *current* affiliation
   rather than their affiliation at publication time, and arXiv and the published
@@ -72,6 +84,21 @@ grouped by milestone rather than per commit.
   already green locally; CI pins that bar rather than chasing it. ([#47])
 
 ### Changed
+
+- **The reference and citation tools reject a non-DOI locally.**
+  `get_paper_references{,_count}` and `get_paper_citations{,_count}` forwarded
+  whatever they were given to Crossref and OpenCitations, both of which are
+  DOI-only: an arXiv ID cost an upstream round-trip to earn a 404 and then
+  negative-cached a key that could never have resolved. They now gate on
+  `_doi.looks_like_doi` — the same predicate `get_paper_metadata` dispatches on
+  — and return `{error, not_found, suggestion}` naming the mismatch. ([#77])
+
+- **`_doi.normalize` is idempotent, and accepts `www.doi.org`.** The `doi:`
+  prefix strip now loops, so a doubled prefix can no longer survive one pass
+  and key separately from its own output. The bare-vs-URL treatment of `?`/`#`
+  is unchanged but now documented and pinned: a bare DOI keeps them (they are
+  legal suffix characters, and truncating would key a different paper), a URL
+  cuts at them (there they are unresolvable unless percent-encoded). ([#77])
 
 - **The ruff rule set went from 8 rule families to 38.** Every added rule is one
   the codebase already satisfied or was made to satisfy here, so each is a
@@ -224,6 +251,21 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **The DOI property-test strategy could generate a non-DOI and assert it was
+  one.** Its suffix alphabet blacklisted Unicode category `Zs` but not `Zl` /
+  `Zp`, so it could emit U+2028 — which `str.strip()` and `\S` both treat as
+  whitespace, making the "DOI" it built not DOI-shaped. The test failed only on
+  a seed that happened to find it. ([#77])
+
+- **A `doi=` BibTeX field could contain a resolver URL.** `generate_bibtex`
+  stripped OpenAlex's DOI with a local `startswith("https://doi.org/")` test,
+  so an older record served over plain http emitted
+  `doi={http://doi.org/10.x/y}` — which every BibTeX style then renders as a
+  doubled resolver link. The http spelling is real enough that the batch
+  matcher already handled it. All three generators (OpenAlex, arXiv, bioRxiv)
+  now route the provider's DOI through `_doi.normalize`, the module that
+  exists so this is not decided twice. ([#77])
 
 - **Shutdown's per-client close timeout was not a bound.** `aclose_all` wrapped
   each `client.aclose()` in `asyncio.wait_for`, which cancels the coroutine on
@@ -1440,3 +1482,4 @@ grouped by milestone rather than per commit.
 [#73]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/73
 [#74]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/74
 [#76]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/76
+[#77]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/77

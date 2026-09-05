@@ -5,42 +5,6 @@ import pytest
 from academic_tools_mcp.providers import crossref
 
 # ---------------------------------------------------------------------------
-# DOI normalization
-# ---------------------------------------------------------------------------
-
-
-class TestNormalizeDoi:
-    def test_bare_doi(self):
-        assert crossref._normalize_doi("10.1038/nature12373") == "10.1038/nature12373"
-
-    def test_https_url(self):
-        assert (
-            crossref._normalize_doi("https://doi.org/10.1038/nature12373") == "10.1038/nature12373"
-        )
-
-    def test_http_url(self):
-        assert (
-            crossref._normalize_doi("http://doi.org/10.1038/nature12373") == "10.1038/nature12373"
-        )
-
-    def test_doi_prefix(self):
-        assert crossref._normalize_doi("doi:10.1038/nature12373") == "10.1038/nature12373"
-
-    def test_strips_whitespace(self):
-        assert crossref._normalize_doi("  10.1038/nature12373  ") == "10.1038/nature12373"
-
-
-class TestCanonicalDoi:
-    def test_lowercases(self):
-        assert crossref.canonical_doi("10.1038/Nature12373") == "10.1038/nature12373"
-
-    def test_normalizes_and_lowercases(self):
-        assert (
-            crossref.canonical_doi("https://doi.org/10.1038/Nature12373") == "10.1038/nature12373"
-        )
-
-
-# ---------------------------------------------------------------------------
 # Rate limiter
 # ---------------------------------------------------------------------------
 

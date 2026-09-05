@@ -515,6 +515,62 @@ class TestAuthorEscaping:
         assert "&" not in author_line.replace(r"\&", "")
 
 
+class TestDoiFieldIsAlwaysBare:
+    """A ``doi=`` field must never contain a resolver URL.
+
+    OpenAlex returns the DOI as ``https://doi.org/...`` and, for older records,
+    over plain http. A local prefix test that only knows the https spelling
+    emits ``doi={http://doi.org/10.x/y}``, which every BibTeX style then
+    renders as ``https://doi.org/http://doi.org/10.x/y``. Routing through
+    `_doi.normalize` is what keeps all three generators honest.
+    """
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "10.1234/xy",
+            "https://doi.org/10.1234/xy",
+            "http://doi.org/10.1234/xy",
+            "https://dx.doi.org/10.1234/xy",
+            "doi:10.1234/xy",
+        ],
+    )
+    def test_openalex_generator(self, raw):
+        bib = bibtex.generate_bibtex(
+            {
+                "type": "article",
+                "title": "T",
+                "publication_year": 2020,
+                "doi": raw,
+                "authorships": [{"author": {"display_name": "A B"}}],
+            }
+        )
+        assert "doi={10.1234/xy}" in bib
+
+    def test_arxiv_generator(self):
+        bib = bibtex.generate_arxiv_bibtex(
+            TestGenerateArxivBibtex()._make_arxiv_paper(doi="http://doi.org/10.1234/xy")
+        )
+        assert "doi={10.1234/xy}" in bib
+
+    def test_biorxiv_generator_preprint_url_is_not_doubled(self):
+        bib = bibtex.generate_biorxiv_bibtex(
+            TestGenerateBiorxivBibtex._make_biorxiv_paper(
+                doi="https://doi.org/10.1101/2024.01.01.573838"
+            )
+        )
+        assert "doi={10.1101/2024.01.01.573838}" in bib
+        assert r"howpublished={\url{https://doi.org/10.1101/2024.01.01.573838}}" in bib
+
+    def test_biorxiv_generator_published_doi(self):
+        bib = bibtex.generate_biorxiv_bibtex(
+            TestGenerateBiorxivBibtex._make_biorxiv_paper(
+                published_doi="http://doi.org/10.1038/s41586-024-00001-1"
+            )
+        )
+        assert "doi={10.1038/s41586-024-00001-1}" in bib
+
+
 class TestDoiEscaping:
     """A DOI must stay resolvable, so it is escaped narrowly rather than
     rewritten into prose — but an unescaped ``%`` comments out the rest of the

@@ -12,14 +12,20 @@ from hypothesis import strategies as st
 from academic_tools_mcp import _doi, manual
 
 # Registrant codes are `10.` followed by four or more digits; the suffix is
-# near-freeform but may not contain whitespace, and `?`/`#` would be read as
-# the start of a query string or fragment by the URL form.
+# near-freeform but may not contain whitespace. `?`/`#` are excluded because
+# the bare and URL spellings *deliberately* diverge on them — a bare DOI keeps
+# them, a URL cuts at them. That documented asymmetry is pinned by example in
+# `test_doi.py`; folding it in here would only weaken this strategy.
+# The `.filter` is not redundant with the categories: `str.strip()` and `\S`
+# both go by `str.isspace()`, which is True for U+2028 (category Zl) and U+2029
+# (Zp) as well as Zs. A suffix carrying one is stripped away by `normalize` and
+# is not a DOI — a hole the category list alone leaves open.
 _SUFFIX_ALPHABET = st.characters(
     min_codepoint=33,
     max_codepoint=0x2FFF,
-    blacklist_characters="?# \t\n\r",
-    blacklist_categories=("Cs", "Cc", "Zs"),
-)
+    blacklist_characters="?#",
+    blacklist_categories=("Cs", "Cc", "Zs", "Zl", "Zp"),
+).filter(lambda c: not c.isspace())
 
 dois = st.builds(
     lambda registrant, suffix: f"10.{registrant}/{suffix}",
@@ -40,6 +46,7 @@ def test_every_accepted_spelling_yields_one_key(doi: str) -> None:
         f"https://doi.org/{doi}",
         f"http://doi.org/{doi}",
         f"https://dx.doi.org/{doi}",
+        f"https://www.doi.org/{doi}",
         f"HTTPS://DX.DOI.ORG/{doi}",
         f"https://doi.org/{doi}?utm_source=x",
         f"https://doi.org/{doi}#abstract",
@@ -76,3 +83,21 @@ def test_dispatch_uses_the_same_shape_test_as_the_cache_key(doi: str) -> None:
     """
     for spelling in (doi, f"https://doi.org/{doi}", f"doi: {doi}", f"  {doi}  "):
         assert manual.resolve_metadata_source(spelling) == "openalex", spelling
+
+
+@given(st.text(max_size=60))
+def test_normalize_is_idempotent_for_any_input(text: str) -> None:
+    """Feeding `normalize` its own output changes nothing — for DOIs and non-DOIs alike.
+
+    Without this, a form that survives one pass but not two (a repeated `doi:`
+    prefix) keys separately from its own normalized output.
+    """
+    once = _doi.normalize(text)
+    assert _doi.normalize(once) == once
+
+
+@given(dois)
+def test_canonical_matches_normalize_lowercased(doi: str) -> None:
+    """`canonical` is exactly `normalize` + `lower` — no second normalization policy."""
+    for spelling in (doi, f"https://doi.org/{doi}", f"doi:{doi}", f"  {doi}  "):
+        assert _doi.canonical(spelling) == _doi.normalize(spelling).lower()
