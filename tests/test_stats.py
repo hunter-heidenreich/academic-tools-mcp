@@ -12,8 +12,6 @@ from academic_tools_mcp import _stats, cache
 
 
 def test_cache_hit_and_miss_counters(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     # Miss before put.
     assert cache.get("openalex", "works", "k1") is None
     snap = _stats.snapshot()["providers"]["openalex"]
@@ -32,7 +30,6 @@ def test_stale_eviction_counts_as_miss(tmp_path, monkeypatch):
     so the operator can see TTL pressure in the same counter."""
     import os
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put("biorxiv", "papers", "k", {"x": 1})
     path = tmp_path / "biorxiv" / "papers" / f"{cache._cache_key('k')}.json"
     old = path.stat().st_mtime - 9999
@@ -43,7 +40,6 @@ def test_stale_eviction_counts_as_miss(tmp_path, monkeypatch):
 
 
 def test_negative_hit_counter(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put_negative("arxiv", "papers", "bogus", {"error": "404"})
     assert cache.get_negative("arxiv", "papers", "bogus") == {"error": "404"}
     assert _stats.snapshot()["providers"]["arxiv"]["negative_hits"] == 1
@@ -60,7 +56,6 @@ def test_snapshot_includes_in_flight(monkeypatch):
 
 
 def test_reset_clears_counters(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put("openalex", "works", "k", {"x": 1})
     cache.get("openalex", "works", "k")
     assert _stats.snapshot()["providers"]["openalex"]["cache_hits"] == 1

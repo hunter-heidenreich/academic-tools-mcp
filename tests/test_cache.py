@@ -5,16 +5,12 @@ from academic_tools_mcp import cache
 
 
 def test_cache_dir_is_public_and_namespaced(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     # Public name (no leading underscore) so the PDF-handling modules can
     # build canonical paths without reaching for a private helper.
     assert cache.cache_dir("openalex", "works") == tmp_path / "openalex" / "works"
 
 
 def test_put_and_get(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     data = {"id": "W123", "title": "Test Paper"}
     cache.put("openalex", "works", "10.1234/test", data)
 
@@ -23,14 +19,10 @@ def test_put_and_get(tmp_path, monkeypatch):
 
 
 def test_get_miss(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     assert cache.get("openalex", "works", "nonexistent") is None
 
 
 def test_has(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     assert cache.has("openalex", "works", "10.1234/test") is False
 
     cache.put("openalex", "works", "10.1234/test", {"title": "Test"})
@@ -38,8 +30,6 @@ def test_has(tmp_path, monkeypatch):
 
 
 def test_namespacing(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     cache.put("openalex", "works", "key1", {"source": "openalex"})
     cache.put("arxiv", "papers", "key1", {"source": "arxiv"})
 
@@ -48,8 +38,6 @@ def test_namespacing(tmp_path, monkeypatch):
 
 
 def test_unicode_data(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     data = {"author": "Müller, François-René"}
     cache.put("openalex", "works", "unicode-test", data)
 
@@ -58,8 +46,6 @@ def test_unicode_data(tmp_path, monkeypatch):
 
 
 def test_cache_file_is_valid_json(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     data = {"title": "Test", "year": 2022}
     cache.put("openalex", "works", "json-test", data)
 
@@ -84,8 +70,6 @@ def test_corrupt_cache_file_self_heals_on_get(tmp_path, monkeypatch):
     died mid-write before atomic writes existed) must not poison the cache.
     get() returns None, the bad file is removed, and the next put() can
     write a clean entry."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     # Manually plant a corrupt file at the exact path get() will look up.
     directory = tmp_path / "openalex" / "works"
     directory.mkdir(parents=True)
@@ -105,8 +89,6 @@ def test_failed_write_does_not_clobber_existing_value(tmp_path, monkeypatch):
     non-serialisable input), the previously cached value at the canonical
     path must remain intact — the temp file gets cleaned up, the rename
     never happens, and the existing entry is unaffected."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     cache.put("openalex", "works", "k", {"title": "good"})
     assert cache.get("openalex", "works", "k") == {"title": "good"}
 
@@ -132,7 +114,6 @@ def test_failed_write_does_not_clobber_existing_value(tmp_path, monkeypatch):
 
 
 def test_get_negative_returns_none_when_absent(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     assert cache.get_negative("openalex", "works", "missing") is None
 
 
@@ -140,8 +121,6 @@ def test_put_then_get_negative_returns_payload_without_internals(tmp_path, monke
     # The agent should see the same {error: ...} shape it would have
     # gotten from a fresh 404 — _expires_at is bookkeeping and must not
     # leak through.
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     err = {"error": "No paper found for arXiv ID: bogus"}
     cache.put_negative("arxiv", "papers", "bogus", err)
 
@@ -156,8 +135,6 @@ def test_negative_does_not_collide_with_positive(tmp_path, monkeypatch):
     # that if a previously-not-found DOI later resolves, we can write a
     # positive entry and have cache.get find it even before the negative
     # expires.
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     cache.put("openalex", "works", "10.1/x", {"title": "Real"})
     cache.put_negative("openalex", "works", "10.1/x", {"error": "stale"})
 
@@ -168,8 +145,6 @@ def test_negative_does_not_collide_with_positive(tmp_path, monkeypatch):
 def test_expired_negative_entry_self_heals(tmp_path, monkeypatch):
     # Past-its-TTL negative entries must be treated as a cache miss
     # AND removed on read so they don't accumulate forever.
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     cache.put_negative(
         "openalex",
         "works",
@@ -187,8 +162,6 @@ def test_expired_negative_entry_self_heals(tmp_path, monkeypatch):
 def test_corrupt_negative_entry_self_heals(tmp_path, monkeypatch):
     # A truncated or otherwise unparseable negative entry must not poison
     # subsequent reads. Same self-heal contract as the positive cache.
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     neg_path = cache._neg_path("arxiv", "papers", "junk-1")
     neg_path.parent.mkdir(parents=True, exist_ok=True)
     neg_path.write_text('{"error": "tru')  # truncated mid-string
@@ -201,8 +174,6 @@ def test_negative_entry_missing_expires_at_self_heals(tmp_path, monkeypatch):
     # A negative file that's syntactically valid JSON but missing the
     # _expires_at sentinel must not be trusted forever — treat it as
     # expired so the next put rebuilds it cleanly.
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     neg_path = cache._neg_path("arxiv", "papers", "no-ttl")
     neg_path.parent.mkdir(parents=True, exist_ok=True)
     neg_path.write_text(json.dumps({"error": "x"}))
@@ -216,8 +187,6 @@ def test_max_age_seconds_evicts_stale_entry(tmp_path, monkeypatch):
     and unlinked, so a stale citation count or published_doi can't pin
     the cache for an entire session."""
     import os
-
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
 
     cache.put("openalex", "works", "10.1/x", {"title": "Stale"})
     path = tmp_path / "openalex" / "works" / f"{cache._cache_key('10.1/x')}.json"
@@ -233,7 +202,6 @@ def test_max_age_seconds_evicts_stale_entry(tmp_path, monkeypatch):
 
 
 def test_max_age_seconds_keeps_fresh_entry(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put("openalex", "works", "fresh", {"title": "Fresh"})
     # Generous TTL → entry survives.
     assert cache.get("openalex", "works", "fresh", max_age_seconds=3600) == {"title": "Fresh"}
@@ -243,8 +211,6 @@ def test_invalidate_drops_positive_and_negative(tmp_path, monkeypatch):
     """force_refresh drops both halves so a previously-404'd identifier
     can resolve on the retry — a stale negative wouldn't expire for 24h
     on its own."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     cache.put("openalex", "works", "10.1/x", {"title": "Real"})
     cache.put_negative("openalex", "works", "10.1/x", {"error": "stale"})
     assert cache.get("openalex", "works", "10.1/x") is not None
@@ -259,7 +225,6 @@ def test_invalidate_drops_positive_and_negative(tmp_path, monkeypatch):
 def test_invalidate_is_idempotent(tmp_path, monkeypatch):
     """Calling invalidate on a key that has nothing cached is a silent
     no-op so callers don't need to feature-detect."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.invalidate("openalex", "works", "never-cached")  # must not raise
 
 
@@ -269,8 +234,6 @@ def test_gc_orphan_tmp_files_removes_old_tmps(tmp_path, monkeypatch):
     the canonical .json (and any recent .tmp from a live writer)
     completely alone."""
     import os
-
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
 
     # Plant a normal cache entry and an orphan .tmp from a "previous run".
     cache.put("openalex", "works", "k", {"x": 1})
@@ -307,8 +270,6 @@ def test_concurrent_writers_dont_corrupt_file(tmp_path, monkeypatch):
     write_text() this could leave a half-written file; with os.replace
     the worst case is "last writer wins", which is fine."""
     import threading
-
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
 
     errors: list[BaseException] = []
 
@@ -364,8 +325,6 @@ def test_get_decodes_utf8_under_c_locale(tmp_path, monkeypatch):
     preferred encoding is ASCII; a locale-default read of an accented author
     name raises UnicodeDecodeError, and the self-heal path would silently
     delete a perfectly good entry."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     data = {"author": "Müller, François-René"}
     cache.put("openalex", "works", "loc-test", data)  # write is explicit UTF-8
     path = tmp_path / "openalex" / "works" / f"{cache._cache_key('loc-test')}.json"
@@ -381,8 +340,6 @@ def test_get_decodes_utf8_under_c_locale(tmp_path, monkeypatch):
 def test_get_negative_decodes_utf8_under_c_locale(tmp_path, monkeypatch):
     """Same UTF-8 contract for the negative cache: a 404 payload carrying a
     non-ASCII identifier must survive a read under a non-UTF-8 locale."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     err = {"error": "No paper found for: Müller (François-René)"}
     cache.put_negative("crossref", "works", "müller-2020", err)
     path = cache._neg_path("crossref", "works", "müller-2020")
@@ -404,8 +361,6 @@ def test_get_non_dict_json_self_heals(tmp_path, monkeypatch):
     """get() is typed dict|None. A file holding a JSON list/scalar (external
     tampering, or a foreign writer) must be treated like corruption — None
     and unlinked — not passed through as a malformed 'hit'."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     directory = tmp_path / "openalex" / "works"
     directory.mkdir(parents=True)
     bad_path = directory / f"{cache._cache_key('listy')}.json"
@@ -418,8 +373,6 @@ def test_get_non_dict_json_self_heals(tmp_path, monkeypatch):
 def test_get_negative_non_dict_json_self_heals(tmp_path, monkeypatch):
     """A non-dict negative entry must self-heal rather than crash on the
     _expires_at lookup (entry.get(...) would AttributeError on a list)."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     neg_path = cache._neg_path("arxiv", "papers", "listy-neg")
     neg_path.parent.mkdir(parents=True, exist_ok=True)
     neg_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
@@ -432,8 +385,6 @@ def test_get_negative_preserves_underscore_payload_keys(tmp_path, monkeypatch):
     """Only the internal _expires_at bookkeeping key is stripped on read —
     caller payload keys that happen to start with '_' (e.g. _canonical_id,
     used elsewhere in the codebase) must round-trip untouched."""
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
-
     err = {"error": "not found", "_canonical_id": "10.1/y", "not_found": True}
     cache.put_negative("openalex", "works", "u-keys", err)
 
@@ -534,7 +485,6 @@ def test_cached_lookup_serves_positive_hit_without_fetch(tmp_path, monkeypatch):
 
     from academic_tools_mcp import _singleflight
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put("openalex", "works", "10.1/x", {"id": "W1"})
     sf = _singleflight.SingleFlight()
     calls = 0
@@ -563,7 +513,6 @@ def test_cached_lookup_serves_negative_hit_without_fetch(tmp_path, monkeypatch):
 
     from academic_tools_mcp import _singleflight
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put_negative("openalex", "works", "10.1/x", {"error": "404"})
     sf = _singleflight.SingleFlight()
     calls = 0
@@ -592,7 +541,6 @@ def test_cached_lookup_force_refresh_invalidates_then_fetches(tmp_path, monkeypa
 
     from academic_tools_mcp import _singleflight
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     cache.put("openalex", "works", "10.1/x", {"id": "stale"})
     cache.put_negative("openalex", "works", "10.1/x", {"error": "old 404"})
     sf = _singleflight.SingleFlight()
@@ -621,7 +569,6 @@ def test_cached_lookup_coalesces_concurrent_callers(tmp_path, monkeypatch):
 
     from academic_tools_mcp import _singleflight
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     sf = _singleflight.SingleFlight()
     calls = 0
 
@@ -663,7 +610,6 @@ def test_cached_lookup_returns_independent_copies(tmp_path, monkeypatch):
 
     from academic_tools_mcp import _singleflight
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     sf = _singleflight.SingleFlight()
 
     async def fetch():
@@ -703,7 +649,6 @@ def test_cached_lookup_uses_custom_single_flight_key(tmp_path, monkeypatch):
 
     from academic_tools_mcp import _singleflight
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
     sf = _singleflight.SingleFlight()
     order = []
 

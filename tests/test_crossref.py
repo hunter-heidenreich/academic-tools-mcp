@@ -142,7 +142,6 @@ class TestSearchWorksCacheWarming:
     async def test_search_hits_warm_works_cache(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
         monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
 
         # Two hits with DOIs + one hit without (real-world quirk —
@@ -180,7 +179,6 @@ class TestSearchWorksCacheWarming:
         # was deliberately fetched and may have richer fields.
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
         monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
 
         # Pre-seed a richer cached version.
