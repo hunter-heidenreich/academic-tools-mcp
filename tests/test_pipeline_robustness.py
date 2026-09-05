@@ -225,6 +225,34 @@ class TestUnindexableDocumentsAreReported:
         assert "find_in_paper" in result["unindexable_note"]
 
     @pytest.mark.asyncio
+    async def test_the_note_states_the_actual_reason(self, corpus):
+        """The note is built from the reasons present, not from one asserted
+        cause. It blamed "the tokeniser is ASCII-only, so non-Latin scripts
+        yield no terms" — which the any-Unicode-letter probe made false, and
+        which was never true of these files: they have no letters in any
+        script. An agent reading it would go looking for an encoding problem."""
+        note = (await search_tools.search_cached_papers("transformer"))["unindexable_note"]
+
+        assert "no letters or digits" in note
+        assert "ASCII" not in note
+        assert "non-Latin" not in note
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_paper_gets_its_own_reason(self, corpus, monkeypatch):
+        """``unreadable`` is an I/O failure, not a tokenisation one, and the
+        recovery differs — re-import rather than "there is nothing to index"."""
+        monkeypatch.setattr(
+            cache_search,
+            "unindexable",
+            lambda *a, **kw: [{"namespace": "manual", "stem": "x", "reason": "unreadable"}],
+        )
+
+        note = (await search_tools.search_cached_papers("transformer"))["unindexable_note"]
+
+        assert "could not be read" in note
+        assert "import_paper" in note
+
+    @pytest.mark.asyncio
     async def test_clean_corpus_stays_lean(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
