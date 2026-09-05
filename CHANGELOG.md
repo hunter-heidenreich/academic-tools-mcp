@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **A `Known upstream limitations` section in the README.** OpenAlex drops or
+  mangles diacritics in author names, reports an author's *current* affiliation
+  rather than their affiliation at publication time, and arXiv and the published
+  DOI can list different author sets for the same work. These are properties of
+  the upstream providers, but until now they were written down only in
+  `CLAUDE.md` — a file users don't read — so anyone citing a result had no way
+  to know which fields to double-check.
+
 - **Tool-layer tests for the three MCP tools that had none, and a CI coverage
   floor to stop it recurring.** `get_paper_references_count`, `search_wikipedia`
   and `get_wikipedia_summary` were untested — the only occurrence of

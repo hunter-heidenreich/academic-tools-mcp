@@ -18,6 +18,14 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 
 All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry honouring `Retry-After`, and definitive 404s are negative-cached (24h; 1h for arXiv/bioRxiv, whose identifiers go live mid-session) so retry-happy agents don't burn rate budget on guaranteed misses.
 
+## Known upstream limitations
+
+These are properties of the upstream providers rather than of this server, which does not attempt to paper over them. Treat them as caveats when citing a result.
+
+- **Diacritics are dropped or mangled** in OpenAlex author names (`Alan Aspuru-Guzik` for `Alán Aspuru-Guzik`). Verify spellings against the publisher's page before quoting a name.
+- **Affiliations are current, not paper-time.** OpenAlex reports where an author works *now*, not where they were when the paper was published — the gap widens for older papers.
+- **Preprint and published author lists diverge.** arXiv and the published DOI can list different author sets for the same work. `get_paper_metadata(doi, follow_published=True)` chains a bioRxiv preprint to its journal version, but only once OpenAlex has indexed that version; until then the response carries `followed_published: false` so you can tell you are looking at preprint-era metadata.
+
 ## Setup
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
