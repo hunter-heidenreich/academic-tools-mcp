@@ -76,19 +76,6 @@ _IMPORT_SUGGESTION = (
 )
 
 
-def _is_definitive_failure(result: dict[str, Any]) -> bool:
-    """Whether a download result is a permanent, paper-intrinsic failure.
-
-    Only these are worth negative-caching. A transient transport / OpenAlex
-    error (``retryable: True``) will succeed on retry, and a ``MAX_PDF_BYTES``
-    abort (carries ``max_bytes``) is a config choice a cap bump fixes — caching
-    either would strand the caller behind a stale miss until the TTL expires or
-    a force_refresh. What remains (no OA URL, dead/landing-page URL) is genuinely
-    about the paper, not the request.
-    """
-    return "error" in result and result.get("retryable") is not True and "max_bytes" not in result
-
-
 def _cached_hit(dest: Path) -> dict[str, Any]:
     """Build the ``cached: True`` response for an existing on-disk PDF."""
     return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": True}
@@ -198,7 +185,7 @@ async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[
                 return neg
 
         result = await _resolve_and_download(identifier, dest, force_refresh=force_refresh)
-        if _is_definitive_failure(result):
+        if _pdf_download.is_definitive_failure(result):
             cache.put_negative(
                 NAMESPACE, _NEG_ENTITY, canonical, result, ttl_seconds=_NEG_TTL_SECONDS
             )
