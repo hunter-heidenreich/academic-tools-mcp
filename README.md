@@ -272,7 +272,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
   ├── PDF + content  manual.py         local-file import + identifier dispatch
   │                  papers.py         PDF → markdown → sections; global
   │                                    single-conversion lock; find_in_markdown
-  │                  cache_search.py   BM25 over cached markdown
+  │                  cache_search.py   BM25 over cached markdown (SQLite FTS5)
   │                  bibtex.py         BibTeX generation
   │                  _pdf_download.py  streaming download + size cap
   │                  oa_download.py    gated open-access fetch for generic DOIs

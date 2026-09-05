@@ -635,6 +635,26 @@ def unindexable(
 _QUERY_SPLIT_RE = re.compile(r"\s+")
 
 
+def _query_words(query: str) -> list[str]:
+    """The query's words, as handed to FTS5 — whitespace-split, filtered.
+
+    Stopwords and single characters are dropped here rather than by
+    ``_tokenize``. Both filters still have to happen: the index stores the
+    *raw* markdown under ``unicode61``, which strips neither, so a query
+    carrying "the" would otherwise OR in a term that matches essentially the
+    whole corpus. What must NOT happen is ``_tokenize``'s ASCII-only word
+    regex, which discards a non-Latin word entirely and made the query
+    disagree with the index that had happily stored it.
+    """
+    words: list[str] = []
+    for raw in _QUERY_SPLIT_RE.split(query.strip()):
+        lowered = raw.lower()
+        if len(lowered) <= 1 or lowered in _STOPWORDS:
+            continue
+        words.append(raw)
+    return words
+
+
 def _fts_query(query: str) -> str:
     """Build an FTS5 MATCH expression OR-ing the query's words.
 
@@ -642,10 +662,12 @@ def _fts_query(query: str) -> str:
     than syntax — an unquoted ``NOT``, ``OR``, ``*``, ``-`` or ``:`` in a
     user query would otherwise be parsed as an operator, or raise. Inside a
     quoted phrase only ``"`` is special, and it is escaped by doubling.
+
+    Returns ``""`` when nothing survives filtering, which the caller treats
+    as an empty result — an empty MATCH expression is a syntax error to FTS5.
     """
-    words = [w for w in _QUERY_SPLIT_RE.split(query.strip()) if w]
     quoted = []
-    for word in words:
+    for word in _query_words(query):
         escaped = word.replace('"', '""')
         # A word that tokenises to nothing (pure punctuation) would make FTS5
         # reject the whole expression.
@@ -653,6 +675,29 @@ def _fts_query(query: str) -> str:
             continue
         quoted.append(f'"{escaped}"')
     return " OR ".join(dict.fromkeys(quoted))
+
+
+def _snippet_terms(query: str, *, normalize: bool) -> set[str]:
+    """Terms used to centre the snippet on the best-matching passage.
+
+    The union of two views of the query, because neither alone is enough.
+    ``_tokenize`` strips punctuation a raw word would carry into the
+    word-boundary regex ("transformer." never matches), but its ASCII-only
+    pattern mangles anything else: "Gutiérrez" becomes ``guti``/``rrez``,
+    neither of which appears in the text, and a wholly non-Latin query
+    becomes nothing at all. Both cases used to centre the snippet on the
+    document head and report no section, so a hit the index found perfectly
+    well came back unnavigable.
+
+    The raw words are transformed the way ``_extract_snippet`` expects them:
+    folded when ``normalize``, then lowercased. For an ordinary ASCII query
+    the two views coincide and this is exactly ``_tokenize`` as before.
+    """
+    terms = set(_tokenize(query, normalize=normalize))
+    terms.update(
+        (_textnorm.fold(word) if normalize else word).lower() for word in _query_words(query)
+    )
+    return terms
 
 
 def search(
@@ -706,8 +751,12 @@ def search(
     if top_k <= 0:
         return []
     top_k = min(top_k, _MAX_TOP_K)
-    query_tokens = _tokenize(query, normalize=normalize)
-    if not query_tokens:
+    # Gate on the MATCH expression, not on ``_tokenize``: a query of purely
+    # non-Latin words tokenises to nothing under that ASCII regex, and
+    # returning early here made such a search come back empty even though
+    # FTS5 had indexed the term and a raw MATCH found it.
+    match_expr = _fts_query(query)
+    if not match_expr:
         return []
 
     _refresh_index(force_refresh=force_refresh)
@@ -718,7 +767,7 @@ def search(
         f"FROM {table} JOIN files f ON f.rowid = {table}.rowid "
         f"WHERE {table} MATCH ?"
     )
-    params: list[Any] = [_fts_query(query)]
+    params: list[Any] = [match_expr]
     if namespace is not None:
         sql += " AND f.ns = ?"
         params.append(namespace)
@@ -736,7 +785,7 @@ def search(
     finally:
         con.close()
 
-    unique_query_terms = set(query_tokens)
+    unique_query_terms = _snippet_terms(query, normalize=normalize)
     out: list[dict[str, Any]] = []
     for row in rows:
         # FTS5's bm25() is negative, most-relevant first. Flip it so the

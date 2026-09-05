@@ -866,3 +866,107 @@ class TestQueryTokenizationMatchesTheIndex:
     def test_empty_and_whitespace_queries_return_nothing(self, accented):
         for query in ("", "   ", "\n\t"):
             assert cache_search.search(query) == []
+
+
+class TestNonLatinQueryReachesTheIndex:
+    """A non-Latin query must reach FTS5 rather than being gated out.
+
+    Follow-on regression from the same root cause as
+    ``TestQueryTokenizationMatchesTheIndex``: that fix rebuilt the MATCH
+    expression from raw words, but ``search`` still *gated* on
+    ``_tokenize(query)`` being non-empty. A query of purely non-Latin words
+    tokenises to ``[]`` under that ASCII regex, so the search returned early
+    and reported nothing — even though the document had indexed the term and
+    a raw ``MATCH`` against the very same index found it.
+    """
+
+    @pytest.fixture
+    def mixed(self, isolated_cache):
+        # An ordinary English paper that happens to carry non-Latin terms —
+        # the realistic case. The document itself indexes fine, so there is
+        # no ``unindexable`` diagnostic to warn the agent either.
+        _seed_markdown(
+            isolated_cache,
+            "arxiv",
+            "2301.00003",
+            "# Attention\n\n## Methods\n\nWe trained it.\n\n"
+            "## Results\n\nJapanese: 注意力機構. Russian: Нейронные сети.\n",
+        )
+        return isolated_cache
+
+    def test_document_is_indexed_not_skipped(self, mixed):
+        cache_search.search("attention")
+        assert cache_search.unindexable() == []
+
+    @pytest.mark.parametrize("query", ["注意力機構", "Нейронные"])
+    def test_non_latin_query_finds_the_document(self, mixed, query):
+        assert [h["canonical_id"] for h in cache_search.search(query)] == ["2301.00003"]
+
+    @pytest.mark.parametrize("query", ["注意力機構", "Нейронные"])
+    def test_non_latin_hit_is_chainable_into_get_paper_section(self, mixed, query):
+        # The whole point of #54's section_index: a hit that resolves to the
+        # document head with section None is a dead end for the agent.
+        (hit,) = cache_search.search(query)
+        assert hit["section"] == "Results"
+        assert hit["section_index"] is not None
+        assert hit["char_offset"] > 0
+
+    def test_accented_hit_is_chainable_too(self, isolated_cache):
+        # ``_tokenize`` mangles "Gutiérrez" into guti/rrez, neither of which
+        # appears in the text, so snippet centring found nothing and the hit
+        # came back with no section.
+        _seed_markdown(
+            isolated_cache,
+            "arxiv",
+            "a",
+            "# Paper\n\n## Intro\n\nnothing.\n\n## Results\n\nBy Ana Gutiérrez.\n",
+        )
+        (hit,) = cache_search.search("Gutiérrez")
+        assert hit["section"] == "Results"
+        assert hit["char_offset"] > 0
+
+
+class TestStopwordsStayOutOfTheMatchExpression:
+    """Stopwords must be filtered from the query, not just from ``_tokenize``.
+
+    FTS5 indexes the *raw* markdown under ``unicode61``, which strips neither
+    stopwords nor single characters. Once the MATCH expression was built from
+    raw words, "the" became a real search term matching essentially every
+    document in the corpus.
+    """
+
+    @pytest.fixture
+    def corpus(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "relevant", "# A\n\nThe transformer model.\n")
+        _seed_markdown(isolated_cache, "arxiv", "irrelevant", "# B\n\nThe cat sat on the mat.\n")
+        return isolated_cache
+
+    def test_stopword_does_not_drag_in_unrelated_documents(self, corpus):
+        found = {h["canonical_id"] for h in cache_search.search("the transformer")}
+        assert found == {"relevant"}
+
+    def test_an_all_stopword_query_matches_nothing(self, corpus):
+        assert cache_search.search("the and of") == []
+
+    def test_single_characters_are_dropped(self, corpus):
+        assert cache_search.search("a") == []
+        assert cache_search.search("x") == []
+
+    def test_stopword_filtering_survives_into_the_match_expression(self):
+        assert cache_search._fts_query("the transformer") == '"transformer"'
+        assert cache_search._fts_query("the") == ""
+
+    def test_empty_match_expression_short_circuits_before_indexing(
+        self, isolated_cache, monkeypatch
+    ):
+        # An empty MATCH expression is a syntax error to FTS5, and there is
+        # no reason to walk the corpus to discover the query was empty.
+        called = False
+
+        def _boom(**kwargs):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(cache_search, "_refresh_index", _boom)
+        assert cache_search.search("the") == []
+        assert not called

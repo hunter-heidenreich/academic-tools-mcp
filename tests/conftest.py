@@ -22,18 +22,11 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Runs before every test in the suite. Idempotent and cheap.
     """
-    from academic_tools_mcp import _clients, _singleflight, _stats, cache_search
+    from academic_tools_mcp import _clients, _singleflight, _stats
 
     # Wipe the per-provider client cache so any test that monkeypatches
     # httpx.AsyncClient sees a fresh build on first use.
     _clients._clients.clear()
-
-    # Reset the in-memory search-index memo. It is keyed by index.json's stat
-    # signature, and a per-test tmp cache root starts with no index file (sig
-    # None) — which would otherwise collide with a prior test's None-keyed memo
-    # and serve stale entries from a different corpus.
-    monkeypatch.setattr(cache_search, "_INDEX_MEMO", None, raising=False)
-    monkeypatch.setattr(cache_search, "_INDEX_MEMO_SIG", None, raising=False)
 
     # Zero the stats counters so a test that asserts on hit/miss totals
     # isn't contaminated by counts from prior tests.

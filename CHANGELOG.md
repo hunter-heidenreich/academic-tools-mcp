@@ -112,6 +112,68 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A non-Latin query returned nothing, though the index held the term.**
+  Moving to FTS5 ([#55]) left `search_cached_papers` gating on `_tokenize` —
+  an ASCII-only regex from when this module built its own index. A query of
+  purely non-Latin words tokenised to nothing and the search returned early,
+  even though the document had indexed cleanly and a raw FTS5 `MATCH` against
+  the very same index found it. No `unindexable` entry warned about it either,
+  so the agent got a silent empty result. The gate is now the MATCH expression
+  itself. Accented and non-Latin hits also resolve a `section_index` again
+  rather than centring on the document head — `_tokenize` mangles "Gutiérrez"
+  into `guti`/`rrez`, neither of which occurs in the text, so the hit came back
+  unnavigable. ([#57])
+
+- **Stopwords leaked into the FTS5 MATCH expression.** Building it from raw
+  words ([#55]) dropped the stopword and single-character filter along with
+  the ASCII one. FTS5 indexes the raw markdown under `unicode61`, which strips
+  neither, so `search("the transformer")` OR-ed in a term matching essentially
+  every document and returned papers with no connection to the query.
+  `_query_words` keeps that filter; only the ASCII word-splitting is gone. ([#57])
+
+- **`.claude/rules/pipeline.md` still documented the deleted JSON search
+  index** — `index.json`, `_INDEX_MEMO`, `_index_sig`, `_load_index`,
+  `tf_norm`, the copy-on-write memo and "shard per-namespace" as the next
+  lever. None of those five symbols exist in the source any more. That file
+  loads whenever the module is edited, so the next reader got a confident,
+  detailed description of an architecture that had been replaced two PRs
+  earlier — the same class of drift [#51] was written to fix. Rewritten
+  against the FTS5 implementation, along with the stale BM25 constants
+  (k1=1.5 → FTS5's 1.2) and the chain-by-title advice [#54] superseded.
+  `tests/conftest.py` likewise still monkeypatched `_INDEX_MEMO` /
+  `_INDEX_MEMO_SIG` with `raising=False`, which had quietly become a no-op.
+  ([#57])
+
+- **A full disk turned a successful fetch into an uncaught exception.**
+  `cache.put` runs inside every provider's `fetch` closure *after* the network
+  request already succeeded, so an `OSError` there (ENOSPC, read-only mount,
+  quota) threw away data we had just paid an HTTP request for and propagated
+  out of the tool instead of the `{error}` contract. `put` and `put_negative`
+  now return whether the write landed and absorb `OSError`, so the caller
+  serves its answer uncached; the failure is counted as
+  `cache_write_failures` for the operator. Genuine programming errors still
+  propagate. ([#56])
+- **An empty conversion produced the literal error `out of range (0--1)`.**
+  A converter can exit 0 having written an empty markdown file — a 0-page PDF,
+  an image-only scan — and every section read then fell through to the range
+  check and emitted that. It now says the markdown is empty and suggests the
+  likely cause (no extractable text layer). ([#56])
+- **The converter's stderr was captured inconsistently.** The command was run
+  as `{cmd} 2>&1` with `stderr=PIPE`, which was worse than merely redundant:
+  `;` and `&&` bind tighter than the redirect, so streams were merged only for
+  a *single-command* converter. With `PDF_CONVERTER_VENV` set — making the
+  command `source ... && {cmd}` — the redirect attached to whatever the last
+  command happened to be. Whether a converter's error reached the agent
+  depended on the shape of the operator's converter string. The redirect is
+  gone; stderr is captured on its own pipe and appended last, so a converter
+  that keeps logging after it fails can no longer push its own error out of
+  the 500-character window. ([#56])
+- **Which markdown file became the paper was nondeterministic.** MinerU emits
+  several `.md` files per run, and both the exact-stem lookup and the
+  fallback used `list(glob(...))[0]` — filesystem order. Both are now sorted,
+  the fallback by depth then name, so a top-level output beats one nested in
+  a subdirectory. ([#56])
+
 - **Namespace-filtered search no longer changes a paper's score.** Corpus
   statistics were scoped to the filtered subset, so the same paper scored
   differently in a filtered and an unfiltered search. Term rarity is now
@@ -1007,3 +1069,5 @@ grouped by milestone rather than per commit.
 [#53]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/53
 [#54]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/54
 [#55]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/55
+[#56]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/56
+[#57]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/57

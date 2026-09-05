@@ -730,6 +730,22 @@ def get_section_content(
 
     boundaries = [(sp.title, sp.start, sp.end) for sp in section_boundaries(markdown)]
 
+    if not boundaries:
+        # A converter can exit 0 having produced an empty or whitespace-only
+        # markdown file (a 0-page PDF, an image-only scan). convert_paper then
+        # reports success with sections: [], and every read here fell through
+        # to the range check below and produced the literal, useless
+        # "out of range (0--1)". Say what actually happened instead.
+        return {
+            "error": "The converted markdown for this paper is empty — no readable text.",
+            "suggestion": (
+                "The PDF probably has no extractable text layer (a scan or an "
+                "image-only document). Re-run convert_paper with force_refresh=True "
+                "to try again, or check the PDF opens and contains selectable text."
+            ),
+            "retryable": False,
+        }
+
     if isinstance(section, int):
         if 0 <= section < len(boundaries):
             resolved_index = section
@@ -1146,7 +1162,7 @@ async def convert_pdf(
                 proc = await asyncio.create_subprocess_exec(
                     "bash",
                     "-c",
-                    f"{converter_cmd} 2>&1",
+                    converter_cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
@@ -1199,7 +1215,15 @@ async def convert_pdf(
             if proc.returncode != 0:
                 # Converter output may include binary noise on crashes;
                 # replace undecodable bytes rather than raising
-                # UnicodeDecodeError ourselves.
+                # UnicodeDecodeError ourselves. stderr is listed last because
+                # it is where a converter puts its actual error, and only the
+                # tail of this string is shown.
+                #
+                # The command used to be wrapped as `{cmd} 2>&1`, which merged
+                # stderr into stdout and left the stderr pipe permanently
+                # empty — so this concatenation always appended nothing, and
+                # a converter that logs progress to stdout could push its real
+                # error out of the 500-char tail.
                 output = (stdout or b"").decode("utf-8", errors="replace") + (stderr or b"").decode(
                     "utf-8", errors="replace"
                 )
@@ -1211,11 +1235,19 @@ async def convert_pdf(
 
             # Find the generated markdown file in the output directory
             stem = pdf_path.stem
-            candidates = list(extract_dir.glob(f"**/{stem}.md"))
+            # Sorted: glob order is filesystem-dependent, and MinerU emits
+            # several .md files per run — so which one *became* the paper was
+            # nondeterministic whenever the exact-stem match missed.
+            candidates = sorted(extract_dir.glob(f"**/{stem}.md"))
 
             if not candidates:
                 # Try any .md file in the output
-                candidates = list(extract_dir.glob("**/*.md"))
+                # Deterministic fallback: shallowest path first, then by name,
+                # so a top-level output beats one nested in a subdirectory.
+                candidates = sorted(
+                    extract_dir.glob("**/*.md"),
+                    key=lambda q: (len(q.relative_to(extract_dir).parts), str(q)),
+                )
 
             if not candidates:
                 return {
