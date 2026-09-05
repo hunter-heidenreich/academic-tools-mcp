@@ -56,6 +56,11 @@ _single_flight = _singleflight.SingleFlight()
 # should surface the new entry by 10am, not tomorrow at 9am.
 _NEG_TTL_SECONDS = 3600.0
 
+# Definitive PDF-download failures share that 1h TTL, for the same reason plus
+# one of its own: arXiv renders PDFs lazily, so a freshly-announced paper's PDF
+# can 404 for minutes after its metadata is live.
+_NEG_ENTITY = "downloads"
+
 # Positive cache TTL. arXiv records are stable per-version, but our
 # canonical key strips the version suffix, so v1 cached today wouldn't
 # reflect a v2 uploaded next week. 14 days is long enough that an active
@@ -436,19 +441,11 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     canonical = canonical_arxiv_id(arxiv_id)
     dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
-    if not force_refresh and (hit := _pdf_download.cached_hit(dest)) is not None:
-        return hit
-
     async def _fetch() -> dict[str, Any]:
-        # Re-check after winning the slot — a concurrent leader may have
-        # just written the file. Skip the short-circuit under force_refresh:
-        # the caller wants fresh bytes, and stream_to_file replaces dest
-        # atomically on success.
-        if not force_refresh and (hit := _pdf_download.cached_hit(dest)) is not None:
-            return hit
-
-        # Need the paper metadata to find the PDF URL
-        paper = await get_paper(arxiv_id)
+        # Need the paper metadata to find the PDF URL. force_refresh is
+        # threaded through: a forced re-download that resolved its URL from a
+        # stale cached record would fetch the bytes it was asked to replace.
+        paper = await get_paper(arxiv_id, force_refresh=force_refresh)
         if "error" in paper:
             return paper
 
@@ -459,11 +456,15 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
                 break
 
         if not pdf_url:
-            return {"error": f"No PDF link found for arXiv ID: {arxiv_id}"}
+            # Definitive: the Atom entry for this paper has no PDF link, which
+            # is how a withdrawn paper presents.
+            return {
+                "error": f"No PDF link found for arXiv ID: {arxiv_id}",
+                "retryable": False,
+            }
 
-        client = _get_client()
         return await _pdf_download.stream_to_file(
-            client,
+            _get_client(),
             pdf_url,
             dest,
             slot_factory=lambda: _request_slot(pdf_url),
@@ -475,4 +476,14 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     # Tuple-keyed so this slot is distinct from get_paper's (keyed on the
     # bare canonical id): _fetch calls get_paper, which would otherwise
     # await this very slot's future and deadlock.
-    return await _single_flight.do(("pdf", canonical), _fetch)
+    return await _pdf_download.cached_download(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity=_NEG_ENTITY,
+        canonical=canonical,
+        dest=dest,
+        fetch=_fetch,
+        neg_ttl=_NEG_TTL_SECONDS,
+        force_refresh=force_refresh,
+        sf_key=("pdf", canonical),
+    )

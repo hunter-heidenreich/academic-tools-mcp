@@ -288,11 +288,16 @@ async def _fetch_chunk(
 
     Returns ``{canonical: work_or_error}`` for every DOI in ``chunk``.
 
-    Single-flight keyed on the chunk contents: ``get_works_batch`` previously
-    bypassed the shared getter protocol entirely and had no coalescing, so two
-    concurrent ``get_papers_metadata`` calls with overlapping DOI lists both
-    issued full batch GETs. Sorted so two callers that pass the same DOIs in a
-    different order still share one fetch.
+    Single-flight keyed on the chunk contents, sorted so two callers passing
+    the same DOIs in a different order still share one fetch.
+
+    **Deliberately not deep-copied**, unlike ``cache.cached_lookup``: the
+    aliasing hazard here was *within* a chunk (one error dict behind 50 keys),
+    which per-key construction fixes outright, and every consumer treats the
+    work objects as read-only. The costs are not comparable either — that
+    copies one record, this would copy fifty full OpenAlex works, the largest
+    objects this codebase moves, on every batch call including cache-warm ones.
+    A consumer that ever needs to mutate one copies that one.
     """
     sf_key = ("works_batch", tuple(sorted(chunk)), force_refresh)
 
@@ -319,16 +324,20 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
         # A garbled 200 body — transient. Surface a retryable error for
         # every DOI in the chunk and do NOT negative-cache (a retry must
         # re-fetch); we can't tell which DOI the upstream meant to error.
-        return dict.fromkeys(chunk, _parse_error_dict())
+        # A fresh dict per key. ``dict.fromkeys`` aliased one object across up
+        # to 50 keys, so a caller mutating its own error corrupted the other
+        # 49 — against ``parse_error_dict``'s documented "fresh dict each
+        # call" and ``cached_lookup``'s deep-copy discipline.
+        return {c: _parse_error_dict() for c in chunk}
     except _http.HTTPX_ERRORS as e:
-        return dict.fromkeys(chunk, _http.error_dict("OpenAlex", e))
+        return {c: _http.error_dict("OpenAlex", e) for c in chunk}
 
     if not isinstance(data, dict):
-        return dict.fromkeys(chunk, _parse_error_dict())
+        return {c: _parse_error_dict() for c in chunk}
 
     results = data.get("results") or []
     if not isinstance(results, list):
-        return dict.fromkeys(chunk, _parse_error_dict())
+        return {c: _parse_error_dict() for c in chunk}
 
     chunk_set = set(chunk)
     seen_in_chunk: set[str] = set()

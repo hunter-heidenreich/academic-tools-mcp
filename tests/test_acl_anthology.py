@@ -220,3 +220,87 @@ class TestPdfFilename:
         # Defense-in-depth: shell/path metacharacters never reach the filename.
         # They are percent-encoded (injective) rather than collapsed to "_".
         assert acl_anthology._pdf_filename("foo;bar") == "foo%3Bbar.pdf"
+
+
+# ---------------------------------------------------------------------------
+# download_pdf
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadPdfProvenance:
+    """ACL decorates its response with ``anthology_id`` and ``pdf_url``.
+
+    The cached and fresh branches were two hand-copied blocks, so nothing
+    stopped them drifting apart — and both called ``dest.stat()`` outside any
+    try, so a concurrent unlink between the usability check and the stat raised
+    OSError straight out of ``download_pdf``, breaking the module's uniform
+    ``{error}`` contract. Both now come from one ``extra_fields`` dict.
+    """
+
+    _DOI = "10.18653/v1/2023.acl-long.1"
+
+    @pytest.mark.asyncio
+    async def test_fresh_and_cached_payloads_agree(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import _pdf_download, cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+        async def fake_stream(client, url, dest, **kwargs):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"%PDF-1.4 acl")
+            return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": False}
+
+        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+
+        fresh = await acl_anthology.download_pdf(self._DOI)
+        cached = await acl_anthology.download_pdf(self._DOI)
+
+        assert fresh["cached"] is False
+        assert cached["cached"] is True
+        # Provenance is identical across both branches, by construction.
+        for key in ("anthology_id", "pdf_url"):
+            assert fresh[key] == cached[key]
+        assert fresh["anthology_id"] == "2023.acl-long.1"
+        assert fresh["pdf_url"] == "https://aclanthology.org/2023.acl-long.1.pdf"
+
+    @pytest.mark.asyncio
+    async def test_a_404_is_negative_cached(self, tmp_path, monkeypatch):
+        """A missing camera-ready re-hit the CDN on every call: only
+        oa_download negative-cached its download failures, the three native
+        providers cached nothing."""
+        from academic_tools_mcp import _pdf_download, cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        calls = 0
+
+        async def fake_stream(client, url, dest, **kwargs):
+            nonlocal calls
+            calls += 1
+            return {"error": "PDF not found", "retryable": False}
+
+        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+
+        assert "error" in await acl_anthology.download_pdf(self._DOI)
+        assert "error" in await acl_anthology.download_pdf(self._DOI)
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_an_error_carries_no_provenance(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import _pdf_download, cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+
+        async def fake_stream(client, url, dest, **kwargs):
+            return {"error": "PDF not found", "retryable": False}
+
+        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+
+        result = await acl_anthology.download_pdf(self._DOI)
+
+        assert "anthology_id" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_non_acl_doi_is_rejected_before_any_fetch(self):
+        result = await acl_anthology.download_pdf("10.1038/nature12373")
+        assert "error" in result
+        assert "Not an ACL Anthology DOI" in result["error"]

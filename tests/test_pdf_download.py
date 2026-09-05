@@ -380,6 +380,14 @@ class TestCachedHit:
         assert hit == {"path": str(p), "size_bytes": 12, "cached": True}
 
 
+# ---------------------------------------------------------------------------
+# is_definitive_failure / cached_download — the shared protocol
+# ---------------------------------------------------------------------------
+#
+# Verified once here rather than per provider, mirroring how test_throttle.py
+# covers the gating primitive.
+
+
 class TestIsDefinitiveFailure:
     """An allowlist, not a denylist — and the difference is a live bug class.
 
@@ -437,3 +445,195 @@ class TestIsDefinitiveFailure:
         assert _pdf_download.is_definitive_failure(
             {"error": "arXiv: PDF not found at http://x", "retryable": False}
         )
+
+
+def _pdf(dest: Path, body: bytes = b"%PDF-1.4 body") -> Path:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(body)
+    return dest
+
+
+class TestCachedDownload:
+    """The file-artifact sibling of ``cache.cached_lookup``."""
+
+    @staticmethod
+    def _call(dest, fetch, **overrides):
+        from academic_tools_mcp import _singleflight
+
+        kwargs = {
+            "single_flight": _singleflight.SingleFlight(),
+            "namespace": "testns",
+            "entity": "downloads",
+            "canonical": "10.1234/x",
+            "dest": dest,
+            "fetch": fetch,
+            "neg_ttl": 3600.0,
+        }
+        kwargs.update(overrides)
+        return _pdf_download.cached_download(**kwargs)
+
+    @pytest.mark.asyncio
+    async def test_a_usable_cached_pdf_short_circuits(self, tmp_path):
+        dest = _pdf(tmp_path / "p.pdf")
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            return {"path": str(dest), "cached": False}
+
+        result = await self._call(dest, fetch)
+
+        assert result["cached"] is True
+        assert calls == 0
+
+    @pytest.mark.asyncio
+    async def test_a_zero_byte_file_is_a_miss(self, tmp_path):
+        dest = _pdf(tmp_path / "p.pdf", b"")
+
+        async def fetch():
+            return {"path": str(dest), "size_bytes": 3, "cached": False}
+
+        assert (await self._call(dest, fetch))["cached"] is False
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_share_one_fetch(self, tmp_path):
+        import asyncio
+
+        dest = tmp_path / "p.pdf"
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.02)
+            return {"path": str(dest), "cached": False}
+
+        from academic_tools_mcp import _singleflight
+
+        sf = _singleflight.SingleFlight()
+        await asyncio.gather(*(self._call(dest, fetch, single_flight=sf) for _ in range(4)))
+
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_a_definitive_failure_is_negative_cached(self, tmp_path):
+        dest = tmp_path / "p.pdf"
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            return {"error": "gone", "retryable": False}
+
+        assert "error" in await self._call(dest, fetch)
+        assert "error" in await self._call(dest, fetch)
+        assert calls == 1, "the second call should be served from the negative cache"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"error": "blip", "retryable": True},
+            {"error": "timed out"},  # no retryable key at all — the live bug
+            {"error": "too big", "retryable": False, "max_bytes": 10},
+        ],
+    )
+    async def test_a_non_definitive_failure_is_not_cached(self, tmp_path, failure):
+        dest = tmp_path / "p.pdf"
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            return dict(failure)
+
+        await self._call(dest, fetch)
+        await self._call(dest, fetch)
+        assert calls == 2
+
+    @pytest.mark.asyncio
+    async def test_a_usable_pdf_wins_over_a_negative_entry(self, tmp_path):
+        """Ordering is load-bearing: a force_refresh that 404s writes a
+        negative entry while a perfectly good PDF is still on disk (
+        ``stream_to_file`` only replaces dest on success). The next plain call
+        must serve the file, not the stale error."""
+        from academic_tools_mcp import cache
+
+        dest = _pdf(tmp_path / "p.pdf")
+        cache.put_negative("testns", "downloads", "10.1234/x", {"error": "gone"})
+
+        async def fetch():
+            raise AssertionError("must not fetch")
+
+        assert (await self._call(dest, fetch))["cached"] is True
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_clears_the_negative_entry_and_refetches(self, tmp_path):
+        from academic_tools_mcp import cache
+
+        dest = tmp_path / "p.pdf"
+        cache.put_negative("testns", "downloads", "10.1234/x", {"error": "gone"})
+
+        async def fetch():
+            return {"path": str(dest), "cached": False}
+
+        assert (await self._call(dest, fetch, force_refresh=True))["cached"] is False
+        assert cache.get_negative("testns", "downloads", "10.1234/x") is None
+
+    @pytest.mark.asyncio
+    async def test_extra_fields_decorate_both_success_branches(self, tmp_path):
+        # ACL's provenance must be identical on the fresh and cached paths.
+        # They used to be two hand-copied blocks that could drift.
+        dest = tmp_path / "p.pdf"
+        extra = {"anthology_id": "P16-1160"}
+
+        async def fetch():
+            _pdf(dest)
+            return {"path": str(dest), "size_bytes": 13, "cached": False}
+
+        fresh = await self._call(dest, fetch, extra_fields=extra)
+
+        async def no_fetch():
+            raise AssertionError("must not fetch")
+
+        cached = await self._call(dest, no_fetch, extra_fields=extra)
+
+        assert fresh["anthology_id"] == cached["anthology_id"] == "P16-1160"
+        assert fresh["cached"] is False
+        assert cached["cached"] is True
+
+    @pytest.mark.asyncio
+    async def test_extra_fields_do_not_decorate_errors(self, tmp_path):
+        dest = tmp_path / "p.pdf"
+
+        async def fetch():
+            return {"error": "gone", "retryable": False}
+
+        result = await self._call(dest, fetch, extra_fields={"anthology_id": "P16-1160"})
+
+        assert "anthology_id" not in result
+
+    @pytest.mark.asyncio
+    async def test_callers_receive_independent_objects(self, tmp_path):
+        # Single-flight followers share the leader's object, and
+        # tools/pipeline writes `cascaded_invalidated` into what it gets back.
+        import asyncio
+
+        from academic_tools_mcp import _singleflight
+
+        dest = tmp_path / "p.pdf"
+
+        async def fetch():
+            await asyncio.sleep(0.01)
+            return {"path": str(dest), "cached": False}
+
+        sf = _singleflight.SingleFlight()
+        a, b = await asyncio.gather(
+            self._call(dest, fetch, single_flight=sf),
+            self._call(dest, fetch, single_flight=sf),
+        )
+
+        assert a is not b
+        a["cascaded_invalidated"] = ["markdown"]
+        assert "cascaded_invalidated" not in b
