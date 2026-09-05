@@ -829,7 +829,9 @@ class TestQueryTokenizationMatchesTheIndex:
     @pytest.fixture
     def accented(self, isolated_cache):
         _seed_markdown(
-            isolated_cache, "arxiv", "2301.00002",
+            isolated_cache,
+            "arxiv",
+            "2301.00002",
             "# Survey\n\n## Refs\n\nMethod introduced by Gutiérrez et al.\n",
         )
         return isolated_cache
