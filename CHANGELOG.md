@@ -23,7 +23,7 @@ grouped by milestone rather than per commit.
   DOI can list different author sets for the same work. These are properties of
   the upstream providers, but until now they were written down only in
   `CLAUDE.md` — a file users don't read — so anyone citing a result had no way
-  to know which fields to double-check.
+  to know which fields to double-check. ([#70])
 
 - **Tool-layer tests for the three MCP tools that had none, and a CI coverage
   floor to stop it recurring.** `get_paper_references_count`, `search_wikipedia`
@@ -201,6 +201,60 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **The `.claude/rules/` layer audited section by section against the code it
+  describes, and roughly fifty wrong claims corrected.** Each file was read
+  beside every source file its `paths:` frontmatter covers. The claims that
+  would have talked a reader into breaking working code:
+
+  `cache.md` said every `_singleflight.do` call routes through `cached_lookup`
+  and is therefore deep-copied — `openalex._fetch_chunk` calls it directly and
+  skips the copy on purpose. `pipeline.md` said `store_markdown_and_index()` is
+  the only place a sections-cache entry is assembled; there are three writers,
+  and the paragraph's stated consequence contradicted the same file six lines
+  down. `http.md` called the per-host map sweep "exact rather than heuristic",
+  which describes one of `_prune_hosts`' two branches and argues the other —
+  the one a test exists for — is dead code. `providers.md` said a DOI missing
+  from a batch response is negative-cached like a singleton 404, omitting the
+  `trustworthy` gate that keeps a truncated page from poisoning a live DOI for
+  the full TTL. `python-design.md` cited hypothesis property tests for
+  `lower_with_map` offsets and BibTeX escaping that do not exist, so an agent
+  reading it would believe those invariants were already pinned. `server.md`
+  described `_escape_doi` as handling four characters with no backslash
+  mangling — it handles ten including `\` — and phrased the `source="auto"`
+  page-1 restriction as advice when it is a hard error. `utils.md` called
+  `config.get` the only accessor, which would have an agent remove the
+  deliberate `os.environ` seam in `_stats`. `pdf-download.md` enumerated
+  `stream_to_file`'s error vocabulary without the `retryable: True` empty-body
+  branch, the exact case its allowlist exists to protect.
+
+  The same audit corrected the source comments the files had drifted from:
+  two referencing `cache.has`, deleted earlier in this branch; `crossref.py`'s
+  "10x its search rate" (it is 3x); `arxiv.py`'s positive-TTL comment claiming
+  the canonical key strips the version suffix, which the function twenty lines
+  below explicitly does not; `get_with_retry`'s "any 5xx", against an explicit
+  allowlist; a sections-lock comment calling an LRU a FIFO; `_stats`' wiring
+  list and `snapshot()` / `get_server_stats` docstrings, all three of which
+  omitted `cache_write_failures`; and three past-tense rationales rewritten as
+  the invariant they were hiding. ([#70])
+
+- **The rules files trimmed by ~11% overall, and re-scoped where the split was
+  wrong.** The dominant cost was prose restating the docstring of the module
+  the file loads for — a rules file loads *because* you opened that module, so
+  its docstrings are already on screen. `oa_download.py` moved from
+  `pipeline.md` to `pdf-download.md`, whose protocol it uses and whose guidance
+  it could not previously see; `python-design.md` now also loads when a rules
+  file itself is edited, since its three anti-rot conventions are what govern
+  them. `http.md` had stated "policy lives in `providers.md`, not here" and
+  then carried three paragraphs of provider policy; that is now consistent.
+  ([#70])
+
+- **`_doi`'s load-bearing ordering invariant is now guarded.** `normalize`
+  strips the `doi:` prefix *before* the URL handling because
+  `"doi:https://doi.org/10.x/y"` occurs in the wild, but the property test's
+  spelling list covered the prefix and the URL only separately. Both nested
+  forms are now in it, mutation-verified: reordering the two steps fails the
+  test. ([#70])
 
 - **A transient network failure during an open-access PDF download was cached
   as permanent for 24 hours.** `_is_definitive_failure` asked
@@ -1281,3 +1335,4 @@ grouped by milestone rather than per commit.
 [#67]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/67
 [#68]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/68
 [#69]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/69
+[#70]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/70

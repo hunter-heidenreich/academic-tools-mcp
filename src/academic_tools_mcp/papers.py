@@ -401,8 +401,8 @@ def sections_key(canonical: str) -> str:
 
 # Per-paper async lock so two concurrent reads of the same paper don't both
 # re-parse the markdown and race to write the sections cache. We cap the
-# dict at ``_SECTION_LOCKS_MAX`` and evict the oldest entries (FIFO via
-# OrderedDict.move_to_end on touch) so a long-running session that touches
+# dict at ``_SECTION_LOCKS_MAX`` and evict least-recently-used first
+# (OrderedDict.move_to_end on touch) so a long-running session that touches
 # thousands of papers doesn't slowly grow this map without bound. Eviction
 # only drops locks that are not currently held — a held lock means a
 # coroutine is mid-section-cache write and dropping it would let a racing

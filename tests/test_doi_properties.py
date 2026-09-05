@@ -43,6 +43,10 @@ def test_every_accepted_spelling_yields_one_key(doi: str) -> None:
         f"HTTPS://DX.DOI.ORG/{doi}",
         f"https://doi.org/{doi}?utm_source=x",
         f"https://doi.org/{doi}#abstract",
+        # The prefix must be stripped *before* the URL handling, or this
+        # nested form (which occurs in the wild) keys separately.
+        f"doi:https://doi.org/{doi}",
+        f"doi: https://dx.doi.org/{doi}",
     ):
         assert _doi.canonical(spelling) == key, spelling
 

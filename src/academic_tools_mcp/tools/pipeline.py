@@ -399,9 +399,10 @@ async def import_paper(
     """
     ext = Path(file_path).suffix.lower()
 
-    # Both import paths run off the event loop. import_local_pdf copies up to
-    # MAX_PDF_BYTES (200 MB by default) through cache._atomic_copy, and
-    # import_markdown reads and parses an arbitrarily large document — either
+    # Both import paths run off the event loop. import_local_pdf copies an
+    # arbitrarily large file through cache._atomic_copy (MAX_PDF_BYTES bounds
+    # downloads, not local imports), and import_markdown reads and parses an
+    # arbitrarily large document — either
     # would stall every concurrent tool call for the duration. The manual
     # functions stay synchronous so their direct callers and tests are
     # unaffected; the boundary is here, matching get_paper_section and

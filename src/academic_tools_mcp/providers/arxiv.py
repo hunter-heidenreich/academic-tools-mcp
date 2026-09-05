@@ -61,10 +61,10 @@ _NEG_TTL_SECONDS = 3600.0
 # can 404 for minutes after its metadata is live.
 _NEG_ENTITY = "downloads"
 
-# Positive cache TTL. arXiv records are stable per-version, but our
-# canonical key strips the version suffix, so v1 cached today wouldn't
-# reflect a v2 uploaded next week. 14 days is long enough that an active
-# session keeps hitting cache and short enough that revisions surface.
+# Positive cache TTL. arXiv records are stable per-version, but a bare id
+# keys on "whatever is current", so an entry cached today wouldn't reflect a
+# revision uploaded next week. 14 days is long enough that an active session
+# keeps hitting cache and short enough that revisions surface.
 _POSITIVE_TTL_SECONDS = 14 * 86400.0
 
 
@@ -371,9 +371,10 @@ async def search_papers(
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("arXiv", e)
 
-    # Opportunistically cache individual papers. Refresh stale entries too:
-    # cache.has ignores the TTL, so a TTL-aware get() ensures fresher search
-    # data replaces an entry that's already past the positive TTL.
+    # Opportunistically cache individual papers. The check is TTL-aware so
+    # fresher search data replaces an entry already past the positive TTL.
+    # Both keys are warmed: warming only the versioned one would leave every
+    # bare lookup a miss.
     for paper in papers:
         raw_id = paper.get("id", "")
         if "/abs/" in raw_id:

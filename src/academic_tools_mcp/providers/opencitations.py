@@ -132,7 +132,7 @@ async def _fetch_direction(
 ) -> dict[str, Any]:
     """Fetch one citation direction (references / citations) for a DOI.
 
-    The two directions are identical but for three knobs, so they share this
+    The two directions are identical but for two knobs, so they share this
     body rather than two near-copies:
       - ``kind`` — both the API path segment and the cache entity / result key
         (``"references"`` or ``"citations"``).

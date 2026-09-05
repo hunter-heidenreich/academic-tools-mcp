@@ -6,10 +6,12 @@ dependencies, no HTTP endpoint, no persistence across restarts.
 
 Wired into:
   - cache.py: ``cache_hits`` / ``cache_misses`` on ``get``,
-    ``negative_hits`` on ``get_negative``.
-  - per-provider ``_throttled_get``: ``http_calls`` after the throttle
-    gap clears, ``backpressure_refusals`` when the burst cap rejects.
-  - _http.get_with_retry: ``http_retries`` per transient retry attempt.
+    ``negative_hits`` on ``get_negative``, ``cache_write_failures`` on a
+    write that could not land.
+  - _throttle.Throttle.slot: ``backpressure_refusals`` when the burst cap
+    rejects, and ``http_calls`` only when ``count_request=True``.
+  - _http.get_with_retry: ``http_calls`` per attempt, ``http_retries`` per
+    transient retry.
 
 Counters are keyed by provider name (the same string each module uses
 for its cache namespace), so cache and HTTP stats line up cleanly.
@@ -97,6 +99,7 @@ def snapshot() -> dict[str, Any]:
               "http_calls": 5,
               "http_retries": 0,
               "backpressure_refusals": 0,
+              "cache_write_failures": 0,
               "in_flight": 0,
             },
             ...
@@ -105,7 +108,7 @@ def snapshot() -> dict[str, Any]:
 
     Counter values are cumulative since process start (or the last
     ``reset()``). ``in_flight`` is sampled live from each provider's
-    ``_pending`` counter.
+    ``_throttle.pending`` counter.
     """
     out: dict[str, dict[str, int]] = {}
     for provider, metrics in _counters.items():

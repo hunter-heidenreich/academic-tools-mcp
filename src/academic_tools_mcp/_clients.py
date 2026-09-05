@@ -82,11 +82,10 @@ async def aclose_all() -> None:
     shutdown can't see a half-closed client (it would build a new one
     instead, which is fine — that one will leak, but only briefly).
 
-    Closes are issued **concurrently**. Each is bounded by
-    ``_ACLOSE_TIMEOUT_SECONDS``, and closing serially meant those bounds
-    added up: eight pooled clients with wedged sockets took up to 40s to shut
-    down — exactly the lifespan-pinning the per-client timeout was added to
-    prevent. Run together, the worst case is one timeout.
+    Invariant: closes are issued **concurrently**, each bounded by
+    ``_ACLOSE_TIMEOUT_SECONDS``, so the worst case is one timeout rather than
+    one per client. Serial closes sum those bounds — the lifespan-pinning the
+    per-client timeout exists to prevent.
 
     Timeouts and transport errors fall through silently (the socket gets
     reaped when the process exits). ``CancelledError`` is deliberately **not**

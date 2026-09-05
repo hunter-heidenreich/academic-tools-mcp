@@ -32,7 +32,7 @@ def _parse_error_dict() -> dict[str, Any]:
 # **The rate we take must follow the identity we send.** Never hardcode these
 # constants: the polite figures against an anonymous User-Agent means the
 # documented default (an empty .env; README: "Nothing is required to get
-# started") requests at 2x the public-pool rate, 3x its concurrency and 10x
+# started") requests at 2x the public-pool rate, 3x its concurrency and 3x
 # its search rate, without identifying itself.
 #
 # Limits per Crossref's REST API docs, mirrored in .claude/rules/providers.md:
@@ -220,14 +220,13 @@ async def search_works(
     # same shape as a /works/{doi} response, so a follow-up get_work
     # call (the inevitable "now fetch the full record for this hit"
     # pattern) becomes a free cache hit. Mirrors arxiv.search_papers.
-    # Use cache.has to avoid stomping a fresher entry.
     for item in items:
         doi = item.get("DOI")
         if not doi:
             continue
         canonical = canonical_doi(doi)
-        # TTL-aware (not cache.has) so a stale-but-present entry is refreshed
-        # by fresher search data; mirrors arxiv.search_papers.
+        # TTL-aware, so a stale-but-present entry is refreshed by fresher
+        # search data while a live one is never clobbered.
         if (
             cache.get(
                 NAMESPACE,

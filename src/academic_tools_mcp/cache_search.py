@@ -59,8 +59,8 @@ _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-.]*[a-z0-9]|[a-z0-9]")
 
 # Lightweight English stopword set. Tiny on purpose — academic prose is
 # already terse, and stripping too aggressively hurts recall on phrasal
-# queries like "in distribution shift". The list is the standard NLTK
-# top-25 minus terms that show up as content in this domain ("not",
+# queries like "in distribution shift". The list is a standard English
+# stopword set minus terms that show up as content in this domain ("not",
 # "no", "very", "all").
 _STOPWORDS = frozenset(
     {
