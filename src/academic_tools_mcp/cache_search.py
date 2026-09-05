@@ -136,12 +136,24 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 # critical section across the worker threads that search() runs in (it is
 # dispatched via asyncio.to_thread at the tool layer); BM25 scoring and
 # snippet extraction run lock-free on the freshly-parsed per-call dict.
-_SCHEMA_VERSION = 1
+# 2: the ``unindexable`` probe stopped being ASCII-biased. Rows written by
+# version 1 can carry a false ``no_indexable_tokens`` flag on a perfectly
+# indexable non-Latin paper, and the ``(mtime, size)`` signal would never
+# recompute them, so the mismatch rebuilds rather than lingering.
+_SCHEMA_VERSION = 2
 _INDEX_DIRNAME = "__search_index__"
 _DB_FILENAME = "index.db"
 _INDEX_LOCK = threading.Lock()
 # NUL can't occur in a namespace dir name or a filename stem, so it is a
 # collision-free separator for the flat entry key.
+
+
+# A character ``unicode61`` will treat as part of a token: any Unicode letter
+# or digit. ``\w`` minus underscore, so this is script-agnostic where a
+# ``[a-z0-9]`` class would not be. Compiled and searched rather than scanned in
+# Python (``any(ch.isalnum() ...)`` is a per-character interpreter loop, which
+# is real cost on a 1 MB thesis); ``search`` short-circuits on the first hit.
+_ALNUM_RE = re.compile(r"[^\W_]")
 
 
 def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
@@ -522,10 +534,17 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     # FTS5 indexes what its tokenizer finds; a document it derives no terms
     # from can never match. Recording *why* keeps such papers reportable
     # rather than merely absent.
-    matched = con.execute(
-        "SELECT 1 FROM fts WHERE rowid = ? AND fts MATCH ?", (rowid, "a OR e OR i OR o OR u")
-    ).fetchone()
-    if matched is None and not _tokenize(text) and not _tokenize(text, normalize=True):
+    #
+    # The test must match ``unicode61``, which tokenises on Unicode character
+    # class — every letter and digit in every script. It previously asked
+    # ``_tokenize`` (ASCII-only) plus a MATCH for the five ASCII vowels, so a
+    # paper in Japanese or Cyrillic was reported unusable while FTS5 had in
+    # fact indexed it perfectly well. That was harmless only for as long as
+    # the query side was equally ASCII-biased; now that a non-Latin query
+    # reaches the index, the report was actively wrong — it told the agent to
+    # fall back to ``find_in_paper`` on a paper that ``search_cached_papers``
+    # would have found.
+    if _ALNUM_RE.search(text) is None:
         return "no_indexable_tokens"
     return None
 

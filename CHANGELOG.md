@@ -112,6 +112,24 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`unindexable` reported papers that the index had, in fact, indexed.** The
+  probe asked `_tokenize` (ASCII-only) plus an FTS5 `MATCH` for the five ASCII
+  vowels, so a paper in Japanese, Cyrillic or Greek was recorded as
+  `no_indexable_tokens` even though `unicode61` tokenises on Unicode character
+  class and had indexed it perfectly well. Harmless only while the query side
+  was equally ASCII-biased; once a non-Latin query could reach the index the
+  report became actively misleading, telling the agent via `unindexable_note`
+  to fall back to `find_in_paper` on a paper `search_cached_papers` would have
+  found. The probe now tests for any Unicode letter or digit, so it catches
+  what it was meant to — empty and punctuation-only files — and nothing else.
+  The index schema version is bumped so rows carrying a stale flag are
+  recomputed rather than lingering behind the `(mtime, size)` signal. ([#57])
+
+  `unicode61` still does not segment CJK: a run delimited by whitespace or
+  punctuation is a single token, so CJK papers are findable by whole runs but
+  not by sub-phrases. That is the documented trade from the FTS5 move
+  (`trigram` measured 842 MB against 165 MB) and is now pinned by a test.
+
 - **A non-Latin query returned nothing, though the index held the term.**
   Moving to FTS5 ([#55]) left `search_cached_papers` gating on `_tokenize` —
   an ASCII-only regex from when this module built its own index. A query of
