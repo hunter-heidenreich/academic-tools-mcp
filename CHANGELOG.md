@@ -76,6 +76,18 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A cancelled single-flight *follower* took down the leader.** The mirror of
+  the fix above, and the likelier direction: cancelling a task cancels the
+  future it is suspended on, and for a follower that is the *shared* future.
+  One follower giving up therefore cancelled the slot for everyone — the
+  leader then called `set_result` on a cancelled future and raised
+  `InvalidStateError` into its own caller in place of a perfectly good result,
+  while every remaining follower saw the cancellation and re-ran the factory,
+  issuing a second outbound request for a key already in flight. Followers now
+  await through `asyncio.shield`, so their cancellation stays their own, and
+  `set_result` is guarded. The documented fan-out is four parallel calls for
+  one paper, so a cancellation lands on a follower three times in four. ([#53])
+
 - **`approx_tokens` disagreed between the two tools that report it.**
   `get_paper_sections` measured the *unstripped* line join, so every section's
   estimate was inflated by its surrounding blank lines and

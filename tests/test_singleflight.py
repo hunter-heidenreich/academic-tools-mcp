@@ -323,3 +323,93 @@ class TestLeaderCancellationDoesNotCancelFollowers:
             return "v"
 
         assert await sf.do("k", factory) == "v"
+
+
+class TestFollowerCancellationDoesNotReachTheLeader:
+    """A follower giving up must not cancel the slot out from under everyone.
+
+    Cancelling a task cancels the future it is suspended on — and for a
+    follower that future is the *shared* one. So one follower's cancellation
+    used to cancel the shared future, with two consequences: the leader then
+    called ``set_result`` on it and raised ``InvalidStateError`` into its own
+    caller in place of a perfectly good result, and every remaining follower
+    saw the cancellation and re-ran the factory, defeating the coalescing this
+    class exists for.
+
+    This is the mirror of ``TestLeaderCancellationDoesNotCancelFollowers``,
+    and the likelier direction: the documented fan-out is four parallel calls
+    for one paper, so a cancellation lands on a follower three times in four.
+    """
+
+    @pytest.mark.asyncio
+    async def test_leader_still_returns_its_result(self):
+        sf = SingleFlight()
+        started = asyncio.Event()
+
+        async def factory():
+            started.set()
+            await asyncio.sleep(0.05)
+            return "leader-result"
+
+        leader = asyncio.create_task(sf.do("k", factory))
+        await started.wait()
+        follower = asyncio.create_task(sf.do("k", factory))
+        await asyncio.sleep(0)
+
+        follower.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await follower
+
+        # Used to be InvalidStateError.
+        assert await leader == "leader-result"
+
+    @pytest.mark.asyncio
+    async def test_other_followers_still_share_the_one_call(self):
+        sf = SingleFlight()
+        started = asyncio.Event()
+        runs = 0
+
+        async def factory():
+            nonlocal runs
+            runs += 1
+            started.set()
+            await asyncio.sleep(0.05)
+            return "result"
+
+        leader = asyncio.create_task(sf.do("k", factory))
+        await started.wait()
+        doomed = asyncio.create_task(sf.do("k", factory))
+        survivor = asyncio.create_task(sf.do("k", factory))
+        await asyncio.sleep(0)
+
+        doomed.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await doomed
+
+        assert await leader == "result"
+        assert await survivor == "result"
+        # The whole point: one outbound call, not two.
+        assert runs == 1
+
+    @pytest.mark.asyncio
+    async def test_the_cancelled_follower_is_still_cancelled(self):
+        # Shielding the shared future must not make a follower uncancellable —
+        # its own caller asked it to stop.
+        sf = SingleFlight()
+        started = asyncio.Event()
+
+        async def factory():
+            started.set()
+            await asyncio.sleep(0.05)
+            return "result"
+
+        leader = asyncio.create_task(sf.do("k", factory))
+        await started.wait()
+        follower = asyncio.create_task(sf.do("k", factory))
+        await asyncio.sleep(0)
+
+        follower.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await follower
+        assert follower.cancelled()
+        await leader
