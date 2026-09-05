@@ -64,13 +64,25 @@ class SingleFlight:
         ``CancelledError`` to them used to fail unrelated calls for no reason.
         A follower that is not itself being cancelled takes over as the new
         leader and runs the factory instead.
+
+        **Nor does follower cancellation reach the leader.** Cancelling a task
+        cancels the future it is suspended on, and for a follower that future
+        is the *shared* one — so one follower giving up used to cancel the slot
+        out from under everybody. The leader then called ``set_result`` on a
+        cancelled future (``InvalidStateError``, raised into the leader's own
+        caller in place of its perfectly good result), and any remaining
+        follower saw the cancellation and redundantly re-ran the factory,
+        defeating the coalescing this class exists for. Followers await through
+        ``asyncio.shield`` so their cancellation stays their own.
         """
         for _ in range(_MAX_TAKEOVERS):
             existing = self._inflight.get(key)
             if existing is None:
                 return await self._lead(key, factory)
             try:
-                return await existing
+                # shield: cancelling this task must cancel our *view* of the
+                # shared future, never the shared future itself.
+                return await asyncio.shield(existing)
             except asyncio.CancelledError:
                 if _self_is_cancelling():
                     # Our own task is being cancelled — that is ours to honour.
@@ -91,7 +103,12 @@ class SingleFlight:
         self._inflight[key] = future
         try:
             result = await factory()
-            future.set_result(result)
+            # Defence in depth: shield keeps followers from cancelling this
+            # future, but setting a result on an already-resolved future is an
+            # InvalidStateError that would replace the leader's answer with a
+            # crash. Never worth risking for a branch this cheap.
+            if not future.done():
+                future.set_result(result)
             return result
         except BaseException as exc:
             # Surface the failure to every waiter, not just the leader.
