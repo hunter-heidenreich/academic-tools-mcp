@@ -822,6 +822,12 @@ async def _reparse_sections_locked(
             stored_checksum is not None
             and stored_checksum == current_checksum
             and cached.get("sections") is not None
+            # An entry predating ``sections_detected`` is re-parsed rather than
+            # read with a guessed default. Re-parsing is a file read and a
+            # regex pass — no subprocess, no network — so computing the true
+            # answer is cheaper than the cost of reporting a wrong one, which
+            # is an agent told a heading-free thesis "has one section".
+            and cached.get("sections_detected") is not None
         ):
             return cached
 
@@ -864,28 +870,35 @@ async def get_or_parse_sections(
         )
 
 
-def _finalize_markdown(
+def store_markdown_and_index(
     namespace: str,
     canonical: str,
     md_path: Path,
-    raw_markdown: str,
+    markdown: str,
     mode: str,
 ) -> dict[str, Any]:
-    """Post-process extractor output, cache it, and return the section index.
+    """Write markdown to the cache and store its section index.
 
-    Shared tail for both conversion modes ("full" and "fast"): normalise
-    trailing whitespace, strip image paths, write the markdown to the cache,
-    parse sections, and store the section index tagged with the conversion
-    mode so callers can tell a degraded fast extraction from a full one.
+    The single home for assembling a sections-cache entry. Every writer routes
+    through here — the two conversion modes via :func:`_finalize_markdown`, and
+    ``manual.import_markdown`` directly — so the payload can never be assembled
+    with a key missing.
+
+    Invariant: a sections-cache entry always carries all four of ``sections``,
+    ``sections_detected``, ``markdown_checksum`` and ``conversion_mode``.
+    ``manual.import_markdown`` wrote only two of them, and since
+    ``_reparse_sections_locked`` accepts an entry whose checksum matches, an
+    imported heading-free paper was reported to the agent as
+    ``sections_detected: true`` — the exact reading ``sections_note`` exists to
+    prevent. (Guarded by tests/test_manual.py::TestMarkdownImportSectionsIndex.)
+
+    ``mode`` is the provenance tag: ``"full"`` / ``"fast"`` for converter
+    output, ``"imported"`` for a pre-converted file that never ran through one.
+
+    Takes the markdown verbatim — post-processing belongs to the caller, since
+    what is right for converter output (see :func:`_finalize_markdown`) is
+    wrong for a file the operator wrote by hand.
     """
-    # Normalise trailing whitespace line-by-line.
-    markdown = "\n".join(line.rstrip() for line in raw_markdown.split("\n"))
-
-    # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
-    # When there is no caption, the path is never useful, so drop it.
-    # When there is a caption, keep the caption text and drop the path.
-    markdown = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"![\1]()", markdown)
-
     # Atomic UTF-8 write: a crash mid-write can't leave a torn markdown file,
     # and non-ASCII content survives a non-UTF-8 host locale.
     cache._atomic_write_text(md_path, markdown)
@@ -910,6 +923,32 @@ def _finalize_markdown(
         "cached": False,
         "conversion_mode": mode,
     }
+
+
+def _finalize_markdown(
+    namespace: str,
+    canonical: str,
+    md_path: Path,
+    raw_markdown: str,
+    mode: str,
+) -> dict[str, Any]:
+    """Post-process converter output, then store it via the shared writer.
+
+    Shared tail for both conversion modes ("full" and "fast"). The
+    post-processing here is specific to *converter* output and deliberately not
+    part of :func:`store_markdown_and_index`: an imported markdown file is the
+    operator's own text, and rewriting its image links would be data loss.
+    """
+    # Normalise trailing whitespace line-by-line.
+    markdown = "\n".join(line.rstrip() for line in raw_markdown.split("\n"))
+
+    # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
+    # The path points into the extraction temp dir, which is removed as soon as
+    # the conversion returns, so it can never resolve. When there is a caption,
+    # keep the caption text and drop the path.
+    markdown = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"![\1]()", markdown)
+
+    return store_markdown_and_index(namespace, canonical, md_path, markdown, mode)
 
 
 async def _convert_fast(
@@ -1113,6 +1152,11 @@ async def convert_pdf(
                 return {
                     "markdown_path": str(md_path),
                     "sections": payload["sections"],
+                    # Reported on every call, not just the first. A fresh
+                    # conversion has always carried this; the cached branch
+                    # dropped it, so the response shape changed once the
+                    # markdown was on disk.
+                    "sections_detected": payload["sections_detected"],
                     "cached": True,
                     "conversion_mode": payload.get("conversion_mode"),
                 }

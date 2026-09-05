@@ -378,6 +378,74 @@ class TestImportMarkdown:
         md_path = papers.markdown_path(namespace, canonical)
         assert cached["markdown_checksum"] == papers.markdown_checksum(md_path)
 
+    def test_cached_sections_carry_every_key_a_conversion_writes(self, tmp_path):
+        """An imported entry must be indistinguishable in shape from a converted
+        one. It carried only sections + markdown_checksum, and because
+        ``_reparse_sections_locked`` accepts an entry whose checksum matches,
+        the missing ``sections_detected`` was never recomputed."""
+        md = tmp_path / "paper.md"
+        md.write_text("## Intro\n\nHello.", encoding="utf-8")
+
+        import uuid
+
+        from academic_tools_mcp import cache, papers
+
+        ident = f"10.1038/test-md-keys-{uuid.uuid4().hex[:8]}"
+        result = manual.import_markdown(str(md), ident)
+
+        canonical = manual.resolve_target(ident)["canonical"]
+        cached = cache.get(result["namespace"], "sections", papers.sections_key(canonical))
+        assert set(cached) == {
+            "sections",
+            "sections_detected",
+            "markdown_checksum",
+            "conversion_mode",
+        }
+        # "imported" rather than None: this markdown never ran through a
+        # converter, which is a different fact from "converted before the field
+        # existed".
+        assert cached["conversion_mode"] == "imported"
+        assert cached["sections_detected"] is True
+
+    @pytest.mark.asyncio
+    async def test_headingless_import_is_reported_as_undetected(self, tmp_path):
+        """The bug this shape fix exists for. A hand-made plain-text conversion
+        has no headings, so ``get_paper_sections`` must say so instead of
+        reporting one synthetic Preamble as a real section."""
+        md = tmp_path / "paper.md"
+        md.write_text("Plain text conversion with no headings.\nSecond line.\n", encoding="utf-8")
+
+        import uuid
+
+        from academic_tools_mcp import server
+
+        ident = f"headingless-{uuid.uuid4().hex[:8]}"
+        assert "error" not in manual.import_markdown(str(md), ident)
+
+        result = await server.get_paper_sections(ident)
+
+        assert result["sections_detected"] is False
+        assert "sections_note" in result
+
+    def test_imported_markdown_is_stored_verbatim(self, tmp_path):
+        """Image links survive import. The converter path rewrites them because
+        its paths point into an extraction dir that is deleted on return; an
+        imported file is the operator's own text and its links may resolve."""
+        md = tmp_path / "paper.md"
+        body = "## Figures\n\n![A plot](./figures/plot.png)\n\nTrailing spaces   \n"
+        md.write_text(body, encoding="utf-8")
+
+        import uuid
+
+        from academic_tools_mcp import papers
+
+        ident = f"10.1038/test-md-verbatim-{uuid.uuid4().hex[:8]}"
+        result = manual.import_markdown(str(md), ident)
+
+        canonical = manual.resolve_target(ident)["canonical"]
+        md_path = papers.markdown_path(result["namespace"], canonical)
+        assert md_path.read_text(encoding="utf-8") == body
+
     def test_arxiv_markdown_routes_to_arxiv_namespace(self, tmp_path):
         md = tmp_path / "paper.md"
         md.write_text("## Abstract\n\nText.\n\n## Introduction\n\nMore text.")
@@ -563,6 +631,84 @@ class TestImportAtomicityAndEncoding:
         canonical = manual.resolve_target(ident)["canonical"]
         md_path = papers.markdown_path(namespace, canonical)
         assert md_path.read_text(encoding="utf-8") == content
+
+
+class TestImportPaperToolDoesNotBlockTheLoop:
+    """The import helpers copy up to MAX_PDF_BYTES and parse whole documents.
+    Run inline they stall every concurrent tool call for the duration, so the
+    tool boundary hands them to a worker thread — the same treatment
+    get_paper_section and find_in_paper already give their reads."""
+
+    @pytest.mark.asyncio
+    async def test_a_slow_import_does_not_stall_a_concurrent_call(self, tmp_path, monkeypatch):
+        import asyncio
+        import time
+
+        from academic_tools_mcp import cache, server
+        from academic_tools_mcp import manual as manual_mod
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        pdf = tmp_path / "slow.pdf"
+        pdf.write_bytes(b"%PDF-1.4 payload")
+
+        real_import = manual_mod.import_local_pdf
+
+        def slow_import(*args, **kwargs):
+            time.sleep(0.20)  # blocking, as a large atomic copy is
+            return real_import(*args, **kwargs)
+
+        monkeypatch.setattr(manual_mod, "import_local_pdf", slow_import)
+
+        stop = False
+        worst_gap = 0.0
+
+        async def heartbeat() -> None:
+            # Measure the longest interval the loop went unserviced. Counting
+            # ticks over a window is not enough: a blocking call finishes
+            # before the window is even sampled, so the count comes out fine.
+            nonlocal worst_gap
+            last = time.monotonic()
+            while not stop:
+                await asyncio.sleep(0.005)
+                now = time.monotonic()
+                worst_gap = max(worst_gap, now - last)
+                last = now
+
+        beat = asyncio.create_task(heartbeat())
+        await asyncio.sleep(0.02)  # let it establish a baseline cadence
+        assert "error" not in await server.import_paper(str(pdf), "10.1234/slow-import")
+        stop = True
+        await beat
+
+        # Run inline, the 0.20s blocking copy owns the loop for its whole
+        # duration and the gap is ~0.20s. Off-loop it stays near the 5ms tick.
+        assert worst_gap < 0.15, f"event loop stalled for {worst_gap:.3f}s during import"
+
+    @pytest.mark.asyncio
+    async def test_markdown_import_holds_the_sections_lock(self, tmp_path, monkeypatch):
+        """import_markdown replaces the markdown and its section index — the
+        pair convert_pdf and the force_refresh cascade mutate under this lock.
+        It took neither, so a concurrent reader could catch a half-replaced
+        state."""
+        import asyncio
+
+        from academic_tools_mcp import cache, papers, server
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        md = tmp_path / "paper.md"
+        md.write_text("## Intro\n\nBody.\n", encoding="utf-8")
+        ident = "10.1234/locked-import"
+        target = manual.resolve_target(ident)
+
+        lock = papers.sections_lock(target["namespace"], target["canonical"])
+        await lock.acquire()
+        task = asyncio.create_task(server.import_paper(str(md), ident))
+        try:
+            await asyncio.sleep(0.05)
+            assert not task.done(), "import_paper proceeded without the sections lock"
+        finally:
+            lock.release()
+        assert "error" not in await task
 
 
 class TestImportPaperTool:

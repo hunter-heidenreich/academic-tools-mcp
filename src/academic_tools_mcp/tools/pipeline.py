@@ -176,11 +176,13 @@ async def convert_paper(
     text. Both modes write the same cache slot; a later ``force_refresh``
     full conversion upgrades a fast one.
 
-    Returns ``{sections, cached, conversion_mode}`` on success. ``cached`` is
-    true when the expensive conversion was skipped (re-parses also count as
-    cached). ``conversion_mode`` echoes which backend produced the markdown
-    (may be null for papers converted before this field existed). Each section
-    entry has ``{index, title, h3s, approx_tokens}``.
+    Returns ``{sections, sections_detected, cached, conversion_mode}`` on
+    success. ``cached`` is true when the expensive conversion was skipped
+    (re-parses also count as cached). ``conversion_mode`` records what produced
+    the markdown: ``"full"`` or ``"fast"`` for a conversion, ``"imported"`` for
+    a pre-converted file handed to import_paper, or null for a paper converted
+    before the field existed. Each section entry has
+    ``{index, title, h3s, approx_tokens}``.
 
     Errors: ``{error, retryable, pdf_size_mb?, suggestion}``.
       - PDF not cached → suggestion points at download_pdf / import_paper.
@@ -274,9 +276,10 @@ async def get_paper_sections(
         return not_converted_error(identifier)
 
     sections_list = sections_data.get("sections", [])
-    # Older cached indices predate this flag; absent means "not recorded",
-    # which we report as detected rather than alarming about every one.
-    detected = sections_data.get("sections_detected", True)
+    # Always recorded: ``papers._reparse_sections_locked`` treats an entry
+    # without this key as stale and re-parses, so a cached index predating the
+    # flag yields the real answer rather than an optimistic default.
+    detected = sections_data["sections_detected"]
     response: dict[str, Any] = {
         "total_sections": len(sections_list),
         "total_approx_tokens": sum(s.get("approx_tokens", 0) for s in sections_list),
@@ -395,14 +398,32 @@ async def import_paper(
     unsupported extension → ``{error}``.
     """
     ext = Path(file_path).suffix.lower()
+
+    # Both import paths run off the event loop. import_local_pdf copies up to
+    # MAX_PDF_BYTES (200 MB by default) through cache._atomic_copy, and
+    # import_markdown reads and parses an arbitrarily large document — either
+    # would stall every concurrent tool call for the duration. The manual
+    # functions stay synchronous so their direct callers and tests are
+    # unaffected; the boundary is here, matching get_paper_section and
+    # find_in_paper.
     if ext == ".pdf":
         return _strip_internal_paths(
-            manual.import_local_pdf(file_path, identifier, force_refresh=force_refresh)
+            await asyncio.to_thread(
+                manual.import_local_pdf, file_path, identifier, force_refresh=force_refresh
+            )
         )
     if ext in _MARKDOWN_EXTS:
-        result = _strip_internal_paths(
-            manual.import_markdown(file_path, identifier, force_refresh=force_refresh)
-        )
+        # Held across the write: import_markdown replaces the markdown and its
+        # section index, the same pair convert_pdf and the force_refresh
+        # cascade mutate under this lock. Without it an interleaved
+        # convert_paper can read a half-replaced state.
+        target = manual.resolve_target(identifier)
+        async with papers.sections_lock(target["namespace"], target["canonical"]):
+            result = _strip_internal_paths(
+                await asyncio.to_thread(
+                    manual.import_markdown, file_path, identifier, force_refresh=force_refresh
+                )
+            )
         if "sections" in result:
             sections = result.pop("sections")
             result["section_count"] = len(sections)

@@ -134,6 +134,58 @@ grouped by milestone rather than per commit.
   an agent could not tell a dead URL from a blipped one without parsing the
   message. *This is a response-shape change.* ([#63])
 
+- **An imported markdown paper with no headings was reported as having
+  sections.** `get_paper_sections` answers `sections_detected: false` when the
+  converted markdown had no headings at all, so an agent knows the single
+  section it gets back is a synthetic `Preamble` and its title means nothing.
+  `import_markdown` assembled its own sections-cache entry carrying only
+  `sections` and `markdown_checksum` — and because the reader accepts any entry
+  whose checksum matches, the missing flag was never recomputed and the tool
+  fell back to reporting `true`. That is the reading `sections_note` exists to
+  prevent, in the case where it is most likely: a hand-made plain-text
+  conversion is exactly what has no headings.
+
+  The entry now has one writer. `papers.store_markdown_and_index()` assembles
+  every sections-cache entry, so a payload cannot be built with a key missing;
+  `_finalize_markdown` keeps only the post-processing that is specific to
+  converter output and delegates the rest. An entry lacking `sections_detected`
+  is treated as stale and re-parsed rather than read with a guessed default —
+  re-parsing is a file read and a regex pass, no subprocess and no network, so
+  computing the true answer costs less than reporting a wrong one.
+
+  Two smaller shape fixes ride along: `convert_paper` now reports
+  `sections_detected` on cached calls as well as the first one, and
+  `conversion_mode` gained the value `"imported"` for markdown that never ran
+  through a converter (distinct from `null`, which means "converted before the
+  field existed"). Imported markdown is stored **verbatim** — the image-path
+  rewriting the converter path does is right for paths into a deleted
+  extraction dir and wrong for an operator's own file. ([#64])
+
+- **`unindexable_note` told the agent the wrong reason.** It said these papers
+  are absent from the keyword index because "the tokeniser is ASCII-only, so
+  non-Latin scripts yield no terms". Fixing the probe in [#58] made that false;
+  the note it was indicting was never updated. It was also never true of the
+  files that reach it — they are punctuation- or symbol-only and have no
+  letters in *any* script — and it steered the agent toward `find_in_paper` on
+  documents with nothing to find. The note is now built from the `reason`
+  actually recorded per file, so `unreadable` (an I/O failure, fixed by
+  re-importing) no longer gets blamed on encoding either.
+
+  `search_cached_papers` also now documents the CJK limitation in its own
+  docstring rather than only in the rules files. `unicode61` does not segment
+  Han/Kana/Hangul, so such a paper is indexed but matches only whole
+  whitespace-delimited runs — a sub-phrase query returns nothing, with no
+  `unindexable` entry to explain it, because the paper *is* indexed. ([#64])
+
+- **`import_paper` blocked the event loop for the length of the import.** The
+  tool is `async` but called the synchronous import helpers inline, so copying
+  a PDF (up to `MAX_PDF_BYTES`, 200 MB by default) or parsing a large markdown
+  file stalled every concurrent tool call for the duration. Both now run in a
+  worker thread, the boundary `get_paper_section` and `find_in_paper` already
+  used. The markdown branch additionally holds the per-paper sections lock,
+  which it never took despite replacing the same markdown + section-index pair
+  that `convert_paper` and the `force_refresh` cascade mutate under it. ([#64])
+
 - **`unindexable` reported papers that the index had, in fact, indexed.** The
   probe asked `_tokenize` (ASCII-only) plus an FTS5 `MATCH` for the five ASCII
   vowels, so a paper in Japanese, Cyrillic or Greek was recorded as
@@ -1112,3 +1164,4 @@ grouped by milestone rather than per commit.
 [#56]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/56
 [#58]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/58
 [#63]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/63
+[#64]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/64
