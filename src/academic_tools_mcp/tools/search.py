@@ -248,21 +248,33 @@ async def find_in_paper(
     if not md_path.exists():
         return not_converted_error(identifier)
 
-    # Read off the event loop alongside the regex pass — a large converted
-    # paper's disk read would otherwise block other concurrent fetches.
-    markdown = await asyncio.to_thread(md_path.read_text)
+    # Read + scan off the event loop — a large converted paper's disk read and
+    # a query with thousands of matches would each otherwise pin it.
+    #
+    # Read UTF-8 explicitly: this was the one read path in the pipeline that
+    # relied on the host locale, so under LC_ALL=C (containers, systemd units)
+    # it raised UnicodeDecodeError straight out of the tool instead of
+    # returning the {error} contract. Its siblings — get_paper_section,
+    # _reparse_sections_locked, _convert_fast, import_markdown — were all
+    # explicit already.
+    def _read_and_scan() -> tuple[list[dict[str, Any]], bool]:
+        markdown = md_path.read_text(encoding="utf-8")
+        return papers.find_in_markdown(
+            markdown,
+            query,
+            max_results=max_results,
+            case_sensitive=case_sensitive,
+            whole_words=whole_words,
+            normalize=normalize,
+        )
 
-    # Wrap the synchronous regex pass in to_thread so a paper with
-    # thousands of matches doesn't pin the event loop.
-    hits, truncated = await asyncio.to_thread(
-        papers.find_in_markdown,
-        markdown,
-        query,
-        max_results=max_results,
-        case_sensitive=case_sensitive,
-        whole_words=whole_words,
-        normalize=normalize,
-    )
+    try:
+        hits, truncated = await asyncio.to_thread(_read_and_scan)
+    except FileNotFoundError:
+        # A concurrent force_refresh cascade unlinked the markdown between the
+        # exists() check and the read. Degrade to the same clean error rather
+        # than letting it escape, matching get_paper_section.
+        return not_converted_error(identifier)
     return {
         "query": query,
         "paper_identifier": identifier,
@@ -361,11 +373,26 @@ async def search_cached_papers(
         normalize=normalize,
         force_refresh=force_refresh,
     )
-    return {
+    response: dict[str, Any] = {
         "query": query,
         "result_count": len(results),
         "results": results,
     }
+
+    # Papers the ASCII-only tokeniser could not index are invisible to BM25 —
+    # correctly, they have no searchable terms, but silently, which left an
+    # agent no way to learn that part of the corpus was never considered.
+    # Reported only when non-empty so the common response stays lean.
+    skipped = await asyncio.to_thread(cache_search.unindexable, namespace)
+    if skipped:
+        response["unindexable_count"] = len(skipped)
+        response["unindexable"] = skipped[:10]
+        response["unindexable_note"] = (
+            "These cached papers are not in the keyword index (the tokeniser is "
+            "ASCII-only, so non-Latin scripts yield no terms). They will never "
+            "match this search. Use find_in_paper on them directly."
+        )
+    return response
 
 
 @mcp.tool

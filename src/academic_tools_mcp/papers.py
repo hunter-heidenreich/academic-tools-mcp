@@ -158,6 +158,33 @@ def _resolve_fast_convert_timeout() -> float | None:
     return _resolve_timeout("PDF_FAST_CONVERT_TIMEOUT", _DEFAULT_FAST_CONVERT_TIMEOUT)
 
 
+class ConverterTemplateError(ValueError):
+    """A PDF_CONVERTER / PDF_FAST_CONVERTER template could not be filled in.
+
+    ``str.format`` raises ``KeyError`` on an unknown placeholder, ``IndexError``
+    on a positional one (``{0}``), and ``ValueError`` on an unbalanced brace.
+    None of those is an ``OSError``, so a typo'd template escaped ``convert_pdf``
+    as a raw exception instead of the ``{error, retryable: False}`` contract —
+    and on the fast path the builder wasn't inside a ``try`` at all.
+
+    Named so both call sites can catch exactly this and say something useful
+    about the env var rather than surfacing a bare ``KeyError('outputdir')``.
+    """
+
+
+def _format_template(template: str, env_var: str, **values: str) -> str:
+    """Fill in a converter command template, or raise ConverterTemplateError."""
+    try:
+        return template.format(**values)
+    except (KeyError, IndexError, ValueError) as e:
+        placeholders = ", ".join(f"{{{k}}}" for k in values)
+        raise ConverterTemplateError(
+            f"{env_var} is not a usable command template ({e!r}). "
+            f"Use bare placeholders — {placeholders} — and balance every brace; "
+            "literal braces must be doubled ({{ and }})."
+        ) from e
+
+
 def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
     """Build the shell command for PDF-to-markdown conversion.
 
@@ -175,7 +202,12 @@ def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
 
     # Named backend or custom command template
     template = _CONVERTERS.get(converter, converter)
-    cmd = template.format(input=shlex.quote(str(pdf_path)), output_dir=shlex.quote(str(output_dir)))
+    cmd = _format_template(
+        template,
+        "PDF_CONVERTER",
+        input=shlex.quote(str(pdf_path)),
+        output_dir=shlex.quote(str(output_dir)),
+    )
 
     # Optionally activate a venv before running
     venv = config.get("PDF_CONVERTER_VENV")
@@ -201,7 +233,12 @@ def _build_fast_converter_command(pdf_path: Path) -> str:
     template = _FAST_CONVERTERS.get(converter, converter)
     # str.format ignores the unused {python} key for templates (e.g. pdftotext)
     # that don't reference it.
-    return template.format(input=shlex.quote(str(pdf_path)), python=shlex.quote(sys.executable))
+    return _format_template(
+        template,
+        "PDF_FAST_CONVERTER",
+        input=shlex.quote(str(pdf_path)),
+        python=shlex.quote(sys.executable),
+    )
 
 
 # A canonical id can contain characters that are unsafe in a filename or, if
@@ -304,6 +341,29 @@ def migrate_legacy_stems() -> int:
                 except OSError:
                     continue
     return moved
+
+
+async def _kill_process_group(proc: "asyncio.subprocess.Process") -> None:
+    """SIGKILL a converter's whole process group and reap it, best-effort.
+
+    ``start_new_session=True`` puts the converter and anything it spawns in a
+    fresh group, so killing the group takes down the tree — killing ``proc``
+    alone would only kill the wrapping ``bash`` and orphan a MinerU run that
+    keeps eating CPU/GPU.
+
+    Guarded on ``returncode`` because signalling an already-reaped pid can in
+    principle reach a recycled process group.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+    except (TimeoutError, ProcessLookupError):
+        pass
 
 
 def _make_extraction_dir(canonical: str) -> Path:
@@ -823,7 +883,16 @@ async def _convert_fast(
                 "conversion_mode": mode_tag,
             }
 
-        cmd = _build_fast_converter_command(pdf_path)
+        try:
+            cmd = _build_fast_converter_command(pdf_path)
+        except ConverterTemplateError as e:
+            # This builder used to sit outside any try, so a malformed
+            # PDF_FAST_CONVERTER escaped convert_paper as a raw exception.
+            return {
+                "error": str(e),
+                "retryable": False,
+                "conversion_mode": "fast",
+            }
         timeout = _resolve_fast_convert_timeout()
 
         try:
@@ -855,15 +924,17 @@ async def _convert_fast(
                 stdout, stderr = await proc.communicate()
             else:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.CancelledError:
+            # Client disconnect / tool-call cancellation / server shutdown.
+            # The `finally` below removes the extraction dir and releases the
+            # conversion lock, but nothing used to signal the subprocess — so a
+            # MinerU run kept pinning CPU/GPU with its output directory deleted
+            # underneath it, and the child was never reaped. Kill, then
+            # re-raise: cancellation is not an error to report to the caller.
+            await _kill_process_group(proc)
+            raise
         except TimeoutError:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except TimeoutError:
-                pass
+            await _kill_process_group(proc)
             return {
                 "error": (
                     f"Fast PDF extraction timed out after {timeout:.0f}s "
@@ -1011,10 +1082,10 @@ async def convert_pdf(
                     stderr=asyncio.subprocess.PIPE,
                     start_new_session=True,
                 )
-            except OSError as e:
-                # Setup failed: temp-dir creation or process spawn (bash
-                # missing, fork EAGAIN, perms). Different from a converter that
-                # ran and failed.
+            except (OSError, ConverterTemplateError) as e:
+                # Setup failed: a malformed PDF_CONVERTER template, temp-dir
+                # creation, or process spawn (bash missing, fork EAGAIN,
+                # perms). Different from a converter that ran and failed.
                 return {
                     "error": (
                         f"Could not start PDF converter subprocess: {e}. "
@@ -1030,17 +1101,20 @@ async def convert_pdf(
                     stdout, stderr = await proc.communicate()
                 else:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.CancelledError:
+                # Client disconnect / tool-call cancellation / server shutdown.
+                # The `finally` below rmtree's the extraction dir and releases
+                # the global conversion lock, but nothing used to signal the
+                # subprocess — so a MinerU run kept pinning CPU/GPU with its
+                # output directory deleted underneath it, and the child was
+                # never reaped. Kill, then re-raise: cancellation is not an
+                # error to report to the caller.
+                await _kill_process_group(proc)
+                raise
             except TimeoutError:
                 # Take down the whole process group, then give it a moment to
                 # actually exit before we return so we don't leave zombies.
-                try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5.0)
-                except TimeoutError:
-                    pass
+                await _kill_process_group(proc)
                 return {
                     "error": (
                         f"PDF conversion timed out after {timeout:.0f}s "
