@@ -12,7 +12,7 @@ paths:
 
 `get_client(name)` is a lazy per-provider singleton over one shared pool config. **A second call with the same `name` silently ignores its kwargs** — headers and timeout are configured in exactly one place per provider; passing different ones later is a no-op, not an override.
 
-`aclose_all()` (wired into `_app._lifespan`) must stay **concurrent**, each close bounded by `_ACLOSE_TIMEOUT_SECONDS`: serial closes sum those bounds and pin the lifespan. `CancelledError` must keep propagating — the best-effort `except Exception` around each close deliberately does not catch it.
+`aclose_all()` (wired into `_app._lifespan`) must stay **concurrent**, with `_ACLOSE_TIMEOUT_SECONDS` bounding the whole set: serial closes sum that bound and pin the lifespan. The bound must also stay **hard** — `asyncio.wait` + cancel the stragglers, never `asyncio.wait_for` per client, which awaits the coroutine it just cancelled and so cannot bound a teardown that keeps awaiting past cancellation. Stragglers are deliberately left unawaited; the process is exiting. `CancelledError` must keep propagating — the best-effort `except Exception` around each close deliberately does not catch it.
 
 ## _http.py
 

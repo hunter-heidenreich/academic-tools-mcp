@@ -25,6 +25,17 @@ grouped by milestone rather than per commit.
   `CLAUDE.md` — a file users don't read — so anyone citing a result had no way
   to know which fields to double-check. ([#73])
 
+- **Tests for `get_client`, which had none.** The pool's shutdown half was well
+  covered; the singleton half — the entire body of `get_client` — was executed
+  only incidentally, by a politeness test reading a User-Agent back off a built
+  client. Neither the identity invariant (same name, same object, one connection
+  pool) nor the documented footgun (a second call silently ignores its `headers`
+  and `timeout`) was pinned anywhere, and every existing test duck-typed
+  `aclose`, so no test drove a real `httpx.AsyncClient` through construction and
+  close. Two pairs of near-verbatim duplicate shutdown tests are merged, and the
+  two groups' disagreeing setup styles (`monkeypatch.setattr` vs. direct
+  mutation of the module global) are settled on monkeypatch. ([#76])
+
 - **Tool-layer tests for the three MCP tools that had none, and a CI coverage
   floor to stop it recurring.** `get_paper_references_count`, `search_wikipedia`
   and `get_wikipedia_summary` were untested — the only occurrence of
@@ -213,6 +224,19 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **Shutdown's per-client close timeout was not a bound.** `aclose_all` wrapped
+  each `client.aclose()` in `asyncio.wait_for`, which cancels the coroutine on
+  timeout and then *awaits it* — so a teardown that keeps awaiting past
+  cancellation (a TLS shutdown hanging on the peer, the case the timeout exists
+  for) pinned the FastMCP lifespan for as long as it liked. The whole set is now
+  bounded once by `asyncio.wait`, which returns when the timeout expires whether
+  or not the closes cooperate; stragglers are cancelled and deliberately left
+  unawaited, since the process is exiting and the kernel reaps the socket. The
+  cancel loop runs in a `finally` because that is the one thing the old
+  `asyncio.gather` did for free: independently created tasks outlive an outer
+  cancellation of `asyncio.wait`, where gather propagates it to its children.
+  ([#76])
 
 - **`get_papers_metadata` no longer depends on an `assert` for a correctness
   guard.** The arXiv/bioRxiv fan-out asserted that its identifier resolved to a
@@ -1415,3 +1439,4 @@ grouped by milestone rather than per commit.
 [#69]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/69
 [#73]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/73
 [#74]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/74
+[#76]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/76

@@ -25,8 +25,12 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
     from academic_tools_mcp import _clients, _singleflight, _stats
 
     # Wipe the per-provider client cache so any test that monkeypatches
-    # httpx.AsyncClient sees a fresh build on first use.
-    _clients._clients.clear()
+    # httpx.AsyncClient sees a fresh build on first use. This drops the
+    # clients without awaiting `_clients.aclose_all()` — a sync fixture can't
+    # — so a test that built a *real* client (test_politeness reads the baked-in
+    # User-Agent off one) leaks it. Harmless: an unused client has opened no
+    # socket. A test that actually connects must close its own clients.
+    _clients._POOL.clear()
 
     # Zero the stats counters so a test that asserts on hit/miss totals
     # isn't contaminated by counts from prior tests.
