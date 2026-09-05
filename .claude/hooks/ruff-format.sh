@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
-# PostToolUse hook: format + autofix the just-edited Python file with ruff.
-#
-# Claude Code passes the tool payload as JSON on stdin. We pull the edited file
-# path, and if it's a .py file under this repo, run `ruff format` then
-# `ruff check --fix` on *that file only* (fast, no repo-wide churn). Everything
-# is best-effort: any failure exits 0 so a formatting hiccup never blocks an edit.
+# PostToolUse hook: `ruff format` + `ruff check --fix` the just-edited .py file.
+# Best-effort — failures exit 0 so a hiccup never blocks an edit. Lint findings
+# are not surfaced to the session; CI is the gate for unfixable errors.
 set -uo pipefail
 
 payload=$(cat)
 
-# Extract the edited path. python3 is guaranteed present (this is a Python repo);
-# avoids a hard jq dependency. Handles Edit/Write/MultiEdit payload shapes.
+# python3 over jq: guaranteed present in a Python repo. Handles Edit/Write/MultiEdit.
 file=$(printf '%s' "$payload" | python3 -c '
 import json, sys
 try:
@@ -26,10 +22,34 @@ case "$file" in
   *.py) ;;
   *) exit 0 ;;
 esac
-[ -f "$file" ] || exit 0
 
 cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || exit 0
+project_dir=$PWD
 
-uv run ruff format "$file"     >/dev/null 2>&1 || true
-uv run ruff check --fix "$file" >/dev/null 2>&1 || true
+# Stay inside this repo — another checkout's .py must not get this repo's config.
+case "$file" in
+  /*) ;;
+  *) file="$project_dir/$file" ;;
+esac
+case "$file" in
+  "$project_dir"/*) ;;
+  *) exit 0 ;;
+esac
+
+[ -f "$file" ] || exit 0
+
+uv run ruff format "$file" >/dev/null 2>&1
+fmt_status=$?
+# --unfixable F401: an import added just before its first use is momentarily
+# unused, and stripping it would break the next edit. Still reported, so CI
+# catches a genuinely unused one.
+uv run ruff check --fix --unfixable F401 "$file" >/dev/null 2>&1 || true
+
+# Non-zero is either an unparseable mid-edit file (expected) or a missing
+# toolchain, which is otherwise silent. Probe only here to tell them apart.
+if [ "$fmt_status" -ne 0 ] && ! uv run ruff --version >/dev/null 2>&1; then
+  echo "ruff-format hook: 'uv run ruff' is unavailable — .py files are NOT being formatted." >&2
+  exit 1
+fi
+
 exit 0

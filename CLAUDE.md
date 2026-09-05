@@ -17,14 +17,14 @@ uv run python -m academic_tools_mcp.server   # Run the MCP server
 
 `ruff` (format + lint) and `mypy` enforce style — config in `pyproject.toml`. A
 `PostToolUse` hook (`.claude/hooks/ruff-format.sh`, wired in `.claude/settings.json`)
-runs `ruff format` + `ruff check --fix` on every `.py` file the moment it's edited.
+runs `ruff format` + `ruff check --fix` on every `.py` file in this repo the moment
+it's edited.
 
-**Footgun:** because the hook autofixes after *each* edit, an `import` added before
-its first use exists is momentarily unused and gets stripped (F401) — the next edit
-then references a name that's gone. Write the **code that uses the symbol first, then
-backfill the import** (a transient reference to a not-yet-imported name is harmless —
-ruff only deletes unused imports, never code), or add the import and its use in the
-same edit.
+The autofix passes **`--unfixable F401`**, so an `import` added just before the code
+that uses it survives the next edit instead of being stripped as momentarily unused.
+It is still *reported*, so CI still fails on a genuinely unused import. Unfixable
+findings (F821, most of B) are never fed back into the session — mid-sequence a file
+legitimately references not-yet-written names, so CI is the gate for those.
 
 ## Changelog & versioning
 
