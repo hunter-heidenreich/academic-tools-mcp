@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -364,3 +365,125 @@ class TestGetAuthorContract:
         second = await openalex.get_author("A123", force_refresh=True)
         assert second.get("id") == "https://openalex.org/A1"
         assert recorder.count == 2, "force_refresh must drop the cache and re-fetch"
+
+
+def _install_slow_throttled_get(monkeypatch, payload):
+    """Like ``_install_throttled_get`` but yields to the event loop first.
+
+    ``_install_throttled_get``'s fake has no await point, so an ``async def``
+    with no suspension runs to completion before ``asyncio.gather`` starts the
+    next coroutine — concurrent callers never actually overlap and nothing can
+    coalesce. Yielding once lets followers pile up behind the leader.
+    """
+    recorder = _Recorder()
+
+    async def fake_throttled_get(url, **kwargs):
+        recorder.urls.append(url)
+        recorder.kwargs.append(kwargs)
+        await asyncio.sleep(0)
+        return _StubResponse(payload)
+
+    monkeypatch.setattr(openalex, "_throttled_get", fake_throttled_get)
+    return recorder
+
+
+class TestBatchNegativeCaching:
+    """A DOI missing from a batch response is only "not found" if the
+    response actually accounted for everything.
+
+    ``get_works_batch`` used to negative-cache (24h) every requested DOI that
+    wasn't in ``results`` — including one whose OpenAlex-stored DOI string
+    merely differed from what we asked for (the loop ``continue``s past those),
+    and without checking ``meta.count`` against the number of records sent, so
+    a truncated response poisoned the whole remainder of the chunk.
+    """
+
+    @pytest.mark.asyncio
+    async def test_clean_miss_is_negative_cached(self, monkeypatch):
+        _install_throttled_get(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [_work_response("10.1234/found")]},
+        )
+
+        out = await openalex.get_works_batch(["10.1234/found", "10.1234/missing"])
+
+        missing = out["10.1234/missing"]
+        assert missing["not_found"] is True
+        assert cache.get_negative("openalex", "works", "10.1234/missing") is not None
+
+    @pytest.mark.asyncio
+    async def test_unmatched_returned_doi_blocks_negative_caching(self, monkeypatch):
+        # OpenAlex answers with a DOI we didn't ask for: we can no longer tell
+        # which request it satisfies, so "missing" is inconclusive.
+        _install_throttled_get(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [_work_response("10.1234/something-else")]},
+        )
+
+        out = await openalex.get_works_batch(["10.1234/asked"])
+
+        assert out["10.1234/asked"].get("not_found") is None
+        assert out["10.1234/asked"]["retryable"] is True
+        assert cache.get_negative("openalex", "works", "10.1234/asked") is None
+
+    @pytest.mark.asyncio
+    async def test_unmatched_work_is_still_cached_under_its_own_doi(self, monkeypatch):
+        _install_throttled_get(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [_work_response("10.1234/something-else")]},
+        )
+
+        await openalex.get_works_batch(["10.1234/asked"])
+
+        assert cache.get("openalex", "works", "10.1234/something-else") is not None
+
+    @pytest.mark.asyncio
+    async def test_truncated_response_blocks_negative_caching(self, monkeypatch):
+        # meta.count says there were more matches than were sent.
+        _install_throttled_get(
+            monkeypatch,
+            {"meta": {"count": 9}, "results": [_work_response("10.1234/a")]},
+        )
+
+        out = await openalex.get_works_batch(["10.1234/a", "10.1234/b"])
+
+        assert out["10.1234/b"]["retryable"] is True
+        assert cache.get_negative("openalex", "works", "10.1234/b") is None
+
+
+class TestBatchSingleFlight:
+    """Overlapping concurrent batches must coalesce into one HTTP call.
+
+    ``get_works_batch`` bypassed the shared getter protocol and had no
+    single-flight at all, so two ``get_papers_metadata`` calls with the same
+    DOI list both issued a full batch GET.
+    """
+
+    @pytest.mark.asyncio
+    async def test_concurrent_identical_batches_issue_one_request(self, monkeypatch):
+        recorder = _install_slow_throttled_get(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [_work_response("10.1234/x")]},
+        )
+
+        dois = ["10.1234/x", "10.1234/y"]
+        await asyncio.gather(
+            openalex.get_works_batch(dois),
+            openalex.get_works_batch(dois),
+        )
+
+        assert recorder.count == 1, f"expected coalescing, got {recorder.count} GETs"
+
+    @pytest.mark.asyncio
+    async def test_doi_order_does_not_defeat_coalescing(self, monkeypatch):
+        recorder = _install_slow_throttled_get(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [_work_response("10.1234/x")]},
+        )
+
+        await asyncio.gather(
+            openalex.get_works_batch(["10.1234/x", "10.1234/y"]),
+            openalex.get_works_batch(["10.1234/y", "10.1234/x"]),
+        )
+
+        assert recorder.count == 1

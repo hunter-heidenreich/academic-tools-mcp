@@ -7,7 +7,6 @@ Provides search and page summary/existence checking via:
 No authentication required. Rate-limited to ~1 req/sec as a courtesy.
 """
 
-import json
 from typing import Any
 from urllib.parse import quote
 
@@ -25,21 +24,16 @@ _SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary"
 # ``json.JSONDecodeError`` on ``.json()``. Handled alongside the HTTP errors so
 # the tools always return the uniform ``{error}`` contract rather than crashing
 # on a garbled response. Mirrors crossref/openalex/opencitations.
-_PARSE_ERRORS = (json.JSONDecodeError,)
+_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable Wikipedia response.
 
-    A new dict each call (like ``_http.error_dict``) so a caller — or a
-    single-flight follower sharing the result — can't mutate a shared object.
-    Marked ``retryable`` and deliberately not negative-cached: a garbled body
-    is transient, so a retry should re-fetch rather than serve a poisoned entry.
+    Delegates to ``_http.parse_error_dict``, the single home for the
+    shape. Six providers carried byte-identical copies of this.
     """
-    return {
-        "error": "Wikipedia returned a response that could not be parsed.",
-        "retryable": True,
-    }
+    return _http.parse_error_dict("Wikipedia")
 
 
 def _build_user_agent() -> str:

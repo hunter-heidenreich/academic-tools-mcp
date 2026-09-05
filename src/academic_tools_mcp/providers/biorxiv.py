@@ -1,11 +1,10 @@
-import json
 import re
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from .. import _clients, _http, _pdf_download, _singleflight, cache, papers
+from .. import _clients, _doi, _http, _pdf_download, _singleflight, cache, papers
 from .._throttle import Throttle
 
 NAMESPACE = "biorxiv"
@@ -15,19 +14,16 @@ _BASE_URL = "https://api.biorxiv.org"
 # ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
 # errors so the tool always returns the uniform ``{error}`` contract rather
 # than crashing on a garbled response.
-_PARSE_ERRORS = (json.JSONDecodeError,)
+_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable bioRxiv response.
 
-    A new dict each call (like ``_http.error_dict``) so a caller — or a
-    single-flight follower sharing the result — can't mutate a shared object.
+    Delegates to ``_http.parse_error_dict``, the single home for the
+    shape. Six providers carried byte-identical copies of this.
     """
-    return {
-        "error": "bioRxiv returned a response that could not be parsed.",
-        "retryable": True,
-    }
+    return _http.parse_error_dict("bioRxiv")
 
 
 # All bioRxiv/medRxiv DOIs use this prefix
@@ -89,7 +85,6 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
 # A trailing query string / fragment is consumed by the optional ``(?:[?#].*)?``
 # group rather than captured into the DOI, so it doesn't get baked into the
 # canonical cache key (mirrors arxiv._ARXIV_URL_RE).
-_DOI_URL_RE = re.compile(r"https?://(?:dx\.)?doi\.org/(10\.\d{4,}/[^\s?#]+)(?:[?#].*)?$")
 
 _BIORXIV_URL_RE = re.compile(
     r"https?://(?:www\.)?(bio|med)rxiv\.org/content/(10\.\d{4,}/[^\s?#]+?)(?:v\d+)?(?:\.full(?:\.pdf)?)?(?:[?#].*)?$"
@@ -106,13 +101,11 @@ def _normalize_doi(doi: str) -> str:
       - bioRxiv URL: https://www.biorxiv.org/content/10.1101/2024.01.01.573838v1
       - medRxiv URL: https://www.medrxiv.org/content/10.1101/2020.01.01.12345v2.full.pdf
     """
-    doi = doi.strip()
-    if doi.lower().startswith("doi:"):
-        doi = doi[4:]
-
-    m = _DOI_URL_RE.match(doi)
-    if m:
-        return m.group(1)
+    # Generic forms (bare, any-case ``doi:`` prefix, doi.org / dx.doi.org
+    # URLs) are handled once in :mod:`_doi`; only the bioRxiv/medRxiv content
+    # URL — with its version suffix and optional ``.full.pdf`` tail — is
+    # specific to this provider and stays here.
+    doi = _doi.normalize(doi)
 
     m = _BIORXIV_URL_RE.match(doi)
     if m:
@@ -174,6 +167,35 @@ def _safe_version(entry: dict[str, Any]) -> int:
         return 0
 
 
+def _collection_of(data: Any) -> list[dict[str, Any]] | None:
+    """Extract the ``collection`` list from a details response, defensively.
+
+    Returns ``None`` when the payload is the wrong *shape* and a list when it
+    is well-formed (possibly empty). The distinction matters: an empty
+    collection is how this API reports "unknown DOI" and is negative-cached,
+    whereas a garbled body says nothing about whether the DOI exists and must
+    stay retryable.
+
+    ``data.get(...)`` raises AttributeError on a JSON ``null``/scalar body, and
+    a collection of non-dicts raises later inside ``_pick_latest_version``.
+    Neither AttributeError nor TypeError is in ``_PARSE_ERRORS`` or
+    ``HTTPX_ERRORS``, so both escaped the provider entirely rather than
+    surfacing as the uniform ``{error, retryable}`` contract. openalex,
+    opencitations and wikipedia already guarded this; bioRxiv and crossref
+    were the two that were missed.
+    """
+    if not isinstance(data, dict):
+        return None
+    collection = data.get("collection")
+    if not isinstance(collection, list):
+        return None
+    entries = [entry for entry in collection if isinstance(entry, dict)]
+    if collection and not entries:
+        # Non-empty but nothing usable in it — malformed, not "no results".
+        return None
+    return entries
+
+
 def _pick_latest_version(collection: list[dict[str, Any]]) -> dict[str, Any]:
     """Select the latest version from a bioRxiv API collection array."""
     if len(collection) == 1:
@@ -184,7 +206,10 @@ def _pick_latest_version(collection: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _parse_paper(raw: dict[str, Any]) -> dict[str, Any]:
     """Convert a raw bioRxiv API entry into a normalized paper dict."""
-    server = raw.get("server", "").lower()
+    # `raw.get("server", "")` returns None when the key is present as JSON
+    # null, and None.lower() raises. Nine lines below, the `published` field
+    # already got this right — the omission here was accidental.
+    server = (raw.get("server") or "").lower()
     if "medrxiv" in server:
         server = "medrxiv"
     else:
@@ -249,18 +274,24 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             response.raise_for_status()
 
             data = response.json()
-            collection = data.get("collection", [])
+            collection = _collection_of(data)
 
             if not collection:
                 # The details API returns 200 with an empty collection (not a
                 # 404) for an unknown DOI, so the medRxiv fallback always gets
                 # a chance — nothing in the shared 10.1101/ prefix distinguishes
-                # bioRxiv from medRxiv.
+                # bioRxiv from medRxiv. A malformed first response also falls
+                # through here: medRxiv may still answer cleanly.
                 url = f"{_BASE_URL}/details/medrxiv/{bare}/na/json"
                 response = await _throttled_get(client, url)
                 response.raise_for_status()
                 data = response.json()
-                collection = data.get("collection", [])
+                fallback = _collection_of(data)
+                # Only a well-formed empty result means "not found". If both
+                # servers returned garbage, this is transient.
+                if collection is None and fallback is None:
+                    return _parse_error_dict()
+                collection = fallback or []
 
             if not collection:
                 err = {"error": f"No paper found for DOI: {doi}"}

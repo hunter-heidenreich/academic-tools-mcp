@@ -398,3 +398,56 @@ class TestGetWorkForceRefresh:
 
         await crossref.get_work("10.1234/x", force_refresh=True)
         assert recorder.count == 2
+
+
+class TestMalformedPayloadShape:
+    """A 200 whose body is valid JSON but not an object must surface the
+    uniform {error, retryable} contract, not raise.
+
+    ``"message" not in data`` raises TypeError on a JSON ``null`` or scalar,
+    and TypeError is in neither ``_PARSE_ERRORS`` nor ``HTTPX_ERRORS`` — it
+    escaped the provider entirely. openalex, opencitations and wikipedia had
+    an isinstance guard; crossref and bioRxiv were the two that were missed.
+    """
+
+    @pytest.mark.parametrize("payload", [None, 5, "a string", [1, 2, 3], True])
+    @pytest.mark.asyncio
+    async def test_get_work_does_not_raise(self, monkeypatch, payload):
+        _stub_json_responses(monkeypatch, payload)
+
+        result = await crossref.get_work("10.1234/x")
+
+        assert "error" in result
+        assert result["retryable"] is True
+
+    @pytest.mark.parametrize("payload", [None, 5, "a string", [1, 2, 3]])
+    @pytest.mark.asyncio
+    async def test_search_works_does_not_raise(self, monkeypatch, payload):
+        _stub_json_responses(monkeypatch, payload)
+
+        result = await crossref.search_works("some title")
+
+        assert "error" in result
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_non_dict_message_is_a_parse_error(self, monkeypatch):
+        _stub_json_responses(monkeypatch, {"message": "not-an-object"})
+
+        result = await crossref.get_work("10.1234/x")
+
+        assert "error" in result
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_malformed_payload_is_not_negative_cached(self, monkeypatch):
+        # A parse failure says nothing about whether the DOI exists, so a
+        # retry must re-fetch rather than be served a poisoned entry.
+        recorder = _stub_json_responses(monkeypatch, None, {"message": {"DOI": "10.1234/x"}})
+
+        first = await crossref.get_work("10.1234/x")
+        second = await crossref.get_work("10.1234/x")
+
+        assert "error" in first
+        assert second.get("DOI") == "10.1234/x"
+        assert recorder.count == 2

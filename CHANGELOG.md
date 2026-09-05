@@ -15,8 +15,68 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Added
+
+- **Continuous integration.** A GitHub Actions workflow now runs `ruff check`,
+  `ruff format --check`, `mypy`, and the full test suite on every push to `main`
+  and every pull request, against Python 3.11 and 3.13. All four gates were
+  already green locally; CI pins that bar rather than chasing it. ([#47])
+
+### Changed
+
+- **`get_works_batch` rejoins the shared getter protocol.** It had no
+  single-flight at all, so two concurrent `get_papers_metadata` calls with
+  overlapping DOI lists both issued full batch GETs; chunks are now coalesced
+  on their sorted contents. The chunk loop was also a serial `for ... await`,
+  issuing four requests one after another while three of OpenAlex's four
+  concurrency slots sat idle — chunks and singleton fallbacks now run
+  concurrently under the existing throttle. ([#49])
+- **Leaf boilerplate consolidated.** `_parse_error_dict` (six byte-identical
+  copies) and `_PARSE_ERRORS` (five) now delegate to `_http.parse_error_dict`
+  and `_http.JSON_PARSE_ERRORS`; error messages are unchanged. Per-provider
+  policy constants and `fetch` closures stay where they are — the seven clients
+  are deliberately *not* collapsed into a generic class. ([#49])
+- **One-time cache filename migration.** Because `safe_stem` replaces two
+  earlier filename rules, cached PDFs and markdown whose identifier contains
+  characters outside `[A-Za-z0-9._-]` are renamed forward at server startup
+  (alongside the existing orphan-`.tmp` sweep). Ordinary arXiv IDs and DOIs are
+  unaffected — on a 7,000-file cache only 20 files move, all of them Elsevier
+  PII-style DOIs (`10.1016/s1359-6446(03)02831-9`) or freeform labels
+  (`google:wordpiece:2012`). Without the sweep those papers would report "not
+  converted yet" and re-run conversions that take tens of minutes. The sweep is
+  idempotent and never overwrites an existing file. ([#48])
+
 ### Fixed
 
+- **The same DOI could land under three different cache keys.** DOI
+  normalization existed in six copies — four byte-identical — and only the two
+  that had been improved (`manual`, `biorxiv`) handled `dx.doi.org` and a
+  case-insensitive `doi:` prefix. So `https://dx.doi.org/10.x/y` and
+  `DOI:10.x/y` were left unnormalized by OpenAlex, Crossref, OpenCitations and
+  ACL, producing distinct cache entries *and* malformed upstream URLs
+  (`/works/doi:https://dx.doi.org/...`). All six also sliced the `doi:` prefix
+  without re-stripping, so a pasted `"doi: 10.x/y"` became `" 10.x/y"` and was
+  reported to the agent as an unknown identifier. Normalization now lives once
+  in `_doi`, carrying the union of what the six did. ([#49])
+- **Malformed upstream JSON escaped the `{error}` contract on Crossref and
+  bioRxiv.** Five of seven providers guarded the decoded payload with
+  `isinstance`; these two were missed. A 200 whose body is `null` or a scalar
+  made `"message" not in data` raise `TypeError` (Crossref) and
+  `data.get("collection")` raise `AttributeError` (bioRxiv) — neither is in
+  `_PARSE_ERRORS` or `HTTPX_ERRORS`, so both propagated out of the tool.
+  bioRxiv's `raw.get("server", "").lower()` also raised on a present-but-null
+  key, nine lines above a sibling field that already handled it correctly.
+  A malformed bioRxiv payload is now distinguished from a legitimately empty
+  one, so it stays retryable instead of being negative-cached as "not
+  found". ([#49])
+- **`get_works_batch` could negative-cache DOIs that exist.** Any requested DOI
+  absent from `results` was cached as not-found for 24h — including one whose
+  OpenAlex-stored DOI string merely differed from the request (the loop
+  `continue`s past those), and with no check of `meta.count` against the number
+  of records returned, so a truncated response poisoned the rest of the chunk.
+  A missing DOI is now only treated as definitive when the response accounted
+  for everything; otherwise it is returned `retryable`. Records returned under
+  an unexpected DOI are cached under their own key instead of discarded. ([#49])
 - **arXiv served the wrong version's metadata and PDF bytes.** The cache key
   stripped the version suffix (`2301.00001v2` → `2301.00001`) while the API
   request kept it, so whichever version was fetched first won the shared key.
@@ -52,28 +112,6 @@ grouped by milestone rather than per commit.
   caches therefore disagreed about identity. All three derived paths — PDF,
   markdown, and the sections key — now share one `papers.safe_stem`, which
   percent-encodes rather than collapses and so is no longer lossy. ([#48])
-
-### Changed
-
-- **One-time cache filename migration.** Because `safe_stem` replaces two
-  earlier filename rules, cached PDFs and markdown whose identifier contains
-  characters outside `[A-Za-z0-9._-]` are renamed forward at server startup
-  (alongside the existing orphan-`.tmp` sweep). Ordinary arXiv IDs and DOIs are
-  unaffected — on a 7,000-file cache only 20 files move, all of them Elsevier
-  PII-style DOIs (`10.1016/s1359-6446(03)02831-9`) or freeform labels
-  (`google:wordpiece:2012`). Without the sweep those papers would report "not
-  converted yet" and re-run conversions that take tens of minutes. The sweep is
-  idempotent and never overwrites an existing file. ([#48])
-
-### Added
-
-- **Continuous integration.** A GitHub Actions workflow now runs `ruff check`,
-  `ruff format --check`, `mypy`, and the full test suite on every push to `main`
-  and every pull request, against Python 3.11 and 3.13. All four gates were
-  already green locally; CI pins that bar rather than chasing it. ([#47])
-
-### Fixed
-
 - **Tests can no longer write to the real cache or reach the network.** Two
   autouse fixtures were added to `tests/conftest.py`. The first points
   `cache._CACHE_ROOT` at each test's private `tmp_path`: 12 of the 28 test
@@ -715,3 +753,4 @@ grouped by milestone rather than per commit.
 [#44]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/44
 [#47]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/47
 [#48]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/48
+[#49]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/49
