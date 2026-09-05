@@ -374,8 +374,13 @@ def _index_path() -> Path:
     return cache._CACHE_ROOT / _INDEX_DIRNAME / _INDEX_FILENAME
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Return ``value`` if it is a dict, else a fresh empty one."""
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _empty_index() -> dict[str, Any]:
-    return {"version": _INDEX_VERSION, "entries": {}}
+    return {"version": _INDEX_VERSION, "entries": {}, "unindexable": {}}
 
 
 def _entry_key(namespace: str, stem: str) -> str:
@@ -408,8 +413,17 @@ def _save_index(index: dict[str, Any]) -> None:
     cache._atomic_write_json(_index_path(), json.dumps(index, ensure_ascii=False))
 
 
-def _build_entry(namespace: str, path: Path, *, mtime_ns: int, size: int) -> dict[str, Any] | None:
-    """Tokenise one markdown file into an index entry, or ``None`` to skip.
+def _build_entry(
+    namespace: str, path: Path, *, mtime_ns: int, size: int
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Tokenise one markdown file into an index entry.
+
+    Returns ``(entry, None)`` on success or ``(None, reason)`` when the file
+    cannot be indexed, so the caller can record *why* instead of dropping it
+    silently. The tokeniser is ASCII-only, so a paper in Chinese, Russian,
+    Greek or Arabic — or one whose extracted text is mostly mathematical
+    symbols — produces no tokens at all and used to vanish from
+    ``search_cached_papers`` permanently, with no error and no diagnostic.
 
     Both tokenisation modes are computed and stored so a single index
     serves ``normalize=True`` and ``normalize=False`` queries without a
@@ -423,11 +437,11 @@ def _build_entry(namespace: str, path: Path, *, mtime_ns: int, size: int) -> dic
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return None
+        return None, "unreadable"
     tokens = _tokenize(text)
     tokens_norm = _tokenize(text, normalize=True)
     if not tokens and not tokens_norm:
-        return None
+        return None, "no_indexable_tokens"
     return {
         "namespace": namespace,
         "stem": path.stem,
@@ -437,7 +451,7 @@ def _build_entry(namespace: str, path: Path, *, mtime_ns: int, size: int) -> dic
         "length_norm": len(tokens_norm),
         "tf": dict(Counter(tokens)),
         "tf_norm": dict(Counter(tokens_norm)),
-    }
+    }, None
 
 
 def _index_sig() -> tuple[int, int] | None:
@@ -479,12 +493,25 @@ def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
             # Memo hit: reuse the parsed dict, but copy entries before any
             # mutation so a prior caller still scoring the memo isn't touched.
             entries: dict[str, Any] = dict(_INDEX_MEMO["entries"])
+            raw_index = _INDEX_MEMO
         else:
             # Memo miss (or forced rebuild): parse from disk. This dict is
             # freshly built and held by no other caller, so it is safe to
             # mutate in place.
-            entries = _load_index()["entries"]
-        index: dict[str, Any] = {"version": _INDEX_VERSION, "entries": entries}
+            raw_index = _load_index()
+            entries = raw_index["entries"]
+        # ``unindexable`` records files the tokeniser could not use, so they
+        # are reported rather than silently absent — and so an unchanged one
+        # is not re-read and re-tokenised on every single refresh. The key is
+        # optional and unvalidated by ``_load_index``, so an index written by
+        # an older version still loads and simply gains the map on its next
+        # dirty save; no version bump, no full rebuild.
+        unindexable: dict[str, Any] = _as_dict(raw_index.get("unindexable"))
+        index: dict[str, Any] = {
+            "version": _INDEX_VERSION,
+            "entries": entries,
+            "unindexable": unindexable,
+        }
         dirty = False
         seen: set[str] = set()
         for ns, path in _iter_markdown_files(None):
@@ -494,7 +521,7 @@ def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
                 continue
             key = _entry_key(ns, path.stem)
             seen.add(key)
-            existing = entries.get(key)
+            existing = entries.get(key) or unindexable.get(key)
             if (
                 not force_refresh
                 and existing is not None
@@ -502,18 +529,34 @@ def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
                 and existing.get("size") == st.st_size
             ):
                 continue
-            entry = _build_entry(ns, path, mtime_ns=st.st_mtime_ns, size=st.st_size)
+            entry, reason = _build_entry(ns, path, mtime_ns=st.st_mtime_ns, size=st.st_size)
             if entry is None:
-                # Unreadable or no-content file — drop any stale entry.
                 if key in entries:
                     del entries[key]
                     dirty = True
+                previous = unindexable.get(key)
+                record = {
+                    "namespace": ns,
+                    "stem": path.stem,
+                    "reason": reason,
+                    "mtime_ns": st.st_mtime_ns,
+                    "size": st.st_size,
+                }
+                if previous != record:
+                    unindexable[key] = record
+                    dirty = True
                 continue
+            if key in unindexable:
+                del unindexable[key]
+                dirty = True
             entries[key] = entry
             dirty = True
-        # Prune entries whose markdown file no longer exists on disk.
+        # Prune records whose markdown file no longer exists on disk.
         for key in [k for k in entries if k not in seen]:
             del entries[key]
+            dirty = True
+        for key in [k for k in unindexable if k not in seen]:
+            del unindexable[key]
             dirty = True
         if dirty:
             _save_index(index)
@@ -523,6 +566,33 @@ def _refresh_index(*, force_refresh: bool = False) -> dict[str, Any]:
         _INDEX_MEMO = index
         _INDEX_MEMO_SIG = _index_sig()
         return index
+
+
+def unindexable(
+    namespace: str | None = None, *, force_refresh: bool = False
+) -> list[dict[str, Any]]:
+    """Papers present on disk that the index could not use.
+
+    Each record is ``{namespace, stem, reason}`` where ``reason`` is
+    ``"no_indexable_tokens"`` (the tokeniser is ASCII-only, so a document in a
+    non-Latin script or one that is mostly mathematical symbols yields nothing)
+    or ``"unreadable"``.
+
+    These papers are invisible to ``search`` — which is correct, they have no
+    searchable terms — but silently so, which is not: an agent asking "which
+    paper mentioned X?" has no way to learn that part of the corpus was never
+    considered. Surfaced through ``search_cached_papers`` so the gap is
+    reportable rather than merely true.
+    """
+    index = _refresh_index(force_refresh=force_refresh)
+    records = _as_dict(index.get("unindexable")).values()
+    out = [
+        {"namespace": r.get("namespace"), "stem": r.get("stem"), "reason": r.get("reason")}
+        for r in records
+        if isinstance(r, dict) and (namespace is None or r.get("namespace") == namespace)
+    ]
+    out.sort(key=lambda r: (r["namespace"] or "", r["stem"] or ""))
+    return out
 
 
 def search(

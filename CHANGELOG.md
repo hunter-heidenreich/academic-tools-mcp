@@ -70,6 +70,39 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A cancelled conversion orphaned the converter process.** `convert_pdf` and
+  `_convert_fast` caught only `TimeoutError`, so on `asyncio.CancelledError`
+  (client disconnect, tool-call cancellation, server shutdown) the `finally`
+  removed the extraction directory and released the global conversion lock
+  while the subprocess was never signalled — a MinerU run kept pinning CPU/GPU
+  with its output directory deleted underneath it, and the child was never
+  reaped. Both paths now tear the process group down and re-raise. ([#52])
+- **A malformed `PDF_CONVERTER` / `PDF_FAST_CONVERTER` escaped as a raw
+  exception.** `str.format` raises `KeyError` on an unknown placeholder,
+  `IndexError` on a positional one, and `ValueError` on an unbalanced brace —
+  none of which is an `OSError`, which is all the full path caught; the fast
+  path had no `try` at all. Both builders now raise a named
+  `ConverterTemplateError` naming the offending variable and the valid
+  placeholders, and both call sites return the `{error, retryable: False}`
+  contract. ([#52])
+- **`find_in_paper` read cached markdown using the host locale.** It was the
+  one read path in the pipeline without an explicit `encoding="utf-8"` — its
+  siblings all had one — so under `LC_ALL=C` (containers, systemd units) it
+  raised `UnicodeDecodeError` straight out of the tool. It also lacked the
+  `FileNotFoundError` guard `get_paper_section` has, so a concurrent
+  `force_refresh` cascade between the `exists()` check and the read raised
+  instead of degrading to the "not converted" error. ([#52])
+- **Papers the keyword index cannot use are now reported instead of vanishing.**
+  The tokeniser is ASCII-only, so a paper in Chinese, Russian, Greek or Arabic —
+  or one whose extracted text is mostly mathematical symbols — yields no terms,
+  was dropped from the index, and became permanently invisible to
+  `search_cached_papers` with no error and no diagnostic. Such files are now
+  tracked with a reason and surfaced as `unindexable_count` / `unindexable` on
+  the search response, pointing at `find_in_paper` as the way to read them. The
+  index gained an optional key without a version bump, so existing indexes load
+  unchanged and no rebuild is triggered; a tracked file is also no longer
+  re-read and re-tokenised on every refresh. ([#52])
+
 - **`download_pdf`'s docstring told the agent the opposite of what the code
   does.** It stated that re-downloading does *not* invalidate converted
   markdown and that `force_refresh` must be passed to `convert_paper` too —
@@ -852,3 +885,4 @@ grouped by milestone rather than per commit.
 [#49]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/49
 [#50]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/50
 [#51]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/51
+[#52]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/52
