@@ -23,6 +23,7 @@ coverage.xml
 !.claude/rules/
 !.claude/settings.json
 !.claude/hooks/
+!.claude/skills/add-provider/
 
 # Secrets
 .env
