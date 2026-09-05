@@ -1,4 +1,4 @@
-"""Tests for the gated open-access PDF download path (KNOWN_ISSUES 3.1).
+"""Tests for the gated open-access PDF download path.
 
 `download_pdf(identifier, allow_oa_url=True)` fetches a generic publisher
 DOI from the open-access PDF URL OpenAlex reports for it — never an

@@ -86,8 +86,6 @@ Per-module deep detail (atomic writes, throttle/backpressure semantics, single-f
 - `.claude/rules/pipeline.md` — `papers.py`, `manual.py`, `cache_search.py`
 - `.claude/rules/server.md` — `server.py`, `_app.py`, `tools/*.py`, `bibtex.py`
 
-Known bugs, fragile code paths, and intentional-constraint trade-offs (with `file:line` references and fix sketches) are inventoried in [`KNOWN_ISSUES.md`](./KNOWN_ISSUES.md). Read it before touching the PDF download/convert pipeline or the retry/backpressure layer.
-
 ## Cross-cutting design decisions
 
 - **Uniform robustness primitives across providers.** Every API client (arxiv, openalex, biorxiv, crossref, opencitations, wikipedia, acl_anthology) has the same shape: persistent `httpx.AsyncClient`, a shared `_throttle.Throttle` instance (5-deep burst cap → `_MAX_CONCURRENT` concurrency semaphore → brief inter-start gap-lock; `LocalBackpressureError` past the burst cap), single-flight by canonical identifier, a transparent retry on transient failure honouring `Retry-After` with exponential backoff (one retry by default; arxiv raises `Throttle(retry_attempts=3)` because its Fastly edge returns 429/503 with no `Retry-After`), negative caching on definitive 404s (default 24h TTL; arxiv/biorxiv override to 1h because preprint identifiers go live mid-session), positive cache TTL eviction, `_stats` counters. The gating *mechanism* lives once in `_throttle.py`; each provider only declares its *policy* constants and holds a `Throttle` (exposed via thin `_throttled_get` / `_request_slot` wrappers). The cached-getter *protocol* (force_refresh → outer cache check → single-flight → in-slot re-check) likewise lives once in `cache.cached_lookup`; each getter passes a `fetch` closure that keeps its own provider quirks.
@@ -102,6 +100,14 @@ Known bugs, fragile code paths, and intentional-constraint trade-offs (with `fil
 - **Manual import is deduplicated by provider routing.** `import_paper(file, identifier)` detects identifier type and stores under the matching provider's namespace, so a subsequent `download_pdf(identifier)` finds the cached PDF — no duplicate downloads or conversions.
 - **bioRxiv → journal chaining.** `get_paper_metadata(biorxiv_doi, follow_published=True)` auto-chains to OpenAlex when `published_doi` is set; falls back to the preprint record if OpenAlex misses.
 - **In-paper search.** `find_in_paper(identifier, query)` scans a converted paper's markdown for substring (or whole-word) matches and returns `[{section, section_index, char_offset, snippet}, ...]`. Char offsets align with `get_paper_section`'s stripped section text so an agent can chain straight to the surrounding context. Pairs with `search_cached_papers` (BM25 across the corpus): "which paper mentioned X?" + "where in the paper does it say X?".
+
+## Upstream metadata caveats
+
+These surface through `get_paper_metadata` / `get_paper_authors` and are properties of the upstream providers, not defects in this tool. Operators correct them by hand under a "published version is authoritative" rule.
+
+- **Author diacritics dropped or mangled** by OpenAlex (`Alan Aspuru-Guzik` for `Alán Aspuru-Guzik`).
+- **Current vs. paper-time institution.** OpenAlex reports an author's *present* affiliation, not their affiliation at publication time.
+- **Preprint vs. published author-count divergence.** arXiv and the published DOI can list different author sets for the same work. `follow_published=True` helps, but chains one direction only and only once OpenAlex has indexed the journal version — when it hasn't, the preprint response carries `followed_published: false` so a consumer can tell it is looking at preprint-era metadata. The batch `get_papers_metadata` does **not** support `follow_published`; chain explicitly per-paper.
 
 ## Cache TTLs
 
