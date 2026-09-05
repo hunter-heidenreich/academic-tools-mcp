@@ -123,7 +123,7 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 
 `download_pdf` natively handles arXiv, bioRxiv/medRxiv, and ACL Anthology. For any other publisher DOI it refuses by default rather than fetching arbitrary URLs; `download_pdf(doi, allow_oa_url=True)` opts into a narrow exception that fetches **only** the open-access PDF URL OpenAlex already surfaces for that work — never a caller-supplied URL.
 
-All four tools accept any identifier (arXiv ID, DOI, or freeform label) and auto-route to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, fetch the PDF yourself and hand it to `import_paper` — see [Manual import](#manual-import) below.
+Every tool above except `search_cached_papers` (which takes a query, not a paper) accepts any identifier — arXiv ID, DOI, or freeform label — and auto-routes to the correct provider's cache namespace. For papers not hosted on arXiv/ACL/bioRxiv, fetch the PDF yourself and hand it to `import_paper` — see [Manual import](#manual-import) below.
 
 ### References and citations (DOI required)
 
@@ -284,8 +284,8 @@ server.py            thin entry: re-exports mcp + tools, registers the
         _clients.py       per-provider pooled httpx.AsyncClient
         _singleflight.py  concurrent same-key callers coalesce to one fetch
         cache.py          atomic file cache, per-provider TTLs, negative cache
-        _doi.py           DOI normalization (one home, seven callers)
-        _useragent.py     the outbound User-Agent (one home, eight clients)
+        _doi.py           DOI normalization — one home, every caller
+        _useragent.py     the outbound User-Agent — one home, every client
         _stats.py         per-provider counters, DEBUG_REQUESTS logging
         _textnorm.py      offset-preserving case folding
         config.py         .env + environment resolution
@@ -297,8 +297,8 @@ server.py            thin entry: re-exports mcp + tools, registers the
 - **One tool per job, auto-routed.** The four core paper tools (`get_paper_metadata`, `get_paper_authors`, `get_paper_abstract`, `get_paper_bibtex`) dispatch on identifier shape rather than forcing the agent to pick between arXiv/bioRxiv/OpenAlex families. Provider-native fields are preserved and tagged with `_source`.
 - **Batch where it matters.** `get_papers_metadata` collapses N parallel singletons into one HTTP call per 50 OpenAlex DOIs (`/works?filter=doi:...|...`) plus concurrent fan-out for arXiv / bioRxiv — designed for reference-graph enrichment.
 - **One API hit per entity.** All tools for a given DOI share one cached response. Concurrent same-key callers are coalesced by single-flight to one fetch.
-- **Per-provider concurrency.** Each provider has its own concurrency cap (arxiv=1 single-connection rule, openalex=4, crossref=3, etc.) — multiple GETs run in flight up to the cap while a brief gap-lock enforces inter-start spacing. Reference-graph traversals are dramatically faster than the previous serialise-everything model.
-- **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry honouring `Retry-After` in either form RFC 9110 permits — delay-seconds or HTTP-date — capped at 10 minutes, before surfacing to the agent.
+- **Per-provider concurrency.** Each provider has its own concurrency cap (arxiv=1, per its single-connection rule; openalex=4; crossref resolved from config, see below) — multiple GETs run in flight up to the cap while a brief gap-lock enforces inter-start spacing. Reference-graph traversals are dramatically faster than the previous serialise-everything model.
+- **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry honouring `Retry-After` in either form RFC 9110 permits — delay-seconds or HTTP-date — capped at 10 minutes, before surfacing to the agent. arXiv retries twice instead of once: its edge returns 429/503 with no `Retry-After`, and a single retry tends to land in the same cooldown.
 - **Burst caps with structured backpressure.** Each provider refuses to stack more than 5 concurrent callers behind its rate-limit gap. The 6th gets `{error, retryable: True, backpressure: True}` immediately so the agent learns to slow down rather than waiting silently.
 - **Negative caching for definitive 404s.** Known-bad identifiers are cached (24h; 1h for arXiv/bioRxiv) so retries don't burn rate budget; transient errors are NOT cached.
 - **The rate we take follows the identity we send.** Crossref publishes two service tiers; the client picks its limits from whether `CROSSREF_MAILTO` is configured rather than assuming the polite tier. Every provider sends a descriptive `User-Agent` naming the project and its repository, with a contact address appended when one is set.
