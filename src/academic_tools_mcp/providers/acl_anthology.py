@@ -2,10 +2,25 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .. import _clients, _doi, _pdf_download, _singleflight, cache, papers
+from .. import _clients, _doi, _pdf_download, _singleflight, _useragent, cache, papers
 from .._throttle import Throttle
 
 NAMESPACE = "acl_anthology"
+
+
+def _get_client():
+    """Return the persistent AsyncClient for ACL Anthology calls.
+
+    The descriptive User-Agent is baked in at construction so every call
+    identifies this client. Previously no headers were passed here at all, so
+    requests went out as ``python-httpx/x.y`` — the generic agent several
+    upstreams throttle hardest, and the one that leaves an operator no way to
+    reach us.
+    """
+    return _clients.get_client(
+        NAMESPACE, headers=_useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS
+    )
+
 
 # ACL Anthology DOI prefix — all ACL venue papers use this
 _ACL_DOI_PREFIX = "10.18653/v1/"
@@ -192,7 +207,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             }
 
         url = pdf_url(aid)
-        client = _clients.get_client(NAMESPACE, timeout=_PDF_TIMEOUT_SECONDS)
+        client = _get_client()
         result = await _pdf_download.stream_to_file(
             client,
             url,

@@ -70,8 +70,16 @@ def get(
     identifier: str,
     *,
     max_age_seconds: float | None = None,
+    count: bool = True,
 ) -> dict[str, Any] | None:
     """Retrieve a cached response. Returns None on miss or corruption.
+
+    ``count=False`` suppresses the hit/miss counters. Use it wherever the call
+    is not a real lookup: ``cached_lookup``'s in-slot re-check (which would
+    otherwise register a second miss for the same lookup, so a genuine miss
+    counted twice while a hit counted once — making the reported hit rate
+    systematically wrong), and the search cache-warming probes, which call
+    ``get`` only to decide whether to overwrite.
 
     ``max_age_seconds`` (optional) treats entries older than that many
     seconds (by file mtime) as misses, and unlinks them so the next put
@@ -86,20 +94,23 @@ def get(
     """
     path = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     if not path.exists():
-        _stats.incr(namespace, "cache_misses")
+        if count:
+            _stats.incr(namespace, "cache_misses")
         return None
     if max_age_seconds is not None:
         try:
             age = time.time() - path.stat().st_mtime
         except OSError:
-            _stats.incr(namespace, "cache_misses")
+            if count:
+                _stats.incr(namespace, "cache_misses")
             return None
         if age > max_age_seconds:
             try:
                 path.unlink()
             except OSError:
                 pass
-            _stats.incr(namespace, "cache_misses")
+            if count:
+                _stats.incr(namespace, "cache_misses")
             return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -108,7 +119,8 @@ def get(
             path.unlink()
         except OSError:
             pass
-        _stats.incr(namespace, "cache_misses")
+        if count:
+            _stats.incr(namespace, "cache_misses")
         return None
     # Entries are always dicts (see put()'s signature). Anything else is a
     # tampered or foreign file — treat it like corruption rather than handing
@@ -118,9 +130,11 @@ def get(
             path.unlink()
         except OSError:
             pass
-        _stats.incr(namespace, "cache_misses")
+        if count:
+            _stats.incr(namespace, "cache_misses")
         return None
-    _stats.incr(namespace, "cache_hits")
+    if count:
+        _stats.incr(namespace, "cache_hits")
     return data
 
 
@@ -229,7 +243,9 @@ async def cached_lookup(
         # cache while a follower's coroutine was suspended at the outer check.
         # On a forced refresh we still re-check so concurrent forced callers
         # share one fetch (the leader writes, followers see the fresh entry).
-        cached = get(namespace, entity, canonical, max_age_seconds=positive_ttl)
+        # count=False: the outer check above already recorded this lookup's
+        # hit/miss. Counting again made every genuine miss register twice.
+        cached = get(namespace, entity, canonical, max_age_seconds=positive_ttl, count=False)
         if cached is not None:
             return cached
         neg = get_negative(namespace, entity, canonical)

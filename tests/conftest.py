@@ -63,6 +63,12 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
         throttle = getattr(module, "_throttle", None)
         if throttle is not None:
             throttle.reset()
+        # Crossref paces search separately from singles (different upstream
+        # limit); its lock binds to the running event loop just as a
+        # Throttle's does, so it needs the same per-test rebuild.
+        reset_search_pacing = getattr(module, "reset_search_pacing", None)
+        if reset_search_pacing is not None:
+            reset_search_pacing()
         if hasattr(module, "_single_flight"):
             monkeypatch.setattr(
                 module,

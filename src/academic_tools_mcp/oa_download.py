@@ -21,11 +21,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import _clients, _pdf_download, _singleflight, cache, manual
+from . import _clients, _pdf_download, _singleflight, _useragent, cache, manual
 from ._throttle import Throttle
 from .providers import openalex
 
 NAMESPACE = "oa_download"
+
+
+def _get_client():
+    """Return the persistent AsyncClient for open-access download calls.
+
+    The descriptive User-Agent is baked in at construction so every call
+    identifies this client. Previously no headers were passed here at all, so
+    requests went out as ``python-httpx/x.y`` — the generic agent several
+    upstreams throttle hardest, and the one that leaves an operator no way to
+    reach us.
+    """
+    return _clients.get_client(
+        NAMESPACE, headers=_useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS
+    )
+
 
 # Conservative concurrency: OA URLs hit arbitrary publisher domains, not a
 # single API with a documented budget, so we keep simultaneous fetches low
@@ -127,7 +142,7 @@ async def _resolve_and_download(
             "suggestion": _IMPORT_SUGGESTION,
         }
 
-    client = _clients.get_client(NAMESPACE, timeout=_PDF_TIMEOUT_SECONDS)
+    client = _get_client()
     return await _pdf_download.stream_to_file(
         client,
         url,

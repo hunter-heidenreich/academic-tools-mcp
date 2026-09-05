@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _http, _singleflight, cache, config
+from .. import _clients, _http, _singleflight, _useragent, cache, config
 from .._throttle import Throttle
 
 NAMESPACE = "wikipedia"
@@ -37,11 +37,12 @@ def _parse_error_dict() -> dict[str, Any]:
 
 
 def _build_user_agent() -> str:
-    """Build User-Agent from WIKIPEDIA_MAILTO env var, or use a default."""
-    mailto = config.get("WIKIPEDIA_MAILTO")
-    if mailto:
-        return f"AcademicToolsMCP/1.0 (mailto:{mailto}) httpx"
-    return "AcademicToolsMCP/1.0 httpx"
+    """Build the Wikimedia-policy User-Agent from ``WIKIPEDIA_MAILTO``.
+
+    Wikimedia's User-Agent policy asks for a descriptive agent with a way to
+    contact the operator; the shared builder emits exactly that shape.
+    """
+    return _useragent.build(config.get("WIKIPEDIA_MAILTO"))
 
 
 # Rate limiting: ~1 req/sec (well within 1,000 req/hour reader tier).

@@ -3,11 +3,24 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _doi, _http, _singleflight, cache
+from .. import _clients, _doi, _http, _singleflight, _useragent, cache
 from .._throttle import Throttle
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
+
+
+def _get_client():
+    """Return the persistent AsyncClient for OpenCitations calls.
+
+    The descriptive User-Agent is baked in at construction so every call
+    identifies this client. Previously no headers were passed here at all, so
+    requests went out as ``python-httpx/x.y`` — the generic agent several
+    upstreams throttle hardest, and the one that leaves an operator no way to
+    reach us.
+    """
+    return _clients.get_client(NAMESPACE, headers=_useragent.headers(), timeout=30.0)
+
 
 # The OpenCitations Index API returns JSON; a malformed/truncated 200 body
 # raises ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the
@@ -139,7 +152,7 @@ async def _fetch_direction(
         bare_doi = _normalize_doi(doi)
 
         try:
-            client = _clients.get_client(NAMESPACE, timeout=30.0)
+            client = _get_client()
             response = await _throttled_get(
                 client,
                 # Percent-encode the DOI so reserved characters (#, ?, …)

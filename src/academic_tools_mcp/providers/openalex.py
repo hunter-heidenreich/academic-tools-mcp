@@ -2,7 +2,7 @@ import asyncio
 from typing import Any
 from urllib.parse import quote
 
-from .. import _clients, _doi, _http, _singleflight, cache, config
+from .. import _clients, _doi, _http, _singleflight, _useragent, cache, config
 from .._throttle import Throttle
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
@@ -102,10 +102,7 @@ def _build_headers() -> dict[str, str]:
     Falls back to a generic UA when no mailto is configured. Without a
     mailto, OpenAlex still serves requests but at the public-pool rate.
     """
-    mailto = config.get("OPENALEX_MAILTO")
-    if mailto:
-        return {"User-Agent": f"academic-tools-mcp ({mailto})"}
-    return {"User-Agent": "academic-tools-mcp"}
+    return _useragent.headers(config.get("OPENALEX_MAILTO"))
 
 
 def _get_client():
