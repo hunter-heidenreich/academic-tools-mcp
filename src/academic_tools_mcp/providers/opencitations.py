@@ -1,10 +1,9 @@
-import json
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _http, _singleflight, cache
+from .. import _clients, _doi, _http, _singleflight, cache
 from .._throttle import Throttle
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
@@ -14,19 +13,16 @@ NAMESPACE = "opencitations"
 # raises ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the
 # HTTP errors so the tool always returns the uniform ``{error}`` contract
 # rather than crashing on a garbled response.
-_PARSE_ERRORS = (json.JSONDecodeError,)
+_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable OpenCitations response.
 
-    A new dict each call (like ``_http.error_dict``) so a caller — or a
-    single-flight follower sharing the result — can't mutate a shared object.
+    Delegates to ``_http.parse_error_dict``, the single home for the
+    shape. Six providers carried byte-identical copies of this.
     """
-    return {
-        "error": "OpenCitations returned a response that could not be parsed.",
-        "retryable": True,
-    }
+    return _http.parse_error_dict("OpenCitations")
 
 
 # Rate limiting: 180 req/min = 3 req/sec. Enforce a minimum 334ms gap.
@@ -71,24 +67,17 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
 def _normalize_doi(doi: str) -> str:
     """Normalize a DOI to bare form (e.g., 10.1234/example).
 
-    Accepts:
-      - bare DOI: 10.1234/example
-      - prefixed: doi:10.1234/example
-      - full URL: https://doi.org/10.1234/example
+    Thin wrapper over :mod:`_doi`, which is the single home for this logic.
+    Six copies had drifted; only two of them handled ``dx.doi.org`` and a
+    case-insensitive ``doi:`` prefix, so the same paper could land under
+    three different cache keys depending on which tool the agent called.
     """
-    doi = doi.strip()
-    if doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/") :]
-    elif doi.startswith("http://doi.org/"):
-        doi = doi[len("http://doi.org/") :]
-    elif doi.startswith("doi:"):
-        doi = doi[len("doi:") :]
-    return doi
+    return _doi.normalize(doi)
 
 
 def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
-    return _normalize_doi(doi).lower()
+    return _doi.canonical(doi)
 
 
 # ---------------------------------------------------------------------------

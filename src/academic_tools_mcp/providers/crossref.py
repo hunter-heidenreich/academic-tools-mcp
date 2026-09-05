@@ -1,10 +1,9 @@
-import json
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _http, _singleflight, cache, config
+from .. import _clients, _doi, _http, _singleflight, cache, config
 from .._throttle import Throttle
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
@@ -14,19 +13,16 @@ NAMESPACE = "crossref"
 # ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
 # errors so the tool always returns the uniform ``{error}`` contract rather
 # than crashing on a garbled response.
-_PARSE_ERRORS = (json.JSONDecodeError,)
+_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable Crossref response.
 
-    A new dict each call (like ``_http.error_dict``) so a caller — or a
-    single-flight follower sharing the result — can't mutate a shared object.
+    Delegates to ``_http.parse_error_dict``, the single home for the
+    shape. Six providers carried byte-identical copies of this.
     """
-    return {
-        "error": "Crossref returned a response that could not be parsed.",
-        "retryable": True,
-    }
+    return _http.parse_error_dict("Crossref")
 
 
 # Rate limiting for the polite pool: max 10 req/sec, 3 concurrent.
@@ -90,24 +86,17 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
 def _normalize_doi(doi: str) -> str:
     """Normalize a DOI to bare form (e.g., 10.1234/example).
 
-    Accepts:
-      - bare DOI: 10.1234/example
-      - prefixed: doi:10.1234/example
-      - full URL: https://doi.org/10.1234/example
+    Thin wrapper over :mod:`_doi`, which is the single home for this logic.
+    Six copies had drifted; only two of them handled ``dx.doi.org`` and a
+    case-insensitive ``doi:`` prefix, so the same paper could land under
+    three different cache keys depending on which tool the agent called.
     """
-    doi = doi.strip()
-    if doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/") :]
-    elif doi.startswith("http://doi.org/"):
-        doi = doi[len("http://doi.org/") :]
-    elif doi.startswith("doi:"):
-        doi = doi[len("doi:") :]
-    return doi
+    return _doi.normalize(doi)
 
 
 def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
-    return _normalize_doi(doi).lower()
+    return _doi.canonical(doi)
 
 
 # ---------------------------------------------------------------------------
@@ -147,10 +136,15 @@ async def search_works(
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("Crossref", e)
 
-    if "message" not in data:
+    # `"x" in data` raises TypeError on a JSON `null`/scalar body, and
+    # TypeError is in neither _PARSE_ERRORS nor HTTPX_ERRORS — it escaped the
+    # provider entirely. Guard the type before indexing, as openalex,
+    # opencitations and wikipedia already do.
+    if not isinstance(data, dict) or "message" not in data:
         return _parse_error_dict()
 
-    items = data["message"].get("items", [])
+    message = data["message"]
+    items = message.get("items", []) if isinstance(message, dict) else []
 
     # Opportunistically warm the works cache. Each search hit is the
     # same shape as a /works/{doi} response, so a follow-up get_work
@@ -213,12 +207,17 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("Crossref", e)
 
-        if "message" not in data:
+        if not isinstance(data, dict) or "message" not in data:
             # Anomalous 200 with no work payload — treat like a parse
             # failure rather than positive-caching an empty {} for the TTL.
+            # The isinstance guard matters as much as the key check: a JSON
+            # `null` body made `"message" not in data` raise TypeError, which
+            # is caught by neither _PARSE_ERRORS nor HTTPX_ERRORS.
             return _parse_error_dict()
 
         work = data["message"]
+        if not isinstance(work, dict):
+            return _parse_error_dict()
         cache.put(NAMESPACE, "works", canonical, work)
         return work
 

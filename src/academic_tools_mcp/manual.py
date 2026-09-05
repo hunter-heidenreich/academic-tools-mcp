@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import _pdf_download, cache, papers
+from . import _doi, _pdf_download, cache, papers
 
 NAMESPACE = "manual"
 
@@ -24,25 +24,16 @@ NAMESPACE = "manual"
 # Identifier normalization (manual-only fallback)
 # ---------------------------------------------------------------------------
 
-_DOI_URL_RE = re.compile(r"https?://(?:dx\.)?doi\.org/(10\.\d{4,}/\S+)$")
-
 
 def _normalize_identifier(identifier: str) -> str:
     """Normalize an identifier to a bare form.
 
-    If it looks like a DOI (bare, doi: prefix, or URL), strip to the bare DOI.
-    Otherwise, return as-is after stripping whitespace.
+    If it looks like a DOI (bare, ``doi:`` prefix in any case, or a doi.org /
+    dx.doi.org URL), strip to the bare DOI via :mod:`_doi`. Anything else —
+    arXiv ids, freeform labels — is returned stripped but untouched, since
+    this dispatcher accepts identifiers that are not DOIs at all.
     """
-    identifier = identifier.strip()
-
-    if identifier.lower().startswith("doi:"):
-        identifier = identifier[4:]
-
-    m = _DOI_URL_RE.match(identifier)
-    if m:
-        return m.group(1)
-
-    return identifier
+    return _doi.normalize(identifier)
 
 
 def _canonical_key(identifier: str) -> str:

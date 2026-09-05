@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .. import _clients, _pdf_download, _singleflight, cache, papers
+from .. import _clients, _doi, _pdf_download, _singleflight, cache, papers
 from .._throttle import Throttle
 
 NAMESPACE = "acl_anthology"
@@ -71,15 +71,11 @@ def is_acl_doi(doi: str) -> bool:
 
 
 def _normalize_doi(doi: str) -> str:
-    """Normalize a DOI to bare form (e.g., 10.18653/v1/2023.acl-long.1)."""
-    doi = doi.strip()
-    if doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/") :]
-    elif doi.startswith("http://doi.org/"):
-        doi = doi[len("http://doi.org/") :]
-    elif doi.startswith("doi:"):
-        doi = doi[len("doi:") :]
-    return doi
+    """Normalize a DOI to bare form (e.g., 10.18653/v1/2023.acl-long.1).
+
+    Thin wrapper over :mod:`_doi`, the single home for this logic.
+    """
+    return _doi.normalize(doi)
 
 
 # Old-format Anthology IDs (pre-2020) are <LETTER><2-digit-year>-<digits>, e.g.

@@ -466,3 +466,85 @@ class TestGetPaperIntegration:
         before = calls[0]
         await biorxiv.get_paper("10.1101/9999.99.99.999999")
         assert calls[0] == before, "not-found is negative-cached; retry served from cache"
+
+
+class TestMalformedPayloadShape:
+    """A 200 whose body is valid JSON but the wrong shape must surface the
+    uniform {error, retryable} contract, not raise.
+
+    ``data.get("collection", [])`` raises AttributeError on a JSON ``null`` or
+    scalar, and a collection of non-dicts raises inside ``_pick_latest_version``.
+    Neither AttributeError nor TypeError is in ``_PARSE_ERRORS`` or
+    ``HTTPX_ERRORS``, so both escaped the provider entirely.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_gap(self, monkeypatch, tmp_path):
+        # These cases issue up to three GETs each; without this they pay the
+        # real 0.5s inter-request gap and dominate the suite's runtime.
+        _reset_biorxiv(monkeypatch, tmp_path)
+
+    @pytest.mark.parametrize("payload", [None, 5, "a string", [1, 2, 3], True])
+    @pytest.mark.asyncio
+    async def test_get_paper_does_not_raise(self, monkeypatch, payload):
+        # Both the bioRxiv call and the medRxiv fallback get the bad payload.
+        _stub_json_responses(monkeypatch, payload, payload)
+
+        result = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert "error" in result, f"{payload!r} escaped the error contract"
+
+    @pytest.mark.asyncio
+    async def test_collection_of_non_dicts_does_not_raise(self, monkeypatch):
+        bad = {"collection": [1, 2, "three"]}
+        _stub_json_responses(monkeypatch, bad, bad)
+
+        result = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_null_server_field_does_not_raise(self, monkeypatch):
+        # `raw.get("server", "").lower()` returned None for a present-but-null
+        # key; the sibling `published` field already handled this correctly.
+        payload = {
+            "collection": [
+                {
+                    "doi": "10.1101/2024.01.01.573838",
+                    "title": "T",
+                    "authors": "Doe, J.",
+                    "date": "2024-01-01",
+                    "version": "1",
+                    "server": None,
+                }
+            ]
+        }
+        _stub_json_responses(monkeypatch, payload)
+
+        result = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert "error" not in result
+        assert result["title"] == "T"
+
+    @pytest.mark.parametrize("payload", [None, 5, [1, 2, 3]])
+    @pytest.mark.asyncio
+    async def test_malformed_payload_is_not_negative_cached(self, monkeypatch, payload):
+        good = {
+            "collection": [
+                {
+                    "doi": "10.1101/2024.01.01.573838",
+                    "title": "Real Paper",
+                    "authors": "Doe, J.",
+                    "date": "2024-01-01",
+                    "version": "1",
+                    "server": "biorxiv",
+                }
+            ]
+        }
+        _stub_json_responses(monkeypatch, payload, payload, good)
+
+        first = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+        second = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert "error" in first
+        assert second.get("title") == "Real Paper", "a bad shape poisoned the cache"

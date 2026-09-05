@@ -1,8 +1,8 @@
-import json
+import asyncio
 from typing import Any
 from urllib.parse import quote
 
-from .. import _clients, _http, _singleflight, cache, config
+from .. import _clients, _doi, _http, _singleflight, cache, config
 from .._throttle import Throttle
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
@@ -12,19 +12,16 @@ NAMESPACE = "openalex"
 # ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
 # errors so the tool always returns the uniform ``{error}`` contract rather
 # than crashing on a garbled response. Mirrors crossref/biorxiv.
-_PARSE_ERRORS = (json.JSONDecodeError,)
+_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
-    """Fresh structured error for an unparseable / malformed OpenAlex response.
+    """Fresh structured error for an unparseable OpenAlex response.
 
-    A new dict each call (like ``_http.error_dict``) so a caller — or a
-    single-flight follower sharing the result — can't mutate a shared object.
+    Delegates to ``_http.parse_error_dict``, the single home for the
+    shape. Six providers carried byte-identical copies of this.
     """
-    return {
-        "error": "OpenAlex returned a response that could not be parsed.",
-        "retryable": True,
-    }
+    return _http.parse_error_dict("OpenAlex")
 
 
 # Rate limiting. OpenAlex's polite-pool soft cap is 10 req/sec; we set
@@ -55,26 +52,15 @@ _POSITIVE_TTL_SECONDS = 30 * 86400.0
 def _normalize_doi(doi: str) -> str:
     """Normalize a DOI to the format OpenAlex expects in the URL path.
 
-    Accepts:
-      - bare DOI: 10.1234/example
-      - prefixed: doi:10.1234/example
-      - full URL: https://doi.org/10.1234/example or http://doi.org/...
-    Surrounding whitespace is stripped. Returns the bare DOI (the caller
-    adds the ``doi:`` path prefix).
+    Returns the bare DOI; the caller adds the ``doi:`` path prefix. Thin
+    wrapper over :mod:`_doi`, the single home for this logic.
     """
-    doi = doi.strip()
-    if doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/") :]
-    elif doi.startswith("http://doi.org/"):
-        doi = doi[len("http://doi.org/") :]
-    elif doi.startswith("doi:"):
-        doi = doi[len("doi:") :]
-    return doi
+    return _doi.normalize(doi)
 
 
 def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
-    return _normalize_doi(doi).lower()
+    return _doi.canonical(doi)
 
 
 def best_pdf_url(work: dict[str, Any]) -> str | None:
@@ -296,6 +282,106 @@ def _canonical_from_response_doi(work_doi: str | None) -> str | None:
     return work_doi.lower()
 
 
+async def _fetch_chunk(
+    chunk: list[str],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Fetch one ``/works?filter=doi:a|b|c`` chunk, coalesced by single-flight.
+
+    Returns ``{canonical: work_or_error}`` for every DOI in ``chunk``.
+
+    Single-flight keyed on the chunk contents: ``get_works_batch`` previously
+    bypassed the shared getter protocol entirely and had no coalescing, so two
+    concurrent ``get_papers_metadata`` calls with overlapping DOI lists both
+    issued full batch GETs. Sorted so two callers that pass the same DOIs in a
+    different order still share one fetch.
+    """
+    sf_key = ("works_batch", tuple(sorted(chunk)), force_refresh)
+
+    async def _runner() -> dict[str, dict[str, Any]]:
+        return await _fetch_chunk_uncoalesced(chunk)
+
+    return await _single_flight.do(sf_key, _runner)
+
+
+async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]]:
+    """The actual batch GET + result mapping for one chunk."""
+    out: dict[str, dict[str, Any]] = {}
+    params = _build_params()
+    # OpenAlex's filter syntax: pipe-separated values are OR'd. The
+    # bare DOI (no doi.org prefix) is what the filter expects.
+    params["filter"] = "doi:" + "|".join(chunk)
+    params["per-page"] = str(len(chunk))
+
+    try:
+        response = await _throttled_get(f"{OPENALEX_BASE_URL}/works", params=params)
+        response.raise_for_status()
+        data = response.json()
+    except _PARSE_ERRORS:
+        # A garbled 200 body — transient. Surface a retryable error for
+        # every DOI in the chunk and do NOT negative-cache (a retry must
+        # re-fetch); we can't tell which DOI the upstream meant to error.
+        return dict.fromkeys(chunk, _parse_error_dict())
+    except _http.HTTPX_ERRORS as e:
+        return dict.fromkeys(chunk, _http.error_dict("OpenAlex", e))
+
+    if not isinstance(data, dict):
+        return dict.fromkeys(chunk, _parse_error_dict())
+
+    results = data.get("results") or []
+    if not isinstance(results, list):
+        return dict.fromkeys(chunk, _parse_error_dict())
+
+    chunk_set = set(chunk)
+    seen_in_chunk: set[str] = set()
+    unmatched_returned = 0
+    for work in results:
+        if not isinstance(work, dict):
+            continue
+        work_canonical = _canonical_from_response_doi(work.get("doi"))
+        if work_canonical is None:
+            continue
+        if work_canonical not in chunk_set:
+            # OpenAlex answered with a DOI whose stored string differs from
+            # the one we asked for. The record is still valid data, so cache
+            # it under its own key — but note that we can no longer tell
+            # which requested DOI it satisfies.
+            unmatched_returned += 1
+            cache.put(NAMESPACE, "works", work_canonical, work)
+            continue
+        cache.put(NAMESPACE, "works", work_canonical, work)
+        out[work_canonical] = work
+        seen_in_chunk.add(work_canonical)
+
+    # A DOI we asked for and didn't get back is normally a definitive miss,
+    # cached negatively so a re-batch in the same session doesn't re-ask
+    # (same shape as get_work's 404 path). But that inference only holds if
+    # the response actually accounted for everything: if OpenAlex returned a
+    # record whose DOI string didn't match what we asked for, or reported
+    # more matches than it sent us (a truncated / paginated response), then a
+    # "missing" DOI may well exist and negative-caching it would poison the
+    # entry for 24h.
+    meta = data.get("meta")
+    reported = meta.get("count") if isinstance(meta, dict) else None
+    truncated = isinstance(reported, int) and reported > len(results)
+    trustworthy = unmatched_returned == 0 and not truncated
+
+    for canonical in chunk:
+        if canonical in seen_in_chunk:
+            continue
+        err: dict[str, Any] = {"error": f"No work found for DOI: {canonical}"}
+        if trustworthy:
+            err["not_found"] = True
+            cache.put_negative(NAMESPACE, "works", canonical, err)
+        else:
+            # Inconclusive rather than absent — let the caller retry.
+            err["retryable"] = True
+        out[canonical] = err
+
+    return out
+
+
 async def get_works_batch(
     dois: list[str],
     *,
@@ -356,65 +442,25 @@ async def get_works_batch(
     safe_misses = [c for c in misses if "|" not in c and "," not in c]
     unsafe_misses = [c for c in misses if "|" in c or "," in c]
 
-    for canonical in unsafe_misses:
-        out[canonical] = await get_work(canonical, force_refresh=force_refresh)
+    chunks = [
+        safe_misses[start : start + _BATCH_CHUNK_SIZE]
+        for start in range(0, len(safe_misses), _BATCH_CHUNK_SIZE)
+    ]
 
-    for start in range(0, len(safe_misses), _BATCH_CHUNK_SIZE):
-        chunk = safe_misses[start : start + _BATCH_CHUNK_SIZE]
-        params = _build_params()
-        # OpenAlex's filter syntax: pipe-separated values are OR'd. The
-        # bare DOI (no doi.org prefix) is what the filter expects.
-        params["filter"] = "doi:" + "|".join(chunk)
-        params["per-page"] = str(len(chunk))
-
-        try:
-            response = await _throttled_get(
-                f"{OPENALEX_BASE_URL}/works",
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except _PARSE_ERRORS:
-            # A garbled 200 body — transient. Surface a retryable error for
-            # every DOI in the chunk and do NOT negative-cache (a retry must
-            # re-fetch); we can't tell which DOI the upstream meant to error.
-            parse_err = _parse_error_dict()
-            for canonical in chunk:
-                out[canonical] = parse_err
-            continue
-        except _http.HTTPX_ERRORS as e:
-            err = _http.error_dict("OpenAlex", e)
-            for canonical in chunk:
-                out[canonical] = err
-            continue
-
-        if not isinstance(data, dict):
-            parse_err = _parse_error_dict()
-            for canonical in chunk:
-                out[canonical] = parse_err
-            continue
-
-        chunk_set = set(chunk)
-        seen_in_chunk: set[str] = set()
-        for work in data.get("results", []) or []:
-            if not isinstance(work, dict):
-                continue
-            work_canonical = _canonical_from_response_doi(work.get("doi"))
-            if work_canonical is None or work_canonical not in chunk_set:
-                continue
-            cache.put(NAMESPACE, "works", work_canonical, work)
-            out[work_canonical] = work
-            seen_in_chunk.add(work_canonical)
-
-        # Anything we asked for and didn't get back is a definitive
-        # miss — cache it negatively so a re-batch in the same session
-        # doesn't re-ask. Same shape as get_work's 404 path.
-        for canonical in chunk:
-            if canonical in seen_in_chunk:
-                continue
-            err = {"error": f"No work found for DOI: {canonical}", "not_found": True}
-            cache.put_negative(NAMESPACE, "works", canonical, err)
-            out[canonical] = err
+    # Chunks and singleton fallbacks run concurrently. The provider's
+    # ``Throttle`` (_MAX_CONCURRENT=4) is what bounds real parallelism; the
+    # loop used to be a serial ``for ... await``, so 200 DOIs issued four
+    # chunk requests strictly one after another while three slots sat idle.
+    # return_exceptions=False is fine here: every task already converts its
+    # failures into error dicts.
+    results = await asyncio.gather(
+        *(get_work(c, force_refresh=force_refresh) for c in unsafe_misses),
+        *(_fetch_chunk(chunk, force_refresh=force_refresh) for chunk in chunks),
+    )
+    for canonical, result in zip(unsafe_misses, results[: len(unsafe_misses)], strict=True):
+        out[canonical] = result
+    for chunk_out in results[len(unsafe_misses) :]:
+        out.update(chunk_out)
 
     return out
 

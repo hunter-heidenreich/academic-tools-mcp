@@ -23,6 +23,7 @@ Usage:
 """
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -65,6 +66,31 @@ HTTPX_ERRORS = (
     httpx.RequestError,
     LocalBackpressureError,
 )
+
+
+# JSON providers all decode with ``json.loads`` and all want the same
+# treatment for a body that won't parse. Single-homed here so a new provider
+# can't forget one of the exception types.
+JSON_PARSE_ERRORS: tuple[type[Exception], ...] = (json.JSONDecodeError,)
+
+
+def parse_error_dict(provider: str, *, detail: str = "could not be parsed") -> dict[str, Any]:
+    """Fresh structured error for an unparseable / malformed provider response.
+
+    A parse failure is *transient* — a truncated or garbled body says nothing
+    about whether the identifier exists — so the result carries
+    ``retryable: True`` and callers must not negative-cache it.
+
+    A new dict each call (like ``error_dict``) so a caller, or a single-flight
+    follower sharing the result, can't mutate a shared object.
+
+    ``detail`` lets a provider be more specific (arXiv speaks XML, not JSON)
+    without forking the shape.
+    """
+    return {
+        "error": f"{provider} returned a response that {detail}.",
+        "retryable": True,
+    }
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
