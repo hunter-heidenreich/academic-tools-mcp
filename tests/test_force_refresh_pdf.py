@@ -1,6 +1,6 @@
 """Regression tests for ``download_pdf(force_refresh=True)`` data safety.
 
-KNOWN_ISSUES finding 1.1: all three PDF providers used to ``dest.unlink()``
+All three PDF providers used to ``dest.unlink()``
 the cached PDF *before* the re-download was attempted, so any failed refetch
 (404, transport error, MAX_PDF_BYTES abort) destroyed the only copy. The fix
 drops the up-front unlink and lets ``_pdf_download.stream_to_file``'s atomic
