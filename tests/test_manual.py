@@ -76,7 +76,12 @@ class TestPdfFilename:
         )
 
     def test_colons_replaced(self):
-        assert manual._pdf_filename("some:label") == "some_label.pdf"
+        assert manual._pdf_filename("some:label") == "some%3Alabel.pdf"
+
+    def test_space_and_underscore_do_not_collide(self):
+        # Regression: both used to become "a_b.pdf", so importing "a b" after
+        # "a_b" silently replaced the other paper's cached PDF.
+        assert manual._pdf_filename("a b") != manual._pdf_filename("a_b")
 
     def test_freeform(self):
         assert manual._pdf_filename("my-paper") == "my-paper.pdf"
@@ -102,9 +107,17 @@ class TestResolveTarget:
         assert target["canonical"] == "2301.00001"
 
     def test_arxiv_with_version(self):
+        # The version is part of identity: an imported v2 must not land on
+        # top of a cached v1 (or be served in its place).
         target = manual.resolve_target("2301.00001v2")
         assert target["namespace"] == "arxiv"
-        assert target["canonical"] == "2301.00001"
+        assert target["canonical"] == "2301.00001v2"
+
+    def test_arxiv_versions_get_distinct_targets(self):
+        v1 = manual.resolve_target("2301.00001v1")
+        v2 = manual.resolve_target("2301.00001v2")
+        assert v1["canonical"] != v2["canonical"]
+        assert v1["pdf_path"] != v2["pdf_path"]
 
     def test_arxiv_old_style(self):
         target = manual.resolve_target("hep-th/9901001")
@@ -114,7 +127,7 @@ class TestResolveTarget:
     def test_arxiv_url(self):
         target = manual.resolve_target("https://arxiv.org/abs/2301.00001v2")
         assert target["namespace"] == "arxiv"
-        assert target["canonical"] == "2301.00001"
+        assert target["canonical"] == "2301.00001v2"
 
     def test_biorxiv_doi(self):
         target = manual.resolve_target("10.1101/2024.01.01.573838")

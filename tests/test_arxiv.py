@@ -64,20 +64,53 @@ class TestNormalizeArxivId:
 
 
 class TestCanonicalArxivId:
-    def test_strips_version(self):
-        assert arxiv.canonical_arxiv_id("2301.00001v2") == "2301.00001"
+    """The version is part of a paper's identity, so it is part of the key.
+
+    Stripping it (the previous behaviour) meant the key and the *fetch*
+    disagreed: whichever version was requested first won the shared key, and
+    every later version was served that one's metadata and PDF bytes.
+    """
+
+    def test_keeps_version(self):
+        assert arxiv.canonical_arxiv_id("2301.00001v2") == "2301.00001v2"
 
     def test_no_version(self):
         assert arxiv.canonical_arxiv_id("2301.00001") == "2301.00001"
 
+    def test_versions_do_not_collide(self):
+        v1 = arxiv.canonical_arxiv_id("2301.00001v1")
+        v2 = arxiv.canonical_arxiv_id("2301.00001v2")
+        bare = arxiv.canonical_arxiv_id("2301.00001")
+        assert len({v1, v2, bare}) == 3
+
     def test_lowercases(self):
         assert arxiv.canonical_arxiv_id("hep-TH/9901001") == "hep-th/9901001"
 
-    def test_url_strips_version_and_lowercases(self):
-        assert arxiv.canonical_arxiv_id("https://arxiv.org/abs/2301.00001v3") == "2301.00001"
+    def test_url_keeps_version_and_lowercases(self):
+        assert arxiv.canonical_arxiv_id("https://arxiv.org/abs/2301.00001v3") == "2301.00001v3"
+
+    def test_old_style_keeps_version(self):
+        assert arxiv.canonical_arxiv_id("hep-th/9901001v1") == "hep-th/9901001v1"
+
+
+class TestBaseArxivId:
+    """``base_arxiv_id`` is the version-stripped "latest" form."""
+
+    def test_strips_version(self):
+        assert arxiv.base_arxiv_id("2301.00001v2") == "2301.00001"
+
+    def test_no_version_is_identity(self):
+        assert arxiv.base_arxiv_id("2301.00001") == "2301.00001"
+
+    def test_all_versions_share_one_base(self):
+        assert (
+            arxiv.base_arxiv_id("2301.00001v1")
+            == arxiv.base_arxiv_id("2301.00001v9")
+            == arxiv.base_arxiv_id("2301.00001")
+        )
 
     def test_old_style_strips_version(self):
-        assert arxiv.canonical_arxiv_id("hep-th/9901001v1") == "hep-th/9901001"
+        assert arxiv.base_arxiv_id("hep-th/9901001v1") == "hep-th/9901001"
 
 
 # ---------------------------------------------------------------------------
@@ -680,3 +713,87 @@ class TestSearchOpportunisticCache:
         refreshed = cache.get(arxiv.NAMESPACE, "papers", canonical)
         assert refreshed is not None
         assert refreshed["title"] == "Fresh Title"
+
+
+class TestVersionedIdentity:
+    """Regression: an explicitly-versioned request must never be answered
+    from a different version's cache entry.
+
+    The key used to be version-stripped while the fetch kept the version, so
+    whichever version was asked for first won the shared key. Every later
+    version was a silent cache hit returning the first one's metadata — and
+    ``download_pdf`` handed back the first one's bytes as ``cached: True``.
+    """
+
+    @staticmethod
+    def _feed(version: str, title: str) -> str:
+        return f"""<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2301.00001{version}</id>
+    <title>{title}</title>
+    <summary>Summary for {version}.</summary>
+    <published>2023-01-01T00:00:00Z</published>
+    <updated>2023-06-01T00:00:00Z</updated>
+    <author><name>Jane Doe</name></author>
+  </entry>
+</feed>"""
+
+    def _install(self, monkeypatch):
+        """Serve a version-specific feed based on the requested id."""
+        from academic_tools_mcp import _clients
+
+        requested: list[str] = []
+        outer = self
+
+        class StubResponse:
+            def __init__(self, text):
+                self.text = text
+                self.status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+        class StubClient:
+            async def get(self, url, **kwargs):
+                ident = kwargs.get("params", {}).get("id_list", "")
+                requested.append(ident)
+                version = "v2" if ident.endswith("v2") else "v1"
+                title = "Version Two Title" if version == "v2" else "Version One Title"
+                return StubResponse(outer._feed(version, title))
+
+        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+        monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
+        return requested
+
+    @pytest.mark.asyncio
+    async def test_v2_after_v1_is_not_served_v1(self, monkeypatch):
+        requested = self._install(monkeypatch)
+
+        v1 = await arxiv.get_paper("2301.00001v1")
+        v2 = await arxiv.get_paper("2301.00001v2")
+
+        assert v1["title"] == "Version One Title"
+        assert v2["title"] == "Version Two Title", (
+            "v2 was served v1's cached record — the version-stripped key is back"
+        )
+        assert requested == ["2301.00001v1", "2301.00001v2"]
+
+    @pytest.mark.asyncio
+    async def test_same_version_twice_still_hits_cache(self, monkeypatch):
+        requested = self._install(monkeypatch)
+
+        first = await arxiv.get_paper("2301.00001v2")
+        second = await arxiv.get_paper("2301.00001v2")
+
+        assert first["title"] == second["title"] == "Version Two Title"
+        assert len(requested) == 1, "a repeat of the same version must not re-fetch"
+
+    @pytest.mark.asyncio
+    async def test_pdf_paths_differ_per_version(self):
+        from academic_tools_mcp import manual
+
+        v1 = manual.resolve_target("2301.00001v1")["pdf_path"]
+        v2 = manual.resolve_target("2301.00001v2")["pdf_path"]
+        bare = manual.resolve_target("2301.00001")["pdf_path"]
+        assert len({str(v1), str(v2), str(bare)}) == 3

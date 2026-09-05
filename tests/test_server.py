@@ -830,7 +830,7 @@ class TestCanonicalIdInResponses:
     """
 
     @pytest.mark.asyncio
-    async def test_arxiv_metadata_strips_version_and_lowercases(self, monkeypatch):
+    async def test_arxiv_metadata_keeps_version_and_lowercases(self, monkeypatch):
         async def fake_arxiv(arxiv_id, **kwargs):
             return {
                 "id": "http://arxiv.org/abs/2301.00001v3",
@@ -839,9 +839,10 @@ class TestCanonicalIdInResponses:
 
         monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
 
-        # Caller passes the version-suffixed form; canonical strips it.
+        # Caller passes the version-suffixed form; canonical keeps it, so a
+        # request for v3 can never be answered from another version's entry.
         result = await server.get_paper_metadata("2301.00001v3")
-        assert result["_canonical_id"] == "2301.00001"
+        assert result["_canonical_id"] == "2301.00001v3"
 
     @pytest.mark.asyncio
     async def test_openalex_metadata_lowercases_doi(self, monkeypatch):
@@ -876,7 +877,9 @@ class TestCanonicalIdInResponses:
             server.get_paper_bibtex,
         ):
             result = await tool("2301.00001v1")
-            assert result["_canonical_id"] == "2301.00001", f"{tool.__name__} missing canonical id"
+            assert result["_canonical_id"] == "2301.00001v1", (
+                f"{tool.__name__} missing canonical id"
+            )
 
     @pytest.mark.asyncio
     async def test_follow_published_canonical_is_journal_doi(self, monkeypatch):
@@ -1015,7 +1018,7 @@ class TestFetchSourceDispatch:
         monkeypatch.setattr(arxiv, "get_paper", fake)
         source, cid, obj = await paper._fetch_source("2301.00001v1")
         assert source == "arxiv"
-        assert cid == "2301.00001"
+        assert cid == "2301.00001v1"
         assert obj["title"] == "T"
 
     @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from .. import _clients, _http, _pdf_download, _singleflight, cache
+from .. import _clients, _http, _pdf_download, _singleflight, cache, papers
 from .._throttle import Throttle
 
 NAMESPACE = "biorxiv"
@@ -294,9 +294,14 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
 
 def _pdf_filename(canonical: str) -> str:
-    """Build a human-readable PDF filename from a canonical DOI."""
-    # Replace slashes and dots for filesystem safety
-    return canonical.replace("/", "_") + ".pdf"
+    """Build a PDF filename from a canonical DOI.
+
+    Routes through ``papers.safe_stem`` — the single sanitizer shared by the
+    PDF, markdown, and sections paths — so this provider can't disagree with
+    the others about which file belongs to which paper. Ordinary bioRxiv DOIs
+    map to the same name as before.
+    """
+    return papers.safe_stem(canonical) + ".pdf"
 
 
 def pdf_path(doi: str) -> Path:
@@ -325,24 +330,16 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     canonical = canonical_key(doi)
     dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
 
-    if not force_refresh and dest.exists():
-        return {
-            "path": str(dest),
-            "size_bytes": dest.stat().st_size,
-            "cached": True,
-        }
+    if not force_refresh and (hit := _pdf_download.cached_hit(dest)) is not None:
+        return hit
 
     async def _fetch() -> dict[str, Any]:
         # Re-check after winning the slot — a concurrent leader may have
         # just written the file. Skip the short-circuit under force_refresh:
         # the caller wants fresh bytes, and stream_to_file replaces dest
         # atomically on success.
-        if not force_refresh and dest.exists():
-            return {
-                "path": str(dest),
-                "size_bytes": dest.stat().st_size,
-                "cached": True,
-            }
+        if not force_refresh and (hit := _pdf_download.cached_hit(dest)) is not None:
+            return hit
 
         # Need paper metadata to get the PDF URL
         paper = await get_paper(doi)

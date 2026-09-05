@@ -218,4 +218,5 @@ class TestPdfFilename:
 
     def test_metacharacters_neutralized(self):
         # Defense-in-depth: shell/path metacharacters never reach the filename.
-        assert acl_anthology._pdf_filename("foo;bar") == "foo_bar.pdf"
+        # They are percent-encoded (injective) rather than collapsed to "_".
+        assert acl_anthology._pdf_filename("foo;bar") == "foo%3Bbar.pdf"

@@ -31,6 +31,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from . import _textnorm, cache, config
 
@@ -205,15 +206,104 @@ def _build_fast_converter_command(pdf_path: Path) -> str:
 
 # A canonical id can contain characters that are unsafe in a filename or, if
 # they ever reach a shell unquoted, dangerous (``$``, backtick, quotes, ...).
-# Map anything outside a conservative safe set to ``_`` before using a
-# canonical as a path component. ``.``/``-`` are kept so dotted DOIs and
-# arXiv-style ids round-trip unchanged.
-_SAFE_STEM_RE = re.compile(r"[^A-Za-z0-9._-]")
+# ``.``/``-`` are kept so dotted DOIs and arXiv-style ids round-trip unchanged.
+#
+# Unsafe characters are **percent-encoded**, not collapsed to ``_``. Collapsing
+# was lossy: ``"a b"`` and ``"a_b"`` mapped to the same ``a_b.pdf``, so two
+# distinct imported papers silently overwrote each other's PDF — while
+# ``markdown_path`` used a *different* rule (``/`` → ``_`` only) and kept them
+# apart, leaving the PDF and markdown caches disagreeing about identity.
+#
+# ``/`` keeps its historical ``_`` mapping rather than becoming ``%2F``: every
+# DOI and old-style arXiv id contains one, so encoding it would rename
+# essentially every file already on disk for no practical gain. The residual
+# ambiguity (``a/b`` vs a literal ``a_b``) is unreachable for real identifiers,
+# since ``/`` only appears in DOIs and old-style arXiv ids.
+_SAFE_STEM_KEEP = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
 
 
-def _safe_stem(canonical: str) -> str:
-    """Map a canonical id to a filesystem/shell-safe path component."""
-    return _SAFE_STEM_RE.sub("_", canonical)
+def safe_stem(canonical: str) -> str:
+    """Map a canonical id to a filesystem/shell-safe path component.
+
+    The single sanitizer for every derived path — PDF, markdown, and the
+    sections cache key — so the three can never disagree about which file
+    belongs to which paper.
+
+    One pass, so an encoded character can never be re-encoded (a chained
+    replace turned a literal ``%`` into ``%2525``).
+    """
+    return "".join(
+        ch if ch in _SAFE_STEM_KEEP else "_" if ch == "/" else quote(ch, safe="")
+        for ch in canonical
+    )
+
+
+# Back-compat alias: this module and its tests grew up with the private name.
+_safe_stem = safe_stem
+
+
+# A stem that already contains only ``safe_stem`` output characters is either
+# native-safe or already migrated. Re-running ``safe_stem`` on it would encode
+# its own ``%`` escapes (``a%20b`` -> ``a%2520b``), so the sweep must test this
+# first: ``safe_stem`` is deliberately not idempotent, the migration is.
+_MIGRATED_STEM_RE = re.compile(r"\A[A-Za-z0-9._%-]*\Z")
+
+
+def _needs_stem_migration(stem: str) -> bool:
+    """Whether ``stem`` was written under a pre-``safe_stem`` filename rule."""
+    return not _MIGRATED_STEM_RE.match(stem)
+
+
+def migrate_legacy_stems() -> int:
+    """Rename cached PDFs/markdown written under the old filename rules.
+
+    Two rules were in use before ``safe_stem``: PDFs collapsed unsafe
+    characters to ``_``, markdown replaced only ``/``. Both are fixed points
+    of ``safe_stem`` for ordinary arXiv ids and DOIs, so the overwhelming
+    majority of an existing cache is already correct — but a DOI carrying
+    parentheses (Elsevier PII style) or a freeform manual label with a space
+    lands on a different name now, and would otherwise be silently orphaned:
+    the paper would report "not converted yet" and re-run a conversion that
+    can take tens of minutes.
+
+    Idempotent and best-effort — a file that can't be renamed is left alone
+    for the next run. Returns the number of files moved. Called once at
+    server startup, alongside ``cache.gc_orphan_tmp_files``.
+
+    The sections index is deliberately not migrated: its cache keys are
+    hashed, so there is nothing to rename, and a missing index is re-derived
+    from the markdown on the next read.
+    """
+    moved = 0
+    root = cache._CACHE_ROOT
+    if not root.is_dir():
+        return 0
+    for namespace_dir in root.iterdir():
+        if not namespace_dir.is_dir():
+            continue
+        for entity in ("pdfs", "markdown"):
+            entity_dir = namespace_dir / entity
+            if not entity_dir.is_dir():
+                continue
+            for path in entity_dir.iterdir():
+                if not path.is_file():
+                    continue
+                if not _needs_stem_migration(path.stem):
+                    continue
+                target_stem = safe_stem(path.stem)
+                if target_stem == path.stem:
+                    continue
+                target = path.with_name(target_stem + path.suffix)
+                if target.exists():
+                    # Already migrated (or a genuine collision) — leave both
+                    # in place rather than destroying data.
+                    continue
+                try:
+                    path.rename(target)
+                    moved += 1
+                except OSError:
+                    continue
+    return moved
 
 
 def _make_extraction_dir(canonical: str) -> Path:
@@ -241,12 +331,12 @@ def markdown_checksum(md_path: Path) -> str:
 
 def markdown_path(namespace: str, canonical: str) -> Path:
     """Return the cache path for converted markdown."""
-    return cache.cache_dir(namespace, "markdown") / (canonical.replace("/", "_") + ".md")
+    return cache.cache_dir(namespace, "markdown") / (safe_stem(canonical) + ".md")
 
 
 def sections_key(canonical: str) -> str:
     """Cache key for section index JSON."""
-    return canonical.replace("/", "_")
+    return safe_stem(canonical)
 
 
 # Per-paper async lock so two concurrent reads of the same paper don't both

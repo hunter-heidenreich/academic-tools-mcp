@@ -1,5 +1,8 @@
 import re
 
+import pytest
+
+from academic_tools_mcp import bibtex
 from academic_tools_mcp.bibtex import (
     _extract_last_name,
     _format_authors_bibtex,
@@ -459,3 +462,81 @@ class TestCorporateAuthors:
         }
         bib = generate_bibtex(work)
         assert "author={Smith, John}" in bib
+
+
+class TestAuthorEscaping:
+    """Author names carry LaTeX specials in practice, and an unescaped one
+    makes the whole .bib fail to compile ("Misplaced alignment tab character
+    &"). Title/journal/doi were escaped from the start; the author path was
+    not.
+    """
+
+    def test_ampersand_in_personal_name_is_escaped(self):
+        out = bibtex._format_one_name("AT&T Labs")
+        assert "&" not in out.replace(r"\&", "")
+        assert r"\&" in out
+
+    @pytest.mark.parametrize(
+        ("raw", "must_not_contain"),
+        [
+            ("Cost & Co", "&"),
+            ("Fifty % Group", "%"),
+            ("Dollar $ Inc", "$"),
+            ("Hash # Lab", "#"),
+            ("Under_score Person", "_"),
+        ],
+    )
+    def test_specials_never_survive_raw(self, raw, must_not_contain):
+        out = bibtex._format_one_name(raw)
+        # Every occurrence must be backslash-escaped.
+        assert must_not_contain not in out.replace("\\" + must_not_contain, "")
+
+    def test_org_names_are_escaped_inside_their_braces(self):
+        out = bibtex._format_one_name("The R&D Collaboration")
+        assert out.startswith("{") and out.endswith("}")
+        assert r"\&" in out
+
+    def test_diacritics_are_preserved(self):
+        assert "Gutiérrez" in bibtex._format_one_name("Ana Gutiérrez")
+
+    def test_particle_handling_survives_escaping(self):
+        assert bibtex._format_one_name("Ludwig van Beethoven") == "van Beethoven, Ludwig"
+
+    def test_full_entry_author_field_is_escaped(self):
+        work = {
+            "id": "W1",
+            "type": "article",
+            "title": "A Title",
+            "publication_year": 2024,
+            "authorships": [{"author": {"display_name": "AT&T Labs"}, "institutions": []}],
+        }
+        entry = bibtex.generate_bibtex(work)
+        author_line = next(line for line in entry.splitlines() if "author=" in line)
+        assert "&" not in author_line.replace(r"\&", "")
+
+
+class TestDoiEscaping:
+    """A DOI must stay resolvable, so it is escaped narrowly rather than
+    rewritten into prose — but an unescaped ``%`` comments out the rest of the
+    file and an unmatched ``{`` swallows it."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("10.1038/nature12373", "10.1038/nature12373"),
+            ("10.1234/a_b%c", r"10.1234/a\_b\%c"),
+            ("10.1234/x{y}z", r"10.1234/x\{y\}z"),
+            ("10.1234/a&b#c$d", r"10.1234/a\&b\#c\$d"),
+        ],
+    )
+    def test_escapes(self, raw, expected):
+        assert bibtex._escape_doi(raw) == expected
+
+    def test_backslash_does_not_double_escape_its_own_braces(self):
+        # Chained str.replace used to turn "\" into "\textbackslash{}" and
+        # then escape those emitted braces again.
+        assert bibtex._escape_doi("a\\b") == r"a\textbackslash{}b"
+
+    def test_braces_balance_after_escaping(self):
+        out = bibtex._escape_doi("10.1234/x{y}z")
+        assert out.count("{") == out.count("}")
