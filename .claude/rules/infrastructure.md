@@ -10,6 +10,7 @@ paths:
   - "src/academic_tools_mcp/config.py"
   - "src/academic_tools_mcp/_useragent.py"
   - "src/academic_tools_mcp/_doi.py"
+  - "src/academic_tools_mcp/_textnorm.py"
 ---
 
 # Shared infrastructure
@@ -63,7 +64,7 @@ Shared HTTP utilities used by every API client.
 
 ## _stats.py
 
-Per-provider counters (`cache_hits`, `cache_misses`, `negative_hits`, `http_calls`, `http_retries`, `backpressure_refusals`) plus a live `in_flight` sample drawn from each provider module's `_throttle.pending`.
+Per-provider counters (`cache_hits`, `cache_misses`, `negative_hits`, `http_calls`, `http_retries`, `backpressure_refusals`, `cache_write_failures`) plus a live `in_flight` sample drawn from each provider module's `_throttle.pending`.
 
 - `_stats.snapshot()` returns `{providers: {arxiv: {...}, openalex: {...}, ...}}`.
 - `_stats.reset()` zeroes cumulative counters (used by the test fixture).
@@ -76,6 +77,31 @@ When adding a new provider: append the module name to `_PROVIDER_MODULES` so its
 
 Loads `.env` from project root. All API credentials come from env vars, never from tool parameters.
 
+## _doi.py
+
+The single home for DOI normalization: `normalize` (bare form), `canonical` (cache-key form), `looks_like_doi` (shape test). Every module that touches a DOI routes through it — providers, `manual`, `bibtex`, `cache`, and the tool layer.
+
+Six copies of this logic had accumulated, four byte-identical, and the two that had drifted forward were the only ones handling `dx.doi.org` and a case-insensitive `doi:` prefix — so one paper could land under three cache keys depending on which tool the agent called first, and two of those keys built malformed upstream URLs. All six also sliced the `doi:` prefix without re-stripping, so a pasted `"doi: 10.1234/x"` became `" 10.1234/x"` and was reported as an unknown identifier.
+
+**Never add a local copy.** Per-provider *policy* — which prefix a URL path needs, whether an ID is an Anthology ID — stays in the provider; only the normalization is shared.
+
+## _useragent.py
+
+The single home for the outbound `User-Agent`: `build(mailto)` and `headers(mailto)`. **Every client passes headers** — the seven providers and `oa_download`.
+
+The shape (`name/version (+url; mailto:...)`) is what Wikimedia's User-Agent policy, Crossref's polite pool, and OpenAlex's polite pool all ask for. Three providers plus `oa_download` previously sent no headers at all and went out as `python-httpx/x.y` — the agent several upstreams throttle hardest, and the one that leaves an operator no way to reach us. The four that did hand-roll one advertised a URL that 404s and a version hardcoded to `1.0`; the version now comes from installed distribution metadata.
+
+The descriptive agent is returned whether or not a contact address is configured — anonymous-but-identifiable still beats `python-httpx`.
+
+## _textnorm.py
+
+Unicode folding for diacritic-insensitive search, used by `papers.find_in_markdown`, `cache_search`, and `bibtex` key generation.
+
+- `fold(text)` — NFKD-decompose and drop combining marks, for tokenisation and key generation where character positions don't matter.
+- `fold_with_map(text)` / `lower_with_map(text, *, fold=False)` — the transformed string **plus an index map back to original offsets**, so a match found in transformed text can be sliced out of the original.
+
+**The offset map is the whole point, and it is not optional even without folding.** Neither transform is length-preserving: a ligature folds 1→N (`ﬁ` → `fi`), and `str.lower()` does too (U+0130 `İ` → two chars). Lowercasing a transformed string after the fact desynchronises its offsets, which is why the transform runs per *original* character and attributes every produced char to exactly one original index. A consumer that lowercases by hand instead will drift its snippet windows and section attribution off the real match.
+
 ## _throttle.py — the shared `Throttle`
 
 The gating *mechanism* lives once here; each provider declares only its *policy*
@@ -87,7 +113,7 @@ semaphore + lock) — no more `global _pending`/`_last_request_time` per module.
 `Throttle.slot(url)` (an `@asynccontextmanager`) enforces three layers in order:
 
 1. **Burst cap** — `pending >= max_pending` (default 5) raises `LocalBackpressureError` immediately, before any sem/lock acquisition. The 6th concurrent caller fails fast instead of silently queueing.
-2. **Concurrency cap** — an `asyncio.Semaphore(max_concurrent)` caps simultaneous in-flight requests. Per-provider `_MAX_CONCURRENT`: arxiv=1 (single-connection rule), openalex=4, acl_anthology=4, crossref=3 (polite-pool concurrency budget), biorxiv=2, opencitations=2, wikipedia=2, oa_download=2.
+2. **Concurrency cap** — an `asyncio.Semaphore(max_concurrent)` caps simultaneous in-flight requests. Each provider declares its own `_MAX_CONCURRENT` and passes it in; the values and their justifications live with the policy in `.claude/rules/providers.md`, not here. Note that crossref's is *resolved at import* from `CROSSREF_MAILTO` rather than being a literal — don't assume a fixed number for it.
 3. **Inter-start gap** — the lock is held only briefly to enforce `min_gap_seconds` between request *starts* (not durations). Released before the actual GET so concurrent in-flight requests don't block each other. `_stats.log_request` + `incr("http_calls")` fire here.
 
 `Throttle.get(client, url, **kw)` is the common case: fire one `_http.get_with_retry` inside `slot(url)` (with `backoff_seconds=max(min_gap_seconds, 1.0)` and `max_attempts=retry_attempts`). `retry_attempts` (constructor arg, default 2 = one retry) is per-provider policy alongside the gap/concurrency caps — arxiv raises it to 3 because its Fastly edge returns 429/503 with no `Retry-After` and one retry tends to land in the same cooldown. `Throttle.reset()` zeroes the counters and rebuilds the loop-bound lock/sem (the conftest fixture calls it between tests).
