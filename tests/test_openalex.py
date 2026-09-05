@@ -7,44 +7,9 @@ from academic_tools_mcp import cache
 from academic_tools_mcp.providers import openalex
 from academic_tools_mcp.providers.openalex import (
     _normalize_author_id,
-    _normalize_doi,
     canonical_author_id,
-    canonical_doi,
     reconstruct_abstract,
 )
-
-
-class TestNormalizeDoi:
-    def test_bare_doi(self):
-        assert _normalize_doi("10.1234/test") == "10.1234/test"
-
-    def test_prefixed_doi(self):
-        assert _normalize_doi("doi:10.1234/test") == "10.1234/test"
-
-    def test_url_doi(self):
-        assert _normalize_doi("https://doi.org/10.1234/test") == "10.1234/test"
-
-    def test_http_url_doi(self):
-        # Parity with crossref: the insecure scheme must also be stripped,
-        # otherwise the bare DOI is never recovered and the request 404s.
-        assert _normalize_doi("http://doi.org/10.1234/test") == "10.1234/test"
-
-    def test_strips_whitespace(self):
-        assert _normalize_doi("  10.1234/test  ") == "10.1234/test"
-
-
-class TestCanonicalDoi:
-    def test_lowercases(self):
-        assert canonical_doi("10.1234/ABC") == "10.1234/abc"
-
-    def test_strips_prefix_and_lowercases(self):
-        assert canonical_doi("doi:10.1234/ABC") == "10.1234/abc"
-
-    def test_strips_url_and_lowercases(self):
-        assert canonical_doi("https://doi.org/10.1234/ABC") == "10.1234/abc"
-
-    def test_strips_http_url_and_lowercases(self):
-        assert canonical_doi("http://doi.org/10.1234/ABC") == "10.1234/abc"
 
 
 class TestNormalizeAuthorId:

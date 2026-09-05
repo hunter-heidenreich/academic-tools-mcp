@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from . import _textnorm, cache, papers
+from . import _doi, _textnorm, cache, papers
 
 # Default size of the snippet window centred on the best-scoring term
 # match. ~200 chars is enough to disambiguate ("variational dropout" vs
@@ -298,7 +298,7 @@ _NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
 # the slash — restoring it is what makes the returned canonical_id chainable
 # into get_paper_metadata. A suffix carrying further slashes still round-trips
 # imperfectly; freeform labels don't match and pass through.
-_MANUAL_DOI_STEM_RE = re.compile(r"^(10\.\d{4,})_")
+_MANUAL_DOI_STEM_RE = re.compile(rf"^({_doi.REGISTRANT_PATTERN})_")
 
 # Old-style arXiv IDs carry exactly one slash: "archive[.subject]/NNNNNNN"
 # (e.g. "hep-th/9901001", "cs/0501001", "math.GT/0309136"). canonical_arxiv_id

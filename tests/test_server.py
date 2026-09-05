@@ -219,7 +219,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto")
+        result = await server.get_paper_references("10.1234/x", source="auto")
         assert result["_source"] == "opencitations"
         assert result["total"] == 4
 
@@ -241,7 +241,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto")
+        result = await server.get_paper_references("10.1234/x", source="auto")
         assert result["_source"] == "crossref"
 
     @pytest.mark.asyncio
@@ -250,7 +250,7 @@ class TestReferencesAutoSource:
         # auto must serve from OpenCitations, not propagate the Crossref
         # error.
         async def fake_cr(doi, **kwargs):
-            return {"error": "No work found on Crossref for DOI: 10.x/x"}
+            return {"error": "No work found on Crossref for DOI: 10.1234/x"}
 
         async def fake_oc(doi, **kwargs):
             return {"references": [{"doi": "10.2/a"}], "count": 1}
@@ -258,7 +258,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto")
+        result = await server.get_paper_references("10.1234/x", source="auto")
         assert result["_source"] == "opencitations"
         assert result["total"] == 1
 
@@ -273,7 +273,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto")
+        result = await server.get_paper_references("10.1234/x", source="auto")
         assert "error" in result
         assert result["sources"]["crossref"]["error"] == "Crossref says no"
         assert result["sources"]["opencitations"]["error"] == "OpenCitations says no"
@@ -296,7 +296,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references(
-            "10.x/x", source="opencitations", page=2, page_size=10
+            "10.1234/x", source="opencitations", page=2, page_size=10
         )
         assert result["_source"] == "opencitations"
         assert result["page"] == 2
@@ -316,7 +316,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto")
+        result = await server.get_paper_references("10.1234/x", source="auto")
         assert result["_source"] == "crossref"
 
     @pytest.mark.asyncio
@@ -332,7 +332,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto")
+        result = await server.get_paper_references("10.1234/x", source="auto")
         assert result["_source"] == "opencitations"
         assert result["total"] == 15
 
@@ -351,7 +351,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto")
+        result = await server.get_paper_references("10.1234/x", source="auto")
         assert result["_source"] == "opencitations"
         assert result["total"] == 0
         assert result["partial_failure"]["source"] == "crossref"
@@ -372,7 +372,7 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto")
+        result = await server.get_paper_references("10.1234/x", source="auto")
         assert "error" in result
         assert result["sources"]["crossref"]["error"] == "Transient: Crossref 503"
         assert result["sources"]["crossref"]["retryable"] is True
@@ -398,10 +398,56 @@ class TestReferencesAutoSource:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references("10.x/x", source="auto", page=2)
+        result = await server.get_paper_references("10.1234/x", source="auto", page=2)
         assert "error" in result
         assert "_source" in result["suggestion"]
         assert called is False, "page>1 auto must not survey either provider"
+
+
+class TestGraphToolsRejectNonDois:
+    """The graph tools are DOI-only and must say so without a round-trip.
+
+    Crossref and OpenCitations have no other identifier space. Forwarding an
+    arXiv ID buys a 404 and then negative-caches a key that could never have
+    resolved, so the shape check happens locally, using the same predicate as
+    the metadata dispatcher.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_provider_calls(self, monkeypatch):
+        async def boom(*args, **kwargs):
+            raise AssertionError("a non-DOI must be rejected before any provider call")
+
+        monkeypatch.setattr(crossref, "get_work", boom)
+        monkeypatch.setattr(opencitations, "get_references", boom)
+        monkeypatch.setattr(opencitations, "get_citations", boom)
+
+    @pytest.mark.parametrize(
+        "identifier", ["2301.00001", "hep-th/9901001", "my-paper-2024", "", "10.123/x"]
+    )
+    @pytest.mark.asyncio
+    async def test_every_graph_tool_rejects(self, identifier):
+        for call in (
+            server.get_paper_references_count(identifier),
+            server.get_paper_references(identifier),
+            server.get_paper_citations_count(identifier),
+            server.get_paper_citations(identifier),
+        ):
+            result = await call
+            assert "error" in result
+            assert result["not_found"] is True
+            assert "suggestion" in result
+
+    @pytest.mark.asyncio
+    async def test_a_doi_url_is_accepted_not_rejected(self, monkeypatch):
+        # The guard normalizes first, so every accepted DOI spelling passes it.
+        async def fake_oc(doi, **kwargs):
+            return {"count": 7}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations_count("https://doi.org/10.1234/x")
+        assert result["count"] == 7
 
 
 class TestReferencesCount:
@@ -425,9 +471,9 @@ class TestReferencesCount:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references_count("10.x/x")
+        result = await server.get_paper_references_count("10.1234/x")
 
-        assert result["doi"] == "10.x/x"
+        assert result["doi"] == "10.1234/x"
         assert result["sources"]["crossref"] == {"count": 2}
         assert result["sources"]["opencitations"] == {"count": 1}
 
@@ -436,7 +482,7 @@ class TestReferencesCount:
         # Crossref omits `reference` entirely when the publisher deposited
         # none — that is a count of 0, not an error.
         async def fake_cr(doi, **kwargs):
-            return {"DOI": "10.x/x"}
+            return {"DOI": "10.1234/x"}
 
         async def fake_oc(doi, **kwargs):
             return {"references": [], "count": 0}
@@ -444,7 +490,7 @@ class TestReferencesCount:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references_count("10.x/x")
+        result = await server.get_paper_references_count("10.1234/x")
 
         assert result["sources"]["crossref"] == {"count": 0}
         assert result["sources"]["opencitations"] == {"count": 0}
@@ -460,7 +506,7 @@ class TestReferencesCount:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references_count("10.x/x")
+        result = await server.get_paper_references_count("10.1234/x")
 
         assert result["sources"]["opencitations"] == {"count": 1}
         assert result["sources"]["crossref"]["retryable"] is True
@@ -486,7 +532,7 @@ class TestReferencesCount:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references_count("10.x/x")
+        result = await server.get_paper_references_count("10.1234/x")
 
         cr = result["sources"]["crossref"]
         assert cr["backpressure"] is True
@@ -507,7 +553,7 @@ class TestReferencesCount:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        result = await server.get_paper_references_count("10.x/x")
+        result = await server.get_paper_references_count("10.1234/x")
 
         assert "error" not in result
         assert result["sources"]["crossref"]["error"] == "Crossref down"
@@ -528,7 +574,7 @@ class TestReferencesCount:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
-        await server.get_paper_references_count("10.x/x", force_refresh=True)
+        await server.get_paper_references_count("10.1234/x", force_refresh=True)
 
         assert seen == {"crossref": True, "opencitations": True}
 
@@ -1053,7 +1099,7 @@ class TestCitationsSourceParam:
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
 
-        result = await server.get_paper_citations("10.x/x")
+        result = await server.get_paper_citations("10.1234/x")
         assert result["_source"] == "opencitations"
         assert result["total"] == 1
 
@@ -1074,7 +1120,7 @@ class TestCitationsSourceParam:
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
 
-        result = await server.get_paper_citations_count("10.x/x")
+        result = await server.get_paper_citations_count("10.1234/x")
         assert result["count"] == 0
 
 

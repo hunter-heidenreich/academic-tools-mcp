@@ -3,6 +3,7 @@
 import asyncio
 from typing import Any
 
+from .. import _doi
 from .._app import (
     DOI,
     FORCE_REFRESH,
@@ -33,6 +34,27 @@ _FORWARDED_ERROR_KEYS = (
     "max_concurrency",
     "not_found",
 )
+
+
+def _reject_non_doi(doi: str) -> dict[str, Any] | None:
+    """Error dict when ``doi`` is not DOI-shaped, else ``None``.
+
+    Both graph providers are DOI-only. Without this, an arXiv ID spends an
+    upstream round-trip to earn a 404 and then plants a ``not_found`` negative
+    cache entry keyed to an identifier that could never have resolved. Uses the
+    same predicate as the metadata dispatcher, so the two agree on what a DOI is.
+    """
+    if _doi.looks_like_doi(doi):
+        return None
+    return {
+        "error": f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only.",
+        "not_found": True,
+        "suggestion": (
+            "Pass a DOI (e.g. 10.1038/nature12373), in bare, doi: or "
+            "https://doi.org/ form. For an arXiv paper, call get_paper_metadata "
+            "first and use the doi field, or search_crossref_by_title to find one."
+        ),
+    }
 
 
 def _source_error(result: dict[str, Any]) -> dict[str, Any]:
@@ -88,7 +110,13 @@ async def get_paper_references_count(
     Returns ``{doi, sources: {crossref: {count: N} | {error, suggestion?},
     opencitations: {count: M} | {error, suggestion?}}}``. Partial-failure
     tolerant: if one source errors the other's count is still reported.
+
+    A non-DOI identifier is rejected locally, without a request —
+    both providers are DOI-only.
     """
+    if (bad := _reject_non_doi(doi)) is not None:
+        return bad
+
     cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_result, oc_result = await asyncio.gather(cr_task, oc_task)
@@ -188,8 +216,12 @@ async def get_paper_references(
     explicitly only if you want to compare coverage before committing.
 
     Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
-    hints for transient failures.
+    hints for transient failures. A non-DOI identifier is rejected locally,
+    without a request — both providers are DOI-only.
     """
+    if (bad := _reject_non_doi(doi)) is not None:
+        return bad
+
     if source == "crossref":
         work = await crossref.get_work(doi, force_refresh=force_refresh)
         if "error" in work:
@@ -281,7 +313,13 @@ async def get_paper_citations_count(
 
     ``force_refresh=True`` re-fetches from OpenCitations, bypassing the cache —
     incoming citations grow continuously, so use it for a fresher count.
+
+    A non-DOI identifier is rejected locally, without a request —
+    both providers are DOI-only.
     """
+    if (bad := _reject_non_doi(doi)) is not None:
+        return bad
+
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
@@ -313,9 +351,13 @@ async def get_paper_citations(
     pass it on the first page for fresh coverage; omit it when paginating so
     page 2..N reuse the warmed cache.
 
-    Errors: bad DOI / upstream failure → ``{error, suggestion}`` with
-    retry hints for transient failures.
+    Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
+    hints for transient failures. A non-DOI identifier is rejected locally,
+    without a request — both providers are DOI-only.
     """
+    if (bad := _reject_non_doi(doi)) is not None:
+        return bad
+
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")

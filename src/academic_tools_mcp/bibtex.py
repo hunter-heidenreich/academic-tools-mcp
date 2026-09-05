@@ -4,6 +4,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from . import _doi
 from ._textnorm import fold
 
 # OpenAlex type -> BibTeX entry type
@@ -230,9 +231,10 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     authorships = work.get("authorships", [])
     title = work.get("title", "") or ""
     year = work.get("publication_year", "")
-    doi = work.get("doi", "")
-    if doi and doi.startswith("https://doi.org/"):
-        doi = doi[len("https://doi.org/") :]
+    # OpenAlex returns the DOI as a resolver URL, and not always over https —
+    # strip it through the shared normalizer rather than a local prefix test,
+    # or an http:// record emits `doi={http://doi.org/...}`, which is not a DOI.
+    doi = _doi.normalize(work.get("doi", "") or "")
 
     biblio = work.get("biblio", {}) or {}
     primary_location = work.get("primary_location", {}) or {}
@@ -338,7 +340,7 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     year = published[:4] if len(published) >= 4 else ""
 
     journal_ref = paper.get("journal_ref")
-    doi = paper.get("doi")
+    doi = _doi.normalize(paper.get("doi") or "")
 
     # Published in a journal -> @article, otherwise preprint -> @misc
     entry_type = "article" if journal_ref else "misc"
@@ -402,8 +404,10 @@ def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     title = paper.get("title", "") or ""
     date = paper.get("date", "") or ""
     year = date[:4] if len(date) >= 4 else ""
-    doi = paper.get("doi", "")
+    doi = _doi.normalize(paper.get("doi") or "")
     published_doi = paper.get("published_doi")
+    if published_doi:
+        published_doi = _doi.normalize(published_doi)
     server = paper.get("server", "biorxiv")
 
     entry_type = "article" if published_doi else "misc"
