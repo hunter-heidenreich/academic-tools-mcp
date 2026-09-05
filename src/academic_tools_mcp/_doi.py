@@ -1,6 +1,6 @@
-"""Shared DOI normalization — the single home. **Never add a local copy.**
+"""Shared DOI normalization — the single home for it.
 
-Divergent normalization is not a cosmetic problem. It lands one paper under
+**Never add a local copy.** Divergent normalization is not a cosmetic problem. It lands one paper under
 several cache keys depending on which tool the agent called first, and a key
 that is not a bare DOI builds a malformed upstream URL:
 

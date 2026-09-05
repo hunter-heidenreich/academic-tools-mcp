@@ -222,7 +222,7 @@ class TestExtractSnippet:
         # "drop" must NOT match inside "dropout" — otherwise short
         # query terms accidentally hit substrings everywhere.
         body = "we use dropout heavily in training"
-        snippet, offset = cache_search._extract_snippet(body, {"drop"})
+        _, offset = cache_search._extract_snippet(body, {"drop"})
         # No word-boundary match → fallback to head, offset is None.
         assert offset is None
 
@@ -230,7 +230,7 @@ class TestExtractSnippet:
         # The folded query term "gutierrez" must locate the accented
         # occurrence and report an offset into the ORIGINAL markdown.
         body = "padding " * 20 + "Work by Gutiérrez here " + "padding " * 20
-        snippet, offset = cache_search._extract_snippet(body, {"gutierrez"}, normalize=True)
+        _, offset = cache_search._extract_snippet(body, {"gutierrez"}, normalize=True)
         assert offset is not None
         assert body[offset : offset + len("Gutiérrez")] == "Gutiérrez"
 

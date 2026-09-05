@@ -1,6 +1,7 @@
 """PDF pipeline tools: download / convert / sections / section / import."""
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -98,12 +99,10 @@ async def _download_pdf_by_provider(
         # concurrent convert_pdf can't read a half-cleared state (and so its
         # cached-markdown read can't race this unlink into a FileNotFoundError).
         async with papers.sections_lock(ns, canonical):
-            try:
+            # Already gone (FileNotFoundError) or any other unlink failure is
+            # non-fatal — the goal is only to drop now-stale markdown.
+            with contextlib.suppress(OSError):
                 md_path.unlink()
-            except OSError:
-                # Already gone (FileNotFoundError) or any other unlink failure
-                # is non-fatal — the goal is only to drop now-stale markdown.
-                pass
             cache.invalidate(ns, "sections", papers.sections_key(canonical))
         result["cascaded_invalidated"] = ["markdown", "sections"]
 

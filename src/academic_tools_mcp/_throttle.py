@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -140,7 +141,7 @@ class Throttle:
         self._lock = asyncio.Lock()
 
     @contextlib.asynccontextmanager
-    async def slot(self, url: str, *, count_request: bool = True):
+    async def slot(self, url: str, *, count_request: bool = True) -> AsyncIterator[None]:
         """Acquire the rate-limit slot for the lifetime of the with-block.
 
         Raises ``LocalBackpressureError`` past ``max_pending`` queued callers so

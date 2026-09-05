@@ -33,6 +33,7 @@ the old single JSON file.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sqlite3
@@ -474,10 +475,8 @@ def _connect() -> sqlite3.Connection:
         # rather than failing every search. Mirrors the JSON index, which
         # self-healed to empty on an unparseable file.
         for suffix in ("", "-wal", "-shm"):
-            try:
+            with contextlib.suppress(OSError):
                 path.with_name(path.name + suffix).unlink()
-            except OSError:
-                pass
         return _open(path)
 
 
@@ -786,8 +785,11 @@ def search(
     _refresh_index(force_refresh=force_refresh)
 
     table = "fts_norm" if normalize else "fts"
+
+    # ``table`` is one of the two literals chosen above, never caller input,
+    # and every value is bound with a ? placeholder.
     sql = (
-        f"SELECT f.ns AS ns, f.stem AS stem, bm25({table}) AS score "
+        f"SELECT f.ns AS ns, f.stem AS stem, bm25({table}) AS score "  # noqa: S608
         f"FROM {table} JOIN files f ON f.rowid = {table}.rowid "
         f"WHERE {table} MATCH ?"
     )

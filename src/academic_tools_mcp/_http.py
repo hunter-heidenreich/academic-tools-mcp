@@ -50,7 +50,7 @@ class LocalBackpressureError(Exception):
         pending: int,
         max_pending: int,
         min_gap_seconds: float = 0.0,
-    ):
+    ) -> None:
         self.provider = provider
         self.pending = pending
         self.max_pending = max_pending

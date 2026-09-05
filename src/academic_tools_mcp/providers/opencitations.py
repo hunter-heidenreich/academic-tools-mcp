@@ -1,3 +1,5 @@
+"""OpenCitations client. Reference and citation edges for a DOI."""
+
 from typing import Any
 from urllib.parse import quote
 
@@ -10,7 +12,7 @@ OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
 
 
-def _get_client():
+def _get_client() -> httpx.AsyncClient:
     """Return the persistent AsyncClient for OpenCitations calls.
 
     The descriptive User-Agent is baked in at construction so every call

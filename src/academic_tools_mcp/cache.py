@@ -1,3 +1,6 @@
+"""The shared on-disk cache: atomic writes, TTLs, negative entries, single-flight."""
+
+import contextlib
 import copy
 import hashlib
 import json
@@ -105,20 +108,16 @@ def get(
                 _stats.incr(namespace, "cache_misses")
             return None
         if age > max_age_seconds:
-            try:
+            with contextlib.suppress(OSError):
                 path.unlink()
-            except OSError:
-                pass
             if count:
                 _stats.incr(namespace, "cache_misses")
             return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        try:
+        with contextlib.suppress(OSError):
             path.unlink()
-        except OSError:
-            pass
         if count:
             _stats.incr(namespace, "cache_misses")
         return None
@@ -126,10 +125,8 @@ def get(
     # tampered or foreign file — treat it like corruption rather than handing
     # back a value that violates this function's return contract.
     if not isinstance(data, dict):
-        try:
+        with contextlib.suppress(OSError):
             path.unlink()
-        except OSError:
-            pass
         if count:
             _stats.incr(namespace, "cache_misses")
         return None
@@ -188,10 +185,8 @@ def invalidate(namespace: str, entity: str, identifier: str) -> None:
     pos = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     neg = _neg_path(namespace, entity, identifier)
     for p in (pos, neg):
-        try:
+        with contextlib.suppress(FileNotFoundError, OSError):
             p.unlink()
-        except (FileNotFoundError, OSError):
-            pass
 
 
 async def cached_lookup(
@@ -287,17 +282,17 @@ def _atomic_write_text(path: Path, payload: str, *, encoding: str = "utf-8") -> 
             f.write(payload)
         os.replace(tmp_path, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             tmp_path.unlink()
-        except OSError:
-            pass
         raise
 
 
 def _atomic_write_json(path: Path, payload: str) -> None:
-    """Write a JSON ``payload`` to ``path`` atomically. Thin UTF-8 wrapper
-    over :func:`_atomic_write_text` — see it for the torn-write / durability
-    semantics."""
+    """Write a JSON ``payload`` to ``path`` atomically.
+
+    Thin UTF-8 wrapper over :func:`_atomic_write_text` — see it for the
+    torn-write / durability semantics.
+    """
     _atomic_write_text(path, payload)
 
 
@@ -328,10 +323,8 @@ def _atomic_copy(src: Path, dst: Path) -> None:
         shutil.copystat(src, tmp_path)
         os.replace(tmp_path, dst)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             tmp_path.unlink()
-        except OSError:
-            pass
         raise
 
 
@@ -391,25 +384,19 @@ def get_negative(namespace: str, entity: str, identifier: str) -> dict[str, Any]
     try:
         entry = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        try:
+        with contextlib.suppress(OSError):
             path.unlink()
-        except OSError:
-            pass
         return None
     # A non-dict entry (tampering / foreign writer) would crash the
     # _expires_at lookup below — self-heal instead.
     if not isinstance(entry, dict):
-        try:
+        with contextlib.suppress(OSError):
             path.unlink()
-        except OSError:
-            pass
         return None
     expires_at = entry.get("_expires_at", 0)
     if not isinstance(expires_at, (int, float)) or expires_at < time.time():
-        try:
+        with contextlib.suppress(OSError):
             path.unlink()
-        except OSError:
-            pass
         return None
     _stats.incr(namespace, "negative_hits")
     # Strip only our own bookkeeping key — caller payload keys that happen to

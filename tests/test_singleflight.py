@@ -114,14 +114,14 @@ async def test_exception_propagates_to_every_waiter():
     calls = 0
     release = asyncio.Event()
 
-    class Boom(Exception):
+    class BoomError(Exception):
         pass
 
     async def factory():
         nonlocal calls
         calls += 1
         await release.wait()
-        raise Boom("kaboom")
+        raise BoomError("kaboom")
 
     tasks = [asyncio.create_task(sf.do("k", factory)) for _ in range(4)]
     await _drain()
@@ -129,7 +129,7 @@ async def test_exception_propagates_to_every_waiter():
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     assert calls == 1, "the exception must come from a single factory run"
-    assert all(isinstance(r, Boom) for r in results)
+    assert all(isinstance(r, BoomError) for r in results)
     # Every waiter sees the *same* exception object the leader raised.
     assert all(r is results[0] for r in results)
 
@@ -278,14 +278,14 @@ class TestLeaderCancellationDoesNotCancelFollowers:
         calls = 0
         release = asyncio.Event()
 
-        class Boom(Exception):
+        class BoomError(Exception):
             pass
 
         async def failing():
             nonlocal calls
             calls += 1
             await release.wait()
-            raise Boom("upstream exploded")
+            raise BoomError("upstream exploded")
 
         tasks = [asyncio.create_task(sf.do("k", failing)) for _ in range(4)]
         await _drain()
@@ -293,7 +293,7 @@ class TestLeaderCancellationDoesNotCancelFollowers:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         assert calls == 1, "the failure must be shared, not re-run"
-        assert all(isinstance(r, Boom) for r in results)
+        assert all(isinstance(r, BoomError) for r in results)
         assert all(r is results[0] for r in results)
 
     @pytest.mark.asyncio

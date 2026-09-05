@@ -1,6 +1,11 @@
+"""ACL Anthology client. Maps ACL DOIs to anthology IDs and fetches their PDFs."""
+
 import re
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from .. import _clients, _doi, _pdf_download, _singleflight, _useragent, cache, papers
 from .._throttle import Throttle
@@ -8,7 +13,7 @@ from .._throttle import Throttle
 NAMESPACE = "acl_anthology"
 
 
-def _get_client():
+def _get_client() -> httpx.AsyncClient:
     """Return the persistent AsyncClient for ACL Anthology calls.
 
     The descriptive User-Agent is baked in at construction so every call
@@ -58,7 +63,7 @@ _throttle = Throttle(
 )
 
 
-def _request_slot(url: str):
+def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
     """ACL Anthology's rate-limit slot (see ``Throttle.slot``).
 
     Kept module-level so the streaming PDF download's ``slot_factory`` lambda

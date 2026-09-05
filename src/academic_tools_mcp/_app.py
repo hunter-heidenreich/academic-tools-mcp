@@ -6,6 +6,7 @@ providers, and content modules only -- never the `tools` package -- so tool
 modules can import from here without an import cycle.
 """
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal
 
@@ -16,7 +17,7 @@ from . import _clients, cache, papers
 
 
 @asynccontextmanager
-async def _lifespan(app: FastMCP):
+async def _lifespan(app: FastMCP) -> AsyncIterator[None]:
     """Manage process-wide resources tied to the server's life.
 
     On startup: sweep ``.cache/`` for stale ``*.tmp`` files left behind

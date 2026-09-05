@@ -1,5 +1,7 @@
 """Open-access PDF download path for generic publisher DOIs.
 
+from contextlib import AbstractAsyncContextManager
+import httpx
 The native PDF providers (arxiv, biorxiv, acl_anthology) build a known
 CDN URL from the identifier. Generic publisher DOIs have no such direct
 URL — but OpenAlex metadata often surfaces an open-access PDF link
@@ -18,8 +20,11 @@ with no duplicate download.
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from . import _clients, _pdf_download, _singleflight, _useragent, manual
 from ._throttle import Throttle
@@ -28,7 +33,7 @@ from .providers import openalex
 NAMESPACE = "oa_download"
 
 
-def _get_client():
+def _get_client() -> httpx.AsyncClient:
     """Return the persistent AsyncClient for open-access download calls.
 
     The descriptive User-Agent is baked in at construction so every call
@@ -96,7 +101,7 @@ _throttle = Throttle(
 )
 
 
-def _request_slot(url: str):
+def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
     """OA-download rate-limit slot (see ``Throttle.slot``).
 
     Kept module-level so the streaming PDF download's ``slot_factory`` lambda
