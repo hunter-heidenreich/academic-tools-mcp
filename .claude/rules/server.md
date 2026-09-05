@@ -10,32 +10,23 @@ paths:
 
 ## Layout: `_app.py` + `tools/` + thin `server.py`
 
-The 21 MCP tools are split across four `tools/` modules, registered against one
-shared FastMCP instance:
+The MCP tools are split across four `tools/` modules by job — `paper`, `pipeline`,
+`graph`, `search` — all registered against one shared FastMCP instance. `grep
+'@mcp.tool' tools/` is the current roster; what follows is the wiring that isn't
+visible from any one file.
 
-- **`_app.py`** — the shared core: the `mcp = FastMCP(...)` instance, the
-  `_lifespan` context manager (closes pooled clients via `_clients.aclose_all()`
-  on shutdown), the full `Annotated` parameter-type vocabulary (`DOI`,
-  `AUTHOR_ID`, `PAPER_ID`, the `*_FORCE_REFRESH` flags, …), and the helpers used
-  by more than one tool group (`_enrich_error`, `_arxiv_id_from_entry`,
-  `_fetch_crossref_work`). It imports infra / providers / content **only** —
-  never `tools` — so tool modules import from it without a cycle.
-- **`tools/paper.py`** — `get_paper_metadata` / `get_papers_metadata` /
-  `get_paper_authors` / `get_paper_abstract` / `get_paper_bibtex` / `get_author`
-  plus the `_format_*_metadata` helpers.
-- **`tools/pipeline.py`** — `download_pdf` / `convert_paper` /
-  `get_paper_sections` / `get_paper_section` / `import_paper` plus
-  `_download_pdf_by_provider`, `_strip_internal_paths`.
-- **`tools/graph.py`** — `get_paper_references[_count]` / `get_paper_citations[_count]`
-  plus the Crossref/OpenCitations page formatters.
-- **`tools/search.py`** — `search_arxiv` / `search_crossref_by_title` /
-  `find_in_paper` / `search_cached_papers` / `search_wikipedia` /
-  `get_wikipedia_summary`.
-- **`server.py`** — thin entry point: imports `mcp` from `_app`, imports the four
-  tool modules (which registers their `@mcp.tool` decorators), re-exports the tool
-  callables + providers + a few helpers under `server.<name>` for callers/tests,
-  and registers the optional operator-only `get_server_stats` debug tool. The
-  console entry point stays `academic_tools_mcp.server:mcp.run`.
+- **`_app.py` imports infra / providers / content only — never `tools`.** That
+  one-way edge is what lets every tool module import from it without a cycle.
+  It is the home for the `mcp = FastMCP(...)` instance, the `_lifespan` context
+  manager (closes pooled clients via `_clients.aclose_all()` on shutdown), the
+  `Annotated` parameter-type vocabulary, and any helper used by more than one
+  tool group. A helper needed by two tool modules moves here rather than being
+  imported across them.
+- **`server.py` imports the four tool modules for their side effect** — that
+  import is what runs the `@mcp.tool` decorators and registers the tools. It
+  also re-exports the tool callables, providers, and helpers under
+  `server.<name>` so existing callers and tests keep one import path, and
+  registers the operator-only `get_server_stats` debug tool.
 
 Each tool fetches the full cached object then returns only the relevant slice.
 `_fetch_crossref_work` is monkeypatched by tests at `_app`, so its call sites in
@@ -52,11 +43,11 @@ Per-source metadata formatting is factored into helpers (`_format_arxiv_metadata
 
 There is no lowest-common-denominator normalisation — agents branch on `_source` for provider-specific fields. All four also accept `force_refresh: bool = False` — drops both positive and negative cache entries via `cache.invalidate(...)` and re-fetches; useful for stale citation counts, a bioRxiv preprint that just got published, or retrying a previously-404'd identifier.
 
-`get_paper_metadata` additionally accepts `follow_published: bool = False` — when `True` and a bioRxiv paper has a `published_doi`, auto-chains to `openalex.get_work(published_doi, force_refresh=force_refresh)` and returns the journal record with `_source: "openalex_via_biorxiv"`, `_canonical_id` set to the journal DOI, a `preprint_doi` field, and `followed_published: True`. Falls back to the preprint record if OpenAlex misses (paper too new to index) — that fallback now carries `followed_published: False` so the lag is explicit rather than silent. The field is set by `_format_biorxiv_metadata`'s keyword-only `followed_published` param (and unconditionally in `_format_openalex_via_biorxiv`); it stays **absent** when no chain was attempted (`follow_published=False`, or no `published_doi`) and on the batch path, so the default response shape is unchanged.
+`get_paper_metadata` additionally accepts `follow_published: bool = False` — when `True` and a bioRxiv paper has a `published_doi`, auto-chains to `openalex.get_work(published_doi, force_refresh=force_refresh)` and returns the journal record with `_source: "openalex_via_biorxiv"`, `_canonical_id` set to the journal DOI, a `preprint_doi` field, and `followed_published: True`. Falls back to the preprint record if OpenAlex misses (paper too new to index) — that fallback carries `followed_published: False` so the lag is explicit rather than silent. The field is set by `_format_biorxiv_metadata`'s keyword-only `followed_published` param (and unconditionally in `_format_openalex_via_biorxiv`); it stays **absent** when no chain was attempted (`follow_published=False`, or no `published_doi`) and on the batch path, so the default response shape is unchanged.
 
 ### Batch metadata: `get_papers_metadata(identifiers)`
 
-For 30+ identifiers at once (typical reference-graph enrichment after `get_paper_references`). Groups identifiers by source, fans out arXiv / bioRxiv as concurrent singletons (now efficient with `_MAX_CONCURRENT > 1`), and routes OpenAlex DOIs through `openalex.get_works_batch` — one HTTP call per 50 DOIs via `/works?filter=doi:...|...`.
+For 30+ identifiers at once (typical reference-graph enrichment after `get_paper_references`). Groups identifiers by source, fans out arXiv / bioRxiv as concurrent singletons, and routes OpenAlex DOIs through `openalex.get_works_batch` — one HTTP call per 50 DOIs via `/works?filter=doi:...|...`.
 
 Returns `{count, papers: [...]}`. Each paper entry mirrors the corresponding `get_paper_metadata` payload exactly, plus an `_input` field carrying the original (un-normalised) identifier so an agent can correlate input → output. Order matches the input list. Per-paper failures appear as `{_input, error, suggestion?}` entries; one failure does not affect the others.
 
@@ -106,7 +97,7 @@ Single tool that auto-detects `.pdf` vs `.md`/`.markdown` by extension. PDFs are
 
 - `get_paper_references_count` — surveys both Crossref and OpenCitations in parallel, returns per-source counts.
 - `get_paper_references(doi, source, page, page_size)` — defaults `source="auto"`, fires both providers in parallel via `asyncio.gather`, picks whichever has more references (tie → Crossref for richer per-entry metadata), falls back to surviving source if one errors. Both errors → response carries both error messages. Explicit `source="crossref"` or `source="opencitations"` skips the survey (important for paginating page=2..N).
-- `get_paper_citations_count` / `get_paper_citations` — incoming citations (OpenCitations only today). `get_paper_citations` deliberately has **no** `source` parameter — OpenCitations is the only provider of incoming citations, so a knob with one value would be noise in the agent's context. Add one when a second source actually exists. (A `CITATION_SOURCE` Annotated type describing this phantom parameter lived in `_app.py` and was referenced by nothing; it has been deleted.)
+- `get_paper_citations_count` / `get_paper_citations` — incoming citations (OpenCitations only today). `get_paper_citations` deliberately has **no** `source` parameter — OpenCitations is the only provider of incoming citations, so a knob with one value would be noise in the agent's context. Add one when a second source actually exists.
 
 All four take `force_refresh: FORCE_REFRESH = False` (the shared `_app.FORCE_REFRESH` type) — drops the cached entry and re-fetches, since the citation graph grows continuously. The reference tools thread it into **both** sources (`_app._fetch_crossref_work(doi, force_refresh=...)` + `opencitations.get_references(..., force_refresh=...)`); `get_paper_references_count` routes Crossref through `_app._fetch_crossref_work` (not `crossref.get_work` directly) for monkeypatch-seam parity with `get_paper_references`. Pass `force_refresh` on the first page only — omit it when paginating so page 2..N reuse the warmed cache.
 
@@ -114,12 +105,12 @@ Crossref provides structured reference metadata (author, title, year, journal, D
 
 ### Search tools
 
-**Response-shape contract:** every search-list tool reports `result_count` (= `len(results)`, how many hits the call returned). `search_arxiv` and `search_crossref_by_title` additionally carry `total_results` — the **upstream** match count (how many exist), so an agent can tell that more results exist beyond the returned page. The two must agree on this meaning: `search_crossref_by_title` surfaces Crossref's `message.total-results` (the `crossref.search_works` provider return now includes it), **not** the length of the returned page. `search_wikipedia` / `search_cached_papers` report only `result_count` (no upstream-total concept).
+**Response-shape contract:** every search-list tool reports `result_count` (= `len(results)`, how many hits the call returned). `search_arxiv` and `search_crossref_by_title` additionally carry `total_results` — the **upstream** match count (how many exist), so an agent can tell that more results exist beyond the returned page. The two must agree on this meaning: `search_crossref_by_title` surfaces Crossref's `message.total-results` (surfaced by `crossref.search_works`), **not** the length of the returned page. `search_wikipedia` / `search_cached_papers` report only `result_count` (no upstream-total concept).
 
-- `search_arxiv` — `{total_results, result_count, results: [...]}`; each hit `{arxiv_id, title, first_author, author_count, published_year}`. Full-author lists balloon on HEP/biology papers, so search drops everything beyond triage. Each entry opportunistically cached — follow-up `get_paper_metadata(arxiv_id)` is free.
-- `search_crossref_by_title` — DOI discovery by bibliographic query. Useful when you only have a title or arXiv ID and need the published DOI (e.g. ACL Anthology DOI for an arXiv paper). Year filtering is optional but Crossref publication dates may differ from arXiv preprint dates. De facto search for bioRxiv (no title search endpoint upstream — Crossref indexes all bioRxiv DOIs). Hits return `{total_results, result_count, results: [{doi, title, first_author, author_count, year}]}` (parallel to `search_arxiv`). Year extraction (`_crossref_year`) walks `issued` → `published-print` → `published-online` → `published` → `posted` (the order in `_app._CROSSREF_DATE_KEYS`, the single home for it — `tools/paper.py` used to carry a duplicate) and guards malformed `date-parts` (`null` / `[]` / `[[null]]`) so a bad record degrades to `year: None` instead of crashing the page; `posted` covers preprints (every bioRxiv DOI). `first_author` falls back to a consortium `name` field when given/family are absent. Each hit also opportunistically warms `crossref/works`.
-- `search_cached_papers` — BM25 over locally-converted markdown across all namespaces (or filtered to one). Use case: "I read this paper a few weeks ago, what was its identifier?" or "which of my imported PDFs talked about X?" — neither answerable by upstream search APIs. Returns `{query, result_count, results: [{namespace, canonical_id, score, title, snippet, section, char_count}]}`; chain `get_paper_section(canonical_id, section)`. Pure keyword match — won't bridge synonyms, doesn't see un-converted PDFs.
-- `find_in_paper` — substring (or whole-word) search inside one converted paper. Returns `{query, paper_identifier, result_count, truncated, results: [{section_index, section, char_offset, match, snippet}, ...]}`. `char_offset` aligns with `get_paper_section`'s stripped section text so an agent can chain straight to the surrounding context. Pairs with `search_cached_papers`: that one tells you *which* paper mentions X, this one tells you *where in the paper*. Not-yet-converted paper → `{error, suggestion}` (the markdown read runs in `asyncio.to_thread` alongside the regex pass).
+- `search_arxiv` — triage hits only: full-author lists balloon on HEP/biology papers, so everything beyond what you need to pick a paper is dropped. Each entry opportunistically warms `arxiv/papers`, so a follow-up `get_paper_metadata(arxiv_id)` is free.
+- `search_crossref_by_title` — DOI discovery by bibliographic query. Useful when you only have a title or arXiv ID and need the published DOI (e.g. ACL Anthology DOI for an arXiv paper). Year filtering is optional but Crossref publication dates may differ from arXiv preprint dates. De facto search for bioRxiv (no title search endpoint upstream — Crossref indexes all bioRxiv DOIs). Hits are shaped parallel to `search_arxiv`. Year extraction (`_crossref_year`) walks `issued` → `published-print` → `published-online` → `published` → `posted` (the order in `_app._CROSSREF_DATE_KEYS`, the single home for it) and guards malformed `date-parts` (`null` / `[]` / `[[null]]`) so a bad record degrades to `year: None` instead of crashing the page; `posted` covers preprints (every bioRxiv DOI). `first_author` falls back to a consortium `name` field when given/family are absent. Each hit also opportunistically warms `crossref/works`.
+- `search_cached_papers` — BM25 over locally-converted markdown across all namespaces (or filtered to one). Use case: "I read this paper a few weeks ago, what was its identifier?" or "which of my imported PDFs talked about X?" — neither answerable by upstream search APIs. Chain a hit into `get_paper_section(canonical_id, section_index)` — on the **index**, not the title, which is not unique. Pure keyword match — won't bridge synonyms, doesn't see un-converted PDFs.
+- `find_in_paper` — substring (or whole-word) search inside one converted paper. `char_offset` aligns with `get_paper_section`'s stripped section text so an agent can chain straight to the surrounding context. Pairs with `search_cached_papers`: that one tells you *which* paper mentions X, this one tells you *where in the paper*. Not-yet-converted paper → `{error, suggestion}` (the markdown read runs in `asyncio.to_thread` alongside the regex pass).
 
 ## bibtex.py
 

@@ -39,9 +39,9 @@ Releases are cut deliberately — not on every merge — by renaming `[Unrelease
 **Layered design — tools never hit the API directly. Every API client uses every shared module.** Per-module deep detail (atomic writes, throttle/backpressure semantics, single-flight slot rules, per-provider quirks, PDF subprocess gating, server tool shapes and error contracts) lives in `.claude/rules/` and loads only when Claude touches the matching file:
 
 - `.claude/rules/python-design.md` — layering and single-responsibility contracts; applies to **every** file under `src/`
-- `.claude/rules/infrastructure.md` — `cache.py`, `_http.py`, `_throttle.py`, `_clients.py`, `_singleflight.py`, `_stats.py`, `config.py`, `_doi.py`, `_useragent.py`
+- `.claude/rules/infrastructure.md` — the shared primitives: `cache.py`, `_http.py`, `_throttle.py`, `_clients.py`, `_singleflight.py`, `_stats.py`, `_pdf_download.py`, `config.py`, `_doi.py`, `_useragent.py`, `_textnorm.py`
 - `.claude/rules/providers.md` — all seven API clients (`providers/*.py`)
-- `.claude/rules/pipeline.md` — `papers.py`, `manual.py`, `cache_search.py`, `oa_download.py`, `_pdf_download.py`, `_fast_extract.py`, `_textnorm.py`
+- `.claude/rules/pipeline.md` — `papers.py`, `_fast_extract.py`, `manual.py`, `oa_download.py`, `cache_search.py`
 - `.claude/rules/server.md` — `server.py`, `_app.py`, `tools/*.py`, `bibtex.py`
 
 Adding a new API provider or a new OpenAlex entity: use the `add-provider` skill (`.claude/skills/add-provider/`).

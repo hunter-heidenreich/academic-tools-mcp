@@ -24,8 +24,8 @@ it.
   it, never re-implement it per call site.
 - **Server tools return slices, not whole objects.** A tool fetches the full
   cached provider object, then returns only the relevant fields (see the unified
-  paper tools in `server.py`). An LLM agent should never receive a raw OpenAlex
-  response. New tool → extract a lean slice.
+  paper tools in `tools/paper.py`). An LLM agent should never receive a raw
+  OpenAlex response. New tool → extract a lean slice.
 - **Shared infrastructure is single-homed.** Caching (`cache.py`), the
   cached-getter protocol (`cache.cached_lookup`), throttling (`_throttle.Throttle`),
   single-flight (`_singleflight.py`), retry (`_http.get_with_retry`), counters
@@ -38,10 +38,9 @@ it.
 
 - **One paper tool per job, not per provider.** The four unified tools
   (`get_paper_metadata` / `_authors` / `_abstract` / `_bibtex`) take any
-  identifier and dispatch internally via
-  `manual.resolve_metadata_source()` (`manual.py:74`). Don't branch on provider
-  *inside* a tool, and don't add a fifth `get_<provider>_metadata` variant —
-  extend the dispatcher instead. Responses tag `_source` / `_canonical_id` so
+  identifier and dispatch internally via `manual.resolve_metadata_source()`.
+  Don't branch on provider *inside* a tool, and don't add a fifth
+  `get_<provider>_metadata` variant — extend the dispatcher instead. Responses tag `_source` / `_canonical_id` so
   callers branch on provider-specific fields downstream.
 - **A new API provider mirrors an existing one.** `providers/arxiv.py` and
   `providers/crossref.py` are the canonical shapes: pooled `httpx.AsyncClient`, a
@@ -86,3 +85,12 @@ rules (`infrastructure.md`, `providers.md`, `pipeline.md`, `server.md`). If you
 change one — a new gating model, a new dispatch path — update the matching doc in
 the same change, and add the `CHANGELOG.md` `[Unreleased]` bullet if the change
 is user-facing.
+
+Two conventions keep those docs from rotting:
+
+- **Cite symbols, never line numbers.** `manual.resolve_metadata_source()` stays
+  correct across every edit; `manual.py:74` was already wrong by ten lines.
+- **Don't transcribe constants.** Name the constant and explain the policy;
+  let the reader grep the value. Every stale fact these files have accumulated
+  was a number copied out of the code — a duplicated concurrency cap drifted
+  while the prose around it stayed true.

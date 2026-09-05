@@ -22,13 +22,21 @@ per-provider code: see `_throttle.Throttle` and `cache.cached_lookup` in
 - Pass a tuple `sf_key` when one canonical id has multiple sub-fetches (`("work", canonical)` / `("author", canonical)` for openalex; `("references", canonical)` / `("citations", canonical)` for opencitations); omit it to key on `canonical`.
 - Inside `_fetch`: on definitive 404, write the error dict to negative cache before returning; on a transient parse failure return `_parse_error_dict()` and cache nothing.
 
+**Parsing and encoding hardening — the shared contract.** Every client holds these; the per-provider sections below note only where one differs.
+
+- **A malformed or truncated 200 body is transient, not definitive.** The `json.JSONDecodeError` (or `ET.ParseError`) is caught via the module's `_PARSE_ERRORS` and returned as `_parse_error_dict()` — `{error, retryable: True}`, a fresh dict each call — and is **not** negative-cached, so a retry re-fetches.
+- **An anomalous 200 of the wrong shape is treated identically**, rather than crashing the parse. Each provider knows what "wrong shape" means for its endpoint (non-dict, missing the entity `id`, not a list of records), and none of them is ever positive-cached for the TTL.
+- **Identifiers are percent-encoded into the request path** via `quote(...)` so reserved characters (`#`, `?`, and a stray `/`) can't split the path or silently truncate the request to the wrong record. What stays literal differs per provider — see below.
+
 To let an agent bypass the cache, accept `force_refresh: bool = False` and thread it into `cached_lookup` (which invalidates both halves before fetching) — see `arxiv.get_paper` / `openalex.get_work` / `biorxiv.get_paper` / `wikipedia.get_summary`.
 
 ## openalex.py
 
-Singleton endpoints (`/works/{id}`, `/authors/{id}`). ID normalization for DOI formats, OpenAlex URLs, ORCIDs. Each entity has `_normalize_*` + `_canonical_*` pair. Rate limit ~10 req/sec (100ms gap). `_get_client()` bakes in the polite-pool `User-Agent` from `OPENALEX_MAILTO`. Cache namespaces: `openalex/works`, `openalex/authors`. Single-flight keys tuple-prefixed (`("work", canonical)`, `("author", canonical)`) — parallel work-and-author fetch on the same paper runs as two slots.
+Singleton endpoints (`/works/{id}`, `/authors/{id}`). ID normalization for DOI formats, OpenAlex URLs, ORCIDs. Each entity has `_normalize_*` + `_canonical_*` pair. `_get_client()` bakes in the polite-pool `User-Agent` from `OPENALEX_MAILTO`. Single-flight keys are tuple-prefixed (`("work", canonical)`, `("author", canonical)`) — parallel work-and-author fetch on the same paper runs as two slots.
 
-**DOI handling & hardening (parity with crossref/biorxiv).** `_normalize_doi` strips surrounding whitespace and both `https://`/`http://doi.org/` (and `doi:`) prefixes; the bare DOI is then percent-encoded into the `/works/doi:{doi}` path via `quote(..., safe="/")` so reserved chars (`#`, `?`) can't truncate the request to the wrong record. A malformed/truncated 200 body raises `json.JSONDecodeError` — caught via `_PARSE_ERRORS` → `_parse_error_dict()` (`{error, retryable: True}`, a fresh dict each call) and **not** negative-cached, so a retry re-fetches. An anomalous 200 that is non-dict or missing the entity `id` key is treated identically (never positive-cached for the TTL). Both `get_work` and `get_author` take `force_refresh`; `get_author`'s 404 carries `not_found: True` to match `get_work`. The `force_refresh` in-slot re-check can still be repopulated by a concurrent non-refresh caller (narrow race, shared with `get_work`) — accepted, not fixed.
+**DOI handling.** `_normalize_doi` strips surrounding whitespace and both `https://`/`http://doi.org/` (and `doi:`) prefixes; the bare DOI is encoded into `/works/doi:{doi}` with `quote(..., safe="/")`. Wrong shape here means non-dict *or* missing the entity `id` key.
+
+Both `get_work` and `get_author` take `force_refresh`, and `get_author`'s 404 carries `not_found: True` to match `get_work`. **Known narrow race:** a `force_refresh` in-slot re-check can be repopulated by a concurrent non-refresh caller — accepted, not fixed.
 
 **Limits:** singleton lookups (ID/DOI/ORCID) are free and unlimited. Search (1000/day), List+filter (10000/day), Content download (100/day) are not currently used.
 
@@ -36,7 +44,7 @@ Singleton endpoints (`/works/{id}`, `/authors/{id}`). ID normalization for DOI f
 
 ## arxiv.py
 
-arXiv Atom API (`export.arxiv.org/api/query`). ID normalization (bare IDs, URLs, version suffixes; URL query strings / fragments are stripped before keying), XML→dict parsing. Rate limit: 1 req/3s, single connection (per arXiv policy). Cache namespace: `arxiv/papers`. `get_paper`'s "not found" path covers THREE definitive shapes — a 200 with no entries, arXiv's 200-with-`api/errors` entry, and a genuine HTTP 404 — all negative-cached. Transient failures (5xx / timeout / 429 / backpressure) are returned as retryable errors and **not** cached.
+arXiv Atom API (`export.arxiv.org/api/query`). ID normalization (bare IDs, URLs, version suffixes; URL query strings / fragments are stripped before keying), XML→dict parsing. `get_paper`'s "not found" path covers THREE definitive shapes — a 200 with no entries, arXiv's 200-with-`api/errors` entry, and a genuine HTTP 404 — all negative-cached. Transient failures (5xx / timeout / 429 / backpressure) are returned as retryable errors and **not** cached.
 
 **Descriptive `User-Agent`, unconditionally.** Unlike the polite-pool opt-in providers (crossref/openalex set a `User-Agent` only when a mailto is configured), `_build_headers()` / `_get_client()` send a descriptive UA on *every* call — metadata, search, and PDF download — because arXiv's Fastly edge throttles generic library UAs (`python-httpx/x.y`) far harder, returning 429/503 on modest bursts. The optional `ARXIV_MAILTO` env var is appended as a contact; the UA is sent even when it's blank. **Retries twice** (`Throttle(retry_attempts=3)`) rather than the default once, because that same edge returns 429/503 with no `Retry-After` when an IP is briefly penalty-boxed and a single retry tends to land in the same cooldown window — the two retries ride `get_with_retry`'s exponential backoff (≈3s, ≈6s).
 
@@ -46,19 +54,19 @@ Search supported with `max_results` capped at 50 in the tool layer.
 
 ## biorxiv.py
 
-bioRxiv/medRxiv API (`api.biorxiv.org`). DOI normalization (bare DOIs, URLs, site content URLs with version suffixes). Tries bioRxiv first, falls back to medRxiv. Selects latest version from multi-version responses. Parses semicolon-separated author strings. Builds PDF URLs from DOI + version + server. Rate limit ~2 req/sec (500ms gap, conservative — no documented limit). Cache namespace: `biorxiv/papers`. The `published_doi` field links to the journal DOI when available — `server.get_paper_metadata(..., follow_published=True)` auto-chains to OpenAlex. No auth.
+bioRxiv/medRxiv API (`api.biorxiv.org`). DOI normalization (bare DOIs, URLs, site content URLs with version suffixes). Tries bioRxiv first, falls back to medRxiv. Selects latest version from multi-version responses. Parses semicolon-separated author strings. Builds PDF URLs from DOI + version + server. No documented upstream limit, so the pacing is deliberately conservative. The `published_doi` field links to the journal DOI when available — `server.get_paper_metadata(..., follow_published=True)` auto-chains to OpenAlex. No auth.
 
 DOI prefix `10.1101/` identifies all bioRxiv and medRxiv papers.
 
 ## crossref.py
 
-Crossref REST API (`api.crossref.org/works/{doi}`). DOI normalization via the shared `_doi` module. `_get_client()` bakes in the shared `_useragent` header, always — with `mailto` (from `CROSSREF_MAILTO`) appended when configured. Cache namespace: `crossref/works`. Full work object cached; tool layer slices out reference list with pagination.
+Crossref REST API (`api.crossref.org/works/{doi}`). DOI normalization via the shared `_doi` module. `_get_client()` bakes in the shared `_useragent` header, always — with `mailto` (from `CROSSREF_MAILTO`) appended when configured. Full work object cached; tool layer slices out reference list with pagination.
 
 **Search opportunistically warms the works cache** — each `search_works` hit with a DOI is written to `crossref/works/<canonical>` (only if not already present, so a richer pre-existing entry isn't clobbered). A subsequent `get_work(doi)` is a free cache hit.
 
 `get_work` takes `force_refresh` (mirrors `openalex.get_work`: invalidate both cache halves up front, skip the pre-slot checks) so the reference-graph tools can refresh both sources — the reference list grows as publishers re-deposit metadata.
 
-**Limits — and the tier is chosen from config, not assumed.** Polite pool (with `CROSSREF_MAILTO`) — 10 req/sec singles, 3 req/sec search, 3 concurrent. Public pool (no mailto) — 5 req/sec singles, 1 req/sec search, 1 concurrent. `_resolve_policy()` picks the constants at import from `in_polite_pool()`; `_MAX_CONCURRENT` / `_MIN_REQUEST_GAP` / `_SEARCH_REQUEST_GAP` are its output, not literals. Changing `CROSSREF_MAILTO` requires a restart (same as `ENABLE_DEBUG_TOOLS`).
+**The tier is chosen from config, not assumed.** `_resolve_policy()` picks the rate constants at import from `in_polite_pool()`, so `_MAX_CONCURRENT` / `_MIN_REQUEST_GAP` / `_SEARCH_REQUEST_GAP` are its output rather than literals — don't read any one of them as a fixed number. Changing `CROSSREF_MAILTO` requires a restart (same as `ENABLE_DEBUG_TOOLS`).
 
 The rate constants used to be hardcoded to the *polite* tier unconditionally while the `User-Agent` carrying the mailto was set only when one was configured — so the documented default (an empty `.env`) requested at 2× the public-pool rate, 3× its concurrency and 10× its search rate, anonymously. If you touch these constants, keep the two halves in lockstep: **the rate we take must follow the identity we send.**
 
@@ -66,21 +74,27 @@ Search is paced separately (`_throttled_search_get`) because Crossref limits it 
 
 ## opencitations.py
 
-OpenCitations Index API v2 (`api.opencitations.net/index/v2`). Outgoing references (`/references/doi:...`) and incoming citations (`/citations/doi:...`). Rate limit ~3 req/sec (334ms gap, 180/min) per OpenCitations policy. Parses space-delimited multi-ID strings (`omid:... doi:... openalex:... pmid:...`) via `_parse_ids()`. Cache namespaces: `opencitations/references`, `opencitations/citations`. Single-flight tuple-prefixed (`("references", canonical)` vs `("citations", canonical)`) — fetching both directions for one paper runs as two slots.
+OpenCitations Index API v2 (`api.opencitations.net/index/v2`). Outgoing references (`/references/doi:...`) and incoming citations (`/citations/doi:...`). Parses space-delimited multi-ID strings (`omid:... doi:... openalex:... pmid:...`) via `_parse_ids()`. Single-flight tuple-prefixed (`("references", canonical)` vs `("citations", canonical)`) — fetching both directions for one paper runs as two slots.
 
-**Parsing/encoding hardening (parity with crossref/openalex — real as of the guard added to those two; it was aspirational before).** The bare DOI is percent-encoded into the `.../doi:{doi}` path via `quote(..., safe="/")` so reserved chars (`#`, `?`) can't truncate the request to the wrong record (the `doi:` scheme prefix and the DOI's own slash stay literal). A malformed/truncated 200 body raises `json.JSONDecodeError` — caught via `_PARSE_ERRORS` → `_parse_error_dict()` (`{error, retryable: True}`, a fresh dict each call) and **not** negative-cached, so a retry re-fetches. An anomalous 200 that isn't the expected list of records (dict / null / string) is treated identically rather than crashing the `_format_record` comprehension; non-dict items inside the list are skipped. `get_references` / `get_citations` are one-line wrappers over a shared `_fetch_direction(doi, *, kind, id_field, force_refresh)` — the two directions differ only by `kind` (the API path segment, cache entity, and result key: `"references"`/`"citations"`) and `id_field` (`"cited"`/`"citing"`). Both take `force_refresh` (threaded into `cached_lookup`) — the citation graph grows continuously, so an agent may want fresher coverage than the 7-day TTL.
+**Encoding and shape.** The bare DOI is encoded into `.../doi:{doi}` with `quote(..., safe="/")` — the `doi:` scheme prefix and the DOI's own slash stay literal. Wrong shape here means anything that isn't a list of records (dict / null / string), which would otherwise crash the `_format_record` comprehension; non-dict items inside a valid list are skipped.
+
+`get_references` / `get_citations` are one-line wrappers over a shared `_fetch_direction(doi, *, kind, id_field, force_refresh)`; the two directions differ only by `kind` (API path segment, cache entity, result key) and `id_field` (`"cited"` / `"citing"`). Both take `force_refresh` — the citation graph grows continuously, so an agent may want fresher coverage than the positive TTL allows.
 
 ## wikipedia.py
 
-MediaWiki OpenSearch (`/w/api.php?action=opensearch`) for title search; Wikimedia REST (`/api/rest_v1/page/summary/{title}`) for summaries and existence verification. Detects disambiguation pages via the `type` field. Rate limit ~1 req/sec (1000ms gap). `_get_client()` bakes in `User-Agent` (mailto from `WIKIPEDIA_MAILTO`) — requests without a `User-Agent` may be blocked. Cache namespace: `wikipedia/summaries`.
+MediaWiki OpenSearch (`/w/api.php?action=opensearch`) for title search; Wikimedia REST (`/api/rest_v1/page/summary/{title}`) for summaries and existence verification. Detects disambiguation pages via the `type` field. `_get_client()` bakes in the `User-Agent` (mailto from `WIKIPEDIA_MAILTO`) — **requests without one may be blocked outright.**
 
-**Parsing/encoding hardening (parity with crossref/openalex/opencitations).** A malformed/truncated 200 body raises `json.JSONDecodeError` — caught via `_PARSE_ERRORS` → `_parse_error_dict()` (`{error, retryable: True}`, a fresh dict each call) and **not** negative-cached, so a retry re-fetches; `get_summary` treats a non-dict 200 body the same way rather than crashing the `data.get(...)` calls. The page title is percent-encoded into the summary path via `quote(url_title, safe="")` (the whole segment — a slash in a title like `AC/DC` is part of the title, not a path separator) so reserved chars can't split the path or truncate the request to the wrong record. **The cache key is case-sensitive beyond the first character** — Wikipedia titles only auto-capitalize the leading letter, so the canonical form is `url_title[:1].upper() + url_title[1:]`, not a full lowercase (which would collide case-distinct articles like `PET` vs `Pet`). The 404 error dict carries `not_found: True` (mirrors `openalex.get_work`); `page_exists` reports `exists: False` **only** on that definitive 404, and propagates transient errors as-is instead of treating a network blip as a confident non-existence.
+**Encoding — `safe=""`, unlike the DOI providers.** The page title is encoded with `quote(url_title, safe="")`, escaping the *whole* segment: a slash in a title like `AC/DC` is part of the title, not a path separator. Wrong shape here means a non-dict body, which would crash `get_summary`'s `data.get(...)` calls.
+
+**The cache key is case-sensitive beyond the first character.** Wikipedia auto-capitalizes only the leading letter, so the canonical form is `url_title[:1].upper() + url_title[1:]`. A full lowercase would collide case-distinct articles like `PET` and `Pet`.
+
+The 404 error dict carries `not_found: True` (mirroring `openalex.get_work`). `page_exists` reports `exists: False` **only** on that definitive 404 and propagates transient errors as-is, rather than reporting a network blip as confident non-existence.
 
 **Limit:** 1000 req/hour for identified clients.
 
 ## acl_anthology.py
 
-PDF source for ACL Anthology papers. Resolves DOIs with prefix `10.18653/v1/` to Anthology IDs by stripping the prefix. Downloads camera-ready PDFs from `https://aclanthology.org/{id}.pdf`. No API, no auth, no documented rate limit — but routes through the same canonical pooled-client + retry + burst-cap shape as every other provider (`_MIN_REQUEST_GAP=0.0`, `_MAX_PENDING=5`, single-flight on canonical DOI). Cache namespace: `acl_anthology/pdfs`. PDF download timeout 60s. Feeds into `papers.py`.
+PDF source for ACL Anthology papers. Resolves DOIs with prefix `10.18653/v1/` to Anthology IDs by stripping the prefix. Downloads camera-ready PDFs from `https://aclanthology.org/{id}.pdf`. No API, no auth, no documented rate limit — but routes through the same canonical pooled-client + retry + burst-cap shape as every other provider, with no inter-start gap and single-flight on the canonical DOI. Feeds into `papers.py`.
 
 Coverage: all ACL-affiliated venues — ACL, EMNLP, NAACL, EACL, AACL, CoNLL, TACL, CL journal, *SEM, Findings, workshops.
 
