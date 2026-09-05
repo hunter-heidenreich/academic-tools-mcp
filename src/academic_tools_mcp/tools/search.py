@@ -284,6 +284,33 @@ async def find_in_paper(
     }
 
 
+# Per-reason explanations for the ``unindexable`` report. Built from the
+# reasons actually present rather than asserting one cause for all of them:
+# the note claimed non-Latin scripts yield no terms, which stopped being true
+# when the probe moved to any-Unicode-letter-or-digit — and was never true of
+# the files that reach it, which have no letters in any script at all.
+_UNINDEXABLE_REASONS: dict[str, str] = {
+    "no_indexable_tokens": (
+        "contain no letters or digits in any script (punctuation- or "
+        "symbol-only), so there is nothing to index"
+    ),
+    "unreadable": "could not be read from the cache — re-import them with import_paper",
+}
+
+
+def _unindexable_note(reasons: set[str]) -> str:
+    """Explain why the reported papers are absent from the keyword index."""
+    described = [_UNINDEXABLE_REASONS[r] for r in sorted(reasons) if r in _UNINDEXABLE_REASONS]
+    if not described:
+        described = ["could not be indexed"]
+    return (
+        "These cached papers are not in the keyword index: they "
+        + "; ".join(described)
+        + ". They will never match this search. Use find_in_paper on them "
+        "directly if you need to check their contents."
+    )
+
+
 @mcp.tool
 async def search_cached_papers(
     query: Annotated[
@@ -366,6 +393,13 @@ async def search_cached_papers(
     product attention"). Only converted papers are searchable; PDFs
     that haven't been through convert_paper / import_paper are not in
     the index.
+
+    **Scripts without whitespace word breaks (CJK) are indexed but only
+    findable by whole runs.** The tokeniser splits on whitespace and
+    punctuation, so an unbroken run of Han/Kana/Hangul is a single term: a
+    query must repeat that entire run to match, and a sub-phrase of it returns
+    nothing. There is no ``unindexable`` warning for this — those papers *are*
+    indexed. Use find_in_paper for sub-phrase lookups in such a paper.
     """
     # Wrap the synchronous BM25 pass in to_thread so it doesn't pin the
     # event loop on a large corpus. Even at hundreds of papers this is
@@ -385,19 +419,15 @@ async def search_cached_papers(
         "results": results,
     }
 
-    # Papers the ASCII-only tokeniser could not index are invisible to BM25 —
-    # correctly, they have no searchable terms, but silently, which left an
-    # agent no way to learn that part of the corpus was never considered.
-    # Reported only when non-empty so the common response stays lean.
+    # Papers the index could not use are invisible to BM25 — correctly, they
+    # have no searchable terms, but silently, which left an agent no way to
+    # learn that part of the corpus was never considered. Reported only when
+    # non-empty so the common response stays lean.
     skipped = await asyncio.to_thread(cache_search.unindexable, namespace)
     if skipped:
         response["unindexable_count"] = len(skipped)
         response["unindexable"] = skipped[:10]
-        response["unindexable_note"] = (
-            "These cached papers are not in the keyword index (the tokeniser is "
-            "ASCII-only, so non-Latin scripts yield no terms). They will never "
-            "match this search. Use find_in_paper on them directly."
-        )
+        response["unindexable_note"] = _unindexable_note({r["reason"] for r in skipped})
     return response
 
 

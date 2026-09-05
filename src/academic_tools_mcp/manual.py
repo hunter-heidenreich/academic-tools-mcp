@@ -349,25 +349,22 @@ def import_markdown(
     except OSError as e:
         return {"error": f"Could not read file {file_path}: {e}"}
 
-    # Atomic UTF-8 write so the markdown file and its checksum/section index
-    # can never diverge on a torn write (and so non-ASCII content survives a
-    # non-UTF-8 host locale).
-    cache._atomic_write_text(md_path, markdown)
-
-    # Parse and cache the section index. Store the markdown checksum the same
-    # way convert_pdf does so a later convert_paper trusts this cache instead
-    # of re-parsing on every call.
-    sections = papers.parse_sections(markdown)
-    sections_data = {
-        "sections": sections,
-        "markdown_checksum": papers.markdown_checksum(md_path),
-    }
-    cache.put(namespace, "sections", papers.sections_key(canonical), sections_data)
+    # Write and index through the shared writer so this entry carries the same
+    # four keys a converted paper's does. Assembling the payload here instead
+    # omitted ``sections_detected``, and because the checksum still matched,
+    # ``get_paper_sections`` reported an imported heading-free paper as having
+    # detected sections. ``mode="imported"`` records that no converter ran.
+    #
+    # The markdown goes in verbatim — no image-path stripping, no rstrip. That
+    # post-processing is right for converter output and wrong here: this file
+    # is the operator's own text, often a hand-made conversion whose links
+    # resolve.
+    stored = papers.store_markdown_and_index(namespace, canonical, md_path, markdown, "imported")
 
     return {
         "identifier": _normalize_identifier(identifier),
         "namespace": namespace,
         "markdown_path": str(md_path),
-        "sections": sections,
+        "sections": stored["sections"],
         "cached": False,
     }

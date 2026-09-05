@@ -140,9 +140,12 @@ class TestHeadinglessDocumentsAreFlagged:
         assert papers.has_detected_sections("plain text only\n") is False
 
     @pytest.mark.asyncio
-    async def test_older_cached_indices_are_not_alarmed_about(self, corpus):
-        # Indices written before this flag existed have no such key; absent
-        # must read as "not recorded", not as "detection failed".
+    async def test_older_cached_indices_are_recomputed_not_guessed(self, corpus):
+        # Indices written before this flag existed have no such key. Absent
+        # used to read as "not recorded" and default to True, which is a guess
+        # — and the wrong one for exactly the papers that need the warning.
+        # Re-parsing costs a file read and a regex pass, so the entry is now
+        # treated as stale and the real answer computed.
         await pipeline_tools.get_paper_sections("dup")
         key = papers.sections_key("dup")
         payload = cache.get("manual", "sections", key)
@@ -153,3 +156,26 @@ class TestHeadinglessDocumentsAreFlagged:
 
         assert result["sections_detected"] is True
         assert "sections_note" not in result
+        # Recomputed, not defaulted: the key is back in the cache entry.
+        assert cache.get("manual", "sections", key)["sections_detected"] is True
+
+    @pytest.mark.asyncio
+    async def test_older_index_on_a_headingless_paper_reports_the_truth(self, corpus, tmp_path):
+        # The case the default got wrong. A legacy entry on a paper with no
+        # headings must not be reported as "sections detected" — that is the
+        # reading ``sections_note`` exists to prevent, and defaulting to True
+        # produced it silently.
+        md = tmp_path / "manual" / "markdown"
+        md.mkdir(parents=True, exist_ok=True)
+        (md / "plain.md").write_text("Body text with no headings at all.\n", encoding="utf-8")
+
+        await pipeline_tools.get_paper_sections("plain")
+        key = papers.sections_key("plain")
+        payload = cache.get("manual", "sections", key)
+        payload.pop("sections_detected", None)
+        cache.put("manual", "sections", key, payload)
+
+        result = await pipeline_tools.get_paper_sections("plain")
+
+        assert result["sections_detected"] is False
+        assert "sections_note" in result
