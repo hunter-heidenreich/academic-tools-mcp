@@ -464,17 +464,13 @@ _SUB_LEVEL: int = 3
 # Section boundaries — the single home
 # ---------------------------------------------------------------------------
 #
-# This computation existed in four places: parse_sections (its own line loop),
-# find_in_markdown and get_section_content (byte-identical copies), and
-# cache_search._section_for_offset (a fourth dialect over raw offsets, missing
-# the empty-section filter). find_in_markdown's docstring already depended on
-# two of them staying identical "because both apply the same recipe" — a
-# copy-paste invariant guarded by one test.
-#
-# The divergence was agent-visible: cache_search could name a section the
-# reader's index had dropped, and returned a *title* for the agent to chain
-# into get_paper_section — which fails outright when a paper repeats a
-# heading (10.9% of this corpus).
+# Four readers depend on these boundaries agreeing: parse_sections,
+# find_in_markdown, get_section_content and cache_search._section_for_offset.
+# They must all come from here — a second implementation is agent-visible, not
+# merely untidy. Drop the empty-section filter and a search hit names a section
+# the reader's index does not have; return a title instead of an index and the
+# agent's chain into get_paper_section dies on "Ambiguous section title"
+# whenever a paper repeats a heading, which 10.9% of a real corpus does.
 
 
 class Section:

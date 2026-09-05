@@ -5,7 +5,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from .. import _app, manual
+from .. import manual
 from .._app import (
     AUTHOR_ID,
     AUTHORS_PAGE,
@@ -22,11 +22,6 @@ from .._app import (
 )
 from ..bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 from ..providers import arxiv, biorxiv, crossref, openalex
-
-
-async def _fetch_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """Fetch an OpenAlex work and return it, or propagate an error dict."""
-    return await openalex.get_work(doi, force_refresh=force_refresh)
 
 
 def _canonical_for_source(source: str | None, identifier: str) -> str | None:
@@ -102,7 +97,7 @@ async def _fetch_source(
     elif source == "biorxiv":
         obj = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
     elif source == "openalex":
-        obj = await _fetch_work(identifier, force_refresh=force_refresh)
+        obj = await openalex.get_work(identifier, force_refresh=force_refresh)
     else:
         return None, None, _unknown_identifier_error(identifier)
     return source, canonical_id, obj
@@ -287,7 +282,7 @@ async def get_paper_metadata(
             # back to the preprint metadata rather than erroring — the
             # agent asked for "the best version", not "fail if no
             # journal record".
-            work = await _fetch_work(published_doi, force_refresh=force_refresh)
+            work = await openalex.get_work(published_doi, force_refresh=force_refresh)
             if "error" not in work:
                 return _format_openalex_via_biorxiv(
                     work,
@@ -312,12 +307,10 @@ async def get_paper_metadata(
     # — that's why _fetch_source doesn't attach the suggestion itself. Crossref
     # force_refresh is threaded into the fallback too: this path exists for
     # brand-new DOIs, which is exactly where a stale cached Crossref record is
-    # most likely and least useful. (_fetch_crossref_work has always accepted
-    # and forwarded force_refresh — the graph tools pass it — this one call
-    # site silently dropped it.) If Crossref also misses, fall through to the
-    # OpenAlex error below.
+    # most likely and least useful. If Crossref also misses, fall through to
+    # the OpenAlex error below.
     if source == "openalex" and obj.get("not_found") and fallback_crossref:
-        cr = await _app._fetch_crossref_work(identifier, force_refresh=force_refresh)
+        cr = await crossref.get_work(identifier, force_refresh=force_refresh)
         if "error" not in cr:
             return _format_crossref_metadata(cr, crossref.canonical_doi(identifier))
 

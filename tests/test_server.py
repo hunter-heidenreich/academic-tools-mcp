@@ -7,7 +7,7 @@ across providers and the auto-source picker.
 
 import pytest
 
-from academic_tools_mcp import _app, cache, manual, papers, server
+from academic_tools_mcp import cache, manual, papers, server
 from academic_tools_mcp.providers import arxiv, biorxiv, crossref, openalex, opencitations
 from academic_tools_mcp.tools import paper
 
@@ -216,7 +216,7 @@ class TestReferencesAutoSource:
                 "count": 4,
             }
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -238,7 +238,7 @@ class TestReferencesAutoSource:
                 "count": 2,
             }
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -255,7 +255,7 @@ class TestReferencesAutoSource:
         async def fake_oc(doi, **kwargs):
             return {"references": [{"doi": "10.2/a"}], "count": 1}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -270,7 +270,7 @@ class TestReferencesAutoSource:
         async def fake_oc(doi, **kwargs):
             return {"error": "OpenCitations says no"}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -292,7 +292,7 @@ class TestReferencesAutoSource:
             cr_called = True
             return {"reference": []}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references(
@@ -313,7 +313,7 @@ class TestReferencesAutoSource:
         async def fake_oc(doi, **kwargs):
             return {"references": [{"doi": f"10.2/{i}"} for i in range(11)], "count": 11}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -329,7 +329,7 @@ class TestReferencesAutoSource:
         async def fake_oc(doi, **kwargs):
             return {"references": [{"doi": f"10.2/{i}"} for i in range(15)], "count": 15}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -348,7 +348,7 @@ class TestReferencesAutoSource:
         async def fake_oc(doi, **kwargs):
             return {"references": [], "count": 0}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -369,7 +369,7 @@ class TestReferencesAutoSource:
         async def fake_oc(doi, **kwargs):
             return {"error": "OpenCitations says no"}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto")
@@ -395,7 +395,7 @@ class TestReferencesAutoSource:
             called = True
             return {"references": [], "count": 0}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references("10.x/x", source="auto", page=2)
@@ -422,7 +422,7 @@ class TestReferencesCount:
         async def fake_oc(doi, **kwargs):
             return {"references": [{"doi": "10.2/a"}], "count": 1}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references_count("10.x/x")
@@ -441,7 +441,7 @@ class TestReferencesCount:
         async def fake_oc(doi, **kwargs):
             return {"references": [], "count": 0}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references_count("10.x/x")
@@ -457,7 +457,7 @@ class TestReferencesCount:
         async def fake_oc(doi, **kwargs):
             return {"references": [{"doi": "10.2/a"}], "count": 1}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references_count("10.x/x")
@@ -483,7 +483,7 @@ class TestReferencesCount:
         async def fake_oc(doi, **kwargs):
             return {"error": "No references found", "not_found": True}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references_count("10.x/x")
@@ -504,7 +504,7 @@ class TestReferencesCount:
         async def fake_oc(doi, **kwargs):
             return {"error": "OpenCitations down"}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         result = await server.get_paper_references_count("10.x/x")
@@ -525,7 +525,7 @@ class TestReferencesCount:
             seen["opencitations"] = force_refresh
             return {"references": [], "count": 0}
 
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_cr)
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
 
         await server.get_paper_references_count("10.x/x", force_refresh=True)

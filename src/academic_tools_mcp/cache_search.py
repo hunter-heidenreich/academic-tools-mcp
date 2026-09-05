@@ -183,11 +183,11 @@ def _section_for_offset(markdown: str, offset: int) -> tuple[int | None, str | N
     """Return ``(section_index, title)`` for a character offset.
 
     Delegates to ``papers.section_at_offset`` so this agrees with what
-    ``get_paper_section`` will actually accept. It used to be a fourth
-    independent dialect that (a) lacked the empty-section filter, so it could
-    name a section the reader's index had dropped, and (b) returned only a
-    *title* — which ``get_paper_section`` rejects with "Ambiguous section
-    title" whenever a paper repeats a heading, as 10.9% of a real corpus does.
+    ``get_paper_section`` will actually accept. A local reimplementation drifts
+    in two agent-visible ways: without the empty-section filter it names a
+    section the reader's index has dropped, and returning a *title* instead of
+    an index hits "Ambiguous section title" whenever a paper repeats a heading
+    — 10.9% of a real corpus.
     """
     found = papers.section_at_offset(markdown, offset)
     if found is None:
@@ -605,7 +605,7 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
 
 
 def unindexable(
-    namespace: str | None = None, *, force_refresh: bool = False
+    namespace: str | None = None, *, force_refresh: bool = False, refresh: bool = True
 ) -> list[dict[str, Any]]:
     """Papers present on disk that the index could not use.
 
@@ -616,8 +616,14 @@ def unindexable(
     searchable terms — but silently so, which is not: an agent asking "which
     paper mentioned X?" has no way to learn that part of the corpus was never
     considered. Surfaced through ``search_cached_papers``.
+
+    ``refresh=False`` skips the corpus walk, for a caller that has just run
+    ``search`` and so already has an index in step with the disk. The walk is
+    an ``os.scandir`` over every cached markdown file; running it twice per
+    tool call buys nothing.
     """
-    _refresh_index(force_refresh=force_refresh)
+    if refresh:
+        _refresh_index(force_refresh=force_refresh)
     con = _connect()
     try:
         sql = "SELECT ns, stem, unindexable FROM files WHERE unindexable IS NOT NULL"
@@ -692,9 +698,9 @@ def _snippet_terms(query: str, *, normalize: bool) -> set[str]:
     word-boundary regex ("transformer." never matches), but its ASCII-only
     pattern mangles anything else: "Gutiérrez" becomes ``guti``/``rrez``,
     neither of which appears in the text, and a wholly non-Latin query
-    becomes nothing at all. Both cases used to centre the snippet on the
-    document head and report no section, so a hit the index found perfectly
-    well came back unnavigable.
+    becomes nothing at all. Either case alone centres the snippet on the
+    document head and reports no section, so a hit the index found perfectly
+    well comes back unnavigable.
 
     The raw words are transformed the way ``_extract_snippet`` expects them:
     folded when ``normalize``, then lowercased. For an ordinary ASCII query

@@ -399,18 +399,24 @@ async def search_cached_papers(
     nothing. There is no ``unindexable`` warning for this — those papers *are*
     indexed. Use find_in_paper for sub-phrase lookups in such a paper.
     """
+
     # Wrap the synchronous BM25 pass in to_thread so it doesn't pin the
     # event loop on a large corpus. Even at hundreds of papers this is
     # tens of milliseconds, but agents may run searches concurrently
     # with HTTP fetches and we shouldn't starve those.
-    results = await asyncio.to_thread(
-        cache_search.search,
-        query,
-        top_k=top_k,
-        namespace=namespace,
-        normalize=normalize,
-        force_refresh=force_refresh,
-    )
+    # One hop, not two: `search` refreshes the index, so `unindexable` reads
+    # the same warm state and skips its own corpus walk.
+    def _search_and_diagnose():
+        hits = cache_search.search(
+            query,
+            top_k=top_k,
+            namespace=namespace,
+            normalize=normalize,
+            force_refresh=force_refresh,
+        )
+        return hits, cache_search.unindexable(namespace, refresh=False)
+
+    results, skipped = await asyncio.to_thread(_search_and_diagnose)
     response: dict[str, Any] = {
         "query": query,
         "result_count": len(results),
@@ -421,7 +427,6 @@ async def search_cached_papers(
     # have no searchable terms, but silently, which left an agent no way to
     # learn that part of the corpus was never considered. Reported only when
     # non-empty so the common response stays lean.
-    skipped = await asyncio.to_thread(cache_search.unindexable, namespace)
     if skipped:
         response["unindexable_count"] = len(skipped)
         response["unindexable"] = skipped[:10]

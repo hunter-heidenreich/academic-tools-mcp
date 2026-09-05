@@ -13,7 +13,6 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from . import _clients, cache, papers
-from .providers import crossref
 
 
 @asynccontextmanager
@@ -382,11 +381,6 @@ PAGE = Annotated[
     int,
     Field(description="Page number, starting at 1.", ge=1),
 ]
-
-
-async def _fetch_crossref_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """Fetch a work from Crossref and return it, or propagate an error dict."""
-    return await crossref.get_work(doi, force_refresh=force_refresh)
 
 
 REF_SOURCE = Annotated[

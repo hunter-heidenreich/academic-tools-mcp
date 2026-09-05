@@ -29,8 +29,10 @@ visible from any one file.
   registers the operator-only `get_server_stats` debug tool.
 
 Each tool fetches the full cached object then returns only the relevant slice.
-`_fetch_crossref_work` is monkeypatched by tests at `_app`, so its call sites in
-`paper.py`/`graph.py` go through the module (`_app._fetch_crossref_work(...)`).
+Tool modules call providers directly (`crossref.get_work(...)`,
+`openalex.get_work(...)`) and tests monkeypatch the provider. Don't add a
+passthrough wrapper in `_app` to create a patch point — two existed purely as
+test seams, one of which nothing patched at all.
 
 Per-source metadata formatting is factored into helpers (`_format_arxiv_metadata` / `_format_biorxiv_metadata` / `_format_openalex_metadata` / `_format_openalex_via_biorxiv`) so `get_paper_metadata` and `get_papers_metadata` produce identical per-paper payloads without duplicating the field mapping.
 
@@ -99,7 +101,7 @@ Single tool that auto-detects `.pdf` vs `.md`/`.markdown` by extension. PDFs are
 - `get_paper_references(doi, source, page, page_size)` — defaults `source="auto"`, fires both providers in parallel via `asyncio.gather`, picks whichever has more references (tie → Crossref for richer per-entry metadata), falls back to surviving source if one errors. Both errors → response carries both error messages. Explicit `source="crossref"` or `source="opencitations"` skips the survey (important for paginating page=2..N).
 - `get_paper_citations_count` / `get_paper_citations` — incoming citations (OpenCitations only today). `get_paper_citations` deliberately has **no** `source` parameter — OpenCitations is the only provider of incoming citations, so a knob with one value would be noise in the agent's context. Add one when a second source actually exists.
 
-All four take `force_refresh: FORCE_REFRESH = False` (the shared `_app.FORCE_REFRESH` type) — drops the cached entry and re-fetches, since the citation graph grows continuously. The reference tools thread it into **both** sources (`_app._fetch_crossref_work(doi, force_refresh=...)` + `opencitations.get_references(..., force_refresh=...)`); `get_paper_references_count` routes Crossref through `_app._fetch_crossref_work` (not `crossref.get_work` directly) for monkeypatch-seam parity with `get_paper_references`. Pass `force_refresh` on the first page only — omit it when paginating so page 2..N reuse the warmed cache.
+All four take `force_refresh: FORCE_REFRESH = False` (the shared `_app.FORCE_REFRESH` type) — drops the cached entry and re-fetches, since the citation graph grows continuously. The reference tools thread it into **both** sources (`crossref.get_work(doi, force_refresh=...)` + `opencitations.get_references(..., force_refresh=...)`); `get_paper_references_count` and `get_paper_references` both call `crossref.get_work` directly, so a test patching the provider covers each of them. Pass `force_refresh` on the first page only — omit it when paginating so page 2..N reuse the warmed cache.
 
 Crossref provides structured reference metadata (author, title, year, journal, DOI) when publishers deposit it; quality varies. OpenCitations aggregates from Crossref/PubMed/DataCite/OpenAIRE/JaLC and returns DOI-to-DOI links with cross-referenced IDs (OMID, OpenAlex, PMID) and self-citation flags — broader coverage, no bibliographic metadata.
 

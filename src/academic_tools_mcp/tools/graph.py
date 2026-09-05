@@ -3,7 +3,6 @@
 import asyncio
 from typing import Any
 
-from .. import _app
 from .._app import (
     DOI,
     FORCE_REFRESH,
@@ -13,7 +12,7 @@ from .._app import (
     _enrich_error,
     mcp,
 )
-from ..providers import opencitations
+from ..providers import crossref, opencitations
 
 # Auto source-selection bias. Crossref entries carry structured
 # bibliographic metadata (author/title/year/journal/DOI); OpenCitations
@@ -90,7 +89,7 @@ async def get_paper_references_count(
     opencitations: {count: M} | {error, suggestion?}}}``. Partial-failure
     tolerant: if one source errors the other's count is still reported.
     """
-    cr_task = _app._fetch_crossref_work(doi, force_refresh=force_refresh)
+    cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_result, oc_result = await asyncio.gather(cr_task, oc_task)
 
@@ -192,7 +191,7 @@ async def get_paper_references(
     hints for transient failures.
     """
     if source == "crossref":
-        work = await _app._fetch_crossref_work(doi, force_refresh=force_refresh)
+        work = await crossref.get_work(doi, force_refresh=force_refresh)
         if "error" in work:
             return _enrich_error(
                 work,
@@ -223,7 +222,7 @@ async def get_paper_references(
 
     # Survey both. The fetches are cached so a follow-up page-1 call with
     # the same DOI doesn't re-fetch.
-    cr_task = _app._fetch_crossref_work(doi, force_refresh=force_refresh)
+    cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_work, oc_data = await asyncio.gather(cr_task, oc_task)
 

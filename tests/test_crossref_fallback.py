@@ -10,8 +10,8 @@ fields are null on the fallback response.
 
 import pytest
 
-from academic_tools_mcp import _app, server
-from academic_tools_mcp.providers import openalex
+from academic_tools_mcp import server
+from academic_tools_mcp.providers import crossref, openalex
 
 
 # A canonical OpenAlex 404 error dict, as get_work now produces it.
@@ -42,7 +42,7 @@ class TestCrossrefFallbackOn404:
             return dict(_CROSSREF_WORK)
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(crossref, "get_work", fake_crossref)
 
         result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert result["_source"] == "crossref"
@@ -73,7 +73,7 @@ class TestCrossrefFallbackOn404:
             return dict(_CROSSREF_WORK)
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(crossref, "get_work", fake_crossref)
 
         result = await server.get_paper_metadata("10.1162/tacl_a_99999")
         assert "error" in result
@@ -99,7 +99,7 @@ class TestCrossrefFallbackOn404:
             return dict(_CROSSREF_WORK)
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(crossref, "get_work", fake_crossref)
 
         result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert "error" in result
@@ -118,7 +118,7 @@ class TestCrossrefFallbackOn404:
             return {"error": f"No work found on Crossref for DOI: {doi}"}
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(crossref, "get_work", fake_crossref)
 
         result = await server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True)
         assert "error" in result
@@ -250,7 +250,7 @@ class TestCrossrefDateHelper:
 class TestFallbackHonoursForceRefresh:
     """``fallback_crossref`` exists for brand-new DOIs — exactly where a stale
     cached Crossref record is most likely and least useful. The call site
-    silently dropped ``force_refresh`` even though ``_fetch_crossref_work``
+    silently dropped ``force_refresh`` even though ``crossref.get_work``
     has always accepted and forwarded it (the graph tools pass it).
     """
 
@@ -266,7 +266,7 @@ class TestFallbackHonoursForceRefresh:
             return {"DOI": doi, "title": ["T"], "type": "journal-article"}
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(crossref, "get_work", fake_crossref)
 
         await server.get_paper_metadata(
             "10.1234/brand-new", force_refresh=True, fallback_crossref=True
@@ -286,7 +286,7 @@ class TestFallbackHonoursForceRefresh:
             return {"DOI": doi, "title": ["T"], "type": "journal-article"}
 
         monkeypatch.setattr(openalex, "get_work", fake_openalex)
-        monkeypatch.setattr(_app, "_fetch_crossref_work", fake_crossref)
+        monkeypatch.setattr(crossref, "get_work", fake_crossref)
 
         await server.get_paper_metadata("10.1234/x", fallback_crossref=True)
 

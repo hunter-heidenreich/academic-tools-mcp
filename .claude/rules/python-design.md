@@ -94,3 +94,22 @@ Two conventions keep those docs from rotting:
   let the reader grep the value. Every stale fact these files have accumulated
   was a number copied out of the code — a duplicated concurrency cap drifted
   while the prose around it stayed true.
+- **Don't transcribe history.** A comment states the invariant the code holds
+  *now*, and where a test pins it — not what the code used to be.
+  `CHANGELOG.md` and `git log -S "<phrase>"` are the homes for "why it
+  changed"; these rules files may carry a one-clause warning where it stops a
+  specific regression, because they are read *before* an edit, when a warning
+  can still act. Past-tense prose outlives the code it describes and then
+  misleads: `_pdf_download.cached_hit` claimed to have "collapsed the six
+  copies of this block" while two remained inline, and `search_cached_papers`
+  told the agent a paper was unindexable because "the tokeniser is ASCII-only"
+  for a full release after FTS5 made that false. A benchmark table in
+  `cache_search.py` disagreed with `CHANGELOG.md`'s copy of the same
+  measurements on every row.
+
+  Rewrite `# X used to happen, which broke Y` as `# Invariant: Y. (Guarded by
+  tests/test_z.py::test_y)` — and **verify the citation** by mutating the
+  guarded line and watching that test fail. An unfalsified citation is the
+  same defect in a new costume. If no test pins it, say so: `# Invariant: …
+  (unguarded)` is honest and greppable. Test docstrings are exempt — a
+  regression test's purpose *is* the regression.
