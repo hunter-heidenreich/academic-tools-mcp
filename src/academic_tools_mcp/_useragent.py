@@ -1,57 +1,62 @@
-"""Shared outbound ``User-Agent`` construction.
+"""Shared outbound ``User-Agent`` construction — one home, every client.
 
-Four providers hand-rolled a User-Agent in four different formats, and three
-(`biorxiv`, `opencitations`, `acl_anthology`) plus the open-access download
-path built no headers at all — so they went out as ``python-httpx/x.y``.
-``providers/arxiv.py`` documents at length why that matters (arXiv's Fastly
-edge throttles anonymous library traffic far harder); the reasoning was never
-propagated to the others.
+Wikimedia, Crossref and OpenAlex all ask for the same shape::
 
-Worse, the URL the hand-rolled agents advertised —
-``https://github.com/academic-tools-mcp`` — does not exist. The entire point
-of a contact URL is that an operator who needs to reach you can; a 404 defeats
-it. The version was hardcoded ``1.0`` against a calendar-versioned package.
+    academic-tools-mcp/<version> (+<project url>; mailto:<contact>)
 
-Both are fixed here, once:
-
-    academic-tools-mcp/2026.9.4 (+https://github.com/hunter-heidenreich/academic-tools-mcp; mailto:you@example.org)
-
-Wikimedia's User-Agent policy, Crossref's polite pool, and OpenAlex's polite
-pool all ask for exactly this shape: a name, a version, a way to reach the
-operator.
+The version is read from installed distribution metadata, never written as a
+literal. Contact scrubbing and the other invariants: ``.claude/rules/utils.md``.
 """
 
 from __future__ import annotations
 
+import re
+from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 
 _PROJECT_URL = "https://github.com/hunter-heidenreich/academic-tools-mcp"
 _DISTRIBUTION = "academic-tools-mcp"
 
-# Fallback when running from a source tree with no installed distribution
-# metadata. Only affects the string we advertise, never behaviour.
+# Advertised when running from an uninstalled source tree; never gates behaviour.
 _UNKNOWN_VERSION = "0+unknown"
 
+# Anything outside printable ASCII, plus the parens that delimit the comment.
+_UNSAFE_IN_MAILTO = re.compile(r"[^\x20-\x7e]|[()]")
 
+_MAILTO_PREFIX = "mailto:"
+
+
+@cache
 def package_version() -> str:
-    """Version of the installed distribution, or a clear placeholder."""
+    """Version of the installed distribution, or a clear placeholder.
+
+    Cached because every ``_get_client`` rebuilds its headers per request.
+    """
     try:
         return version(_DISTRIBUTION)
-    except PackageNotFoundError:  # pragma: no cover - source-tree fallback
+    except PackageNotFoundError:
         return _UNKNOWN_VERSION
 
 
-def build(mailto: str | None = None) -> str:
-    """Build the outbound User-Agent, appending ``mailto`` when configured.
+def normalize_mailto(mailto: str | None) -> str | None:
+    """Scrub an operator-supplied contact, or ``None`` if nothing survives.
 
-    The descriptive agent is returned whether or not a contact address is
-    set — an anonymous-but-identifiable client is still far better than
-    ``python-httpx``, and several upstreams throttle the latter specifically.
+    Invariant: scrub before stripping the prefix, in a loop, as
+    ``_doi.normalize`` does — scrubbing can reveal a prefix (``mail(to:x``).
     """
-    agent = f"{_DISTRIBUTION}/{package_version()} (+{_PROJECT_URL}"
-    if mailto:
-        agent += f"; mailto:{mailto}"
-    return agent + ")"
+    if not mailto:
+        return None
+    value = _UNSAFE_IN_MAILTO.sub("", mailto).strip()
+    while value[: len(_MAILTO_PREFIX)].lower() == _MAILTO_PREFIX:
+        value = value[len(_MAILTO_PREFIX) :].strip()
+    return value or None
+
+
+def build(mailto: str | None = None) -> str:
+    """Build the outbound User-Agent, appending a normalized contact if given."""
+    contact = normalize_mailto(mailto)
+    suffix = f"; {_MAILTO_PREFIX}{contact}" if contact else ""
+    return f"{_DISTRIBUTION}/{package_version()} (+{_PROJECT_URL}{suffix})"
 
 
 def headers(mailto: str | None = None) -> dict[str, str]:

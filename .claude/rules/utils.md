@@ -24,9 +24,15 @@ The single home for DOI normalization: `normalize` (bare form), `canonical` (cac
 
 ## _useragent.py
 
-The single home for the outbound `User-Agent`: `build(mailto)`, `headers(mailto)`, `package_version()`.
+The single home for the outbound `User-Agent`: `build(mailto)`, `headers(mailto)`, `normalize_mailto(mailto)`, `package_version()`.
 
-**The version comes from installed distribution metadata, never a literal, and the agent stays descriptive when no mailto is configured** — anonymous-but-identifiable still beats `python-httpx`. Politeness coverage is parametrized over a client list in `tests/test_politeness.py`; a new client must be appended to it or it is unguarded.
+**The version comes from installed distribution metadata, never a literal, and the agent stays descriptive when no mailto is configured** — anonymous-but-identifiable still beats `python-httpx`. `package_version` is cached because every provider's `_get_client` rebuilds its headers per request, which would otherwise put an `importlib.metadata` `sys.path` scan on the hot path.
+
+**The contact address is scrubbed to printable ASCII minus parens, and no caller may skip that.** It is the one operator-supplied string interpolated into a header: a CRLF injects a header and only fails at send time as a `RequestError`, so every request degrades to a misleading "network error" dict; a non-ASCII character raises `UnicodeEncodeError` *inside* `httpx` at client construction, which is not in `HTTPX_ERRORS` and so crashes uncaught. `config.get` does not strip, unlike `config.flag`.
+
+**Invariant: `normalize_mailto` scrubs before stripping the `mailto:` prefix, and the strip is a loop** — the ordering `_doi.normalize` holds for `doi:`, for the same reason. Scrubbing can *reveal* a prefix (`mail(to:x` → `mailto:x`), so the other order is not idempotent. A contact that normalizes to empty is dropped entirely rather than emitting a bare `mailto:`.
+
+**Every client module builds its headers through `headers()`; none respells the `{"User-Agent": ...}` dict.** Politeness coverage in `tests/test_politeness.py` discovers those modules by import scan — a module holding both `_get_client` and `_throttle` — for the reason `_stats.throttles` scans rather than reading a roster: a new provider is guarded the moment it exists.
 
 ## _textnorm.py
 
