@@ -69,6 +69,9 @@ _NEG_TTL_SECONDS = 3600.0
 # not yet minted.
 _NEG_ENTITY = "downloads"
 
+# PDF downloads are larger than a metadata call; use a generous timeout.
+_PDF_TIMEOUT_SECONDS = 60.0
+
 # Positive cache TTL. The published_doi field appears asynchronously
 # when a preprint becomes a journal article — a 7-day TTL guarantees
 # the agent sees that transition within a week without re-fetching the
@@ -399,7 +402,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             dest,
             slot_factory=lambda: _request_slot(pdf_url),
             provider_label="bioRxiv",
-            timeout=60.0,
+            timeout=_PDF_TIMEOUT_SECONDS,
             not_found_message=f"PDF not found for DOI: {doi}",
         )
 

@@ -17,6 +17,15 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`stream_to_file`'s in-slot re-check and cap boundary are now actually
+  tested.** The re-check is the `cached_download` protocol's core concurrency
+  guarantee — a caller that missed the outer check picks up the leader's
+  just-written PDF instead of re-streaming it — and both of its branches, plus
+  the deliberate `force_refresh` skip, were uncovered. So was the
+  exactly-at-`MAX_PDF_BYTES` case the design rules name explicitly. Deleting
+  the re-check passed the whole prior suite. `_pdf_download` is now at full
+  statement coverage. ([#79])
+
 - **Property-based tests for the retry/backoff arithmetic.** `_http`'s two
   numeric invariants — a parsed `Retry-After` is either `None` or a finite
   positive float, and every sleep sits between the `backoff_seconds` floor and
@@ -92,6 +101,25 @@ grouped by milestone rather than per commit.
   already green locally; CI pins that bar rather than chasing it. ([#47])
 
 ### Changed
+
+- **The download temp file is created only once the response is worth
+  writing.** `stream_to_file` used to `mkstemp` before opening the connection,
+  so a 404 created and deleted a scratch file (and `mkdir`'d the destination
+  directory) for nothing, and every early return had to be covered by an
+  `fd_handed_off` flag and a manual `os.close`. Moving it past the status and
+  Content-Type gates and switching to `NamedTemporaryFile` — which binds the fd
+  to the file object, so no raw fd can leak — removes the flag entirely.
+  ([#79])
+
+- **`manual.import_local_pdf`'s cache-hit branch routes through
+  `_pdf_download.cached_hit`.** It was the last hand-rolled
+  check-then-`stat` pair — the exact shape `cached_hit` was introduced to
+  retire in the ACL provider — so a PDF unlinked between the usability check
+  and the size read raised `OSError` out of the tool instead of counting as a
+  miss. Its now-unused `_looks_like_cached_pdf` alias is gone. ([#79])
+
+- **arXiv and bioRxiv name their PDF timeout** (`_PDF_TIMEOUT_SECONDS`) instead
+  of passing a bare `60.0`, matching `acl_anthology` and `oa_download`. ([#79])
 
 - **arXiv's parse-error helper delegates to the shared one instead of
   respelling it.** `_http.parse_error_dict` grew a `detail` parameter
@@ -265,6 +293,22 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **A full or read-only disk no longer escapes `download_pdf` as a raised
+  `OSError`.** `stream_to_file` caught only `_http.HTTPX_ERRORS`, so an ENOSPC
+  from the chunk write propagated past the `{error}` contract that every other
+  tool upholds — in the one code path whose `MAX_PDF_BYTES` cap exists
+  precisely to protect the disk. `cache.put` had already made this call for
+  JSON writes and documented why. It now returns `{error, retryable: True}`:
+  retryable, so a full disk also stays out of the negative cache rather than
+  being recorded against the paper. `manual.import_local_pdf`'s post-copy size
+  read moved inside its existing `try` for the same reason. ([#79])
+
+- **`MAX_PDF_BYTES=-1` silently disabled the size cap.** The resolver treated
+  any value `<= 0` as "disabled", so the `-1`-means-unlimited idiom from other
+  tools — or a typo — removed the disk guard with no signal, and the documented
+  disable vocabulary (`none` / `off` / `disabled` / `0`) did not say so.
+  Negative values now fall back to the default. ([#79])
 
 - **Transient HTTP errors now carry `retryable: True`, the flag two callers
   already branch on.** `_http.error_dict` set it for local backpressure alone;
@@ -1542,3 +1586,4 @@ grouped by milestone rather than per commit.
 [#76]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/76
 [#77]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/77
 [#78]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/78
+[#79]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/79

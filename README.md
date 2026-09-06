@@ -49,7 +49,7 @@ All configuration is via environment variables in `.env`. Nothing is required to
 | `ARXIV_MAILTO` | No | Your email, appended to the arXiv User-Agent. A descriptive agent is sent either way — arXiv's edge throttles generic library agents far harder. |
 | `CACHE_DIR` | No | Where the on-disk cache lives (default: `.cache/` beside the project). Set it when running from an installed wheel. |
 | `ACADEMIC_TOOLS_ENV_FILE` | No | Explicit path to the `.env` to load, overriding the search order |
-| `MAX_PDF_BYTES` | No | Cap on a single PDF download (default `200000000` ≈ 200 MB). `none` / `off` / `0` disables. |
+| `MAX_PDF_BYTES` | No | Cap on a single PDF download (default `200000000` ≈ 200 MB). `none` / `off` / `disabled` / `0` disables; any other unparseable value (including a negative one) falls back to the default. |
 | `WIKIPEDIA_MAILTO` | No | Your email — required by [Wikimedia policy](https://meta.wikimedia.org/wiki/User-Agent_policy) for the User-Agent header |
 | `PDF_CONVERTER` | No | PDF-to-markdown backend: `mineru` (default), `marker`, or a custom command (see [PDF Pipeline](#pdf-pipeline)) |
 | `PDF_CONVERTER_VENV` | No | Path to a virtualenv to activate before running the converter (e.g. `~/.venvs/mineru`) |
