@@ -264,9 +264,7 @@ def _legacy_index_path() -> Path:
 
 
 _SCHEMA = (
-    # rowid is declared, not implicit: VACUUM renumbers an implicit one, which
-    # would repoint every row at another paper's postings. UNIQUE (ns, stem)
-    # brings its own index, whose leading column already serves the ns filter.
+    # Declared, not implicit — VACUUM renumbers an implicit rowid, and fts keys on it.
     """CREATE TABLE IF NOT EXISTS files (
            rowid     INTEGER PRIMARY KEY,
            ns        TEXT    NOT NULL,
@@ -276,12 +274,7 @@ _SCHEMA = (
            unindexable TEXT,
            UNIQUE (ns, stem)
        )""",
-    # Contentless: postings only. The markdown is on disk and the winners are
-    # re-read for snippets anyway. contentless_delete=1 (SQLite 3.43+) is what
-    # lets a removed paper be DELETEd without handing back its text.
-    #
-    # Two tables because folding is a build-time tokenizer option in FTS5
-    # while ``normalize`` is a query-time flag here.
+    # contentless_delete=1 needs SQLite 3.43+; it is what lets a removed paper go.
     """CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
            body, content='', contentless_delete=1,
            tokenize="unicode61 remove_diacritics 0"
