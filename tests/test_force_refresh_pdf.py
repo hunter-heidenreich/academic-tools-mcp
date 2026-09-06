@@ -15,42 +15,16 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
-from academic_tools_mcp import _clients, cache
+from academic_tools_mcp import cache
 from academic_tools_mcp.providers import acl_anthology, arxiv, biorxiv
 
-
-@contextlib.asynccontextmanager
-async def _passthrough_slot(*_args, **_kwargs):
-    """Replacement for each provider's ``_request_slot`` — skips the
-    rate-limit gating (and its sleeps) so the test focuses on the
-    download/cache logic. The real slot is covered elsewhere."""
-    yield
-
-
-def _mock_stream_response(status_code: int = 200, chunks: list[bytes] | None = None):
-    """Mock async-context-manager yielding a streaming response, mirroring
-    the helper in tests/test_pdf_download.py."""
-    chunks = chunks or [b"%PDF-1.4 fresh bytes"]
-
-    async def aiter_bytes(_chunk_size):
-        for c in chunks:
-            yield c
-
-    response = MagicMock()
-    response.status_code = status_code
-    response.raise_for_status = MagicMock()
-    response.aiter_bytes = aiter_bytes
-
-    @contextlib.asynccontextmanager
-    async def stream_cm():
-        yield response
-
-    return stream_cm
+from ._download_fakes import install_stream as _install_stream
+from ._download_fakes import mock_stream_response as _mock_stream_response
+from ._download_fakes import passthrough_slot as _passthrough_slot
 
 
 def _connect_error_stream():
@@ -124,24 +98,7 @@ def _setup_provider(name: str, monkeypatch) -> tuple[Path, callable]:
     return dest, call
 
 
-def _install_stream(monkeypatch, stream_cm_or_obj) -> None:
-    """Point every provider's pooled client at a stub whose .stream returns
-    the given context manager (called fresh per stream invocation)."""
-
-    class StubClient:
-        def stream(self, *_args, **_kwargs):
-            return stream_cm_or_obj() if callable(stream_cm_or_obj) else stream_cm_or_obj
-
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
-
-
 _PROVIDERS = ["arxiv", "biorxiv", "acl"]
-
-
-@pytest.fixture(autouse=True)
-def _isolated_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-    return tmp_path
 
 
 def _seed_cached_pdf(dest: Path, body: bytes = b"%PDF-1.4 OLD cached bytes") -> bytes:

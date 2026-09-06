@@ -15,7 +15,22 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An unclassified OpenAlex failure no longer tells the agent to hand-fetch
+  the PDF.** `oa_download` decided whether to attach its "fetch it yourself and
+  call `import_paper`" hatch with a *denylist* — anything not explicitly flagged
+  `retryable: True` was a dead end. But `_http.error_dict` leaves every
+  non-retryable 4xx unflagged, so an OpenAlex 403 or 451 (and the defensive
+  fallback) were reported to the agent as permanent when a retry would have
+  fixed them. The classifier is now an allowlist, the same polarity
+  `_pdf_download.is_definitive_failure` already used. Conversely, a *download*
+  failure that genuinely is definitive — a publisher 404, a landing page served
+  under a `%PDF-` promise — now carries the hatch it was missing, while a
+  size-cap abort and a 0-byte 200 still do not. ([#90])
+
 ### Added
+
 
 - **Property tests for identifier routing and the arXiv re-file sweep**
   (`tests/test_manual_properties.py`). Three invariants that examples had been
@@ -2049,3 +2064,4 @@ grouped by milestone rather than per commit.
 [#87]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/87
 [#88]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/88
 [#89]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/89
+[#90]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/90

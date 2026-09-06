@@ -13,13 +13,11 @@ NAMESPACE = "opencitations"
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the persistent AsyncClient for OpenCitations calls.
+    """Return the pooled AsyncClient for OpenCitations calls.
 
-    The descriptive User-Agent is baked in at construction so every call
-    identifies this client. Previously no headers were passed here at all, so
-    requests went out as ``python-httpx/x.y`` — the generic agent several
-    upstreams throttle hardest, and the one that leaves an operator no way to
-    reach us.
+    Configured here only: ``_clients.get_client`` ignores kwargs on every later
+    call for this namespace, so the UA and the timeout are set here or not at
+    all.
     """
     return _clients.get_client(NAMESPACE, headers=_useragent.headers(), timeout=30.0)
 

@@ -37,7 +37,7 @@ arxiv/biorxiv pass a **tuple** `sf_key` (`("pdf", canonical)`) because their `fe
 
 **Trust boundary: the URL comes from `openalex.best_pdf_url` or nowhere** (`best_oa_location.pdf_url` → `primary_location.pdf_url` → `open_access.oa_url`). Do not add a parameter that accepts a URL, do not widen resolution to a search or a redirect chase, and keep `require_pdf=True` on the `stream_to_file` call — this is the only caller that passes it, because it is the only path whose URL can be a publisher landing page.
 
-**`_IMPORT_SUGGESTION` attaches to definitive failures only.** A retryable OpenAlex lookup error passes through untouched — telling an agent to go fetch the PDF by hand when it should just retry is the failure this guards against.
+**`_IMPORT_SUGGESTION` attaches to known-definitive failures only, on an allowlist.** Both attachment sites gate the same way: the resolution branch on `not_found is True or retryable is False`, the download branch on `is_definitive_failure` itself. That polarity is load-bearing — `_http.error_dict` leaves **every** non-retryable 4xx unflagged, so a denylist ("anything not marked retryable") tells an agent to go fetch the PDF by hand on a 403 it should simply retry. The same allowlist is what keeps a `MAX_PDF_BYTES` abort (raise the cap) and a 0-byte 200 (a blip) out of the hatch.
 
 The negative half lives in this module's own namespace while the artifact lands in `manual` (`manual.resolve_target`), because "no OA copy exists" is a verdict specific to this path while the PDF is shared with manual import and the rest of the pipeline.
 

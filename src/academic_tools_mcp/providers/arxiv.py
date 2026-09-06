@@ -86,11 +86,13 @@ def _build_headers() -> dict[str, str]:
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the persistent AsyncClient for arXiv calls.
+    """Return the pooled AsyncClient for arXiv calls.
 
-    The descriptive User-Agent is baked in at construction so every call
-    (metadata, search, PDF download) identifies the client and avoids
-    arXiv's heavier throttling of anonymous library traffic.
+    Configured here only: ``_clients.get_client`` ignores kwargs on every later
+    call for this namespace, so ``_build_headers`` (which carries
+    ``ARXIV_MAILTO``) runs here or nowhere — arXiv throttles anonymous library
+    traffic harder. The 30s default paces metadata and search; ``download_pdf``
+    overrides it per call with ``_PDF_TIMEOUT_SECONDS``.
     """
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 

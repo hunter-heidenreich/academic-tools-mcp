@@ -94,11 +94,11 @@ def _build_headers() -> dict[str, str]:
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the persistent AsyncClient for Crossref calls.
+    """Return the pooled AsyncClient for Crossref calls.
 
-    The polite-pool User-Agent header is baked into the client at
-    construction so every call automatically opts into the higher rate
-    limits.
+    Configured here only: ``_clients.get_client`` ignores kwargs on every later
+    call for this namespace, so ``_build_headers`` (which carries the
+    ``CROSSREF_MAILTO`` polite-pool opt-in) runs here or nowhere.
     """
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
