@@ -52,22 +52,34 @@ def log_request(provider: str, url: str, wait_seconds: float) -> None:
     )
 
 
-def throttles() -> Iterator["Throttle"]:
-    """Yield the shared ``Throttle`` of every already-imported package module.
+_THROTTLE_MODULE = f"{_PACKAGE_PREFIX}_throttle"
 
-    Scanned, never imported: sampling a provider must not load it. Matched by
-    attribute because a runtime ``Throttle`` import would close a cycle.
+
+def _is_throttle(value: object) -> bool:
+    """Whether ``value`` is a ``Throttle``, without importing the class."""
+    return any(
+        cls.__name__ == "Throttle" and cls.__module__ == _THROTTLE_MODULE
+        for cls in type(value).__mro__
+    )
+
+
+def throttles() -> Iterator["Throttle"]:
+    """Yield every ``Throttle`` instance held by an already-imported package module.
+
+    Scanned, never imported: sampling a provider must not load it. Every
+    attribute qualifies, not just one named ``_throttle``, so a module that
+    grows a second throttle cannot drop out of the reset seam or the in-flight
+    sample — deduped by identity, since one instance may be re-exported.
     """
+    seen: set[int] = set()
     for name, module in list(sys.modules.items()):
-        if not name.startswith(_PACKAGE_PREFIX):
+        if not name.startswith(_PACKAGE_PREFIX) or module is None:
             continue
-        throttle = getattr(module, "_throttle", None)
-        if throttle is None:
-            continue
-        # A module that binds the *name* `_throttle` to something else — the
-        # `_throttle` module itself, say — is not a provider.
-        if hasattr(throttle, "pending") and hasattr(throttle, "namespace"):
-            yield throttle
+        for value in list(vars(module).values()):
+            if not _is_throttle(value) or id(value) in seen:
+                continue
+            seen.add(id(value))
+            yield value
 
 
 def snapshot() -> dict[str, Any]:
@@ -77,15 +89,17 @@ def snapshot() -> dict[str, Any]:
     ``cache_hits``, ``cache_misses``, ``negative_hits``, ``http_calls``,
     ``http_retries``, ``backpressure_refusals`` and ``cache_write_failures``,
     cumulative since process start (or the last ``reset()``), plus an
-    ``in_flight`` sampled live from ``Throttle.pending``. Rows are copies, so
-    mutating the result cannot corrupt the counters.
+    ``in_flight`` sampled live and summed over every ``Throttle`` the namespace
+    owns. Rows are copies, so mutating the result cannot corrupt the counters.
     """
     out: dict[str, dict[str, int]] = {
         provider: dict(metrics) for provider, metrics in list(_counters.items())
     }
 
     for throttle in throttles():
-        out.setdefault(throttle.namespace, {})["in_flight"] = throttle.pending
+        # Summed, not assigned: a namespace may own more than one throttle.
+        row = out.setdefault(throttle.namespace, {})
+        row["in_flight"] = row.get("in_flight", 0) + throttle.pending
 
     return {"providers": out}
 

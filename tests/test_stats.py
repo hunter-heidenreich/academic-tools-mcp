@@ -193,6 +193,65 @@ class TestThrottleDiscovery:
             assert throttle.namespace == namespace, module_name
         assert checked >= 8, f"only {checked} providers checked — discovery regressed"
 
+    def test_a_second_throttle_on_a_module_is_discovered(self, monkeypatch):
+        """Discovery matches the type, not the attribute name ``_throttle``.
+
+        A module that paces one endpoint apart from the rest (crossref's search
+        gate is the standing candidate) would otherwise hold a throttle that no
+        test ever resets and no snapshot ever samples.
+        """
+        from academic_tools_mcp._throttle import Throttle
+        from academic_tools_mcp.providers import wikipedia
+
+        second = Throttle(
+            namespace=wikipedia.NAMESPACE,
+            label="Wikipedia search",
+            max_concurrent=1,
+            min_gap_seconds=0.0,
+        )
+        monkeypatch.setattr(wikipedia, "_search_throttle", second, raising=False)
+
+        assert any(t is second for t in _stats.throttles())
+
+    def test_in_flight_sums_every_throttle_in_the_namespace(self, monkeypatch):
+        """Two throttles, one row: assigning instead of summing would report
+        whichever the scan reached last and hide the other's traffic."""
+        from academic_tools_mcp._throttle import Throttle
+        from academic_tools_mcp.providers import wikipedia
+
+        second = Throttle(
+            namespace=wikipedia.NAMESPACE,
+            label="Wikipedia search",
+            max_concurrent=1,
+            min_gap_seconds=0.0,
+        )
+        second.pending = 2
+        monkeypatch.setattr(wikipedia, "_search_throttle", second, raising=False)
+        monkeypatch.setattr(wikipedia._throttle, "pending", 3)
+
+        assert _stats.snapshot()["providers"][wikipedia.NAMESPACE]["in_flight"] == 5
+
+    def test_yields_each_instance_once(self):
+        """Deduped by identity: a throttle re-exported into a second module
+        would otherwise be reset twice and counted twice."""
+        namespaces = [id(t) for t in _stats.throttles()]
+        assert len(namespaces) == len(set(namespaces))
+
+    def test_a_module_level_mock_is_not_mistaken_for_a_throttle(self, monkeypatch):
+        """The scan reads arbitrary module attributes, and a MagicMock answers
+        ``hasattr`` for anything — so shape-matching would file rows under a
+        mock and blow up summing its ``pending``."""
+        from unittest.mock import MagicMock
+
+        from academic_tools_mcp.providers import wikipedia
+
+        monkeypatch.setattr(wikipedia, "_probe_client", MagicMock(), raising=False)
+
+        providers = _stats.snapshot()["providers"]
+
+        assert all(isinstance(name, str) for name in providers)
+        assert all(isinstance(row.get("in_flight", 0), int) for row in providers.values())
+
 
 class TestDebugRequests:
     @pytest.mark.parametrize(
