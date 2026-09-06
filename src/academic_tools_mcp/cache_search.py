@@ -23,26 +23,20 @@ from urllib.parse import unquote
 
 from . import _doi, _textnorm, cache, papers
 
-# Default size of the snippet window centred on the best-scoring term
-# match. ~200 chars is enough to disambiguate ("variational dropout" vs
-# "dropout regularisation") without bloating the response.
+# Enough to disambiguate "variational dropout" from "dropout regularisation"
+# without bloating the response.
 _SNIPPET_CHARS = 200
 
-# Hard cap on returned hits so a noisy query can't pull the whole corpus
-# back in one tool call.
+# So a noisy query can't pull the whole corpus back in one tool call.
 _MAX_TOP_K = 50
 
-# Tokenisation: split on anything that isn't a letter, digit, or
-# intra-word hyphen / dot (so "BM25" survives, "self-attention" stays
-# one token, "1.5x" stays one token, but "(end)" / "[1]" don't pollute
-# the index). All lowercased.
+# Keeps intra-word hyphens and dots, so "self-attention", "BM25" and "1.5x"
+# stay one token each. Snippet terms only — FTS5 tokenises the corpus.
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-.]*[a-z0-9]|[a-z0-9]")
 
-# Lightweight English stopword set. Tiny on purpose — academic prose is
-# already terse, and stripping too aggressively hurts recall on phrasal
-# queries like "in distribution shift". The list is a standard English
-# stopword set minus terms that show up as content in this domain ("not",
-# "no", "very", "all").
+# Deliberately far shorter than a standard English list: over-stripping hurts
+# recall on phrasal queries, and "all" / "no" / "not" / "very" carry content
+# in this domain. Don't grow it.
 _STOPWORDS = frozenset(
     {
         "a",
@@ -103,48 +97,30 @@ _STOPWORDS = frozenset(
 # scans a whole document rather than a line.
 _HEADING_RE = re.compile(papers.HEADING_PATTERN, re.MULTILINE)
 
-# Persistent index. Lives in a reserved double-underscore namespace dir
-# that _scan_markdown naturally skips (it has no ``markdown/``
-# subdir). Bump _SCHEMA_VERSION to force a full rebuild when the entry
-# schema or tokeniser changes. The lock serialises the load→refresh→save
-# critical section across the worker threads that search() runs in (it is
-# dispatched via asyncio.to_thread at the tool layer); BM25 scoring and
-# snippet extraction run lock-free on the freshly-parsed per-call dict.
-# 2: the ``unindexable`` probe stopped being ASCII-biased. Rows written by
-# version 1 can carry a false ``no_indexable_tokens`` flag on a perfectly
-# indexable non-Latin paper, and the ``(mtime, size)`` signal would never
-# recompute them, so the mismatch rebuilds rather than lingering.
+# Bump to force a full rebuild when the row schema or the tokenizer changes;
+# a mismatch is rebuilt rather than migrated, since the index is derived state.
 _SCHEMA_VERSION = 2
 _INDEX_DIRNAME = "__search_index__"
 _DB_FILENAME = "index.db"
-# Recorded in place of a real mtime for a file that could not be read, so the
-# (mtime, size) signal can never match and the next refresh retries.
+# Stands in for the mtime of a file that could not be read, so the staleness
+# signal can never match and the next refresh retries it.
 _UNREADABLE_MTIME = -1
 _INDEX_LOCK = threading.Lock()
-# Cache roots whose legacy JSON index has already been swept. Once per root,
-# not once per refresh: the file it removes exists only on an upgrade from a
-# pre-FTS5 release and can never reappear. Keyed on the root rather than a bare
-# flag so the sweep still runs if _CACHE_ROOT is repointed.
+# Keyed on the cache root, not a bare flag, so the sweep still runs if
+# _CACHE_ROOT is repointed.
 _LEGACY_SWEPT: set[Path] = set()
 
-
-# A character ``unicode61`` will treat as part of a token: any Unicode letter
-# or digit. ``\w`` minus underscore, so this is script-agnostic where a
-# ``[a-z0-9]`` class would not be. Compiled and searched rather than scanned in
-# Python (``any(ch.isalnum() ...)`` is a per-character interpreter loop, which
-# is real cost on a 1 MB thesis); ``search`` short-circuits on the first hit.
+# One Unicode letter or digit — ``\w`` minus underscore, which is what
+# ``unicode61`` counts as a token character in any script.
 _ALNUM_RE = re.compile(r"[^\W_]")
 
 
 def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
     """Lowercase, drop stopwords, return a list of content tokens.
 
-    Preserves intra-word hyphens and dots so domain terms like
-    ``self-attention`` and ``BM25`` survive intact.
-
-    With ``normalize=True``, NFKD-fold and strip combining marks first so
-    "café" and "cafe" tokenise identically. Must be applied to BOTH the
-    query and the documents or the BM25 vocabulary won't align.
+    Feeds ``_snippet_terms`` only — the corpus and the MATCH expression are
+    both tokenised by FTS5, and this regex disagrees with it outside ASCII.
+    ``normalize=True`` NFKD-folds first, so "café" and "cafe" agree.
     """
     if normalize:
         text = _textnorm.fold(text)
@@ -156,9 +132,7 @@ def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
 def _extract_title(markdown: str) -> str | None:
     """Return the first H1 or H2 in the document, or ``None``.
 
-    Converters disagree on whether to use H1 or H2 for the paper title,
-    so we accept either. The "Preamble" / "Abstract" prefix that some
-    papers carry is preserved — the caller can re-rank if needed.
+    Either level, because converters disagree on which one a paper title gets.
     """
     for match in _HEADING_RE.finditer(markdown):
         level = len(match.group(1))
@@ -168,14 +142,10 @@ def _extract_title(markdown: str) -> str | None:
 
 
 def _section_for_offset(markdown: str, offset: int) -> tuple[int | None, str | None]:
-    """Return ``(section_index, title)`` for a character offset.
+    """Return ``(section_index, title)`` for a character offset, or ``(None, None)``.
 
-    Delegates to ``papers.section_at_offset`` so this agrees with what
-    ``get_paper_section`` will actually accept. A local reimplementation drifts
-    in two agent-visible ways: without the empty-section filter it names a
-    section the reader's index has dropped, and returning a *title* instead of
-    an index hits "Ambiguous section title" whenever a paper repeats a heading
-    — 10.9% of a real corpus.
+    Must keep delegating to ``papers.section_at_offset``: a local copy of that
+    scan names sections ``get_paper_section`` would refuse.
     """
     return papers.section_at_offset(markdown, offset) or (None, None)
 
@@ -189,34 +159,25 @@ def _extract_snippet(
 ) -> tuple[str, int | None]:
     """Return ``(snippet, char_offset)`` for the best matching position.
 
-    "Best matching" = the position with the most distinct query terms
-    in the surrounding window (so we prefer "variational dropout"
-    cooccurrence over a lone "dropout"). Falls back to the document
-    head if no term appears at all.
+    "Best matching" = the position with the most distinct query terms in the
+    surrounding window, so "variational dropout" cooccurrence beats a lone
+    "dropout". Falls back to the document head, and a ``None`` offset, when no
+    term is found — the caller must not attribute a section to that.
 
-    With ``normalize=True`` the ``query_terms`` are already diacritic-
-    folded (by ``_tokenize(query, normalize=True)``), so we locate them
-    against a folded copy of the markdown but map every hit back to an
-    ORIGINAL offset, keeping ``char_offset`` and the snippet slice
-    aligned with the un-folded text.
+    ``char_offset`` indexes the ORIGINAL markdown under either normalisation.
     """
     if not query_terms:
         return _collapse(markdown[:window]), 0
 
-    # Find every occurrence of every query term, collecting (offset, term).
-    # Word-boundary match so "drop" doesn't hit inside "dropout".
+    # Word boundaries, so "drop" doesn't hit inside "dropout". One alternation
+    # over all the terms rather than a pass each — these documents reach
+    # megabytes and this runs once per winner — longest alternative first so an
+    # overlapping pair ("attention" / "attentions") reports the longer. The
+    # matched text *is* the term: both sides are transformed identically.
     #
-    # Both modes locate against a transformed copy of the markdown but report
-    # ORIGINAL offsets via index_map. The map is required even when
-    # normalize=False: str.lower() is not length-preserving (U+0130 'İ' →
-    # 'i' + combining dot), so a raw m.start() would drift past the real match
-    # for any doc containing such a char before the hit.
-    #
-    # One alternation over all terms, not a pass per term: these documents run
-    # to megabytes and this is called once per winner. Longest alternative
-    # first, so an overlapping pair ("attention" / "attentions") reports the
-    # longer. The matched text *is* the term — both sides are already
-    # lowercased and folded identically.
+    # index_map is required even on the normalize=False path: str.lower() is
+    # not length-preserving (U+0130 'İ' → 'i' + combining dot), so a raw
+    # m.start() drifts past the match.
     lowered, index_map = _textnorm.lower_with_map(markdown, fold=normalize)
     alternation = "|".join(re.escape(t) for t in sorted(query_terms, key=len, reverse=True))
     pattern = re.compile(rf"\b(?:{alternation})\b")
@@ -227,10 +188,9 @@ def _extract_snippet(
     if not hits:
         return _collapse(markdown[:window]), None
 
-    # Score each hit by counting distinct query terms within ±window/2 chars,
-    # via one sliding window over the offset-sorted hits: `lo` and `hi` only
-    # ever advance, so this is linear rather than the quadratic it becomes
-    # when one term repeats densely inside a single window.
+    # Distinct terms within ±window/2 chars, via one sliding window over the
+    # offset-sorted hits: `lo` and `hi` only advance, so a term repeating
+    # densely inside one window costs linear time, not quadratic.
     hits.sort()
     half = window // 2
     best_offset = hits[0][0]
@@ -258,12 +218,10 @@ def _extract_snippet(
 
 
 def _collapse(snippet: str) -> str:
-    r"""Trim and flatten a snippet's whitespace.
+    """Trim and flatten a snippet's whitespace.
 
-    A snippet that crosses a heading boundary would otherwise render as
-    "## Methods\n\n\n\nWe trained..." — and the head-of-document fallbacks
-    must be shaped the same way as a centred one, or the response key means
-    two different things depending on whether a term was located.
+    Every return path goes through this, so the response key doesn't mean two
+    different things depending on whether a term was located.
     """
     return re.sub(r"\s+", " ", snippet.strip())
 
@@ -272,10 +230,9 @@ def _collapse(snippet: str) -> str:
 # Filename → identifier inversion per namespace
 # ---------------------------------------------------------------------------
 
-# Each namespace stores markdown under papers.safe_stem(canonical) + ".md",
-# which maps "/" to "_" and percent-encodes everything else unsafe. Inverting
-# the "_" is namespace-specific because a DOI suffix can legitimately contain
-# one; we can only restore the slashes a known prefix introduced.
+# Inverting safe_stem's "/" -> "_" is namespace-specific, because a DOI suffix
+# may legitimately contain "_": only a slash a known prefix introduced is
+# decidable.
 _NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
     # bioRxiv DOIs are always "10.1101/<suffix>" — exactly one slash.
     "biorxiv": [("10.1101_", "10.1101/")],
@@ -283,23 +240,15 @@ _NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
     "acl_anthology": [("10.18653_v1_", "10.18653/v1/")],
 }
 
-# The manual namespace is where manual.resolve_target sends *every* DOI that
-# isn't arXiv/bioRxiv/ACL, so most of what lands there is a publisher DOI and
-# not the freeform label the name suggests. A DOI is "10.<registrant>/<suffix>"
-# and the registrant is digits only, so the first "_" after it is unambiguously
-# the slash — restoring it is what makes the returned canonical_id chainable
-# into get_paper_metadata. A suffix carrying further slashes still round-trips
-# imperfectly; freeform labels don't match and pass through.
+# Most of the manual namespace is publisher DOIs, not the freeform labels the
+# name suggests. The registrant is digits only, so the first "_" after it is
+# unambiguously the slash; a suffix carrying further slashes round-trips
+# imperfectly, and a label doesn't match and passes through.
 _MANUAL_DOI_STEM_RE = re.compile(rf"^({_doi.REGISTRANT_PATTERN})_")
 
-# Old-style arXiv IDs carry exactly one slash: "archive[.subject]/NNNNNNN"
-# (e.g. "hep-th/9901001", "cs/0501001", "math.GT/0309136"). canonical_arxiv_id
-# lowercases them and keeps the slash, then the storage step turns it into "_",
-# so the stem is "archive[.subject]_NNNNNNN". This regex inverts ALL archives
-# (not just the hyphenated physics ones) in one shot. The version suffix is
-# optional because canonical_arxiv_id deliberately keeps it — "hep-th_9901001v2"
-# is a stem that occurs. New-style IDs start with a digit ("2301.00001") and
-# never match, so they pass through untouched.
+# "archive[.subject]_NNNNNNN[vN]" — every old-style archive, dotted or
+# hyphenated, with the version canonical_arxiv_id keeps. New-style ids start
+# with a digit and pass through.
 _ARXIV_OLDSTYLE_STEM_RE = re.compile(r"^([a-z][a-z.\-]*)_(\d{7}(?:v\d+)?)$")
 
 
@@ -339,18 +288,12 @@ def _restore_slashes(namespace: str, stem: str) -> str:
 def _scan_markdown() -> list[tuple[str, Path, int, int]]:
     """Every cached markdown file as ``(namespace, path, mtime_ns, size)``.
 
-    ``os.scandir`` gets the directory entry and its stat in one pass, where
-    ``glob`` + a separate ``Path.stat()`` per file costs two. On a
-    3,700-paper corpus that walk was 45% of a query's wall time; the refresh
-    needs the stat anyway, so there is no reason to fetch it twice.
+    ``os.scandir`` carries the stat the refresh needs, so it isn't fetched
+    twice. Order is not guaranteed — the refresh keys on ``(ns, stem)``.
 
-    **Deliberately unfiltered.** ``_refresh_index`` prunes every indexed row
-    this walk did not return, so restricting it to one namespace would delete
-    every other namespace's postings. Order is not guaranteed either — the
-    refresh keys on ``(ns, stem)``, not position.
-
-    The reserved ``__search_index__`` directory is skipped for free: it holds
-    no ``markdown/`` subdirectory, so its scandir raises and is passed over.
+    **Must stay unfiltered.** ``_refresh_index`` prunes every indexed row this
+    walk did not return, so a namespace filter would delete every other
+    namespace's postings.
     """
     root = cache._CACHE_ROOT
     if not root.is_dir():
@@ -405,16 +348,12 @@ _SCHEMA = (
            UNIQUE (ns, stem)
        )""",
     "CREATE INDEX IF NOT EXISTS files_ns ON files(ns)",
-    # Contentless (content=''): the index stores postings, never the text.
-    # The markdown is already on disk and the top-k winners are re-read for
-    # snippets anyway, so storing it twice would be pure waste.
-    # contentless_delete=1 (SQLite 3.43+) lets a removed paper be DELETEd
-    # without handing back its original text.
+    # Contentless: postings only. The markdown is on disk and the winners are
+    # re-read for snippets anyway. contentless_delete=1 (SQLite 3.43+) is what
+    # lets a removed paper be DELETEd without handing back its text.
     #
-    # Two tables rather than one because ``normalize`` is a query-time flag in
-    # this API but diacritic folding is a *build-time* tokenizer option in
-    # FTS5. Keeping both preserves the parameter's exact meaning instead of
-    # silently redefining it.
+    # Two tables because folding is a build-time tokenizer option in FTS5
+    # while ``normalize`` is a query-time flag here.
     """CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5(
            body, content='', contentless_delete=1,
            tokenize="unicode61 remove_diacritics 0"
@@ -430,10 +369,8 @@ _SCHEMA = (
 def _connect() -> sqlite3.Connection:
     """Open the index database, creating and migrating it as needed.
 
-    A connection per call: SQLite connections are not shareable across
-    threads, and the tool layer dispatches searches through
-    ``asyncio.to_thread``. Opening costs microseconds, so there is nothing to
-    amortise by holding one open.
+    One connection per call — they are not shareable across the worker threads
+    ``search`` runs in, and opening costs microseconds.
     """
     path = _index_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -476,10 +413,9 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
         version = None
 
     if version == _SCHEMA_VERSION:
-        # The meta row is written last, so its presence means the tables it
-        # describes exist. Returning here keeps the common open read-only —
-        # otherwise every connection opens a write transaction to re-assert a
-        # version that already matched, and a search opens three.
+        # The meta row is written last, so its presence means the tables exist.
+        # Returning keeps the common open read-only; otherwise every connection
+        # opens a write transaction, and a search opens three.
         return
 
     if version is not None:
@@ -500,10 +436,9 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
 def _sweep_legacy_index() -> None:
     """Delete the JSON index this replaced. Best-effort, idempotent.
 
-    Runs once per cache root: the file it removes can only be left by an
-    upgrade from a pre-FTS5 release, so probing for it on every refresh is a
-    stat per search, forever, for a file that will never reappear. Called under
-    ``_INDEX_LOCK``, so the set needs no lock of its own.
+    Once per cache root, not per refresh: only an upgrade can leave that file,
+    so probing for it on every search is a stat that will never pay off. Called
+    under ``_INDEX_LOCK``, so the set needs no lock of its own.
     """
     root = cache._CACHE_ROOT
     if root in _LEGACY_SWEPT:
@@ -523,16 +458,10 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     con.execute("DELETE FROM fts_norm WHERE rowid = ?", (rowid,))
     con.execute("INSERT INTO fts(rowid, body) VALUES (?, ?)", (rowid, text))
     con.execute("INSERT INTO fts_norm(rowid, body) VALUES (?, ?)", (rowid, text))
-    # FTS5 indexes what its tokenizer finds; a document it derives no terms
-    # from can never match. Recording *why* keeps such papers reportable
-    # rather than merely absent.
-    #
-    # The probe must agree with ``unicode61``, which tokenises on Unicode
-    # character class — every letter and digit in every script. An ASCII-biased
-    # test reports a Japanese or Cyrillic paper as unusable when FTS5 has
-    # indexed it perfectly well, and since a non-Latin query does reach the
-    # index, ``unindexable_note`` then tells the agent to fall back to
-    # ``find_in_paper`` on a paper ``search_cached_papers`` would have found.
+    # A document FTS5 derives no terms from can never match; recording *why*
+    # keeps it reportable rather than merely absent. The probe must agree with
+    # ``unicode61`` on what a term is — an ASCII-biased test calls a Japanese
+    # or Cyrillic paper unusable when the index holds it fine.
     if _ALNUM_RE.search(text) is None:
         return "no_indexable_tokens"
     return None
@@ -576,11 +505,9 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                     else:
                         reason = None
 
-                    # A read that failed records a signal that can never match,
-                    # so the next refresh retries. Storing the stat that *did*
-                    # succeed would freeze the failure: a lock that cleared, or
-                    # a chmod (which leaves mtime alone), would never be
-                    # noticed and the paper would stay unindexed forever.
+                    # Storing the stat that *did* succeed would freeze the
+                    # failure — a lock that cleared, or a chmod, leaves mtime
+                    # alone, so the retry would never fire.
                     recorded_mtime = _UNREADABLE_MTIME if reason else mtime_ns
 
                     if existing is None:
@@ -619,18 +546,14 @@ def unindexable(
 ) -> list[dict[str, Any]]:
     """Papers present on disk that the index could not use.
 
-    Each record is ``{namespace, stem, reason}`` where ``reason`` is
-    ``"no_indexable_tokens"`` or ``"unreadable"``.
+    Each record is ``{namespace, stem, reason}``, where ``reason`` is
+    ``"no_indexable_tokens"`` or ``"unreadable"``. Such papers are invisible
+    to ``search`` correctly but *silently*, which is what this fixes.
 
-    These papers are invisible to ``search`` — correctly, they have no
-    searchable terms — but silently so, which is not: an agent asking "which
-    paper mentioned X?" has no way to learn that part of the corpus was never
-    considered. Surfaced through ``search_cached_papers``.
-
-    ``refresh=False`` skips the corpus walk, for a caller that has just run
-    ``search`` and so already has an index in step with the disk. The walk is
-    an ``os.scandir`` over every cached markdown file; running it twice per
-    tool call buys nothing.
+    ``refresh=False`` skips the corpus walk — for a caller that has just run
+    ``search`` and so already has an index in step with the disk. It is the
+    contract ``search_cached_papers`` relies on, not an optimisation: making
+    it unconditional walks the corpus twice per tool call.
     """
     if refresh:
         _refresh_index(force_refresh=force_refresh)
@@ -647,31 +570,19 @@ def unindexable(
     return [{"namespace": r["ns"], "stem": r["stem"], "reason": r["unindexable"]} for r in rows]
 
 
-# Query words for the MATCH expression. Deliberately *not* ``_tokenize``:
-# that regex was written to tokenise documents back when this module did its
-# own indexing, and it splits on any non-ASCII character. FTS5 now tokenises
-# the documents itself, so feeding it ``_tokenize``'s output made the two
-# sides disagree — "Gutiérrez" became ``guti OR rrez`` and matched nothing,
-# even though the document indexed cleanly as one token. Split on whitespace
-# and let FTS5 apply the same tokenizer to the query that it applied to the
-# corpus.
-# NUL splits alongside whitespace, for two reasons that agree: ``unicode61``
-# treats it as a token separator, so this is what the corpus was indexed as;
-# and sqlite3 cannot bind a string containing one at all, so a word carrying it
-# would fail the query rather than merely fail to match.
+# ``unicode61``'s separators, so the query splits the way the corpus did.
+# Splitting on NUL is also what keeps one out of the bind — sqlite3 cannot bind
+# a string containing one at all.
 _QUERY_SPLIT_RE = re.compile(r"[\s\x00]+")
 
 
 def _query_words(query: str) -> list[str]:
-    """The query's words, as handed to FTS5 — whitespace-split, filtered.
+    """The query's words, as handed to FTS5 — split, then filtered.
 
-    Stopwords and single characters are dropped here rather than by
-    ``_tokenize``. Both filters still have to happen: the index stores the
-    *raw* markdown under ``unicode61``, which strips neither, so a query
-    carrying "the" would otherwise OR in a term that matches essentially the
-    whole corpus. What must NOT happen is ``_tokenize``'s ASCII-only word
-    regex, which discards a non-Latin word entirely and made the query
-    disagree with the index that had happily stored it.
+    Stopwords and single characters are dropped here and not by ``_tokenize``,
+    whose ASCII-only regex would discard a non-Latin word the index holds. The
+    filters themselves are still needed: ``unicode61`` strips neither, so an
+    unfiltered "the" ORs in a term matching the whole corpus.
     """
     words: list[str] = []
     for raw in _QUERY_SPLIT_RE.split(query.strip()):
@@ -690,10 +601,8 @@ def _fts_query(query: str) -> str:
     user query would otherwise be parsed as an operator, or raise. Inside a
     quoted phrase only ``"`` is special, and it is escaped by doubling.
 
-    Returns ``""`` when nothing survives filtering, which the caller treats
+    Returns ``""`` when nothing survives filtering, which the caller must treat
     as an empty result — an empty MATCH expression is a syntax error to FTS5.
-    A word that tokenises to nothing (pure punctuation, or quotes alone) needs
-    no special case: FTS5 accepts the phrase and it simply matches nothing.
     """
     quoted = [f'"{word.replace(chr(34), chr(34) * 2)}"' for word in _query_words(query)]
     return " OR ".join(dict.fromkeys(quoted))
@@ -702,18 +611,12 @@ def _fts_query(query: str) -> str:
 def _snippet_terms(query: str, *, normalize: bool) -> set[str]:
     """Terms used to centre the snippet on the best-matching passage.
 
-    The union of two views of the query, because neither alone is enough.
-    ``_tokenize`` strips punctuation a raw word would carry into the
-    word-boundary regex ("transformer." never matches), but its ASCII-only
-    pattern mangles anything else: "Gutiérrez" becomes ``guti``/``rrez``,
-    neither of which appears in the text, and a wholly non-Latin query
-    becomes nothing at all. Either case alone centres the snippet on the
-    document head and reports no section, so a hit the index found perfectly
-    well comes back unnavigable.
-
-    The raw words are transformed the way ``_extract_snippet`` expects them:
-    folded when ``normalize``, then lowercased. For an ordinary ASCII query
-    the two views coincide and this is exactly ``_tokenize`` as before.
+    The union of two views of the query, because neither alone is enough for
+    ``_extract_snippet``'s word-boundary scan: ``_tokenize`` strips punctuation
+    a raw word would carry in ("transformer." never matches), while the raw
+    words keep what its ASCII-only pattern mangles ("Gutiérrez"). With only
+    one, a hit the index found comes back centred on the document head and
+    with no section — unnavigable.
     """
     terms = set(_tokenize(query, normalize=normalize))
     terms.update(
@@ -748,38 +651,29 @@ def search(
             "char_count": 48217,
         }
 
-    Ranking is SQLite FTS5's built-in BM25 over a contentless index. Only
-    the ``top_k`` winners are re-read, to extract the title, snippet, and
-    section. Every returned hit matched at least one query term and scores
-    above zero; higher is better.
+    Every returned hit matched at least one query term and scores above zero;
+    higher is better. ``section_index`` and ``char_offset`` are ``None`` when
+    the term could not be located in the text.
 
     **Scores are corpus-global.** ``namespace`` selects which documents come
     back, not how they rank: term rarity is computed over the whole index, so
     one paper scores identically in a filtered and an unfiltered search.
 
     ``normalize=True`` folds diacritics on both sides, so "cafe" and "café"
-    rank identically. Folding is a build-time property of an FTS5 tokenizer
-    rather than a query-time one, so the index carries a folded and an
-    un-folded table and this flag selects between them — the parameter means
-    exactly what it did before.
+    rank identically. ``force_refresh=True`` re-indexes every document
+    regardless of the ``(mtime, size)`` staleness signal — the safety valve for
+    a file that changed without either changing.
 
-    ``force_refresh=True`` re-indexes every document regardless of the
-    ``(mtime, size)`` staleness signal — a safety valve for the rare case
-    where a file changed without either changing.
-
-    Raises ``sqlite3.Error`` if the index cannot be read or written. That is
-    deliberate: every query word is a quoted phrase, so FTS5 has no syntax
-    error left to raise, and swallowing the exception would report a locked or
-    corrupt index to the agent as a confident "no paper mentions this".
-    ``search_cached_papers`` turns it into the standard ``{error, suggestion}``.
+    Raises ``sqlite3.Error`` rather than swallowing it, which would report a
+    locked or corrupt index as a confident "no paper mentions this";
+    ``search_cached_papers`` turns it into ``{error, suggestion}``.
     """
     if top_k <= 0:
         return []
     top_k = min(top_k, _MAX_TOP_K)
-    # Gate on the MATCH expression, not on ``_tokenize``: a query of purely
-    # non-Latin words tokenises to nothing under that ASCII regex, and
-    # returning early here made such a search come back empty even though
-    # FTS5 had indexed the term and a raw MATCH found it.
+    # Gate on the MATCH expression, never on ``_tokenize``: a wholly non-Latin
+    # query tokenises to nothing under that ASCII regex, and FTS5 would have
+    # matched it.
     match_expr = _fts_query(query)
     if not match_expr:
         return []
@@ -799,8 +693,8 @@ def search(
     if namespace is not None:
         sql += " AND f.ns = ?"
         params.append(namespace)
-    # Tie-break by (namespace, stem): equal-scoring hits would otherwise
-    # come back in rowid order, which drifts as papers are added.
+    # Tie-break by (namespace, stem): FTS5 orders by rank alone, so equal
+    # scores would fall back to insertion order, which drifts.
     sql += f" ORDER BY bm25({table}), f.ns, f.stem LIMIT ?"
     params.append(top_k)
 
@@ -813,10 +707,10 @@ def search(
     unique_query_terms = _snippet_terms(query, normalize=normalize)
     out: list[dict[str, Any]] = []
     for row in rows:
-        # FTS5's bm25() is negative, most-relevant first; flip it so the
-        # response reads "higher is better". No score filter: FTS5 only
-        # returns rows that actually matched, so a low score means "matched on
-        # a term with little discriminative value", not "did not match".
+        # bm25() is negative, most-relevant first; flip it so the response
+        # reads "higher is better". No score floor: FTS5 returns only rows that
+        # matched, so a low score means "matched on a term with little
+        # discriminative value", not "did not match".
         score = -float(row["score"])
         path = cache._CACHE_ROOT / row["ns"] / "markdown" / f"{row['stem']}.md"
         try:
@@ -833,20 +727,16 @@ def search(
             {
                 "namespace": row["ns"],
                 "canonical_id": _filename_to_canonical(row["ns"], row["stem"]),
-                # Invariant: every returned hit scores above zero, so the
-                # rounding is to significant figures rather than decimal
-                # places. FTS5 clamps a degenerate IDF (a term in every
-                # document) to 1e-6 and then scales it down by the length
-                # normalisation, so a long document can score 4e-08 — which
-                # any fixed number of decimals reports as 0.0. Real-corpus
-                # scores are 0.9-4 and render identically either way.
+                # Significant figures, not decimal places: a degenerate IDF
+                # clamps to 1e-6 and the length normalisation scales it below
+                # 1e-7, which any fixed number of decimals reports as 0.0 —
+                # breaking the invariant that every hit scores above zero.
                 "score": float(f"{score:.6g}"),
                 "title": title,
                 "snippet": snippet,
                 "section": section,
-                # The chainable handle. `section` is a title, and titles are
-                # not unique — get_paper_section rejects a repeated one with
-                # "Ambiguous section title". Pass this index instead.
+                # The chainable handle: `section` is a title, and a repeated
+                # one is rejected as ambiguous.
                 "section_index": section_index,
                 "char_offset": snippet_offset,
                 "char_count": len(text),
