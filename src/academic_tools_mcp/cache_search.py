@@ -187,6 +187,14 @@ class _ScannedFile(NamedTuple):
     size: int
 
 
+class _IndexedFile(NamedTuple):
+    """The row already recorded for a cached file."""
+
+    rowid: int
+    mtime_ns: int
+    size: int
+
+
 def _scan_markdown() -> list[_ScannedFile]:
     """Every cached markdown file on disk.
 
@@ -403,7 +411,7 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
         con = _connect()
         try:
             known = {
-                (row["ns"], row["stem"]): (row["rowid"], row["mtime_ns"], row["size"])
+                (row["ns"], row["stem"]): _IndexedFile(row["rowid"], row["mtime_ns"], row["size"])
                 for row in con.execute("SELECT rowid, ns, stem, mtime_ns, size FROM files")
             }
             seen: set[tuple[str, str]] = set()
@@ -416,8 +424,8 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                     if (
                         not force_refresh
                         and existing is not None
-                        and existing[1] == found.mtime_ns
-                        and existing[2] == found.size
+                        and existing.mtime_ns == found.mtime_ns
+                        and existing.size == found.size
                     ):
                         continue
                     reason: str | None
@@ -439,25 +447,26 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                         )
                         rowid = int(cur.lastrowid or 0)
                     else:
-                        rowid = existing[0]
+                        rowid = existing.rowid
                         con.execute(
                             "UPDATE files SET mtime_ns = ?, size = ? WHERE rowid = ?",
                             (recorded_mtime, found.size, rowid),
                         )
-                    if reason is None:
-                        reason = _index_document(con, rowid, text)
-                    else:
-                        con.execute("DELETE FROM fts WHERE rowid = ?", (rowid,))
-                        con.execute("DELETE FROM fts_norm WHERE rowid = ?", (rowid,))
-                    con.execute("UPDATE files SET unindexable = ? WHERE rowid = ?", (reason, rowid))
+                    # Always: it drops the old postings, and adds none for the
+                    # empty text an unreadable file leaves behind.
+                    probed = _index_document(con, rowid, text)
+                    con.execute(
+                        "UPDATE files SET unindexable = ? WHERE rowid = ?",
+                        (reason or probed, rowid),
+                    )
 
                 # Every indexed row the walk missed — why it stays unfiltered.
-                for key, (rowid, _m, _s) in known.items():
+                for key, row in known.items():
                     if key in seen:
                         continue
-                    con.execute("DELETE FROM fts WHERE rowid = ?", (rowid,))
-                    con.execute("DELETE FROM fts_norm WHERE rowid = ?", (rowid,))
-                    con.execute("DELETE FROM files WHERE rowid = ?", (rowid,))
+                    con.execute("DELETE FROM fts WHERE rowid = ?", (row.rowid,))
+                    con.execute("DELETE FROM fts_norm WHERE rowid = ?", (row.rowid,))
+                    con.execute("DELETE FROM files WHERE rowid = ?", (row.rowid,))
         finally:
             con.close()
 

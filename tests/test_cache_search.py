@@ -1018,6 +1018,39 @@ class TestIndexFailuresAreNotSilent:
             {"namespace": "arxiv", "stem": "ghost", "reason": "unreadable"}
         ]
 
+    def test_a_paper_that_becomes_unreadable_loses_its_postings(self, isolated_cache, monkeypatch):
+        """Otherwise it keeps matching a file that can no longer be read.
+
+        `search` drops such a winner when the re-read fails, so the hit does
+        not surface — but it consumed a `top_k` slot on the way, and the paper
+        is reported unreadable while still holding postings that say otherwise.
+        """
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention model.\n")
+        assert len(cache_search.search("attention")) == 1
+
+        original_read = Path.read_text
+
+        def selective_read(self, *args, **kwargs):
+            if self.name == "p.md":
+                raise OSError("vanished")
+            return original_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", selective_read)
+        # Touch it so the (mtime, size) signal marks it changed.
+        (isolated_cache / "arxiv" / "markdown" / "p.md").write_text("# P\n\nattention model!\n")
+
+        assert cache_search.search("attention") == []
+        assert [r["reason"] for r in cache_search.unindexable()] == ["unreadable"]
+
+        con = cache_search._connect()
+        try:
+            for table in ("fts", "fts_norm"):
+                assert con.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0, (
+                    "stale postings must go when a paper stops being readable"
+                )
+        finally:
+            con.close()
+
     def test_unindexable_without_refresh_does_not_walk_the_corpus(
         self, isolated_cache, monkeypatch
     ):
