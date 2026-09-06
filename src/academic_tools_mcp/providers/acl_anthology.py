@@ -14,13 +14,11 @@ NAMESPACE = "acl_anthology"
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the persistent AsyncClient for ACL Anthology calls.
+    """Return the pooled AsyncClient for ACL Anthology calls.
 
-    The descriptive User-Agent is baked in at construction so every call
-    identifies this client. Previously no headers were passed here at all, so
-    requests went out as ``python-httpx/x.y`` — the generic agent several
-    upstreams throttle hardest, and the one that leaves an operator no way to
-    reach us.
+    Configured here only: ``_clients.get_client`` ignores kwargs on every later
+    call for this namespace, so the UA and ``_PDF_TIMEOUT_SECONDS`` are set here
+    or not at all. PDF-only client, so the download timeout is the default.
     """
     return _clients.get_client(
         NAMESPACE, headers=_useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS

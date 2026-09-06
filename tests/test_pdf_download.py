@@ -19,36 +19,10 @@ import pytest
 
 from academic_tools_mcp import _pdf_download, _stats
 
-# stream_to_file takes an explicit timeout — no default, so every caller states
-# one. Short here: nothing in these tests reaches a real socket.
-_TIMEOUT = 5.0
-
-
-@contextlib.asynccontextmanager
-async def _passthrough_slot():
-    """A slot factory that does nothing — for tests that don't need
-    to exercise rate-limit gating."""
-    yield
-
-
-def _mock_stream_response(status_code: int = 200, chunks: list[bytes] | None = None):
-    """Build a mock async-context-manager that yields a streaming response."""
-    chunks = chunks or [b"%PDF-1.4 fake content"]
-
-    async def aiter_bytes(chunk_size):
-        for c in chunks:
-            yield c
-
-    response = MagicMock()
-    response.status_code = status_code
-    response.raise_for_status = MagicMock()
-    response.aiter_bytes = aiter_bytes
-
-    @contextlib.asynccontextmanager
-    async def stream_cm():
-        yield response
-
-    return stream_cm
+from ._download_fakes import TIMEOUT as _TIMEOUT
+from ._download_fakes import mock_stream_response as _mock_stream_response
+from ._download_fakes import passthrough_slot as _passthrough_slot
+from ._download_fakes import streaming_client as _streaming_client
 
 
 class TestResolveMaxPdfBytes:
@@ -343,32 +317,6 @@ class TestStreamToFile:
 
 
 # --- streaming error responses ---------------------------------------------
-
-
-class _UnreadStream(httpx.AsyncByteStream):
-    """A response body that is genuinely streamed.
-
-    ``httpx.MockTransport`` with ``text=``/``content=`` hands back a response
-    whose content is already buffered, so ``.text`` works and the bug under
-    test cannot reproduce. A real stream is required.
-    """
-
-    def __init__(self, payload: bytes) -> None:
-        self._payload = payload
-
-    async def __aiter__(self):
-        yield self._payload
-
-
-def _streaming_client(status_code: int, body: bytes, content_type: str = "text/html"):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            status_code,
-            headers={"content-type": content_type},
-            stream=_UnreadStream(body),
-        )
-
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
 @pytest.mark.asyncio

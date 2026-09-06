@@ -110,7 +110,11 @@ def _build_headers() -> dict[str, str]:
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the persistent AsyncClient for OpenAlex calls."""
+    """Return the pooled AsyncClient for OpenAlex calls.
+
+    Configured here only: ``_clients.get_client`` ignores kwargs on every later
+    call for this namespace, so ``_build_headers`` runs here or nowhere.
+    """
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 

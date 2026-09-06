@@ -62,10 +62,11 @@ def _build_headers() -> dict[str, str]:
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the persistent AsyncClient for Wikipedia calls.
+    """Return the pooled AsyncClient for Wikipedia calls.
 
-    The User-Agent header (with mailto when configured) is baked in at
-    construction so every call meets Wikimedia's identification policy.
+    Configured here only: ``_clients.get_client`` ignores kwargs on every later
+    call for this namespace, so ``_build_headers`` runs here or nowhere — and
+    Wikimedia's identification policy makes it mandatory, not polite.
     """
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=15.0)
 

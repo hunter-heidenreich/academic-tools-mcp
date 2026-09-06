@@ -26,15 +26,10 @@ import pytest
 from academic_tools_mcp import _clients, cache
 from academic_tools_mcp.providers import arxiv, biorxiv
 
+from ._download_fakes import passthrough_slot as _passthrough_slot
+
 _ARXIV_ID = "2301.00001"
 _BIORXIV_DOI = "10.1101/2020.01.01.000001"
-
-
-@contextlib.asynccontextmanager
-async def _passthrough_slot(*_args, **_kwargs):
-    """Skip the real rate-limit gating (and its sleeps) — the slot is covered
-    elsewhere; this test is about single-flight coalescing."""
-    yield
 
 
 def _dest(mod, identifier: str) -> Path:
@@ -57,11 +52,6 @@ def _setup(mod, identifier: str, monkeypatch) -> None:
 
     monkeypatch.setattr(mod, "get_paper", fake_get_paper)
     monkeypatch.setattr(mod, "_request_slot", _passthrough_slot)
-
-
-@pytest.fixture(autouse=True)
-def _isolated_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
 
 @pytest.mark.asyncio
