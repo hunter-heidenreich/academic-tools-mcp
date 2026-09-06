@@ -309,7 +309,8 @@ async def get_paper_section(
         str,
         Field(
             description="Integer index (e.g. '0') or case-insensitive title "
-            "substring (e.g. 'Introduction'). "
+            "substring (e.g. 'Introduction'). Diacritics are ignored when "
+            "nothing matches exactly, so 'Resume' finds 'Résumé'. "
             "Call get_paper_sections to see the available sections."
         ),
     ],

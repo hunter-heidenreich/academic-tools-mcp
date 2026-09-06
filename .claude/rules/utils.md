@@ -30,9 +30,15 @@ The single home for the outbound `User-Agent`: `build(mailto)`, `headers(mailto)
 
 ## _textnorm.py
 
-Diacritic folding for search: `papers.find_in_markdown` and `cache_search` (both halves), `bibtex` key generation (`fold` only).
+Diacritic folding for search: `papers.find_in_markdown`, `papers._match_section_title` and `cache_search` (both halves), `bibtex` key generation (`fold` only).
 
-**Any consumer that needs offsets back into the original text takes them from `fold_with_map` / `lower_with_map` — never a hand-rolled `str.lower()`, and not even on the `fold=False` path.** Neither transform is length-preserving (`ﬁ` → `fi`; U+0130 `İ` lowercases to two chars), so the transform runs per *original* character and attributes every produced char to exactly one original index. An unmapped offset drifts the snippet window and the section attribution off the real match.
+**Any consumer that needs offsets back into the original text takes them from `fold_with_map` / `lower_with_map` — never a hand-rolled `str.lower()`, and not even on the `fold=False` path.** Neither transform is length-preserving (`ﬁ` → `fi`; U+0130 `İ` lowercases to two chars), so the index map is built per *original* character and attributes every produced char to exactly one original index. An unmapped offset drifts the snippet window and the section attribution off the real match.
+
+**The string is the whole-string transform; only the map is per-character.** `str.lower()` is context-*sensitive* at a word-final Greek sigma (`"ΟΔΥΣΣΕΥΣ".lower()` ends in `ς`), so a per-character lowercase would emit a string the whole-string tokeniser never produces and a Greek hit would come back with no snippet and no section. Reuniting the two halves rests on one property: per-character and whole-string transforms always agree in *length*, because every context-sensitive case mapping Python implements is one-to-one. Pinned by `hypothesis`, not asserted at runtime.
+
+**Turning a transformed span back into an original slice goes through `original_span`, never two `index_map[...]` lookups.** A span that ends inside one original character's expansion (the `f` of a folded `ﬁ`) has both ends resolving to the same index and slices to nothing; `original_span` widens the end past the last contributing character while still preferring `index_map[end]`, the entry that swallows combining marks dropped after the span.
+
+**The per-character loop is skipped for runs of ASCII** — NFKD is the identity there, no ASCII char is combining, and ASCII lowercasing is one-to-one, so the run maps to itself index-for-index. Worth ~4x on a paper-sized document, which these run over per section and per search winner.
 
 ## config.py
 

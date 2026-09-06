@@ -1,112 +1,82 @@
 """Unicode folding for diacritic-insensitive search.
 
-NFKD-normalize then drop combining marks so "cafe" matches "café" and
-vice versa. Two entry points:
-
-- ``fold(text)`` — the folded string, for tokenisation / IDF where the
-  character position doesn't matter.
-- ``fold_with_map(text)`` — the folded string plus an index map back to
-  ORIGINAL character offsets, so a match found in folded text can be
-  sliced out of the original text with correct offsets.
-
-NFKD changes length: combining marks contribute zero folded chars, and a
-ligature like "ﬁ" expands to "fi" (one original char → two folded
-chars). The index map carries enough information to invert either case.
-
-``bibtex`` builds on ``fold`` for citation-key generation (where offsets are
-irrelevant), layering ASCII transliteration on top via ``_fold_translit``.
+NFKD-normalize then drop combining marks so "cafe" matches "café". ``fold``
+returns just the folded string; the ``*_with_map`` pair also returns an index
+map back to ORIGINAL offsets, which ``original_span`` reads to slice a match
+out of the untransformed text. Rationale in ``.claude/rules/utils.md``.
 """
 
-from __future__ import annotations
-
+import re
 import unicodedata
+
+# ASCII is NFKD-identity, non-combining and one-to-one under lower(), so such a
+# run maps to itself index-for-index and skips the loop — ~4x on a whole paper.
+_SEGMENT_RE = re.compile(r"[\x00-\x7f]+|[^\x00-\x7f]+")
 
 
 def fold(text: str) -> str:
-    """NFKD-fold ``text`` and strip combining marks.
-
-    Case is left untouched — folding is independent of case-folding;
-    callers that want case-insensitivity apply ``re.IGNORECASE`` (or
-    ``.lower()``) separately.
-    """
+    """NFKD-fold ``text`` and strip combining marks. Case is left untouched."""
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
 def fold_with_map(text: str) -> tuple[str, list[int]]:
-    """Fold ``text`` and return ``(folded, index_map)``.
-
-    ``index_map`` has length ``len(folded) + 1``. For a match found at
-    folded ``[start, end)``, the corresponding ORIGINAL span is
-    ``[index_map[start], index_map[end])``:
-
-    - ``index_map[i]`` = the original-string index that folded char ``i``
-      derives from.
-    - ``index_map[len(folded)]`` = ``len(text)`` (the end sentinel), so a
-      match ending at the very end of the folded text maps to the end of
-      the original text.
-
-    NFKD is applied per original character so each folded char is
-    attributed to exactly one original index:
-
-    - A combining mark folds to "" → contributes no folded char and no
-      map entry (it is skipped).
-    - A base char folds to one char → one map entry pointing at it.
-    - A ligature ("ﬁ" → "fi") folds to N chars → N map entries, all
-      pointing at the single original index. A match covering only part
-      of the expansion still maps to that original index, so the reported
-      original span is the whole original char (correct — you can't
-      address half of "ﬁ").
-
-    Edge cases: empty input → ``("", [0])``; leading/trailing combining
-    marks are skipped; input that is entirely combining marks folds to
-    ``("", [0])`` as well.
-    """
-    folded_parts: list[str] = []
-    index_map: list[int] = []
-    for orig_idx, ch in enumerate(text):
-        for d in unicodedata.normalize("NFKD", ch):
-            if unicodedata.combining(d):
-                continue
-            folded_parts.append(d)
-            index_map.append(orig_idx)
-    index_map.append(len(text))  # end sentinel
-    return "".join(folded_parts), index_map
+    """Fold ``text``: ``(fold(text), index_map)``."""
+    return _transform_with_map(text, fold_marks=True, lower=False)
 
 
 def lower_with_map(text: str, *, fold: bool = False) -> tuple[str, list[int]]:
-    """Lowercase ``text`` (optionally NFKD-folding first) with an offset map.
+    """Lowercase ``text``, NFKD-folding first when ``fold``: ``(lowered, index_map)``."""
+    return _transform_with_map(text, fold_marks=fold, lower=True)
 
-    Returns ``(transformed, index_map)`` with the same contract as
-    ``fold_with_map``: ``index_map[i]`` is the ORIGINAL index that
-    ``transformed[i]`` derives from, and ``index_map[len(transformed)] ==
-    len(text)``. A match found in ``transformed`` slices back out of ``text``
-    via ``text[index_map[start] : index_map[end]]``.
 
-    The reason this exists separately from ``fold_with_map``: ``str.lower()``
-    is *not* length-preserving — U+0130 'İ' lowercases to ``"i̇"`` (two
-    chars) — so lowercasing a folded string after the fact desynchronises its
-    offsets from the map. Doing the lowercase per ORIGINAL character (and, with
-    ``fold=True``, after NFKD-decomposition and combining-mark stripping) keeps
-    every produced char attributed to exactly one original index, no matter how
-    folding (ligature 1→N) or lowercasing (1→N) changes the length.
+def _transform_with_map(text: str, *, fold_marks: bool, lower: bool) -> tuple[str, list[int]]:
+    """Transform ``text``, plus each output char's index in the ORIGINAL string.
 
-    The output string is identical to the whole-string transform —
-    ``lower_with_map(t, fold=True)[0] == fold(t).lower()`` and
-    ``lower_with_map(t, fold=False)[0] == t.lower()`` — because Python's
-    ``str.lower()`` is context-insensitive, so per-char and whole-string
-    lowercasing agree. That equality is what keeps the snippet locator's
-    vocabulary aligned with the tokeniser's.
+    ``index_map`` has length ``len(transformed) + 1``; ``[-1]`` is ``len(text)``,
+    the sentinel that lets a match ending at the end of ``transformed`` reach the
+    end of ``text``. ``original_span`` reads it.
+
+    The string is always the *whole-string* transform. ``str.lower()`` is
+    context-sensitive at a word-final Greek sigma, so lowercasing character by
+    character would emit a string the tokeniser never produces and lose the
+    match. Only the map is built per ORIGINAL character — that is what absorbs
+    the length changes: a combining mark contributes no entry, "ﬁ" contributes
+    two pointing at one index, 'İ' lowercases to two chars. The two halves stay
+    in step because per-character and whole-string transforms always agree in
+    *length*; that is pinned by property test, not asserted here.
     """
-    parts: list[str] = []
+    folded = fold(text) if fold_marks else text
+    transformed = folded.lower() if lower else folded
+
     index_map: list[int] = []
-    for orig_idx, ch in enumerate(text):
-        decomposed = unicodedata.normalize("NFKD", ch) if fold else ch
-        for d in decomposed:
-            if fold and unicodedata.combining(d):
-                continue
-            for low in d.lower():
-                parts.append(low)
-                index_map.append(orig_idx)
-    index_map.append(len(text))  # end sentinel
-    return "".join(parts), index_map
+    for segment in _SEGMENT_RE.finditer(text):
+        start, end = segment.span()
+        if text[start].isascii():
+            index_map.extend(range(start, end))
+            continue
+        for orig_idx in range(start, end):
+            decomposed = (
+                unicodedata.normalize("NFKD", text[orig_idx]) if fold_marks else text[orig_idx]
+            )
+            for char in decomposed:
+                if fold_marks and unicodedata.combining(char):
+                    continue
+                index_map.extend((orig_idx,) * (len(char.lower()) if lower else 1))
+    index_map.append(len(text))
+    return transformed, index_map
+
+
+def original_span(index_map: list[int], start: int, end: int) -> tuple[int, int]:
+    """Original ``[lo, hi)`` covering the transformed span ``[start, end)``.
+
+    Indexing the map twice is not enough: a span ending inside one character's
+    expansion (the "f" of a folded "ﬁ") resolves both ends to the same index and
+    slices to nothing, hence the widening. ``index_map[end]`` still wins when
+    larger — it is the entry that swallows trailing combining marks, so "cafe"
+    against a decomposed "café" keeps its accent.
+    """
+    lo = index_map[start]
+    if end <= start:
+        return lo, lo
+    return lo, max(index_map[end], index_map[end - 1] + 1)

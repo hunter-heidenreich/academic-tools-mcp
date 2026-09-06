@@ -311,6 +311,28 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A Greek word ending in a capital sigma is searchable again.**
+  `str.lower()` is context-sensitive at a word-final Σ — `"ΟΔΥΣΣΕΥΣ".lower()`
+  ends in `ς`, not `σ` — but `_textnorm.lower_with_map` lowercased character by
+  character and emitted `σ`. `search_cached_papers` builds its snippet terms
+  with a whole-string `.lower()`, so such a term matched nothing: the hit came
+  back centred on the document head with no `section` or `char_offset`, i.e.
+  unnavigable. Both offset-mapping helpers now return the whole-string
+  transform and use the per-character walk only to build the index map.
+  ([#82])
+- **`find_in_paper` no longer reports an empty `match` for a partial ligature
+  hit.** With `normalize=True`, a query matching only part of one original
+  character's expansion (the `f` of a folded `ﬁ`, the `1` of a folded `½`)
+  resolved both ends of the span to the same original index and sliced nothing.
+  The transformed-span-to-original-slice conversion is now single-homed in
+  `_textnorm.original_span`, which widens the end to cover the whole original
+  character. ([#82])
+- **`get_paper_section` finds an accented heading from its ASCII spelling.**
+  A title lookup compared raw lowercased substrings, so `"Resume"` missed a
+  `"Résumé"` heading and came back listing every section. It now falls back to
+  a diacritic-folded comparison — but only when the exact pass finds nothing,
+  so a paper carrying both spellings still resolves each one instead of
+  erroring as ambiguous. ([#82])
 - **A new provider no longer has to be registered in two hand-maintained
   lists to be visible.** `_stats._PROVIDER_MODULES` and the reset fixture in
   `tests/conftest.py` each named the same eight modules; a provider missing
@@ -1624,3 +1646,4 @@ grouped by milestone rather than per commit.
 [#78]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/78
 [#79]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/79
 [#81]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/81
+[#82]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/82
