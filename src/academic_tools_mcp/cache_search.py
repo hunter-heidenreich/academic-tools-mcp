@@ -46,23 +46,6 @@ _STOPWORDS = frozenset(_STOPWORD_TEXT.split())
 
 _HEADING_RE = re.compile(papers.HEADING_PATTERN, re.MULTILINE)
 
-# Bump to force a full rebuild when the row schema or the tokenizer changes;
-# a mismatch is rebuilt rather than migrated, since the index is derived state.
-_SCHEMA_VERSION = 2
-_INDEX_DIRNAME = "__search_index__"
-_DB_FILENAME = "index.db"
-# Stands in for the mtime of a file that could not be read, so the staleness
-# signal can never match and the next refresh retries it.
-_UNREADABLE_MTIME = -1
-_INDEX_LOCK = threading.Lock()
-# Keyed on the cache root, not a bare flag, so the sweep still runs if
-# _CACHE_ROOT is repointed.
-_LEGACY_SWEPT: set[Path] = set()
-
-# One Unicode letter or digit — ``\w`` minus underscore, which is what
-# ``unicode61`` counts as a token character in any script.
-_ALNUM_RE = re.compile(r"[^\W_]")
-
 
 def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
     """Lowercase, drop stopwords, return a list of content tokens.
@@ -274,6 +257,26 @@ def _scan_markdown() -> list[tuple[str, Path, int, int]]:
 # ---------------------------------------------------------------------------
 # Persistent incremental index
 # ---------------------------------------------------------------------------
+
+_INDEX_DIRNAME = "__search_index__"
+_DB_FILENAME = "index.db"
+
+# Bump to force a full rebuild when the row schema or the tokenizer changes;
+# a mismatch is rebuilt rather than migrated, since the index is derived state.
+_SCHEMA_VERSION = 2
+
+# Stands in for the mtime of a file that could not be read, so the staleness
+# signal can never match and the next refresh retries it.
+_UNREADABLE_MTIME = -1
+
+# One Unicode letter or digit — ``\w`` minus underscore, which is what
+# ``unicode61`` counts as a token character in any script.
+_ALNUM_RE = re.compile(r"[^\W_]")
+
+# Process-wide mutable state, both guarded by the lock: refreshes serialise on
+# it, and the legacy sweep records which cache roots it has already visited.
+_INDEX_LOCK = threading.Lock()
+_LEGACY_SWEPT: set[Path] = set()
 
 
 def _index_path() -> Path:
