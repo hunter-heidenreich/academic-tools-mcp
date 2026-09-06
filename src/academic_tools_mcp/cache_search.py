@@ -158,8 +158,7 @@ def _filename_to_canonical(namespace: str, stem: str) -> str:
 def _restore_slashes(namespace: str, stem: str) -> str:
     """Undo ``safe_stem``'s ``"/" -> "_"`` mapping, as far as it is decidable."""
     if namespace == "arxiv":
-        m = _ARXIV_OLDSTYLE_STEM_RE.match(stem)
-        return f"{m.group(1)}/{m.group(2)}" if m else stem
+        return _ARXIV_OLDSTYLE_STEM_RE.sub(r"\1/\2", stem, count=1)
     if namespace == "manual":
         return _MANUAL_DOI_STEM_RE.sub(r"\1/", stem, count=1)
     prefix = _NAMESPACE_DOI_PREFIXES.get(namespace, "")
