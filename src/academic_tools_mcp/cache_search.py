@@ -329,7 +329,6 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
 
     A no-op — and a read-only one — when the recorded version already matches.
     """
-    version = None
     try:
         row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         version = int(row["value"]) if row else None
@@ -342,11 +341,11 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
         # opens a write transaction, and a search opens three.
         return
 
-    if version is not None:
-        for table in ("fts", "fts_norm"):
-            con.execute(f"DROP TABLE IF EXISTS {table}")
-        con.execute("DROP TABLE IF EXISTS files")
-        con.execute("DROP TABLE IF EXISTS meta")
+    # Any other version rebuilds, including one that could not be read: a value
+    # we cannot parse says nothing about the shape of the tables under it, so
+    # stamping them current would certify a schema nobody has checked.
+    for table in ("fts", "fts_norm", "files", "meta"):
+        con.execute(f"DROP TABLE IF EXISTS {table}")
 
     with con:
         for stmt in _SCHEMA:

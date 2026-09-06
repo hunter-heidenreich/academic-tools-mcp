@@ -440,6 +440,15 @@ grouped by milestone rather than per commit.
   six significant figures; real-corpus scores (0.9–4) render identically.
   ([#86])
 
+- **An unreadable schema version now rebuilds the index instead of certifying
+  it.** `_ensure_schema` dropped the old tables only when it had read a version
+  that differed. A value it could not parse — a botched edit, a torn write —
+  came back as "unknown", skipped the drops, and then stamped whatever tables
+  were on disk with the current version, so a stale schema was silently
+  declared current and never rebuilt again. The guarding test could not have
+  caught it: it asserted only that search still returned a hit, which it did,
+  because those tables happened to be correct. ([#86])
+
 - **A busy search index is no longer deleted.** `_connect` treats a database it
   cannot open as corrupt and unlinks it, which is right for "file is not a
   database" — but `sqlite3.OperationalError` is a *subclass* of

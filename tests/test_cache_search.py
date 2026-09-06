@@ -1176,6 +1176,13 @@ class TestIndexFailuresAreNotSilent:
         assert closed == [True], "the connection must be closed before the error propagates"
 
     def test_a_non_integer_schema_version_rebuilds(self, isolated_cache):
+        """An unreadable version must rebuild, not be stamped current.
+
+        "Search still works" proves nothing here — the tables were already
+        correct. A version we cannot parse says nothing about the shape of the
+        tables beneath it, so the postings have to be discarded and rebuilt;
+        the old code skipped the drops and re-stamped whatever was on disk.
+        """
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
         cache_search.search("attention")
 
@@ -1184,6 +1191,17 @@ class TestIndexFailuresAreNotSilent:
             con.execute("UPDATE meta SET value = 'not a version' WHERE key = 'schema_version'")
         con.close()
 
+        con = cache_search._connect()
+        try:
+            assert con.execute("SELECT count(*) FROM fts").fetchone()[0] == 0, (
+                "the postings should have been dropped, not certified"
+            )
+            version = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        finally:
+            con.close()
+        assert int(version[0]) == cache_search._SCHEMA_VERSION
+
+        # And the corpus is re-indexed on the next search, as after any rebuild.
         assert len(cache_search.search("attention")) == 1
 
     @pytest.mark.asyncio
