@@ -239,7 +239,7 @@ def _scan_markdown() -> list[_ScannedFile]:
 _INDEX_DIRNAME = "__search_index__"
 
 # Bump when the row schema or the tokenizer changes; a mismatch rebuilds.
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 # Never equals a real stat, so a file that failed to read is retried.
 _UNREADABLE_MTIME = -1
@@ -264,6 +264,9 @@ def _legacy_index_path() -> Path:
 
 
 _SCHEMA = (
+    # rowid is declared, not implicit: VACUUM renumbers an implicit one, which
+    # would repoint every row at another paper's postings. UNIQUE (ns, stem)
+    # brings its own index, whose leading column already serves the ns filter.
     """CREATE TABLE IF NOT EXISTS files (
            rowid     INTEGER PRIMARY KEY,
            ns        TEXT    NOT NULL,
@@ -273,7 +276,6 @@ _SCHEMA = (
            unindexable TEXT,
            UNIQUE (ns, stem)
        )""",
-    "CREATE INDEX IF NOT EXISTS files_ns ON files(ns)",
     # Contentless: postings only. The markdown is on disk and the winners are
     # re-read for snippets anyway. contentless_delete=1 (SQLite 3.43+) is what
     # lets a removed paper be DELETEd without handing back its text.

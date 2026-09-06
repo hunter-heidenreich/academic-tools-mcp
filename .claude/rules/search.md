@@ -21,7 +21,7 @@ Per namespace: arXiv old-style stems (`_ARXIV_OLDSTYLE_STEM_RE`) restore the sla
 
 ## The FTS5 index
 
-**Persistent incremental index — SQLite FTS5** at `.cache/__search_index__/index.db` (WAL, `synchronous=NORMAL`, opened per call — SQLite connections aren't thread-shareable). A `files` table holds `(ns, stem, mtime_ns, size, unindexable)`; two **contentless** (`content=''`, `contentless_delete=1`) FTS5 tables hold the postings. `contentless_delete=1` is what lets a removed paper be DELETEd. Two tables rather than one because diacritic folding is a build-time tokenizer option in FTS5 while `normalize` is a query-time flag here: `fts` uses `remove_diacritics 0`, `fts_norm` uses `remove_diacritics 2`, and the flag selects between them.
+**Persistent incremental index — SQLite FTS5** at `.cache/__search_index__/index.db` (WAL, `synchronous=NORMAL`, opened per call — SQLite connections aren't thread-shareable). A `files` table holds `(ns, stem, mtime_ns, size, unindexable)` — its `rowid` is **declared, not implicit**, because `VACUUM` renumbers an implicit one and every row would then point at another paper's postings; `UNIQUE (ns, stem)` carries the only index it needs, its leading column serving the `ns` filter; two **contentless** (`content=''`, `contentless_delete=1`) FTS5 tables hold the postings. `contentless_delete=1` is what lets a removed paper be DELETEd. Two tables rather than one because diacritic folding is a build-time tokenizer option in FTS5 while `normalize` is a query-time flag here: `fts` uses `remove_diacritics 0`, `fts_norm` uses `remove_diacritics 2`, and the flag selects between them.
 
 ## Staleness and self-healing
 

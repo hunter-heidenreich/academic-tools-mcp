@@ -378,6 +378,14 @@ grouped by milestone rather than per commit.
   converted yet" and re-run conversions that take tens of minutes. The sweep is
   idempotent and never overwrites an existing file. ([#48])
 
+- **A redundant index came out of the search database.** `files_ns` duplicated
+  the leading column of the index `UNIQUE (ns, stem)` already creates, so no
+  query ever chose it — `EXPLAIN QUERY PLAN` picks `sqlite_autoindex_files_1`
+  for the namespace filter and the rowid primary key for the search join — while
+  every insert and update paid to maintain it: 21% of the refresh's write time
+  on a 4,000-row corpus. `_SCHEMA_VERSION` is bumped, so the index is rebuilt
+  once on first search after upgrading. ([#86])
+
 - **Corpus search got measurably cheaper per call.** Snippet extraction ran one
   full-document regex pass per query term and scored each candidate window by
   walking its neighbours outward; it is now a single alternation pass and one
