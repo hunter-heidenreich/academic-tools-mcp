@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _doi, _http, _singleflight, _useragent, cache, config
+from .. import _clients, _doi, _http, _singleflight, _stats, _useragent, cache, config
 from .._throttle import Throttle
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
@@ -309,6 +309,10 @@ async def _fetch_chunk(
     sf_key = ("works_batch", tuple(sorted(chunk)), force_refresh)
 
     async def _runner() -> dict[str, dict[str, Any]]:
+        # This path bypasses cache.cached_lookup, so it books its own misses —
+        # one per DOI about to be resolved upstream.
+        for _ in chunk:
+            _stats.incr(NAMESPACE, "cache_misses")
         return await _fetch_chunk_uncoalesced(chunk)
 
     return await _single_flight.do(sf_key, _runner)

@@ -243,7 +243,7 @@ class TestDownloadPdfProvenance:
     async def test_fresh_and_cached_payloads_agree(self, tmp_path, monkeypatch):
         from academic_tools_mcp import _pdf_download, cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 
         async def fake_stream(client, url, dest, **kwargs):
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -270,7 +270,7 @@ class TestDownloadPdfProvenance:
         providers cached nothing."""
         from academic_tools_mcp import _pdf_download, cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         calls = 0
 
         async def fake_stream(client, url, dest, **kwargs):
@@ -288,7 +288,7 @@ class TestDownloadPdfProvenance:
     async def test_an_error_carries_no_provenance(self, tmp_path, monkeypatch):
         from academic_tools_mcp import _pdf_download, cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 
         async def fake_stream(client, url, dest, **kwargs):
             return {"error": "PDF not found", "retryable": False}

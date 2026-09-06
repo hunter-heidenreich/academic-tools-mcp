@@ -85,9 +85,12 @@ def throttles() -> Iterator["Throttle"]:
 def snapshot() -> dict[str, Any]:
     """Return the counters plus a live in-flight sample.
 
-    ``{"providers": {<namespace>: {<counter>: int}}}``, where the counters are
-    ``cache_hits``, ``cache_misses``, ``negative_hits``, ``http_calls``,
-    ``http_retries``, ``backpressure_refusals`` and ``cache_write_failures``,
+    ``{"providers": {<namespace>: {<counter>: int}}}``. ``cache_hits`` and
+    ``negative_hits`` count lookups served from disk; ``cache_misses`` counts
+    lookups that went upstream, booked at the fetch, so the three series
+    partition served lookups rather than overlapping. Alongside them:
+    ``http_calls``, ``http_retries``, ``backpressure_refusals`` and
+    ``cache_write_failures``,
     cumulative since process start (or the last ``reset()``), plus an
     ``in_flight`` sampled live and summed over every ``Throttle`` the namespace
     owns. Rows are copies, so mutating the result cannot corrupt the counters.

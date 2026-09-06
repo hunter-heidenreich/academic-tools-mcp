@@ -18,7 +18,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 import academic_tools_mcp
-from academic_tools_mcp import _stats, cache
+from academic_tools_mcp import _singleflight, _stats, cache
 
 
 def _all_package_modules():
@@ -44,22 +44,78 @@ def _module_throttles() -> dict[str, Any]:
 
 
 class TestCounters:
-    def test_cache_hit_and_miss_counters(self):
-        # Miss before put.
+    def test_a_serve_from_cache_counts_a_hit(self):
         assert cache.get("openalex", "works", "k1") is None
-        snap = _stats.snapshot()["providers"]["openalex"]
-        assert snap["cache_misses"] == 1
-        assert snap.get("cache_hits", 0) == 0
+        snap = _stats.snapshot()["providers"].get("openalex", {})
+        assert snap.get("cache_misses", 0) == 0, (
+            "a bare read that finds nothing went nowhere — it is not a miss"
+        )
 
-        # Hit after put.
         cache.put("openalex", "works", "k1", {"title": "X"})
         assert cache.get("openalex", "works", "k1") is not None
         snap = _stats.snapshot()["providers"]["openalex"]
         assert snap["cache_hits"] == 1
+        assert snap.get("cache_misses", 0) == 0
 
-    def test_stale_eviction_counts_as_miss(self, tmp_path):
-        """TTL-evicted entries should look identical to a never-cached miss
-        so the operator can see TTL pressure in the same counter."""
+    @pytest.mark.asyncio
+    async def test_a_miss_is_counted_where_the_fetch_happens(self):
+        """``cache_misses`` means "went upstream", so it is booked by the one
+        thing that knows: the branch about to call ``fetch``. Counting it in
+        ``get`` instead billed a miss for every negative-cache hit and every
+        lookup of purely local data."""
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            cache.put("openalex", "works", "k2", {"title": "X"})
+            return {"title": "X"}
+
+        async def lookup():
+            return await cache.cached_lookup(
+                single_flight=_singleflight.SingleFlight(),
+                namespace="openalex",
+                entity="works",
+                canonical="k2",
+                positive_ttl=3600.0,
+                fetch=fetch,
+            )
+
+        await lookup()
+        await lookup()
+
+        assert calls == 1
+        snap = _stats.snapshot()["providers"]["openalex"]
+        assert snap["cache_misses"] == 1, snap
+        assert snap["cache_hits"] == 1, snap
+
+    @pytest.mark.asyncio
+    async def test_a_negative_hit_is_not_also_a_miss(self):
+        """The whole point of the negative cache is that a known-bad identifier
+        stops costing upstream calls; billing each one a miss hid that."""
+        cache.put_negative("openalex", "works", "gone", {"error": "404"})
+
+        async def fetch():
+            raise AssertionError("must be served from the negative cache")
+
+        for _ in range(3):
+            await cache.cached_lookup(
+                single_flight=_singleflight.SingleFlight(),
+                namespace="openalex",
+                entity="works",
+                canonical="gone",
+                positive_ttl=3600.0,
+                fetch=fetch,
+            )
+
+        snap = _stats.snapshot()["providers"]["openalex"]
+        assert snap["negative_hits"] == 3, snap
+        assert snap.get("cache_misses", 0) == 0, snap
+
+    @pytest.mark.asyncio
+    async def test_stale_eviction_counts_as_miss(self, tmp_path):
+        """A TTL-evicted entry sends us back upstream, so it must look identical
+        to a never-cached miss — that is how TTL pressure stays visible."""
         import os
 
         cache.put("biorxiv", "papers", "k", {"x": 1})
@@ -67,7 +123,18 @@ class TestCounters:
         old = path.stat().st_mtime - 9999
         os.utime(path, (old, old))
 
-        assert cache.get("biorxiv", "papers", "k", max_age_seconds=60) is None
+        async def fetch():
+            return {"x": 2}
+
+        result = await cache.cached_lookup(
+            single_flight=_singleflight.SingleFlight(),
+            namespace="biorxiv",
+            entity="papers",
+            canonical="k",
+            positive_ttl=60.0,
+            fetch=fetch,
+        )
+        assert result == {"x": 2}
         assert _stats.snapshot()["providers"]["biorxiv"]["cache_misses"] == 1
 
     def test_negative_hit_counter(self):

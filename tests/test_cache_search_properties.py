@@ -211,7 +211,7 @@ def _seed_once() -> None:
         ("arxiv", "hep-th_9901001v2", "# Old\n\n## Results\n\nString duality and branes.\n"),
         ("manual", "10.1038_s41586-021-03819-2", "# Folding\n\n## Intro\n\nProtein structure.\n"),
     ):
-        path = cache._CACHE_ROOT / namespace / "markdown" / f"{stem}.md"
+        path = cache.CACHE_ROOT / namespace / "markdown" / f"{stem}.md"
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body, encoding="utf-8")

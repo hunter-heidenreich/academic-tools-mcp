@@ -78,7 +78,7 @@ def _install_stream(monkeypatch, stream_cm_or_obj) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolated_cache(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     return tmp_path
 
 

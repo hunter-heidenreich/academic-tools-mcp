@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from . import _textnorm, cache, config
+from . import _textnorm, atomic, cache, config
 
 # Default subprocess timeout for PDF→markdown conversion. Big PDFs on
 # CPU-only MinerU runs can legitimately take 20+ minutes, so we err
@@ -313,7 +313,7 @@ def migrate_legacy_stems() -> int:
     from the markdown on the next read.
     """
     moved = 0
-    root = cache._CACHE_ROOT
+    root = cache.CACHE_ROOT
     if not root.is_dir():
         return 0
     for namespace_dir in root.iterdir():
@@ -920,7 +920,7 @@ def store_markdown_and_index(
     """
     # Atomic UTF-8 write: a crash mid-write can't leave a torn markdown file,
     # and non-ASCII content survives a non-UTF-8 host locale.
-    cache._atomic_write_text(md_path, markdown)
+    atomic.write_text(md_path, markdown)
 
     sections = parse_sections(markdown)
     detected = has_detected_sections(markdown)

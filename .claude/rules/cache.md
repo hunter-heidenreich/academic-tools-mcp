@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/academic_tools_mcp/cache.py"
+  - "src/academic_tools_mcp/atomic.py"
   - "src/academic_tools_mcp/_singleflight.py"
 ---
 
@@ -10,20 +11,25 @@ paths:
 
 Generic file-based JSON cache under `.cache/<namespace>/<entity>/`, keyed by SHA-256 of the identifier. Provider-agnostic — a new provider is a new namespace.
 
-**Atomicity, not durability.** Canonical writes land in a sibling `mkstemp` temp and `os.replace` into place; `fsync` is deliberately skipped, survivable only because every read self-heals — corrupt JSON, `OSError`, `UnicodeDecodeError` and non-dict payloads are caught, the bad file unlinked, `None` returned. **A new read path must hold up its half of that bargain**, and must name its encoding explicitly (UTF-8) so records survive an `LC_ALL=C` host.
+**Atomicity, not durability.** Canonical writes go through `atomic.write_text` / `atomic.copy` — a sibling `mkstemp` temp, then `os.replace`. `fsync` is deliberately skipped, survivable only because every read self-heals — corrupt JSON, `OSError`, `UnicodeDecodeError` and non-dict payloads are caught, the bad file unlinked, `None` returned. **A new read path must hold up its half of that bargain**, and must name its encoding explicitly (UTF-8) so records survive an `LC_ALL=C` host.
 
-**`put` / `put_negative` absorb `OSError` and return a bool.** A `fetch` closure must never treat `False` as a failure — the network response is already paid for, and serving it uncached is the correct outcome.
+**`put` / `put_negative` absorb `OSError` and return a bool.** A `fetch` closure must never treat `False` as a failure — the network response is already paid for, and serving it uncached is the correct outcome. Both go through `_write_entry`, which absorbs *only* `OSError`: an unserialisable payload is a programming error and must reach the caller. `atomic.write_text` is the single write seam, so patching it fakes a full disk for both writers at once. `_unlink_quietly` needs no counter of its own: every path that reaches a failed unlink goes on to `put` in the same directory, which fails and ticks `cache_write_failures`.
 
-**`_CACHE_ROOT` is bound at import** (`_resolve_cache_root()` at module scope; `CACHE_DIR` relocates it for installed-wheel / read-only-tree deployments). `tests/conftest.py` monkeypatches that single attribute, so any module needing the test redirect reads `cache._CACHE_ROOT` at call time (`cache_search`, `papers.migrate_legacy_stems`) rather than capturing it at import. Don't hide it behind a function without updating conftest.
+**`_expires_at` is reserved** in a `put_negative` payload — overwritten on write, stripped on read. Every other key, underscore-prefixed ones included (`_canonical_id`), round-trips.
 
-**Cross-module surface — renames here break callers.** `cache_dir` is public because the path builders live elsewhere: `providers/*.pdf_path`, `manual.pdf_path`, `papers.markdown_path`. Two leading-underscore names are cross-module on purpose — `_atomic_write_text` (`papers.store_markdown_and_index`) and `_atomic_copy` (`manual.import_local_pdf`, its only caller; downloaded PDFs never touch it, since `_pdf_download.stream_to_file` owns its own temp-and-rename).
+**Counters partition, they don't overlap.** `cache_hits` / `negative_hits` are booked by `get` / `get_negative` when a lookup is *served from disk*; `cache_misses` is booked immediately before `fetch` — it means "went upstream". A read that finds nothing counts nothing, which is why `openalex._fetch_chunk` books its own misses (it bypasses `cached_lookup`) and why `papers`' sections reads move no counter at all. PDF downloads are outside this series entirely.
+
+**`CACHE_ROOT` is bound at import** (`_resolve_cache_root()` at module scope; `CACHE_DIR` relocates it for installed-wheel / read-only-tree deployments). `tests/conftest.py` monkeypatches that single attribute, so any module needing the test redirect reads `cache.CACHE_ROOT` at call time (`cache_search`, `papers.migrate_legacy_stems`) rather than capturing it at import. Don't hide it behind a function without updating conftest.
+
+**Cross-module surface — renames here break callers.** `cache_dir` and `CACHE_ROOT` are public because the path builders live elsewhere (`providers/*.pdf_path`, `papers.markdown_path`, `cache_search`). Anything reached from another module gets a public name; a leading underscore here means genuinely internal. `_pdf_download.stream_to_file` writes its own temp-and-rename rather than calling `atomic`, because it enforces a byte cap while streaming.
 
 **Lifetime**
 
 - **Positive TTL eviction** — `get(..., max_age_seconds=N)` unlinks entries older than N seconds (by mtime) and returns `None`. Entries never re-read with a `max_age_seconds` persist indefinitely.
 - **Negative cache** (`get_negative` / `put_negative`) lives in a sibling `_neg/` subdirectory under each entity; a provider overrides the default via its own `_NEG_TTL_SECONDS`, and the per-provider policy lives in `.claude/rules/providers.md`.
 - **`invalidate(namespace, entity, identifier)`** drops both halves at once — used by `force_refresh=True`.
-- **Orphan `.tmp` sweep** — `gc_orphan_tmp_files()` unlinks `*.tmp` files older than `_ORPHAN_TMP_AGE_SECONDS`, called from the FastMCP lifespan in `_app`. It never touches files newer than the cutoff, so it cannot race a live writer. It bounds *leakage*, not cache size — it evicts no entries.
+- **Orphan `.tmp` sweep** — `gc_orphan_tmp_files()` unlinks `*.tmp` files older than `_ORPHAN_TMP_AGE_SECONDS`, called from the FastMCP lifespan in `_app`. It never touches files newer than the cutoff, so it cannot race a live writer. It bounds *leakage*, not cache size — it evicts no entries. **Invariant this rests on: a temp file's mtime is its own write time.** `atomic.copy` therefore calls `os.utime` after `shutil.copystat` — a copy that inherits an old source's mtime hands the sweep a live temp that reads as an orphan.
+- **Boundaries fall on the safe side.** An entry aged exactly `max_age_seconds` still hits (`age > max_age`), a negative entry at exactly its expiry is still live (`expires_at < now`), and a `.tmp` exactly at the cutoff *is* swept (`mtime > cutoff`).
 
 ### `cached_lookup` — the shared cached-getter protocol
 

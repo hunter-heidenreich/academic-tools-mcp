@@ -20,10 +20,10 @@ def isolated_cache():
 
     A second redirect here would only move the corpus somewhere the other
     suites don't look; ``_isolate_cache_root`` is autouse and points
-    ``cache._CACHE_ROOT`` at this test's ``tmp_path``, which is what
+    ``cache.CACHE_ROOT`` at this test's ``tmp_path``, which is what
     ``cache_search`` reads at call time.
     """
-    return cache._CACHE_ROOT
+    return cache.CACHE_ROOT
 
 
 def _raise_oserror(*args, **kwargs):
@@ -1260,7 +1260,7 @@ class TestTheCorpusWalkSurvivesIO:
     """The walk degrades around what it cannot read; it never fails a search."""
 
     def test_a_cache_root_that_does_not_exist_is_an_empty_corpus(self, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", cache._CACHE_ROOT / "never-created")
+        monkeypatch.setattr(cache, "CACHE_ROOT", cache.CACHE_ROOT / "never-created")
         assert cache_search._scan_markdown() == []
         assert cache_search.search("attention") == []
 
@@ -1275,7 +1275,7 @@ class TestTheCorpusWalkSurvivesIO:
         real_scandir = os.scandir
 
         def guarded(path):
-            if Path(path) == cache._CACHE_ROOT:
+            if Path(path) == cache.CACHE_ROOT:
                 raise PermissionError("no")
             return real_scandir(path)
 

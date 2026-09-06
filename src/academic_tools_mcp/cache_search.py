@@ -206,7 +206,7 @@ def _scan_markdown() -> list[_ScannedFile]:
     try:
         # A missing or non-directory root raises here, which is the same
         # "nothing cached yet" answer as an empty one.
-        with os.scandir(cache._CACHE_ROOT) as namespaces:
+        with os.scandir(cache.CACHE_ROOT) as namespaces:
             namespace_entries = list(namespaces)
     except OSError:
         return []
@@ -268,12 +268,12 @@ class _IndexedFile(NamedTuple):
 
 def _index_path() -> Path:
     """Path to the SQLite index database."""
-    return cache._CACHE_ROOT / _INDEX_DIRNAME / "index.db"
+    return cache.CACHE_ROOT / _INDEX_DIRNAME / "index.db"
 
 
 def _legacy_index_path() -> Path:
     """Path to the pre-FTS5 JSON index, which ``_sweep_legacy_index`` removes."""
-    return cache._CACHE_ROOT / _INDEX_DIRNAME / "index.json"
+    return cache.CACHE_ROOT / _INDEX_DIRNAME / "index.json"
 
 
 _SCHEMA = (
@@ -374,7 +374,7 @@ def _sweep_legacy_index() -> None:
     so probing for it on every search is a stat that will never pay off. Called
     under ``_INDEX_LOCK``, so the set needs no lock of its own.
     """
-    root = cache._CACHE_ROOT
+    root = cache.CACHE_ROOT
     if root in _LEGACY_SWEPT:
         return
     _LEGACY_SWEPT.add(root)

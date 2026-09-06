@@ -3,7 +3,7 @@ import errno
 
 import pytest
 
-from academic_tools_mcp import manual
+from academic_tools_mcp import atomic, manual
 
 # ---------------------------------------------------------------------------
 # Identifier normalization
@@ -236,7 +236,7 @@ class TestImportLocalPdf:
         """A full disk during the copy owes the same contract as a failed
         ``cache.put``: an error dict rather than a raised OSError, and a
         ``cache_write_failures`` tick so the operator can see the disk."""
-        from academic_tools_mcp import _stats, cache
+        from academic_tools_mcp import _stats
 
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake content")
@@ -244,7 +244,7 @@ class TestImportLocalPdf:
         def _full_disk(source, dest):
             raise OSError(errno.ENOSPC, "No space left on device")
 
-        monkeypatch.setattr(cache, "_atomic_copy", _full_disk)
+        monkeypatch.setattr(atomic, "copy", _full_disk)
 
         result = manual.import_local_pdf(str(pdf), "10.1038/test-nospace")
 
@@ -516,7 +516,7 @@ class TestImportForceRefresh:
     def test_force_refresh_replaces_pdf_and_cascades(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache, papers
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         v1 = tmp_path / "v1.pdf"
         v1.write_bytes(b"%PDF-1.4 version ONE")
@@ -559,7 +559,7 @@ class TestImportForceRefresh:
     def test_force_refresh_replaces_markdown(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache, papers
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         md1 = tmp_path / "v1.md"
         md1.write_text("## Alpha\n\nFirst.", encoding="utf-8")
@@ -594,7 +594,7 @@ class TestImportAtomicityAndEncoding:
     def test_zero_byte_cached_pdf_is_not_served(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         pdf = tmp_path / "real.pdf"
         pdf.write_bytes(b"%PDF-1.4 real content")
@@ -618,7 +618,7 @@ class TestImportAtomicityAndEncoding:
 
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         pdf = tmp_path / "real.pdf"
         pdf.write_bytes(b"%PDF-1.4 real content")
@@ -661,7 +661,7 @@ class TestImportAtomicityAndEncoding:
 
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         pdf = tmp_path / "real.pdf"
         pdf.write_bytes(b"%PDF-1.4 real content")
@@ -689,7 +689,7 @@ class TestImportAtomicityAndEncoding:
 
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         pdf = tmp_path / "p.pdf"
         pdf.write_bytes(b"%PDF-1.4 content")
@@ -709,7 +709,7 @@ class TestImportAtomicityAndEncoding:
     def test_markdown_import_survives_non_utf8_locale(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache, papers
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         md = tmp_path / "p.md"
         content = "## Café\n\nMüller, François-René — 数据 \U0001f600\n"
@@ -745,7 +745,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
         from academic_tools_mcp import cache, server
         from academic_tools_mcp import manual as manual_mod
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         pdf = tmp_path / "slow.pdf"
         pdf.write_bytes(b"%PDF-1.4 payload")
 
@@ -792,7 +792,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
 
         from academic_tools_mcp import cache, papers, server
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         md = tmp_path / "paper.md"
         md.write_text("## Intro\n\nBody.\n", encoding="utf-8")
         ident = "10.1234/locked-import"
@@ -817,7 +817,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
 
         from academic_tools_mcp import cache, papers, server
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 body")
         ident = "10.1234/locked-pdf-import"
@@ -839,7 +839,7 @@ class TestImportPaperTool:
     async def test_force_refresh_replaces_and_cascades(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache, server
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         v1 = tmp_path / "v1.pdf"
         v1.write_bytes(b"%PDF-1.4 ONE")
@@ -861,7 +861,7 @@ class TestImportPaperTool:
     async def test_markdown_force_refresh_slims_to_section_count(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache, server
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         md1 = tmp_path / "v1.md"
         md1.write_text("## A\n\nx.", encoding="utf-8")
@@ -946,7 +946,7 @@ class TestMigrateMisroutedArxiv:
     def misrouted(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
             directory = tmp_path / "manual" / entity
             directory.mkdir(parents=True)
@@ -1011,7 +1011,7 @@ class TestMigrateMisroutedArxiv:
     def test_empty_cache_is_a_no_op(self, tmp_path, monkeypatch):
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         assert manual.migrate_misrouted_arxiv() == 0
 
     def test_a_migrated_paper_is_findable_under_its_arxiv_identifier(self, misrouted):
