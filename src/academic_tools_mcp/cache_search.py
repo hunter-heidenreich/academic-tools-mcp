@@ -89,57 +89,47 @@ def _extract_snippet(
 
     ``char_offset`` indexes the ORIGINAL markdown under either normalisation.
     """
-    if not query_terms:
-        return _collapse(markdown[:_SNIPPET_CHARS]), None
-
-    # Not a raw str.lower(): 'İ' lowercases to two chars, so an unmapped
-    # m.start() drifts past the match.
-    lowered, index_map = _textnorm.lower_with_map(markdown, fold=normalize)
-    # Longest first — \b settles "attention" against "attentions" on its own,
-    # but not a split on the hyphen or dot _content_tokens keeps intact.
-    alternation = "|".join(re.escape(t) for t in sorted(query_terms, key=len, reverse=True))
-    # One pass for every term: megabyte documents, once per winner.
-    pattern = re.compile(rf"\b(?:{alternation})\b")
-    hits: list[tuple[int, str]] = [
-        (index_map[m.start()], m.group(0)) for m in pattern.finditer(lowered)
-    ]
-
-    if not hits:
-        return _collapse(markdown[:_SNIPPET_CHARS]), None
-
-    # No sort: finditer scans forward and index_map is monotonic, so offsets ascend.
     half = _SNIPPET_CHARS // 2
-    best_offset = hits[0][0]
-    best_distinct = 1
-    counts: Counter[str] = Counter()
-    lo = hi = 0
-    for off, _term in hits:
-        while hi < len(hits) and hits[hi][0] <= off + half:
-            counts[hits[hi][1]] += 1
-            hi += 1
-        while hits[lo][0] < off - half:
-            term = hits[lo][1]
-            if counts[term] == 1:
-                del counts[term]
-            else:
-                counts[term] -= 1
-            lo += 1
-        if len(counts) > best_distinct:
-            best_distinct = len(counts)
-            best_offset = off
+    hits: list[tuple[int, str]] = []
+    if query_terms:
+        # Not a raw str.lower(): 'İ' lowercases to two chars, so an unmapped
+        # m.start() drifts past the match.
+        lowered, index_map = _textnorm.lower_with_map(markdown, fold=normalize)
+        # Longest first — \b settles "attention" against "attentions" on its own,
+        # but not a split on the hyphen or dot _content_tokens keeps intact.
+        alternation = "|".join(re.escape(t) for t in sorted(query_terms, key=len, reverse=True))
+        # One pass for every term: megabyte documents, once per winner.
+        pattern = re.compile(rf"\b(?:{alternation})\b")
+        hits = [(index_map[m.start()], m.group(0)) for m in pattern.finditer(lowered)]
 
-    start = max(0, best_offset - half)
-    end = min(len(markdown), start + _SNIPPET_CHARS)
-    return _collapse(markdown[start:end]), best_offset
+    best_offset: int | None = None
+    if hits:
+        # No sort: finditer scans forward and index_map is monotonic, so offsets ascend.
+        best_offset = hits[0][0]
+        best_distinct = 1
+        counts: Counter[str] = Counter()
+        lo = hi = 0
+        for off, _term in hits:
+            while hi < len(hits) and hits[hi][0] <= off + half:
+                counts[hits[hi][1]] += 1
+                hi += 1
+            while hits[lo][0] < off - half:
+                term = hits[lo][1]
+                if counts[term] == 1:
+                    del counts[term]
+                else:
+                    counts[term] -= 1
+                lo += 1
+            if len(counts) > best_distinct:
+                best_distinct = len(counts)
+                best_offset = off
 
-
-def _collapse(snippet: str) -> str:
-    """Trim and flatten a snippet's whitespace.
-
-    Every return path goes through this, so the response key doesn't mean two
-    different things depending on whether a term was located.
-    """
-    return re.sub(r"\s+", " ", snippet.strip())
+    # Nothing to centre on is just the head of the document. One exit, so the
+    # snippet cannot come out shaped two ways: a raw slice would render a
+    # crossed heading boundary as "## Methods\n\n\n\nWe trained...".
+    start = 0 if best_offset is None else max(0, best_offset - half)
+    snippet = markdown[start : start + _SNIPPET_CHARS]
+    return re.sub(r"\s+", " ", snippet.strip()), best_offset
 
 
 # ---------------------------------------------------------------------------
