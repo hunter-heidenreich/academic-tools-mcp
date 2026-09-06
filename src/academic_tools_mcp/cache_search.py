@@ -18,7 +18,7 @@ import sqlite3
 import threading
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import unquote
 
 from . import _doi, _textnorm, cache, papers
@@ -173,30 +173,44 @@ def _restore_slashes(namespace: str, stem: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _scan_markdown() -> list[tuple[str, Path, int, int]]:
-    """Every cached markdown file as ``(namespace, path, mtime_ns, size)``.
+class _ScannedFile(NamedTuple):
+    """One cached markdown file, as the refresh needs it.
+
+    ``path`` stays a ``str``: the refresh reads only the files whose stat
+    changed, so building a ``Path`` for every one of them is most of the walk.
+    """
+
+    namespace: str
+    stem: str
+    path: str
+    mtime_ns: int
+    size: int
+
+
+def _scan_markdown() -> list[_ScannedFile]:
+    """Every cached markdown file on disk.
 
     ``os.scandir`` carries the stat the refresh needs, so it isn't fetched
-    twice. Order is not guaranteed — the refresh keys on ``(ns, stem)``.
+    twice. Order is not guaranteed — the refresh keys on ``(namespace, stem)``.
 
     **Must stay unfiltered.** ``_refresh_index`` prunes every indexed row this
     walk did not return, so a namespace filter would delete every other
     namespace's postings.
     """
-    root = cache._CACHE_ROOT
-    if not root.is_dir():
-        return []
-    out: list[tuple[str, Path, int, int]] = []
+    out: list[_ScannedFile] = []
     try:
-        namespace_entries = list(os.scandir(root))
+        # A missing or non-directory root raises here, which is the same
+        # "nothing cached yet" answer as an empty one.
+        with os.scandir(cache._CACHE_ROOT) as namespaces:
+            namespace_entries = list(namespaces)
     except OSError:
         return []
     for ns_entry in namespace_entries:
         if not ns_entry.is_dir():
             continue
-        md_dir = Path(ns_entry.path) / "markdown"
         try:
-            entries = list(os.scandir(md_dir))
+            with os.scandir(Path(ns_entry.path) / "markdown") as files:
+                entries = list(files)
         except OSError:
             continue
         for entry in entries:
@@ -206,7 +220,15 @@ def _scan_markdown() -> list[tuple[str, Path, int, int]]:
                 st = entry.stat()
             except OSError:
                 continue
-            out.append((ns_entry.name, Path(entry.path), st.st_mtime_ns, st.st_size))
+            out.append(
+                _ScannedFile(
+                    ns_entry.name,
+                    entry.name.removesuffix(".md"),
+                    entry.path,
+                    st.st_mtime_ns,
+                    st.st_size,
+                )
+            )
     return out
 
 
@@ -394,20 +416,20 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
             seen: set[tuple[str, str]] = set()
 
             with con:
-                for ns, path, mtime_ns, size in _scan_markdown():
-                    key = (ns, path.stem)
+                for found in _scan_markdown():
+                    key = (found.namespace, found.stem)
                     seen.add(key)
                     existing = known.get(key)
                     if (
                         not force_refresh
                         and existing is not None
-                        and existing[1] == mtime_ns
-                        and existing[2] == size
+                        and existing[1] == found.mtime_ns
+                        and existing[2] == found.size
                     ):
                         continue
                     reason: str | None
                     try:
-                        text = path.read_text(encoding="utf-8", errors="replace")
+                        text = Path(found.path).read_text(encoding="utf-8", errors="replace")
                     except OSError:
                         reason, text = "unreadable", ""
                     else:
@@ -416,19 +438,19 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                     # Storing the stat that *did* succeed would freeze the
                     # failure — a lock that cleared, or a chmod, leaves mtime
                     # alone, so the retry would never fire.
-                    recorded_mtime = _UNREADABLE_MTIME if reason else mtime_ns
+                    recorded_mtime = _UNREADABLE_MTIME if reason else found.mtime_ns
 
                     if existing is None:
                         cur = con.execute(
                             "INSERT INTO files(ns, stem, mtime_ns, size) VALUES (?,?,?,?)",
-                            (ns, path.stem, recorded_mtime, size),
+                            (found.namespace, found.stem, recorded_mtime, found.size),
                         )
                         rowid = int(cur.lastrowid or 0)
                     else:
                         rowid = existing[0]
                         con.execute(
                             "UPDATE files SET mtime_ns = ?, size = ? WHERE rowid = ?",
-                            (recorded_mtime, size, rowid),
+                            (recorded_mtime, found.size, rowid),
                         )
                     if reason is None:
                         reason = _index_document(con, rowid, text)

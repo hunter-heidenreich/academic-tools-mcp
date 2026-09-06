@@ -31,6 +31,16 @@ def _raise_oserror(*args, **kwargs):
     raise OSError("nope")
 
 
+class _FakeScandir(list):
+    """A scandir stand-in: iterable, and usable as the context manager it is."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def _seed_markdown(root, namespace: str, filename_stem: str, body: str):
     """Write a markdown file under <root>/<namespace>/markdown/<stem>.md."""
     md_dir = root / namespace / "markdown"
@@ -942,7 +952,7 @@ class TestIncrementalIndex:
         cache_search.search("attention")
         assert cache_search._index_path().exists()
         walked = cache_search._scan_markdown()
-        assert all(ns != cache_search._INDEX_DIRNAME for ns, _, _, _ in walked)
+        assert all(f.namespace != cache_search._INDEX_DIRNAME for f in walked)
         assert all(ns != cache_search._INDEX_DIRNAME for ns, _ in self._index_rows())
 
     def test_legacy_json_index_is_swept_away(self, isolated_cache):
@@ -1110,7 +1120,7 @@ class TestTheCorpusWalkSurvivesIO:
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
         (isolated_cache / "README").write_text("not a namespace")
 
-        assert [ns for ns, _, _, _ in cache_search._scan_markdown()] == ["arxiv"]
+        assert [f.namespace for f in cache_search._scan_markdown()] == ["arxiv"]
 
     def test_an_unreadable_cache_root_is_an_empty_corpus(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
@@ -1135,7 +1145,7 @@ class TestTheCorpusWalkSurvivesIO:
             return real_scandir(path)
 
         monkeypatch.setattr(cache_search.os, "scandir", guarded)
-        assert [ns for ns, _, _, _ in cache_search._scan_markdown()] == ["arxiv"]
+        assert [f.namespace for f in cache_search._scan_markdown()] == ["arxiv"]
 
     def test_a_file_that_cannot_be_statted_is_skipped(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
@@ -1157,16 +1167,17 @@ class TestTheCorpusWalkSurvivesIO:
                 raise OSError("nope")
 
         def guarded(path):
-            return [_UnstattableEntry(e) if e.name == "ghost.md" else e for e in real_scandir(path)]
+            with real_scandir(path) as it:
+                return _FakeScandir(_UnstattableEntry(e) if e.name == "ghost.md" else e for e in it)
 
         monkeypatch.setattr(cache_search.os, "scandir", guarded)
-        assert [Path(p).stem for _, p, _, _ in cache_search._scan_markdown()] == ["p"]
+        assert [f.stem for f in cache_search._scan_markdown()] == ["p"]
 
     def test_a_non_markdown_file_is_ignored(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
         (isolated_cache / "arxiv" / "markdown" / "notes.txt").write_text("attention")
 
-        assert [Path(p).stem for _, p, _, _ in cache_search._scan_markdown()] == ["p"]
+        assert [f.stem for f in cache_search._scan_markdown()] == ["p"]
 
     def test_a_legacy_index_that_cannot_be_deleted_is_left_alone(self, isolated_cache, monkeypatch):
         legacy = cache_search._legacy_index_path()
