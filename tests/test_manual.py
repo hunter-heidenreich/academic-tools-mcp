@@ -5,6 +5,8 @@ import pytest
 
 from academic_tools_mcp import _stems, atomic, manual
 
+from ._checksums import markdown_checksum
+
 # ---------------------------------------------------------------------------
 # PDF filename
 # ---------------------------------------------------------------------------
@@ -342,7 +344,7 @@ class TestImportMarkdown:
         assert cached is not None
         # Checksum present and matches the markdown actually written to cache.
         md_path = papers.markdown_path(namespace, canonical)
-        assert cached["markdown_checksum"] == papers.markdown_checksum(md_path)
+        assert cached["markdown_checksum"] == markdown_checksum(md_path)
 
     def test_cached_sections_carry_every_key_a_conversion_writes(self, tmp_path):
         """An imported entry must be indistinguishable in shape from a converted
@@ -534,7 +536,7 @@ class TestImportForceRefresh:
         cached = cache.get(namespace, "sections", papers.sections_key(canonical))
         assert [s["title"] for s in cached["sections"]] == ["Beta", "Gamma"]
         # Stored checksum matches the new on-disk file.
-        assert cached["markdown_checksum"] == papers.markdown_checksum(md_path)
+        assert cached["markdown_checksum"] == markdown_checksum(md_path)
 
 
 class TestImportAtomicityAndEncoding:

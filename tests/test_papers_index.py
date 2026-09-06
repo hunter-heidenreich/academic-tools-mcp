@@ -11,6 +11,8 @@ import pytest
 
 from academic_tools_mcp import cache, papers
 
+from ._checksums import markdown_checksum
+
 
 class TestSectionLocksLRU:
     """The per-paper section lock dict is bounded so a long-running
@@ -150,16 +152,18 @@ class TestStoredChecksumDescribesTheStoredText:
         # The entry describes our text, so it must carry our checksum — not the
         # one on disk, which would make it match forever.
         assert entry["markdown_checksum"] == papers.checksum_text(ours)
-        assert entry["markdown_checksum"] != papers.markdown_checksum(md_path)
+        assert entry["markdown_checksum"] != markdown_checksum(md_path)
 
     def test_checksum_text_agrees_with_the_file_the_writer_wrote(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         md_path = papers.markdown_path("test", "agree")
         # Non-ASCII and every newline shape: atomic.write_text pins newline=""
         # so the bytes on disk are exactly the UTF-8 encoding of the payload.
-        text = "## Gutiérrez\n\nline one\nline two\n"
+        # A payload carrying \r\n or a bare \r is what distinguishes that pin
+        # from a writer that translates line endings on the way out.
+        text = "## Gutiérrez\r\n\r\nline one\nline two\rline three\n"
         papers.store_markdown_and_index("test", "agree", md_path, text, "full")
-        assert papers.checksum_text(text) == papers.markdown_checksum(md_path)
+        assert papers.checksum_text(text) == markdown_checksum(md_path)
 
     @pytest.mark.asyncio
     async def test_a_mismatched_entry_self_heals_on_the_next_read(self, tmp_path, monkeypatch):

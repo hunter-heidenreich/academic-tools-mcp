@@ -8,7 +8,21 @@ easily repair.
 import re
 from pathlib import Path
 
+import pytest
+
 from academic_tools_mcp import _stems, cache, papers
+
+from ._checksums import markdown_checksum
+
+
+def _seed(tmp_path, namespace, entity, names):
+    """Write cached artifacts under ``<tmp_path>/<namespace>/<entity>/``."""
+    d = tmp_path / namespace / entity
+    d.mkdir(parents=True, exist_ok=True)
+    suffix = ".pdf" if entity == "pdfs" else ".md"
+    for n in names:
+        (d / (n + suffix)).write_text("x")
+    return d
 
 
 class TestSafeStem:
@@ -65,6 +79,16 @@ class TestSafeStem:
             stem = papers.safe_stem(canonical)
             assert _stems._needs_stem_migration(stem) is False
 
+    def test_a_literal_percent_2f_is_not_read_as_an_encoded_slash(self):
+        """The ``%2F`` rewrite is exact, not a heuristic.
+
+        ``safe_stem`` percent-encodes first and maps ``%2F`` back to ``_``. A
+        literal ``%`` becomes ``%25``, so the only way that escape reaches the
+        output is a real ``/`` — otherwise the two ids below would share a file.
+        """
+        assert papers.safe_stem("a/b") == "a_b"
+        assert papers.safe_stem("a%2Fb") == "a%252Fb"
+
     def test_keeps_normal_doi_and_arxiv_ids(self):
         # Normal identifiers are unchanged except for the legacy / -> _ map,
         # so existing cache filenames don't churn.
@@ -81,16 +105,8 @@ class TestMigrateLegacyStems:
     converted yet" and re-runs a conversion that can take tens of minutes.
     """
 
-    def _seed(self, tmp_path, namespace, entity, names):
-        d = tmp_path / namespace / entity
-        d.mkdir(parents=True)
-        suffix = ".pdf" if entity == "pdfs" else ".md"
-        for n in names:
-            (d / (n + suffix)).write_text("x")
-        return d
-
     def test_renames_legacy_names(self, tmp_path):
-        d = self._seed(tmp_path, "manual", "markdown", ["10.1016_s0304-3975(03)00229-9"])
+        d = _seed(tmp_path, "manual", "markdown", ["10.1016_s0304-3975(03)00229-9"])
 
         moved = papers.migrate_legacy_stems()
 
@@ -100,13 +116,13 @@ class TestMigrateLegacyStems:
 
     def test_leaves_ordinary_identifiers_alone(self, tmp_path):
         names = ["2301.00001", "10.1101_2021.01.01.123", "hep-th_9901001", "P16-1160"]
-        d = self._seed(tmp_path, "arxiv", "pdfs", names)
+        d = _seed(tmp_path, "arxiv", "pdfs", names)
 
         assert papers.migrate_legacy_stems() == 0
         assert sorted(p.stem for p in d.iterdir()) == sorted(names)
 
     def test_is_idempotent(self, tmp_path):
-        self._seed(tmp_path, "manual", "pdfs", ["my paper"])
+        _seed(tmp_path, "manual", "pdfs", ["my paper"])
 
         first = papers.migrate_legacy_stems()
         second = papers.migrate_legacy_stems()
@@ -115,7 +131,7 @@ class TestMigrateLegacyStems:
         assert (tmp_path / "manual" / "pdfs" / "my%20paper.pdf").exists()
 
     def test_does_not_clobber_an_existing_target(self, tmp_path):
-        d = self._seed(tmp_path, "manual", "pdfs", ["a b", "a%20b"])
+        d = _seed(tmp_path, "manual", "pdfs", ["a b", "a%20b"])
 
         assert papers.migrate_legacy_stems() == 0, "must not overwrite a real file"
         assert (d / "a b.pdf").exists() and (d / "a%20b.pdf").exists()
@@ -125,8 +141,28 @@ class TestMigrateLegacyStems:
         assert papers.migrate_legacy_stems() == 0
 
     def test_ignores_unrelated_entities(self, tmp_path):
-        self._seed(tmp_path, "openalex", "works", ["some(thing)"])
+        _seed(tmp_path, "openalex", "works", ["some(thing)"])
         assert papers.migrate_legacy_stems() == 0
+
+    def test_counts_every_namespace_and_both_entity_dirs(self, tmp_path):
+        """The count is the whole sweep, not the first directory it finds."""
+        _seed(tmp_path, "manual", "pdfs", ["a paper"])
+        _seed(tmp_path, "manual", "markdown", ["a paper"])
+        _seed(tmp_path, "arxiv", "pdfs", ["another paper"])
+
+        assert papers.migrate_legacy_stems() == 3
+
+    def test_ignores_unrelated_suffixes_in_an_artifact_dir(self, tmp_path):
+        # Only .pdf/.md are artifacts. An editor backup or a stray sidecar
+        # carries the destination's legacy characters and is not ours to move.
+        d = tmp_path / "manual" / "pdfs"
+        d.mkdir(parents=True)
+        strays = ["my paper.pdf.bak", "my paper.json", "my paper"]
+        for name in strays:
+            (d / name).write_text("x")
+
+        assert papers.migrate_legacy_stems() == 0
+        assert sorted(p.name for p in d.iterdir()) == sorted(strays)
 
 
 class TestMigrateLegacyStemsSkips:
@@ -153,10 +189,41 @@ class TestMigrateLegacyStemsSkips:
         assert papers.migrate_legacy_stems() == 0
 
     def test_a_subdirectory_inside_an_entity_dir_is_skipped(self, tmp_path):
-        nested = tmp_path / "manual" / "markdown" / "a dir"
+        # Named like a legacy artifact, so it clears the suffix and stem checks
+        # and only the is_file() guard stands between it and a rename.
+        nested = tmp_path / "manual" / "markdown" / "a dir.md"
         nested.mkdir(parents=True)
         assert papers.migrate_legacy_stems() == 0
         assert nested.is_dir()
+
+    def test_an_unreadable_directory_does_not_stop_the_server(self, tmp_path, monkeypatch):
+        """The sweep runs inside the startup lifespan, so it may not raise.
+
+        An ``iterdir`` that fails on permissions used to propagate out of
+        ``_lifespan`` and leave the server unable to start over a cache the
+        operator could have ignored.
+        """
+        _seed(tmp_path, "manual", "markdown", ["my paper"])
+
+        def refuse(self):
+            raise PermissionError("cache is not readable")
+
+        monkeypatch.setattr(Path, "iterdir", refuse)
+        assert papers.migrate_legacy_stems() == 0
+
+    def test_one_unreadable_namespace_does_not_hide_the_rest(self, tmp_path, monkeypatch):
+        _seed(tmp_path, "manual", "markdown", ["my paper"])
+        blocked = tmp_path / "arxiv" / "pdfs"
+        blocked.mkdir(parents=True)
+        real_iterdir = Path.iterdir
+
+        def refuse(self):
+            if self == blocked:
+                raise PermissionError("not readable")
+            return real_iterdir(self)
+
+        monkeypatch.setattr(Path, "iterdir", refuse)
+        assert papers.migrate_legacy_stems() == 1
 
     def test_a_rename_that_fails_leaves_the_file_for_the_next_run(self, tmp_path, monkeypatch):
         d = tmp_path / "manual" / "markdown"
@@ -172,12 +239,49 @@ class TestMigrateLegacyStemsSkips:
         assert legacy.exists()
 
 
-class TestMarkdownChecksum:
-    def test_a_missing_file_checksums_to_empty(self, tmp_path):
-        assert papers.markdown_checksum(tmp_path / "nope.md") == ""
+class TestSectionsKeyForStem:
+    """The sections key for a paper already named by a stem on disk.
 
-    def test_an_empty_file_is_not_confused_with_a_missing_one(self, tmp_path):
+    The identity, and it has to stay one: re-sanitizing would encode the stem's
+    own ``%`` escapes, so ``manual.migrate_misrouted_arxiv`` would invalidate a
+    key nothing was ever stored under and leave the stale index in place.
+    """
+
+    def test_agrees_with_sections_key_for_the_identifier_that_named_the_file(self):
+        for canonical in ["2301.00001", "10.1016/s1-6(03)02831-9", "notes~draft 2024", "a/b"]:
+            stem = papers.safe_stem(canonical)
+            assert _stems.sections_key_for_stem(stem) == papers.sections_key(canonical)
+
+    def test_re_sanitizing_a_stem_would_not_agree(self):
+        stem = papers.safe_stem("my paper")
+        assert papers.safe_stem(stem) != _stems.sections_key_for_stem(stem)
+
+
+class TestMarkdownPathForStem:
+    def test_agrees_with_markdown_path_for_the_identifier_that_named_the_file(self):
+        """One naming rule, whether the caller holds the id or the stem.
+
+        ``cache_search`` reads a hit's file from a stem recovered off disk; a
+        second spelling of the recipe there would read a path nothing wrote.
+        """
+        for canonical in ["2301.00001", "10.1016/s1-6(03)02831-9", "notes~draft 2024"]:
+            stem = papers.safe_stem(canonical)
+            assert papers.markdown_path_for_stem("ns", stem) == papers.markdown_path(
+                "ns", canonical
+            )
+
+
+class TestChecksumText:
+    def test_an_empty_document_still_has_a_checksum(self, tmp_path):
+        """Absent and empty are different states, and only one has a digest.
+
+        An index entry for a paper whose markdown is a zero-byte file must
+        still match disk; a sentinel shared with "no file" would make the two
+        compare equal and suppress the re-parse that heals it.
+        """
         empty = tmp_path / "empty.md"
         empty.write_text("")
-        assert papers.markdown_checksum(empty) == papers.checksum_text("")
-        assert papers.markdown_checksum(empty) != ""
+        assert markdown_checksum(empty) == papers.checksum_text("")
+
+        with pytest.raises(OSError):
+            markdown_checksum(tmp_path / "nope.md")

@@ -1,6 +1,6 @@
 """Property-based tests for artifact naming and the section index.
 
-Five invariants stronger than any example set. Each is a contract the *agent*
+Six invariants stronger than any example set. Each is a contract the *agent*
 depends on, and each spans two functions that an example suite can only sample:
 
 * ``safe_stem`` is the sole reason two papers cannot share a file. Injectivity
@@ -9,6 +9,9 @@ depends on, and each spans two functions that an example suite can only sample:
 * ``safe_stem``'s output must be a fixed point of the startup migration. The
   writer and the migration gate are two spellings of one alphabet, and the
   character that broke their agreement (``~``) was in neither example set.
+* A stem is one path component inside its own cache directory. ``import_paper``
+  accepts an operator-supplied label, so this holds for every string, not for
+  the traversal spellings someone remembered to enumerate.
 * ``migrate_legacy_stems`` runs unattended at startup over a cache the operator
   cannot easily repair. It must never merge two papers onto one file, and a
   second run must find nothing left to do.
@@ -25,6 +28,7 @@ The identifier strategies are shared with the corpus-search properties, which
 build them from the same routing.
 """
 
+import os
 import string
 
 from hypothesis import HealthCheck, assume, given, settings
@@ -73,7 +77,8 @@ def test_safe_stem_output_is_never_seen_as_legacy(canonical: str) -> None:
     A character the writer emits but the gate rejects makes startup re-encode a
     correct name (``notes~draft%202024`` → ``notes~draft%25202024``) and orphan
     the file it just renamed. ``~`` is the character that broke this: ``quote``
-    passes the RFC 3986 unreserved set, which ``_SAFE_STEM_KEEP`` does not list.
+    passes the whole RFC 3986 unreserved set, which is easy to under-count when
+    the gate is spelled by hand.
     """
     stem = _stems.safe_stem(canonical)
     assert _stems._MIGRATED_STEM_RE.match(stem)
@@ -81,12 +86,40 @@ def test_safe_stem_output_is_never_seen_as_legacy(canonical: str) -> None:
 
 
 @given(st.text(min_size=0, max_size=40))
-def test_a_stem_that_needs_no_migration_is_left_alone(canonical: str) -> None:
-    """``safe_stem`` is not idempotent; the migration gate is what makes the
-    sweep idempotent. Re-encoding a migrated stem would double its escapes."""
+def test_safe_stem_is_not_idempotent_on_its_own_output(canonical: str) -> None:
+    """The gate, not the sanitizer, is what makes the sweep idempotent.
+
+    Re-encoding a migrated stem doubles its escapes, so a sweep that compared
+    ``safe_stem(stem)`` to ``stem`` would rename every already-correct name
+    forever. This is the premise the gate above discharges.
+    """
     stem = _stems.safe_stem(canonical)
     assume("%" in stem)
-    assert _stems.safe_stem(stem) != stem, "the fixture must actually be re-encodable"
+    assert _stems.safe_stem(stem) != stem
+
+
+@given(st.text(min_size=0, max_size=60))
+def test_a_stem_is_always_one_component_inside_its_cache_dir(canonical: str) -> None:
+    """No identifier can name a file outside the namespace it was filed under.
+
+    ``import_paper`` takes an operator-supplied label, so the sanitizer is the
+    only thing between ``../../etc/passwd`` and a write outside the cache. The
+    stem must be a single path component and the parent must be untouched — for
+    every derived path, since a traversal that reached only one of them would
+    still let two papers land on one file.
+    """
+    assert os.sep not in _stems.safe_stem(canonical)
+
+    for path, expected_dir in (
+        (_stems.pdf_path("ns", canonical), cache.cache_dir("ns", "pdfs")),
+        (_stems.markdown_path("ns", canonical), cache.cache_dir("ns", "markdown")),
+    ):
+        # The bare stem may be "." or ".."; the suffix every builder appends
+        # makes the filename ("..pdf") an ordinary component regardless, so the
+        # assertion belongs on the path, not on the stem.
+        assert path.name not in (".", "..")
+        assert path.parent == expected_dir
+        assert path.resolve().parent == expected_dir.resolve()
 
 
 @given(identifiers)

@@ -19,10 +19,9 @@ are the home of each symbol and the place to read about it.
 
 from .._stems import (
     checksum_text,
-    markdown_checksum,
     markdown_path,
+    markdown_path_for_stem,
     migrate_legacy_stems,
-    pdf_path,
     safe_stem,
     sections_key,
 )
@@ -60,12 +59,11 @@ __all__ = [
     "get_or_parse_sections",
     "get_section_content",
     "has_detected_sections",
-    "markdown_checksum",
     "markdown_path",
+    "markdown_path_for_stem",
     "migrate_legacy_stems",
     "parse_sections",
     "parse_sections_and_detect",
-    "pdf_path",
     "safe_stem",
     "section_at_offset",
     "section_boundaries",

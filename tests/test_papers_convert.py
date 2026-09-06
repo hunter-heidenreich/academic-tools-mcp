@@ -21,6 +21,7 @@ from academic_tools_mcp.papers.convert import (
     _resolve_fast_convert_timeout,
 )
 
+from ._checksums import markdown_checksum
 from ._conversion_fakes import env, fake_proc, spawning
 
 # ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ class TestConvertPdfCachePaths:
             papers.sections_key(canonical),
             {
                 "sections": sections,
-                "markdown_checksum": papers.markdown_checksum(md_path),
+                "markdown_checksum": markdown_checksum(md_path),
             },
         )
 
@@ -129,7 +130,7 @@ class TestConvertPdfCachePaths:
         assert [s["title"] for s in result["sections"]] == ["Fresh"]
 
         refreshed = cache.get(ns, "sections", papers.sections_key(canonical))
-        assert refreshed["markdown_checksum"] == papers.markdown_checksum(md_path)
+        assert refreshed["markdown_checksum"] == markdown_checksum(md_path)
 
     @pytest.mark.asyncio
     async def test_errors_when_neither_markdown_nor_pdf_exists(self, isolated_cache):
@@ -151,7 +152,7 @@ class TestConvertPdfCachePaths:
             papers.sections_key(canonical),
             {
                 "sections": [{"index": 0, "title": "A", "h3s": [], "approx_tokens": 1}],
-                "markdown_checksum": papers.markdown_checksum(md_path),
+                "markdown_checksum": markdown_checksum(md_path),
             },
         )
 
@@ -769,7 +770,7 @@ class TestConvertPdfFastMode:
         assert md_path.exists()
         cached = cache.get("test", "sections", papers.sections_key("fast-1"))
         assert cached["conversion_mode"] == "fast"
-        assert cached["markdown_checksum"] == papers.markdown_checksum(md_path)
+        assert cached["markdown_checksum"] == markdown_checksum(md_path)
 
     @pytest.mark.asyncio
     async def test_fast_mode_runs_outside_global_lock(self, isolated_cache, real_pdf, monkeypatch):
@@ -828,7 +829,7 @@ class TestConvertPdfFastMode:
             papers.sections_key(canonical),
             {
                 "sections": papers.parse_sections(md_path.read_text()),
-                "markdown_checksum": papers.markdown_checksum(md_path),
+                "markdown_checksum": markdown_checksum(md_path),
                 "conversion_mode": "full",
             },
         )

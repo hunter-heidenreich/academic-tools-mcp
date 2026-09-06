@@ -130,9 +130,6 @@ def migrate_misrouted_arxiv() -> int:
                 continue
             moved += 1
             if entity == "markdown":
-                # The stem is already ``safe_stem`` output, so the key is
-                # derived from it rather than re-sanitized: ``safe_stem`` is
-                # not idempotent and would re-encode its own escapes.
                 cache.invalidate(NAMESPACE, "sections", _stems.sections_key_for_stem(path.stem))
     return moved
 
