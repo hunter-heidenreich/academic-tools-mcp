@@ -69,7 +69,17 @@ freeform_labels = st.text(
     max_size=30,
 ).filter(lambda s: "/" not in s and s.strip() == s and not s.startswith("10."))
 
-identifiers = st.one_of(arxiv_new_ids, arxiv_old_ids, single_slash_dois, freeform_labels)
+# The "Cite as" spelling arXiv prints, which is what an agent pastes.
+prefixed_arxiv_ids = st.builds(
+    lambda prefix, gap, ident: f"{prefix}:{gap}{ident}",
+    st.sampled_from(["arXiv", "arxiv", "ARXIV"]),
+    st.sampled_from(["", " "]),
+    st.one_of(arxiv_new_ids, arxiv_old_ids),
+)
+
+identifiers = st.one_of(
+    arxiv_new_ids, arxiv_old_ids, prefixed_arxiv_ids, single_slash_dois, freeform_labels
+)
 
 
 def _mixed_case(text: str, flags: list[bool]) -> str:
@@ -94,6 +104,35 @@ def test_a_stored_paper_inverts_to_the_key_it_was_stored_under(identifier: str) 
     target = manual.resolve_target(identifier)
     stem = papers.safe_stem(target["canonical"])
     assert cache_search._filename_to_canonical(target["namespace"], stem) == target["canonical"]
+
+
+@given(st.one_of(arxiv_new_ids, arxiv_old_ids, prefixed_arxiv_ids))
+def test_a_spelling_of_an_arxiv_id_is_never_a_second_cache_entry(spelling: str) -> None:
+    """Every spelling of one arXiv id collapses to one namespace and one key.
+
+    The `arXiv:` prefix is what arXiv's own "Cite as" box prints; left
+    unstripped it was not an arXiv shape, so the paper cached under `manual`
+    alongside the copy a bare id had already fetched.
+    """
+    from academic_tools_mcp.providers import arxiv
+
+    target = manual.resolve_target(spelling)
+    assert target["namespace"] == "arxiv"
+    assert target["canonical"] == arxiv._normalize_arxiv_id(spelling).lower()
+    assert ":" not in target["canonical"]
+
+
+@given(st.text(max_size=40))
+def test_arxiv_normalization_is_idempotent_for_any_input(text: str) -> None:
+    """Feeding `_normalize_arxiv_id` its own output changes nothing.
+
+    Without the prefix loop, `arXiv:arXiv:2301.00001` survives one pass and
+    keys separately from its own normalized form.
+    """
+    from academic_tools_mcp.providers import arxiv
+
+    once = arxiv._normalize_arxiv_id(text)
+    assert arxiv._normalize_arxiv_id(once) == once
 
 
 @given(arxiv_old_ids, st.lists(st.booleans(), max_size=30))

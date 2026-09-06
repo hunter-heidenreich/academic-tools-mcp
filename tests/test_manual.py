@@ -900,11 +900,33 @@ class TestOldStyleArxivRouting:
             "math.GT/0309136",
             "cond-mat.stat-mech/0501001",
             "https://arxiv.org/abs/math.GT/0309136",
+            # The "Cite as" form arXiv itself prints.
+            "arXiv:2301.00001",
+            "arxiv:2301.00001v2",
+            "ARXIV:hep-th/9901001",
+            "arXiv: 2301.00001",
+            "arXiv:math.GT/0309136",
+            # Nested forms that occur in pasted citations.
+            "arXiv:arXiv:2301.00001",
+            "arXiv:https://arxiv.org/abs/2301.00001",
         ],
     )
     def test_routes_to_the_arxiv_namespace(self, identifier):
         assert manual.resolve_target(identifier)["namespace"] == "arxiv"
         assert manual.resolve_metadata_source(identifier) == "arxiv"
+
+    def test_the_prefix_is_not_part_of_the_cache_key(self):
+        prefixed = manual.resolve_target("arXiv:2301.00001v2")
+        bare = manual.resolve_target("2301.00001v2")
+        assert prefixed["canonical"] == bare["canonical"] == "2301.00001v2"
+        assert prefixed["pdf_path"] == bare["pdf_path"]
+
+    def test_a_freeform_label_that_merely_starts_with_arxiv_is_untouched(self):
+        # The prefix strip must not capture a label; only something that is an
+        # arXiv id underneath it changes namespace.
+        target = manual.resolve_target("arxiv:my-notes")
+        assert target["namespace"] == "manual"
+        assert target["canonical"] == "arxiv:my-notes"
 
     def test_case_variants_share_one_cache_key(self):
         upper = manual.resolve_target("HEP-TH/9901001")
@@ -912,7 +934,9 @@ class TestOldStyleArxivRouting:
         assert (upper["namespace"], upper["canonical"]) == (lower["namespace"], lower["canonical"])
         assert upper["pdf_path"] == lower["pdf_path"]
 
-    @pytest.mark.parametrize("identifier", ["10.1101/2024.01.01.123", "10.1038/x", "my-label"])
+    @pytest.mark.parametrize(
+        "identifier", ["10.1101/2024.01.01.123", "10.1038/x", "my-label", "arxiv:my-notes"]
+    )
     def test_non_arxiv_identifiers_are_unaffected(self, identifier):
         assert manual.resolve_target(identifier)["namespace"] != "arxiv"
 
@@ -928,13 +952,17 @@ class TestMigrateMisroutedArxiv:
             directory.mkdir(parents=True)
             (directory / f"cond-mat.stat-mech_0501001{suffix}").write_text("stale")
             (directory / f"hep-th_9901001v2{suffix}").write_text("stale")
+            # An "arXiv:"-prefixed id: safe_stem percent-encodes the colon, so
+            # recovering it needs the unquote as well as the slash repair.
+            (directory / f"arxiv%3A2301.00001{suffix}").write_text("stale")
+            (directory / f"arxiv%3Ahep-th_9901001{suffix}").write_text("stale")
             # Genuinely manual: a freeform label and a publisher DOI.
             (directory / f"my-imported-paper{suffix}").write_text("keep")
             (directory / f"10.1038_s41586-021-03819-2{suffix}").write_text("keep")
         return tmp_path
 
     def test_moves_only_the_misrouted_files(self, misrouted):
-        assert manual.migrate_misrouted_arxiv() == 4
+        assert manual.migrate_misrouted_arxiv() == 8
 
         for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
             arxiv_dir = misrouted / "arxiv" / entity
@@ -942,6 +970,8 @@ class TestMigrateMisroutedArxiv:
             assert {p.name for p in arxiv_dir.iterdir()} == {
                 f"cond-mat.stat-mech_0501001{suffix}",
                 f"hep-th_9901001v2{suffix}",
+                f"arxiv%3A2301.00001{suffix}",
+                f"arxiv%3Ahep-th_9901001{suffix}",
             }
             assert {p.name for p in manual_dir.iterdir()} == {
                 f"my-imported-paper{suffix}",
@@ -949,7 +979,7 @@ class TestMigrateMisroutedArxiv:
             }
 
     def test_is_idempotent(self, misrouted):
-        assert manual.migrate_misrouted_arxiv() == 4
+        assert manual.migrate_misrouted_arxiv() == 8
         assert manual.migrate_misrouted_arxiv() == 0
 
     def test_never_overwrites_an_existing_target(self, misrouted):
@@ -965,7 +995,7 @@ class TestMigrateMisroutedArxiv:
     def test_a_subdirectory_is_not_a_paper(self, misrouted):
         (misrouted / "manual" / "pdfs" / "hep-th_9901002").mkdir()
 
-        assert manual.migrate_misrouted_arxiv() == 4
+        assert manual.migrate_misrouted_arxiv() == 8
 
     def test_a_move_that_fails_leaves_the_file_for_the_next_run(self, misrouted, monkeypatch):
         from pathlib import Path

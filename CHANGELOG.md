@@ -402,9 +402,22 @@ grouped by milestone rather than per commit.
   chained nowhere. The shape test is now single-homed in
   `_is_arxiv_identifier`, which both `resolve_target` and
   `resolve_metadata_source` call. `manual.migrate_misrouted_arxiv()` moves the
-  files already written to the wrong namespace; it runs at startup beside
+  files already written to the wrong namespace — for this and the `arXiv:`
+  prefix both, since its predicate inverts `safe_stem` and then asks the router
+  rather than matching a shape of its own. It runs at startup beside
   `papers.migrate_legacy_stems`, is idempotent, and never overwrites an
   existing file. ([#86])
+
+- **`arXiv:2301.00001` now routes to arXiv.** The prefix is what arXiv's own
+  "Cite as" box prints and what an agent pastes, but `_normalize_arxiv_id`
+  stripped URLs and not it — so the string was neither an arXiv shape (the
+  router filed the paper under `manual`) nor a valid `id_list` value, and the
+  canonical key carried the prefix, giving one paper a second cache entry
+  beside the copy a bare id had already fetched. Stripped in a loop and before
+  the URL handling, the ordering `_doi.normalize` holds for `doi:`, so
+  `arXiv:arXiv:…` and `arXiv:https://arxiv.org/abs/…` both collapse and the
+  function is idempotent for every input. A freeform label that merely starts
+  with `arxiv:` is untouched. ([#86])
 
 - **A versioned old-style arXiv id no longer produces a dead-end
   `canonical_id`.** `canonical_arxiv_id` deliberately keeps the version, so

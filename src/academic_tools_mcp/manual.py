@@ -16,6 +16,7 @@ import contextlib
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from . import _doi, _pdf_download, _stats, cache, papers
 
@@ -185,23 +186,23 @@ def migrate_misrouted_arxiv() -> int:
     return moved
 
 
-# An old-style arXiv stem as ``safe_stem`` writes it: the sole "/" became "_",
-# and every other character of an arXiv id is already safe. Deliberately the
-# same shape cache_search inverts — a second spelling would let the migration
-# and the search results disagree about which files are arXiv's.
-_MISROUTED_ARXIV_STEM_RE = re.compile(r"^[a-z][a-z.\-]*_\d{7}(?:v\d+)?$")
-
-
 def _is_misrouted_arxiv_stem(stem: str) -> bool:
     """Whether a ``manual`` stem is an arXiv id stored in the wrong namespace.
 
-    Restores the one slash ``safe_stem`` collapsed, then asks the router — the
-    same predicate that decides where a paper goes now, so the migration and
-    the routing can't disagree about which files are arXiv's.
+    Inverts ``safe_stem`` — restore the slash, then percent-decode, the order
+    ``cache_search._filename_to_canonical`` uses — and asks the router. Both
+    with and without the slash repair, because it is not decidable from the
+    stem alone: ``arxiv%3A2301.00001`` carries no slash while
+    ``arxiv%3Ahep-th_9901001`` does.
+
+    Asking the router rather than matching a shape here is the point: the
+    criterion is exactly "``resolve_target`` would put this somewhere else
+    now", so the migration cannot disagree with the routing it exists to
+    catch up with.
     """
-    if not _MISROUTED_ARXIV_STEM_RE.match(stem):
-        return False
-    return _is_arxiv_identifier(stem.replace("_", "/", 1))
+    return any(
+        _is_arxiv_identifier(unquote(candidate)) for candidate in {stem, stem.replace("_", "/", 1)}
+    )
 
 
 # ---------------------------------------------------------------------------
