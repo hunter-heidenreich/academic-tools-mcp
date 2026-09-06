@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Property and unit tests for BibTeX rendering.** `tests/test_bibtex_properties.py`
+  pins the three invariants no example set can cover: a citation key is always
+  ASCII `[a-z0-9]`, an escaped field leaves no unescaped LaTeX special and no
+  unbalanced group brace, and an escaped DOI is losslessly recoverable — it has
+  to stay resolvable. The example suite gained the null-and-missing-field cases
+  OpenAlex actually emits, every `_TYPE_MAP` entry, direct `_escape_bibtex`
+  coverage, and the arXiv-DOI and preprint-URL branches ([#85]).
+
 - **Property and unit tests for the shared `User-Agent`.** `tests/test_useragent.py`
   covers the agent's shape, the distribution-metadata version source and its
   not-installed fallback, and every malformed-contact case; three `hypothesis`
@@ -143,6 +151,24 @@ grouped by milestone rather than per commit.
   already green locally; CI pins that bar rather than chasing it. ([#47])
 
 ### Changed
+
+- **Citation keys pick a better title word and a fuller surname.** Particle
+  detection gained BibTeX's own case rule — a lowercase word before the surname
+  is part of it — so `da Costa`, `do Nascimento` and `ter Braak` key and render
+  like `van Tilborg` already did, without growing a wordlist that would have to
+  guess whether a capitalized `Du`, `Den` or `Bin` is a particle or a given
+  name (in a 1000-name OpenAlex sample, all of those were given names or
+  initials). `_TITLE_SKIP` grew from 11 English articles to the English
+  closed class plus the articles and prepositions of the major publication
+  languages, so a French or German title no longer keys on `la` or `der`, and
+  `_first_key_word` now keeps hyphenated compounds whole (`Pre-exposure` →
+  `preexposure`, not `pre`) and strips a Romance elision (`L'exil` → `exil`).
+  Against a 595-title OpenAlex sample this changes ~11% of keys ([#85]).
+
+- **Generated titles are double-braced.** `title={{...}}` case-protects the
+  whole title, so `plain.bst` and its relatives stop rendering "NaCl" as
+  "nacl". An entry regenerated from a cached record will differ from one
+  emitted before this change ([#85]).
 
 - **The download temp file is created only once the response is worth
   writing.** `stream_to_file` used to `mkstemp` before opening the connection,
@@ -335,6 +361,64 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **A name that escapes to nothing no longer crashes the author field.** A
+  display name of `"{"` passes the blank check and then escapes to the empty
+  string, which reached `_format_one_name`'s surname walk with no tokens.
+  Blank formatted names are dropped where the joining happens, so one bad
+  entry in a list can't emit a dangling ` and ` either ([#85]).
+
+- **A DOI with a LaTeX special no longer breaks its `howpublished` link.**
+  `\url{}` takes verbatim catcodes from url.sty, so the backslash escape the
+  field used to carry (`\url{https://doi.org/10.1101/a\_b}`) landed in the
+  link target itself. URLs are percent-encoded now (`a%5Fb`), which the DOI
+  resolver decodes; the `doi=` field, which is prose, keeps its backslash
+  escapes ([#85]).
+
+- **Conference papers render as `@inproceedings` again.** `_TYPE_MAP` was keyed
+  on Crossref's work vocabulary, which OpenAlex replaced in 2023 — `type_crossref`
+  is gone from the work object entirely, so `proceedings-article`,
+  `posted-content`, `monograph` and `proceedings` could never match, and the
+  16M works OpenAlex types as `conference-paper` all fell through to `@misc`,
+  losing the `booktitle`. The map now follows OpenAlex's own vocabulary and
+  covers the types added since: `reference-entry` → `@incollection`,
+  `book-review` / `retraction` / `data-paper` / `software-paper` → `@article`,
+  and `conference-abstract` / `software` / `paratext` / `libguides` /
+  `peer-review` / `supplementary-materials` → `@misc` ([#85]).
+
+- **A null inside an OpenAlex work no longer crashes BibTeX generation.**
+  OpenAlex emits explicit nulls rather than dropping keys, so `"author": null`,
+  `"display_name": null` and `"authorships": null` — the last through the
+  dissertation `school` lookup, which walked the list outside its truthiness
+  guard — raised `AttributeError`/`TypeError` out of `get_paper_bibtex`, and a
+  null `publication_year` printed the citation key `smithNonesome`. The year
+  now routes through `_key_year` (ASCII digits or nothing), the same gate
+  `_key_token` applies to the word components ([#85]).
+
+- **A non-arXiv preprint's `howpublished` is a resolvable URL.** The branch
+  emitted `\url{}` when the preprint had no DOI, and otherwise interpolated the
+  *raw* OpenAlex DOI — a resolver URL, sometimes over plain http, the spelling
+  `doi=` routes through `_doi.normalize` precisely to avoid. It now emits
+  `https://doi.org/<normalized>`, falls back to the OpenAlex landing page, and
+  emits nothing when there is neither ([#85]).
+
+- **An old-style arXiv DOI keeps its archive path.**
+  `10.48550/arXiv.hep-th/9901001` yielded `eprint={9901001}`, because the id was
+  read as the last `/` segment. Matching the `10.48550/arxiv.` prefix keeps
+  `hep-th/9901001`, and also stops a DOI that merely contains "arxiv" in its
+  suffix from being rendered as an eprint ([#85]).
+
+- **Numeric and special-character `biblio` values.** An integer `first_page`
+  raised `TypeError` mid-render, and volume/issue/pages reached the entry
+  unescaped, so a volume of "1 & 2" broke the whole `.bib`. All three are
+  escaped like any other prose field now, and whitespace runs inside a field
+  collapse to one space — an Atom-wrapped `journal_ref` used to split the
+  entry's one-field-per-line layout ([#85]).
+
+- **A leading number no longer becomes the citation key's title word.** "3D
+  Shape Analysis" keyed on `d`, the digit having been split off by the word
+  regex; it keys on `3d` now, while a wholly numeric token ("100 Years of...")
+  is skipped as undistinguishing ([#85]).
 
 - **A malformed `*_MAILTO` no longer breaks every outbound request.** The
   contact address is now scrubbed to printable ASCII minus parens and stripped
@@ -1706,3 +1790,4 @@ grouped by milestone rather than per commit.
 [#82]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/82
 [#83]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/83
 [#84]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/84
+[#85]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/85
