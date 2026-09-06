@@ -44,8 +44,6 @@ if then than so such
 """
 _STOPWORDS = frozenset(_STOPWORD_TEXT.split())
 
-# The same pattern papers.parse_sections uses, compiled MULTILINE because this
-# scans a whole document rather than a line.
 _HEADING_RE = re.compile(papers.HEADING_PATTERN, re.MULTILINE)
 
 # Bump to force a full rebuild when the row schema or the tokenizer changes;
