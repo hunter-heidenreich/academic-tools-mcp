@@ -23,13 +23,10 @@ _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable arXiv response.
 
-    A new dict each call (like ``_http.error_dict``) so a caller — or a
-    single-flight follower sharing the result — can't mutate a shared object.
+    Delegates to ``_http.parse_error_dict``, the single home for the shape;
+    ``detail`` carries the one arXiv-specific part — it speaks XML, not JSON.
     """
-    return {
-        "error": "arXiv returned a response that could not be parsed as XML.",
-        "retryable": True,
-    }
+    return _http.parse_error_dict("arXiv", detail="could not be parsed as XML")
 
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"

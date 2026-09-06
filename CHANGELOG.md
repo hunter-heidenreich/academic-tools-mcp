@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Property-based tests for the retry/backoff arithmetic.** `_http`'s two
+  numeric invariants — a parsed `Retry-After` is either `None` or a finite
+  positive float, and every sleep sits between the `backoff_seconds` floor and
+  the `_MAX_RETRY_AFTER_SECONDS` ceiling — were stated in prose and covered by
+  a handful of examples. `tests/test_http_properties.py` holds them over
+  arbitrary header values. The `isfinite` guard turned out to be defended by no
+  example test at all: deleting it passes the whole example suite. ([#78])
+
 - **A unit-test file for the shared DOI normalizer, which had none.** `_doi`
   was covered only by property tests and, transitively, by five provider
   wrappers that each re-derived the same six examples. Neither side of the
@@ -84,6 +92,12 @@ grouped by milestone rather than per commit.
   already green locally; CI pins that bar rather than chasing it. ([#47])
 
 ### Changed
+
+- **arXiv's parse-error helper delegates to the shared one instead of
+  respelling it.** `_http.parse_error_dict` grew a `detail` parameter
+  specifically so arXiv could say "could not be parsed as XML" without forking
+  the shape; arXiv kept its own byte-identical copy anyway. ([#78])
+
 
 - **The reference and citation tools reject a non-DOI locally.**
   `get_paper_references{,_count}` and `get_paper_citations{,_count}` forwarded
@@ -251,6 +265,50 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **Transient HTTP errors now carry `retryable: True`, the flag two callers
+  already branch on.** `_http.error_dict` set it for local backpressure alone;
+  a 429, a 5xx, a timeout and a network error each announced themselves as
+  "Transient — retry." in prose and carried no machine-readable flag at all.
+  Two consumers read the key, not the prose, and both got it wrong:
+  `oa_download` answered an OpenAlex timeout with "fetch the PDF by hand and
+  call `import_paper`" — the advice its own comment says is wrong for a blip —
+  and `get_paper_references`' both-sources-failed response told the agent that
+  "retryable errors are flagged `'retryable': true`" while flagging nothing.
+  Other 4xx stay deliberately unflagged: `retryable: False` is an explicit
+  "definitive, safe to negative-cache" signal, and a paywalled 403 is not
+  something we know that about. ([#78])
+
+- **`_RETRYABLE_STATUSES` is now the single definition of "transient status".**
+  `get_with_retry` read the allowlist while `error_dict` used a `500 <= status
+  < 600` range, and the two disagreed in both directions: a 501 Not Implemented
+  was advertised to the agent as transient though the retry helper itself
+  declines to retry it, and a 408 / 425 — which it *does* retry — reached the
+  agent unflagged, as a body snippet. Both now read the same frozenset, and a
+  retryable 4xx reads "temporary rejection (HTTP 408)" rather than being
+  mislabelled a server error. ([#78])
+
+- **`Retry-After` on a 5xx now reaches the agent.** `get_with_retry` honours
+  the header on every retryable status, but `error_dict` read it only inside
+  the 429 branch — so a 503 maintenance window advertising `Retry-After: 300`
+  was slept on internally and then discarded, and the agent got no
+  `retry_after_seconds` at all. Both RFC 9110 forms are honoured, and the
+  existing `_MAX_RETRY_AFTER_SECONDS` clamp applies. ([#78])
+
+- **A `Throttle`'s `label` now actually reaches the agent on backpressure.**
+  `LocalBackpressureError` carried it and `error_dict` ignored it, building the
+  message from its own argument instead. Every provider's `label` matches its
+  call-site literal, so behaviour is unchanged today — but the rules file
+  promised `label` was the agent-facing name, and a new provider that set the
+  two differently would have found it silently discarded. ([#78])
+
+- **A non-positive `max_attempts` no longer escapes as `UnboundLocalError`.**
+  `get_with_retry` skipped its loop entirely and fell through to an unbound
+  `response`. The resulting `UnboundLocalError` is a `NameError`, so it is not
+  in `HTTPX_ERRORS` and would have escaped the provider instead of becoming an
+  `{error}` dict. It clamps to one attempt, so a misconfigured `Throttle`
+  degrades to "no retries" rather than crashing the tool. ([#78])
+
 
 - **The DOI property-test strategy could generate a non-DOI and assert it was
   one.** Its suffix alphabet blacklisted Unicode category `Zs` but not `Zl` /
@@ -1483,3 +1541,4 @@ grouped by milestone rather than per commit.
 [#74]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/74
 [#76]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/76
 [#77]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/77
+[#78]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/78
