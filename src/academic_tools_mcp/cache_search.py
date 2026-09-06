@@ -107,10 +107,7 @@ def _extract_snippet(
     if not hits:
         return _collapse(markdown[:_SNIPPET_CHARS]), None
 
-    # Distinct terms within ±window/2 chars, via one sliding window: `lo` and
-    # `hi` only advance, so a term repeating densely inside one window costs
-    # linear time, not quadratic. No sort — finditer scans left to right and
-    # index_map is monotonic, so the offsets are already ascending.
+    # No sort: finditer scans forward and index_map is monotonic, so offsets ascend.
     half = _SNIPPET_CHARS // 2
     best_offset = hits[0][0]
     best_distinct = 1
