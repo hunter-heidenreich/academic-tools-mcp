@@ -110,3 +110,32 @@ class TestGet:
     def test_value_is_returned(self, monkeypatch):
         monkeypatch.setenv("ATM_TEST_ONLY", "v")
         assert config.get("ATM_TEST_ONLY") == "v"
+
+
+class TestFlag:
+    """The single home for env-var truthiness. Two call sites spelling their
+    own ``in ("1", "true", ...)`` is how ``DEBUG_REQUESTS=yes`` ends up
+    meaning something different from ``ENABLE_DEBUG_TOOLS=yes``.
+    """
+
+    @pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "Yes", "on", "ON", " 1 ", "on\n"])
+    def test_enabled_spellings(self, monkeypatch, raw):
+        monkeypatch.setenv("ATM_TEST_FLAG", raw)
+        assert config.flag("ATM_TEST_FLAG") is True
+
+    @pytest.mark.parametrize("raw", ["", "0", "no", "off", "false", "nope", " "])
+    def test_disabled_spellings(self, monkeypatch, raw):
+        monkeypatch.setenv("ATM_TEST_FLAG", raw)
+        assert config.flag("ATM_TEST_FLAG") is False
+
+    def test_unset_is_false(self, monkeypatch):
+        monkeypatch.delenv("ATM_TEST_FLAG", raising=False)
+        assert config.flag("ATM_TEST_FLAG") is False
+
+    def test_read_at_call_time(self, monkeypatch):
+        """Both callers re-check per request so an operator can flip the flag
+        without restarting the server."""
+        monkeypatch.delenv("ATM_TEST_FLAG", raising=False)
+        assert config.flag("ATM_TEST_FLAG") is False
+        monkeypatch.setenv("ATM_TEST_FLAG", "1")
+        assert config.flag("ATM_TEST_FLAG") is True

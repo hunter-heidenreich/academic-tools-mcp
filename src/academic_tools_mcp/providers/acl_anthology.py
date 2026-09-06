@@ -201,6 +201,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             url,
             dest,
             slot_factory=lambda: _request_slot(url),
+            namespace=NAMESPACE,
             provider_label="ACL Anthology",
             timeout=_PDF_TIMEOUT_SECONDS,
             not_found_message=f"PDF not found on ACL Anthology for: {aid}",

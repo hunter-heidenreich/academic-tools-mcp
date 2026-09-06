@@ -146,6 +146,7 @@ async def _resolve_and_download(
         url,
         dest,
         slot_factory=lambda: _request_slot(url),
+        namespace=NAMESPACE,
         provider_label="OA download",
         timeout=_PDF_TIMEOUT_SECONDS,
         require_pdf=True,

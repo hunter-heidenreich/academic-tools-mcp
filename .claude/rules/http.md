@@ -45,6 +45,7 @@ Each provider keeps thin **module-level wrappers** that delegate to its instance
 
 Per-provider counters plus a live `in_flight` sample read from each provider module's `_throttle.pending` (`snapshot()` documents the shape).
 
-- **`DEBUG_REQUESTS`** logs each throttled GET to **stderr** — never stdout, which carries the JSON-RPC stream. Re-read per call, so it flips without a restart.
-
-When adding a new provider: append the module path to `_PROVIDER_MODULES` **and** to `_reset_pooled_state` in `tests/conftest.py`. The two lists must stay in sync and nothing enforces it.
+- **`throttles()` discovers by scanning `sys.modules`, not from a list of module paths.** A new provider is sampled the moment it is imported, and `snapshot()` stays a read — importing a module in order to measure it would report in-flight rows for providers the process never used. `tests/conftest.py` resets through the same seam, so there is no second list to keep in sync.
+- **`in_flight` is filed under `throttle.namespace`**, the same string the module's cache and HTTP counters use, so a provider can never split into two rows. That `Throttle(namespace=…)` equals the module's own `NAMESPACE` is pinned by a test, not by convention.
+- **`DEBUG_REQUESTS`** logs each throttled GET to **stderr** — never stdout, which carries the JSON-RPC stream. Parsed by `config.flag`, the single home for env-var truthiness, and re-read per call so it flips without a restart.
+- **A failed disk write is `cache_write_failures`, wherever it happens** — `cache.put` / `put_negative`, `_pdf_download.stream_to_file`, `manual.import_local_pdf`. A PDF is the largest write the server makes; leaving it uncounted hid a full disk from the one counter that exists to show it.

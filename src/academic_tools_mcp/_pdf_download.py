@@ -22,7 +22,7 @@ from typing import Any
 
 import httpx
 
-from . import _http, _singleflight, cache, config
+from . import _http, _singleflight, _stats, cache, config
 
 # Clears an image-heavy preprint; catches a 10 GB non-PDF.
 _DEFAULT_MAX_PDF_BYTES = 200_000_000
@@ -107,6 +107,7 @@ async def stream_to_file(
     dest: Path,
     *,
     slot_factory: Callable[[], Any],
+    namespace: str,
     provider_label: str,
     timeout: float,  # noqa: ASYNC109 — httpx's own timeout, not a cancel scope
     not_found_message: str | None = None,
@@ -118,6 +119,11 @@ async def stream_to_file(
     provider's rate-limit slot on entry. It is held for the whole download:
     an open connection counts toward the concurrency cap, so releasing early
     would let a fan-out exceed documented limits.
+
+    ``namespace`` is the provider's cache namespace and ``provider_label`` its
+    human-facing name — the same split as ``Throttle``: the label reaches the
+    agent in the error message, the namespace files a disk failure under the
+    row that already holds this provider's cache counters.
 
     ``require_pdf=True`` rejects a non-PDF before anything is written — the
     open-access path's URL can resolve to a publisher landing page.
@@ -212,6 +218,7 @@ async def stream_to_file(
         return _http.error_dict(provider_label, e)
     except OSError as e:
         # Retryable, so a full disk is never recorded against the paper.
+        _stats.incr(namespace, "cache_write_failures")
         return {
             "error": f"{provider_label}: could not write the PDF to {dest}: {e}",
             "retryable": True,

@@ -22,7 +22,7 @@ Tool modules call providers directly (`crossref.get_work(...)`, `openalex.get_wo
 
 Adding a tool to a `tools/*.py` module registers it with FastMCP (the decorator runs on import), but it is not reachable as `server.<name>` until you add it to `server.py`'s import list **and** `__all__` — the test suite drives every tool that way and monkeypatches providers as `server.<provider>`.
 
-`_DEBUG_TOOLS_ENABLED` is read from `config.get("ENABLE_DEBUG_TOOLS")` **at import**, so the gate needs a restart, and `get_server_stats` is defined *inside* the `if` — an agent must never be able to observe cache/throttle state. Don't hoist the definition out and gate registration instead.
+`_DEBUG_TOOLS_ENABLED` is read from `config.flag("ENABLE_DEBUG_TOOLS")` **at import**, so the gate needs a restart, and `get_server_stats` is defined *inside* the `if` — an agent must never be able to observe cache/throttle state. Don't hoist the definition out and gate registration instead.
 
 ## Cross-tool response contracts
 

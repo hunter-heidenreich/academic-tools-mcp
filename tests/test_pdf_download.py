@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from academic_tools_mcp import _pdf_download
+from academic_tools_mcp import _pdf_download, _stats
 
 # stream_to_file takes an explicit timeout — no default, so every caller states
 # one. Short here: nothing in these tests reaches a real socket.
@@ -91,6 +91,7 @@ class TestStreamToFile:
             "http://example.com/x.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="probe",
             provider_label="Test",
             timeout=_TIMEOUT,
         )
@@ -114,6 +115,7 @@ class TestStreamToFile:
             "http://example.com/x.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="probe",
             provider_label="Test",
             not_found_message="No PDF found.",
             timeout=_TIMEOUT,
@@ -140,6 +142,7 @@ class TestStreamToFile:
             "http://example.com/x.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="probe",
             provider_label="Test",
             timeout=_TIMEOUT,
         )
@@ -168,6 +171,7 @@ class TestStreamToFile:
             "http://example.com/x.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="probe",
             provider_label="Test",
             timeout=_TIMEOUT,
         )
@@ -190,6 +194,7 @@ class TestStreamToFile:
             "http://example.com/x.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="probe",
             provider_label="Test",
             timeout=_TIMEOUT,
         )
@@ -239,6 +244,7 @@ class TestStreamToFile:
                 "http://example.com/x.pdf",
                 dest,
                 slot_factory=_passthrough_slot,
+                namespace="arxiv",
                 provider_label="arXiv",
                 timeout=_TIMEOUT,
             )
@@ -251,6 +257,12 @@ class TestStreamToFile:
         )
         assert not dest.exists()
         assert not list(tmp_path.glob("*.tmp")), "the partial temp file was left behind"
+
+        # Counted under the cache namespace, not the "arXiv" label: a disk
+        # failure has to land in the row already holding this provider's cache
+        # counters, or an operator diagnosing a full disk sees two half-rows.
+        counters = _stats.snapshot()["providers"]["arxiv"]
+        assert counters["cache_write_failures"] == 1, counters
 
     @pytest.mark.asyncio
     async def test_a_rejected_response_never_touches_the_disk(self, tmp_path: Path):
@@ -265,6 +277,7 @@ class TestStreamToFile:
             "http://example.com/x.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="probe",
             provider_label="Test",
             timeout=_TIMEOUT,
         )
@@ -291,6 +304,7 @@ class TestStreamToFile:
             "http://example.com/x.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="probe",
             provider_label="Test",
             timeout=_TIMEOUT,
         )
@@ -314,6 +328,7 @@ class TestStreamToFile:
             "http://example.com/x.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="probe",
             provider_label="Test",
             timeout=_TIMEOUT,
         )
@@ -369,6 +384,7 @@ async def test_a_streaming_4xx_returns_the_status_not_a_response_not_read(tmp_pa
             "https://publisher.example/paper.pdf",
             tmp_path / "out.pdf",
             slot_factory=_passthrough_slot,
+            namespace="oa_download",
             provider_label="OA download",
             require_pdf=True,
             timeout=_TIMEOUT,
@@ -390,6 +406,7 @@ async def test_a_streaming_404_still_short_circuits_before_the_body_read(tmp_pat
             "https://publisher.example/paper.pdf",
             tmp_path / "out.pdf",
             slot_factory=_passthrough_slot,
+            namespace="oa_download",
             provider_label="OA download",
             not_found_message="Open-access PDF not found",
             timeout=_TIMEOUT,
@@ -410,6 +427,7 @@ async def test_a_streaming_success_is_never_buffered(tmp_path):
             "https://publisher.example/paper.pdf",
             tmp_path / "out.pdf",
             slot_factory=_passthrough_slot,
+            namespace="oa_download",
             provider_label="OA download",
             require_pdf=True,
             timeout=_TIMEOUT,
@@ -458,6 +476,7 @@ class TestEmptyBodyRejected:
             "https://example.org/empty.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="arxiv",
             provider_label="arXiv",
             timeout=_TIMEOUT,
         )
@@ -479,6 +498,7 @@ class TestEmptyBodyRejected:
             "https://example.org/ok.pdf",
             dest,
             slot_factory=_passthrough_slot,
+            namespace="arxiv",
             provider_label="arXiv",
             timeout=_TIMEOUT,
         )
