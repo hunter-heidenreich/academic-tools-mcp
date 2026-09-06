@@ -471,22 +471,19 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
             con.close()
 
 
-def unindexable(
-    namespace: str | None = None, *, force_refresh: bool = False, refresh: bool = True
-) -> list[dict[str, Any]]:
+def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[dict[str, Any]]:
     """Papers present on disk that the index could not use.
 
     Each record is ``{namespace, stem, reason}``, where ``reason`` is
     ``"no_indexable_tokens"`` or ``"unreadable"``. Such papers are invisible
     to ``search`` correctly but *silently*, which is what this fixes.
 
-    ``refresh=False`` skips the corpus walk — for a caller that has just run
-    ``search`` and so already has an index in step with the disk. It is the
-    contract ``search_cached_papers`` relies on, not an optimisation: making
-    it unconditional walks the corpus twice per tool call.
+    ``refresh=False`` is a contract, not an optimisation: it is how
+    ``search_cached_papers`` reads the state the ``search`` it just ran left
+    behind, instead of walking the corpus a second time.
     """
     if refresh:
-        _refresh_index(force_refresh=force_refresh)
+        _refresh_index()
     con = _connect()
     try:
         sql = "SELECT ns, stem, unindexable FROM files WHERE unindexable IS NOT NULL"
