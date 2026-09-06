@@ -1,34 +1,14 @@
 """BM25 keyword search over the converted-markdown cache.
 
-The PDF pipeline (download_pdf → convert_paper) lands every paper's
-markdown under ``.cache/<namespace>/markdown/<canonical>.md``. After
-weeks of use this becomes the agent's actual reading history — but
-without a search primitive, recovering "the paper that mentioned X"
-means remembering the exact identifier.
+The PDF pipeline (download_pdf → convert_paper) lands every paper's markdown
+under ``.cache/<namespace>/markdown/<canonical>.md``. This ranks that corpus
+against a query with SQLite FTS5 and re-reads only the winners, to extract a
+title, a snippet centred on the densest cluster of query terms, and the
+section index an agent chains into ``get_paper_section``.
 
-Ranking is SQLite FTS5's built-in BM25. For the top hits this module
-re-reads the file to extract the document title (first H1/H2), a
-~200-char snippet centred on the highest-scoring matching term, and the
-section the snippet falls under, so the agent can chain into
-``get_paper_section`` by index.
-
-The index (``.cache/__search_index__/index.db``) is **contentless**
-(``content=''``): it stores postings, never the text. The markdown is
-already on disk and the winners are re-read for snippets anyway, so
-storing it twice would be waste — this is what makes the database
-smaller than the JSON index it replaced, not larger.
-
-Refresh is a per-document upsert keyed on ``(mtime_ns, size)``: the corpus
-walk remains, but only changed files are re-read and re-indexed. (The
-measurements behind the move off the previous JSON index are in
-``CHANGELOG.md`` — transcribing them here only gave two copies to disagree.)
-
-Two FTS tables, not one: ``normalize`` is a query-time flag in this API
-while diacritic folding is a build-time tokenizer option in FTS5, so the
-index carries a folded and an un-folded table and the flag selects
-between them. That preserves the parameter's exact meaning rather than
-silently redefining it, and both tables together are still well under
-the old single JSON file.
+Design rationale — the contentless index, the two tokenizer tables, the
+``(mtime_ns, size)`` refresh and the invariants each of them holds — is in
+``.claude/rules/search.md``, which loads whenever this file is opened.
 """
 
 from __future__ import annotations
@@ -429,10 +409,9 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS files_ns ON files(ns)",
     # Contentless (content=''): the index stores postings, never the text.
     # The markdown is already on disk and the top-k winners are re-read for
-    # snippets anyway, so storing it twice would be pure waste — this is what
-    # makes the database *smaller* than the JSON it replaces rather than
-    # larger. contentless_delete=1 (SQLite 3.43+) lets a removed paper be
-    # DELETEd without handing back its original text.
+    # snippets anyway, so storing it twice would be pure waste.
+    # contentless_delete=1 (SQLite 3.43+) lets a removed paper be DELETEd
+    # without handing back its original text.
     #
     # Two tables rather than one because ``normalize`` is a query-time flag in
     # this API but diacritic folding is a *build-time* tokenizer option in
@@ -465,8 +444,7 @@ def _connect() -> sqlite3.Connection:
     except sqlite3.DatabaseError:
         # Not a database, or corrupt. The index is derived state — rebuilt
         # from the markdown on the next refresh — so discard and start over
-        # rather than failing every search. Mirrors the JSON index, which
-        # self-healed to empty on an unparseable file.
+        # rather than failing every search.
         for suffix in ("", "-wal", "-shm"):
             with contextlib.suppress(OSError):
                 path.with_name(path.name + suffix).unlink()
@@ -837,11 +815,10 @@ def search(
     unique_query_terms = _snippet_terms(query, normalize=normalize)
     out: list[dict[str, Any]] = []
     for row in rows:
-        # FTS5's bm25() is negative, most-relevant first. Flip it so the
-        # response keeps "higher is better", as it always has. No score
-        # filter: FTS5 only returns rows that actually matched, so a low
-        # score means "matched on a term with little discriminative value",
-        # not "did not match".
+        # FTS5's bm25() is negative, most-relevant first; flip it so the
+        # response reads "higher is better". No score filter: FTS5 only
+        # returns rows that actually matched, so a low score means "matched on
+        # a term with little discriminative value", not "did not match".
         score = -float(row["score"])
         path = cache._CACHE_ROOT / row["ns"] / "markdown" / f"{row['stem']}.md"
         try:
