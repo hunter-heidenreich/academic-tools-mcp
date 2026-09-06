@@ -237,33 +237,29 @@ def _scan_markdown() -> list[_ScannedFile]:
 # ---------------------------------------------------------------------------
 
 _INDEX_DIRNAME = "__search_index__"
-_DB_FILENAME = "index.db"
 
-# Bump to force a full rebuild when the row schema or the tokenizer changes;
-# a mismatch is rebuilt rather than migrated, since the index is derived state.
+# Bump when the row schema or the tokenizer changes; a mismatch rebuilds.
 _SCHEMA_VERSION = 2
 
-# Stands in for the mtime of a file that could not be read, so the staleness
-# signal can never match and the next refresh retries it.
+# Never equals a real stat, so a file that failed to read is retried.
 _UNREADABLE_MTIME = -1
 
-# One Unicode letter or digit — ``\w`` minus underscore, which is what
-# ``unicode61`` counts as a token character in any script.
+# One Unicode letter or digit: ``\w`` minus underscore, which is what
+# ``unicode61`` treats as a token character, in any script.
 _ALNUM_RE = re.compile(r"[^\W_]")
 
-# Process-wide mutable state, both guarded by the lock: refreshes serialise on
-# it, and the legacy sweep records which cache roots it has already visited.
 _INDEX_LOCK = threading.Lock()
+# Only touched under _INDEX_LOCK, so it needs no lock of its own.
 _LEGACY_SWEPT: set[Path] = set()
 
 
 def _index_path() -> Path:
     """Path to the SQLite index database."""
-    return cache._CACHE_ROOT / _INDEX_DIRNAME / _DB_FILENAME
+    return cache._CACHE_ROOT / _INDEX_DIRNAME / "index.db"
 
 
 def _legacy_index_path() -> Path:
-    """Path to the JSON index this replaced, so it can be swept away."""
+    """Path to the pre-FTS5 JSON index, which ``_sweep_legacy_index`` removes."""
     return cache._CACHE_ROOT / _INDEX_DIRNAME / "index.json"
 
 
