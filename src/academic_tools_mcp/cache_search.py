@@ -74,15 +74,6 @@ def _extract_title(markdown: str) -> str | None:
     return None
 
 
-def _section_for_offset(markdown: str, offset: int) -> tuple[int | None, str | None]:
-    """Return ``(section_index, title)`` for a character offset, or ``(None, None)``.
-
-    Must keep delegating to ``papers.section_at_offset``: a local copy of that
-    scan names sections ``get_paper_section`` would refuse.
-    """
-    return papers.section_at_offset(markdown, offset) or (None, None)
-
-
 def _extract_snippet(
     markdown: str,
     query_terms: set[str],
@@ -673,10 +664,12 @@ def search(
             continue
         title = _extract_title(text)
         snippet, snippet_offset = _extract_snippet(text, unique_query_terms, normalize=normalize)
-        if snippet_offset is not None:
-            section_index, section = _section_for_offset(text, snippet_offset)
-        else:
-            section_index, section = None, None
+        # Never a local heading scan: a copy of papers' drops the empty-section
+        # filter and names a section get_paper_section would refuse.
+        found = (
+            papers.section_at_offset(text, snippet_offset) if snippet_offset is not None else None
+        )
+        section_index, section = found or (None, None)
         out.append(
             {
                 "namespace": row["ns"],

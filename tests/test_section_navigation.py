@@ -61,7 +61,7 @@ class TestSharedBoundaries:
         md = "## Empty\n\n## Real\n\nbody text\n"
         assert [sp.title for sp in papers.section_boundaries(md)] == ["Real"]
         assert papers.get_section_content(md, 0)["title"] == "Real"
-        assert cache_search._section_for_offset(md, md.index("body"))[1] == "Real"
+        assert papers.section_at_offset(md, md.index("body"))[1] == "Real"
 
 
 class TestChainingByIndex:
@@ -82,8 +82,8 @@ class TestChainingByIndex:
         assert "Ambiguous section title" in by_title["error"]
 
     def test_repeated_titles_get_distinct_indices(self):
-        first = cache_search._section_for_offset(DUPLICATE_TITLES, DUPLICATE_TITLES.index("alpha"))
-        second = cache_search._section_for_offset(DUPLICATE_TITLES, DUPLICATE_TITLES.index("beta"))
+        first = papers.section_at_offset(DUPLICATE_TITLES, DUPLICATE_TITLES.index("alpha"))
+        second = papers.section_at_offset(DUPLICATE_TITLES, DUPLICATE_TITLES.index("beta"))
         assert first[1] == second[1] == "Results"
         assert first[0] != second[0]
 

@@ -146,32 +146,32 @@ class TestSectionForOffset:
     def test_returns_enclosing_h2(self):
         md = "## Intro\n\nfirst\n\n## Methods\n\nsecond chunk here\n"
         idx = md.index("second chunk")
-        assert cache_search._section_for_offset(md, idx) == (1, "Methods")
+        assert papers.section_at_offset(md, idx) == (1, "Methods")
 
     def test_h3_does_not_open_new_section(self):
         # H3 is a sub-heading; it doesn't change which section we're in.
         md = "## Methods\n\n### Setup\n\ndetails go here\n"
-        assert cache_search._section_for_offset(md, md.index("details")) == (0, "Methods")
+        assert papers.section_at_offset(md, md.index("details")) == (0, "Methods")
 
     def test_a_negative_offset_resolves_to_no_section(self):
         # `search` never produces one, but the (None, None) contract is what
         # lets the caller destructure unconditionally.
-        assert cache_search._section_for_offset("# A\n\nbody\n", -1) == (None, None)
+        assert papers.section_at_offset("# A\n\nbody\n", -1) is None
 
     def test_a_document_with_no_sections_resolves_to_no_section(self):
-        assert cache_search._section_for_offset("", 0) == (None, None)
+        assert papers.section_at_offset("", 0) is None
 
     def test_offset_before_first_heading_is_the_preamble(self):
         # Previously returned None, leaving a preamble hit with no navigation
         # at all — even though get_section_content *does* expose that text as
         # section 0. The two now agree.
         md = "Preface text\n\n## First\n\nbody\n"
-        assert cache_search._section_for_offset(md, 0) == (0, "Preamble")
+        assert papers.section_at_offset(md, 0) == (0, "Preamble")
 
     def test_index_is_accepted_by_get_section_content(self):
         # The whole point: whatever index comes back must be chainable.
         md = "## Intro\n\nfirst\n\n## Methods\n\nsecond chunk here\n"
-        index, title = cache_search._section_for_offset(md, md.index("second chunk"))
+        index, title = papers.section_at_offset(md, md.index("second chunk"))
         got = papers.get_section_content(md, index)
         assert "error" not in got
         assert got["title"] == title
@@ -179,8 +179,8 @@ class TestSectionForOffset:
     def test_repeated_titles_still_resolve_to_distinct_indices(self):
         # The failure mode this exists to fix: two sections named "Results".
         md = "## Results\n\nalpha here\n\n## Methods\n\nmid\n\n## Results\n\nbeta here\n"
-        first = cache_search._section_for_offset(md, md.index("alpha"))
-        second = cache_search._section_for_offset(md, md.index("beta"))
+        first = papers.section_at_offset(md, md.index("alpha"))
+        second = papers.section_at_offset(md, md.index("beta"))
         assert first[1] == second[1] == "Results"
         assert first[0] != second[0]
         # Chaining by title is what used to fail.
@@ -192,7 +192,7 @@ class TestSectionForOffset:
         # A heading with no body is dropped from the reader's index, so it
         # must not be nameable here either.
         md = "## Empty\n\n## Real\n\nactual body text\n"
-        index, title = cache_search._section_for_offset(md, md.index("actual"))
+        index, title = papers.section_at_offset(md, md.index("actual"))
         assert title == "Real"
         assert papers.get_section_content(md, index)["title"] == "Real"
 

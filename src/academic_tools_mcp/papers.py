@@ -462,7 +462,7 @@ _SUB_LEVEL: int = 3
 # ---------------------------------------------------------------------------
 #
 # Four readers depend on these boundaries agreeing: parse_sections,
-# find_in_markdown, get_section_content and cache_search._section_for_offset.
+# find_in_markdown, get_section_content and cache_search.search.
 # They must all come from here — a second implementation is agent-visible, not
 # merely untidy. Drop the empty-section filter and a search hit names a section
 # the reader's index does not have; return a title instead of an index and the
