@@ -1589,6 +1589,15 @@ class TestStopwordsStayOutOfTheMatchExpression:
         assert cache_search.search("a") == []
         assert cache_search.search("x") == []
 
+    @pytest.mark.parametrize("char", ["x", "ß", "Ω", "ﬁ", "İ"])
+    def test_one_character_is_one_character_however_it_lowercases(self, char):
+        """The filter measures the word, not its lowercase expansion.
+
+        'İ' lowercases to two characters, so a check on the lowered length let
+        exactly one single-character query through while dropping every other.
+        """
+        assert cache_search._query_words(char) == []
+
     def test_stopword_filtering_survives_into_the_match_expression(self):
         assert cache_search._fts_query("the transformer") == '"transformer"'
         assert cache_search._fts_query("the") == ""

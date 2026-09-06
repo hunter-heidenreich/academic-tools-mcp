@@ -505,19 +505,18 @@ _QUERY_SPLIT_RE = re.compile(r"[\s\x00]+")
 def _query_words(query: str) -> list[str]:
     """The query's words, as handed to FTS5 — split, then filtered.
 
-    Stopwords and single characters are dropped here and not by
-    ``_content_tokens``, whose ASCII-only regex would discard a non-Latin word
-    the index holds. The
-    filters themselves are still needed: ``unicode61`` strips neither, so an
+    Filtered here rather than in ``_content_tokens``, whose ASCII-only regex
+    would drop a non-Latin word the index holds. Filtered at all because
+    ``unicode61`` strips neither stopwords nor single characters, so an
     unfiltered "the" ORs in a term matching the whole corpus.
     """
-    words: list[str] = []
-    for raw in _QUERY_SPLIT_RE.split(query.strip()):
-        lowered = raw.lower()
-        if len(lowered) <= 1 or lowered in _STOPWORDS:
-            continue
-        words.append(raw)
-    return words
+    return [
+        word
+        for word in _QUERY_SPLIT_RE.split(query.strip())
+        # len(word), not len(word.lower()): 'İ' lowercases to two characters
+        # and would slip through a filter meant to drop single characters.
+        if len(word) > 1 and word.lower() not in _STOPWORDS
+    ]
 
 
 def _fts_query(query: str) -> str:
