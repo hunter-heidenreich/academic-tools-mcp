@@ -522,16 +522,20 @@ def _query_words(query: str) -> list[str]:
 def _fts_query(query: str) -> str:
     """Build an FTS5 MATCH expression OR-ing the query's words.
 
-    Each word is double-quoted so FTS5 treats it as a literal phrase rather
-    than syntax — an unquoted ``NOT``, ``OR``, ``*``, ``-`` or ``:`` in a
-    user query would otherwise be parsed as an operator, or raise. Inside a
-    quoted phrase only ``"`` is special, and it is escaped by doubling.
+    Each word is quoted so FTS5 reads it as a phrase, not syntax: an unquoted
+    ``NOT``, ``OR``, ``*``, ``-`` or ``:`` parses as an operator, or raises.
+    Inside a phrase only ``"`` is special, escaped by doubling.
 
     Returns ``""`` when nothing survives filtering, which the caller must treat
     as an empty result — an empty MATCH expression is a syntax error to FTS5.
     """
-    quoted = [f'"{word.replace(chr(34), chr(34) * 2)}"' for word in _query_words(query)]
-    return " OR ".join(dict.fromkeys(quoted))
+    # Deduplicated case-insensitively, because FTS5 is: ORing a term with its
+    # own other spelling counts it twice in the score. The original spelling is
+    # what gets emitted — folding is the tokenizer's job, not ours.
+    by_token: dict[str, str] = {}
+    for word in _query_words(query):
+        by_token.setdefault(word.lower(), word)
+    return " OR ".join('"' + w.replace('"', '""') + '"' for w in by_token.values())
 
 
 def _snippet_terms(query: str, *, normalize: bool) -> set[str]:

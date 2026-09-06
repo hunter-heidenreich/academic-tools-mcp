@@ -449,6 +449,14 @@ grouped by milestone rather than per commit.
   caught it: it asserted only that search still returned a hit, which it did,
   because those tables happened to be correct. ([#86])
 
+- **A query that repeats a word in another case no longer double-counts it.**
+  `_fts_query` deduplicated its terms, but on the raw word — so `"Attention
+  attention"` built `"Attention" OR "attention"`, two spellings FTS5 tokenises
+  identically, and BM25 counted the term twice (measured: the top score doubles
+  from `1e-6` to `2e-6`). The same query typed in one case ranked differently
+  from the other. Deduplication is now case-insensitive, while the original
+  spelling is what reaches FTS5 — folding is the tokenizer's job. ([#86])
+
 - **A busy search index is no longer deleted.** `_connect` treats a database it
   cannot open as corrupt and unlinks it, which is right for "file is not a
   database" — but `sqlite3.OperationalError` is a *subclass* of

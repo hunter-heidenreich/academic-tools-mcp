@@ -1612,6 +1612,13 @@ class TestStopwordsStayOutOfTheMatchExpression:
         assert cache_search._fts_query("attention attention") == '"attention"'
         assert cache_search._fts_query("attention model attention") == ('"attention" OR "model"')
 
+    def test_a_repeat_in_another_case_is_still_one_term(self):
+        """FTS5 lowercases, so two spellings are one term — and ORing a term
+        with itself counts it twice in the score, skewing the ranking of a
+        query that merely varied its capitalisation."""
+        assert cache_search._fts_query("Attention attention") == '"Attention"'
+        assert cache_search._fts_query("BERT bert Bert") == '"BERT"'
+
     def test_a_nul_splits_a_query_the_way_the_tokeniser_does(self):
         # sqlite3 cannot bind a string carrying a NUL at all, and `unicode61`
         # treats it as a separator, so the query is split on it.

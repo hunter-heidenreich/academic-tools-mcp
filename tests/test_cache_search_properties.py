@@ -290,6 +290,9 @@ def test_the_match_expression_is_deduplicated(query: str) -> None:
     assume(expression)
     terms = expression.split(" OR ")
     assert len(terms) == len(set(terms))
+    # Case-insensitively too: FTS5 lowercases, so two spellings of one word
+    # would OR a term with itself and count it twice in the score.
+    assert len(terms) == len({t.lower() for t in terms})
 
 
 @given(st.text(max_size=40))
