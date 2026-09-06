@@ -316,7 +316,9 @@ def _open(path: Path) -> sqlite3.Connection:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
         _ensure_schema(con)
-    except sqlite3.DatabaseError:
+    except Exception:
+        # Whatever went wrong, don't leave the connection open for `_connect`
+        # to unlink the file out from under.
         con.close()
         raise
     return con

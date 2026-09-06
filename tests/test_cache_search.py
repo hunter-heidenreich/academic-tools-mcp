@@ -1132,6 +1132,49 @@ class TestIndexFailuresAreNotSilent:
         assert result["retryable"] is True
         assert "result_count" not in result
 
+    def test_a_failed_open_closes_its_connection(self, isolated_cache, monkeypatch):
+        """`_open` must leave nothing behind, whatever the failure was.
+
+        The handler exists to avoid leaking a connection, which has nothing to
+        do with which exception occurred — and `sqlite3.InterfaceError` is a
+        sibling of `DatabaseError`, not a subclass, so naming one branch of the
+        hierarchy missed cases and left `_connect` unlinking a file it still
+        held open.
+        """
+        cache_search._index_path().parent.mkdir(parents=True, exist_ok=True)
+        closed: list[bool] = []
+        real_connect = sqlite3.connect
+
+        class _SpyConnection:
+            def __init__(self, con):
+                self._con = con
+
+            def __getattr__(self, name):
+                return getattr(self._con, name)
+
+            def __setattr__(self, name, value):
+                if name == "_con":
+                    super().__setattr__(name, value)
+                else:
+                    setattr(self._con, name, value)
+
+            def close(self):
+                closed.append(True)
+                self._con.close()
+
+        monkeypatch.setattr(
+            cache_search.sqlite3, "connect", lambda p: _SpyConnection(real_connect(p))
+        )
+
+        def boom(con):
+            raise sqlite3.InterfaceError("not a DatabaseError")
+
+        monkeypatch.setattr(cache_search, "_ensure_schema", boom)
+        with pytest.raises(sqlite3.InterfaceError):
+            cache_search._open(cache_search._index_path())
+
+        assert closed == [True], "the connection must be closed before the error propagates"
+
     def test_a_non_integer_schema_version_rebuilds(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
         cache_search.search("attention")
