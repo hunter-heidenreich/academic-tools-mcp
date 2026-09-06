@@ -36,61 +36,15 @@ _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-.]*[a-z0-9]|[a-z0-9]")
 # Deliberately far shorter than a standard English list: over-stripping hurts
 # recall on phrasal queries, and "all" / "no" / "not" / "very" carry content
 # in this domain. Don't grow it.
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "and",
-        "or",
-        "but",
-        "of",
-        "to",
-        "in",
-        "on",
-        "at",
-        "for",
-        "with",
-        "by",
-        "from",
-        "as",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "this",
-        "that",
-        "these",
-        "those",
-        "it",
-        "its",
-        "we",
-        "our",
-        "their",
-        "them",
-        "they",
-        "he",
-        "she",
-        "his",
-        "her",
-        "i",
-        "you",
-        "your",
-        "if",
-        "then",
-        "than",
-        "so",
-        "such",
-        "into",
-        "about",
-        "over",
-        "under",
-        "between",
-    }
-)
+_STOPWORD_TEXT = """
+a an the and or but
+of to in on at for with by from as into about over under between
+is are was were be been being
+this that these those it its
+we our their them they he she his her i you your
+if then than so such
+"""
+_STOPWORDS = frozenset(_STOPWORD_TEXT.split())
 
 # The same pattern papers.parse_sections uses, compiled MULTILINE because this
 # scans a whole document rather than a line.
