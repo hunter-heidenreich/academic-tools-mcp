@@ -47,18 +47,19 @@ _STOPWORDS = frozenset(_STOPWORD_TEXT.split())
 _HEADING_RE = re.compile(papers.HEADING_PATTERN, re.MULTILINE)
 
 
-def _tokenize(text: str, *, normalize: bool = False) -> list[str]:
-    """Lowercase, drop stopwords, return a list of content tokens.
+def _content_tokens(text: str, *, normalize: bool = False) -> set[str]:
+    """Lowercased content words, punctuation stripped, stopwords dropped.
 
-    Feeds ``_snippet_terms`` only — the corpus and the MATCH expression are
-    both tokenised by FTS5, and this regex disagrees with it outside ASCII.
-    ``normalize=True`` NFKD-folds first, so "café" and "cafe" agree.
+    **Not a tokenizer** — FTS5 tokenises both the corpus and the query, and
+    this regex disagrees with it outside ASCII. Its one consumer is
+    ``_snippet_terms``, which needs the punctuation-stripped view of a query
+    word. ``normalize=True`` NFKD-folds first, so "café" and "cafe" agree.
     """
     if normalize:
         text = _textnorm.fold(text)
-    return [
+    return {
         tok for tok in _TOKEN_RE.findall(text.lower()) if tok not in _STOPWORDS and len(tok) > 1
-    ]
+    }
 
 
 def _extract_title(markdown: str) -> str | None:
@@ -531,8 +532,9 @@ _QUERY_SPLIT_RE = re.compile(r"[\s\x00]+")
 def _query_words(query: str) -> list[str]:
     """The query's words, as handed to FTS5 — split, then filtered.
 
-    Stopwords and single characters are dropped here and not by ``_tokenize``,
-    whose ASCII-only regex would discard a non-Latin word the index holds. The
+    Stopwords and single characters are dropped here and not by
+    ``_content_tokens``, whose ASCII-only regex would discard a non-Latin word
+    the index holds. The
     filters themselves are still needed: ``unicode61`` strips neither, so an
     unfiltered "the" ORs in a term matching the whole corpus.
     """
@@ -564,13 +566,13 @@ def _snippet_terms(query: str, *, normalize: bool) -> set[str]:
     """Terms used to centre the snippet on the best-matching passage.
 
     The union of two views of the query, because neither alone is enough for
-    ``_extract_snippet``'s word-boundary scan: ``_tokenize`` strips punctuation
-    a raw word would carry in ("transformer." never matches), while the raw
-    words keep what its ASCII-only pattern mangles ("Gutiérrez"). With only
-    one, a hit the index found comes back centred on the document head and
+    ``_extract_snippet``'s word-boundary scan: ``_content_tokens`` strips
+    punctuation a raw word would carry in ("transformer." never matches), while
+    the raw words keep what its ASCII-only pattern mangles ("Gutiérrez"). With
+    only one, a hit the index found comes back centred on the document head and
     with no section — unnavigable.
     """
-    terms = set(_tokenize(query, normalize=normalize))
+    terms = _content_tokens(query, normalize=normalize)
     terms.update(
         (_textnorm.fold(word) if normalize else word).lower() for word in _query_words(query)
     )
@@ -623,7 +625,7 @@ def search(
     if top_k <= 0:
         return []
     top_k = min(top_k, _MAX_TOP_K)
-    # Gate on the MATCH expression, never on ``_tokenize``: a wholly non-Latin
+    # Gate on the MATCH expression, never on the word regex: a wholly non-Latin
     # query tokenises to nothing under that ASCII regex, and FTS5 would have
     # matched it.
     match_expr = _fts_query(query)

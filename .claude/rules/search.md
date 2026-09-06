@@ -7,7 +7,7 @@ paths:
 
 ## Scope
 
-BM25 keyword search across every cached markdown file (`.cache/<namespace>/markdown/*.md`), ranked by SQLite FTS5's built-in `bm25()`. **FTS5 tokenises both the documents and the query; `_tokenize`'s only remaining caller is `_snippet_terms`.** What the query path shares with it is the `_STOPWORDS` constant, not the function. Keep that set deliberately under-aggressive — it is far shorter than a standard English list, because words that carry content here ("all", "no", "not", "very") must stay out of it.
+BM25 keyword search across every cached markdown file (`.cache/<namespace>/markdown/*.md`), ranked by SQLite FTS5's built-in `bm25()`. **FTS5 tokenises both the documents and the query; `_content_tokens`'s only remaining caller is `_snippet_terms`.** What the query path shares with it is the `_STOPWORDS` constant, not the function. Keep that set deliberately under-aggressive — it is far shorter than a standard English list, because words that carry content here ("all", "no", "not", "very") must stay out of it.
 
 ## What a hit returns
 
@@ -35,7 +35,7 @@ FTS5's `bm25()` is negative, most-relevant-first; `search` flips it so the respo
 
 ## Query tokenisation
 
-The query must be tokenised by FTS5, not `_tokenize`: `_tokenize`'s ASCII-only regex splits "Gutiérrez" into `guti OR rrez` and reduces a wholly non-Latin query to nothing, disagreeing with an index that stored the term fine. So `_query_words` splits on whitespace **and NUL** (`unicode61`'s separators, and sqlite3 cannot bind a string carrying a NUL at all), `_fts_query` double-quotes each word (an unquoted `NOT`/`OR`/`*`/`-`/`:` parses as an operator or raises), and `search` gates on the MATCH expression being non-empty — never on `_tokenize`. `_query_words` drops stopwords and single characters itself — `unicode61` strips neither, so an unfiltered "the" ORs in a term that matches the whole corpus. The sole surviving `_tokenize` caller is `_snippet_terms`, which unions tokenised with raw-lowercased words because `_extract_snippet`'s word-boundary scan needs punctuation stripped *and* the accented form intact — otherwise the snippet centres on the document head and reports no `section_index`, leaving a real hit unnavigable.
+The query must be tokenised by FTS5, not `_content_tokens`: `_content_tokens`'s ASCII-only regex splits "Gutiérrez" into `guti OR rrez` and reduces a wholly non-Latin query to nothing, disagreeing with an index that stored the term fine. So `_query_words` splits on whitespace **and NUL** (`unicode61`'s separators, and sqlite3 cannot bind a string carrying a NUL at all), `_fts_query` double-quotes each word (an unquoted `NOT`/`OR`/`*`/`-`/`:` parses as an operator or raises), and `search` gates on the MATCH expression being non-empty — never on `_content_tokens`. `_query_words` drops stopwords and single characters itself — `unicode61` strips neither, so an unfiltered "the" ORs in a term that matches the whole corpus. The sole surviving `_content_tokens` caller is `_snippet_terms`, which unions tokenised with raw-lowercased words because `_extract_snippet`'s word-boundary scan needs punctuation stripped *and* the accented form intact — otherwise the snippet centres on the document head and reports no `section_index`, leaving a real hit unnavigable.
 
 ## `unindexable` and the CJK trade
 

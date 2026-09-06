@@ -296,7 +296,7 @@ def test_the_match_expression_is_deduplicated(query: str) -> None:
 def test_snippet_terms_cover_the_words_the_index_matched(query: str) -> None:
     """Every word handed to FTS5 has a snippet term, so a hit can be centred.
 
-    `_tokenize` alone drops a non-Latin word entirely and splits an accented
+    `_content_tokens` alone drops a non-Latin word entirely and splits an accented
     one, which centres the snippet on the document head and reports no
     section — a hit the index found perfectly well, come back unnavigable.
     """
@@ -312,8 +312,8 @@ def test_snippet_terms_cover_the_words_the_index_matched(query: str) -> None:
 
 @given(st.text(max_size=80), st.booleans())
 def test_tokens_are_lowercase_content_words(text: str, normalize: bool) -> None:
-    """Every `_tokenize` token is lowercase, longer than one char, and not a stopword."""
-    for token in cache_search._tokenize(text, normalize=normalize):
+    """Every `_content_tokens` token is lowercase, longer than one char, and not a stopword."""
+    for token in cache_search._content_tokens(text, normalize=normalize):
         assert token == token.lower()
         assert len(token) > 1
         assert token not in cache_search._STOPWORDS
@@ -322,11 +322,11 @@ def test_tokens_are_lowercase_content_words(text: str, normalize: bool) -> None:
 
 @given(st.text(max_size=80))
 def test_normalizing_is_folding_then_tokenizing(text: str) -> None:
-    """`_tokenize(normalize=True)` is exactly `_tokenize(fold(text))`.
+    """`_content_tokens(normalize=True)` is exactly `_content_tokens(fold(text))`.
 
     The query and the documents must agree on the folded vocabulary; a second
     normalization policy here would let them diverge.
     """
-    assert cache_search._tokenize(text, normalize=True) == cache_search._tokenize(
+    assert cache_search._content_tokens(text, normalize=True) == cache_search._content_tokens(
         _textnorm.fold(text)
     )

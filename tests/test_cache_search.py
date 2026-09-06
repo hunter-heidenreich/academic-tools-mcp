@@ -45,50 +45,50 @@ def _seed_markdown(root, namespace: str, filename_stem: str, body: str):
 # ---------------------------------------------------------------------------
 
 
-class TestTokenize:
+class TestContentTokens:
     def test_lowercases_and_drops_stopwords(self):
         # "is" and "you" are stopwords; "all" is deliberately NOT a
         # stopword (it's content-bearing in academic prose).
-        assert cache_search._tokenize("Attention Is All You Need") == [
+        assert cache_search._content_tokens("Attention Is All You Need") == {
             "attention",
             "all",
             "need",
-        ]
+        }
 
     def test_drops_punctuation(self):
         # Brackets, parens, commas all split tokens cleanly. Trailing
         # period on "al." gets stripped because the regex requires the
         # last char of a multi-char token to be alphanumeric — "al"
         # comes back without it.
-        assert cache_search._tokenize("Vaswani et al. (2017), [1]") == [
+        assert cache_search._content_tokens("Vaswani et al. (2017), [1]") == {
             "vaswani",
             "et",
             "al",
             "2017",
-        ]
+        }
 
     def test_preserves_intra_word_hyphens(self):
         # Domain terms with hyphens must survive as single tokens —
         # otherwise "self-attention" can't be queried as a phrase.
-        toks = cache_search._tokenize("self-attention and cross-attention")
+        toks = cache_search._content_tokens("self-attention and cross-attention")
         assert "self-attention" in toks
         assert "cross-attention" in toks
 
     def test_preserves_intra_word_dots(self):
         # Version strings and acronyms with dots stay intact.
-        assert "bm25" in cache_search._tokenize("BM25 ranks documents")
-        assert "v1.5" in cache_search._tokenize("model v1.5 fine-tuned")
+        assert "bm25" in cache_search._content_tokens("BM25 ranks documents")
+        assert "v1.5" in cache_search._content_tokens("model v1.5 fine-tuned")
 
     def test_drops_stopwords(self):
         # The classic stopwords are gone but content words survive.
-        toks = cache_search._tokenize("the model is trained on a corpus of papers")
+        toks = cache_search._content_tokens("the model is trained on a corpus of papers")
         for stop in ("the", "is", "on", "a", "of"):
             assert stop not in toks
         assert "model" in toks and "trained" in toks and "corpus" in toks
 
     def test_drops_single_char_tokens(self):
         # "x" alone is noise; "x86" is content.
-        toks = cache_search._tokenize("we run x and y on x86 hardware")
+        toks = cache_search._content_tokens("we run x and y on x86 hardware")
         assert "x" not in toks
         assert "y" not in toks
         assert "x86" in toks
@@ -96,11 +96,9 @@ class TestTokenize:
     def test_normalize_folds_diacritics(self):
         # Without normalize the diacritic splits the token (the regex
         # only keeps [a-z0-9-.] runs), so "Gutiérrez" → ["guti", "rrez"].
-        assert cache_search._tokenize("Gutiérrez") == ["guti", "rrez"]
+        assert cache_search._content_tokens("Gutiérrez") == {"guti", "rrez"}
         # With normalize it folds to a single ASCII token.
-        assert cache_search._tokenize("Gutiérrez", normalize=True) == [
-            "gutierrez",
-        ]
+        assert cache_search._content_tokens("Gutiérrez", normalize=True) == {"gutierrez"}
 
 
 # ---------------------------------------------------------------------------
@@ -769,7 +767,7 @@ class TestIncrementalIndex:
     def _count_markdown_reads(self, monkeypatch):
         """Record every markdown file read, so re-reads are countable.
 
-        The old suite counted ``_tokenize`` calls; FTS5 tokenises inside
+        The old suite counted ``_content_tokens`` calls; FTS5 tokenises inside
         SQLite, so the observable cost is the file read.
         """
         seen: list[str] = []
@@ -1280,7 +1278,7 @@ class TestQueryTokenizationMatchesTheIndex:
     """The query and the documents must be tokenised by the same tokenizer.
 
     Regression: after the move to FTS5 the documents were tokenised by SQLite
-    while the query still went through ``_tokenize`` — an ASCII-only regex
+    while the query still went through ``_content_tokens`` — an ASCII-only regex
     written back when this module did its own indexing. It split "Gutiérrez"
     into ``guti OR rrez``, which matched nothing, even though the document had
     indexed cleanly as a single token.
@@ -1334,7 +1332,7 @@ class TestNonLatinQueryReachesTheIndex:
     Follow-on regression from the same root cause as
     ``TestQueryTokenizationMatchesTheIndex``: that fix rebuilt the MATCH
     expression from raw words, but ``search`` still *gated* on
-    ``_tokenize(query)`` being non-empty. A query of purely non-Latin words
+    ``_content_tokens(query)`` being non-empty. A query of purely non-Latin words
     tokenises to ``[]`` under that ASCII regex, so the search returned early
     and reported nothing — even though the document had indexed the term and
     a raw ``MATCH`` against the very same index found it.
@@ -1372,7 +1370,7 @@ class TestNonLatinQueryReachesTheIndex:
         assert hit["char_offset"] > 0
 
     def test_accented_hit_is_chainable_too(self, isolated_cache):
-        # ``_tokenize`` mangles "Gutiérrez" into guti/rrez, neither of which
+        # ``_content_tokens`` mangles "Gutiérrez" into guti/rrez, neither of which
         # appears in the text, so snippet centring found nothing and the hit
         # came back with no section.
         _seed_markdown(
@@ -1387,7 +1385,7 @@ class TestNonLatinQueryReachesTheIndex:
 
 
 class TestStopwordsStayOutOfTheMatchExpression:
-    """Stopwords must be filtered from the query, not just from ``_tokenize``.
+    """Stopwords must be filtered from the query, not just from ``_content_tokens``.
 
     FTS5 indexes the *raw* markdown under ``unicode61``, which strips neither
     stopwords nor single characters. Once the MATCH expression was built from
