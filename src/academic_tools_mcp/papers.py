@@ -621,7 +621,9 @@ def find_in_markdown(
     match. Caveat: ``\\b`` word boundaries are ASCII-oriented; folding
     turns diacritic Latin words into ASCII so ``whole_words`` works for
     them, but non-Latin scripts (CJK, Arabic) stay unreliable for
-    ``whole_words`` and are largely unaffected by folding.
+    ``whole_words`` and are largely unaffected by folding. A query that
+    matches only part of one original character's expansion (``"f"`` inside
+    a "ﬁ" ligature) reports the whole original character as ``match``.
 
     Hit offsets align with ``get_paper_section``'s stripped section text
     because both apply the same ``"\\n".join(lines[s:e]).strip()`` recipe.
@@ -669,8 +671,8 @@ def find_in_markdown(
                 pos = match.start()
                 matched = match.group()
             else:
-                pos = index_map[match.start()]
-                matched = section_text[pos : index_map[match.end()]]
+                pos, span_end = _textnorm.original_span(index_map, match.start(), match.end())
+                matched = section_text[pos:span_end]
             ws = max(0, pos - _FIND_SNIPPET_WINDOW)
             we = min(len(section_text), pos + len(matched) + _FIND_SNIPPET_WINDOW)
             # Collapse newlines so the snippet renders on one line in
@@ -688,6 +690,27 @@ def find_in_markdown(
     return hits, False
 
 
+def _match_section_title(
+    section: str, boundaries: list[tuple[str, int, int]]
+) -> list[tuple[int, str, int, int]]:
+    """Sections whose title contains ``section``, case- and diacritic-insensitively.
+
+    The folded pass runs only when the exact one finds nothing, so folding can
+    widen a miss into a hit ("Resume" → "Résumé") but never turns a resolving
+    query into an ambiguity error.
+    """
+    query = section.lower()
+    matches = [(i, t, s, e) for i, (t, s, e) in enumerate(boundaries) if query in t.lower()]
+    if matches:
+        return matches
+    folded = _textnorm.fold(section).lower()
+    return [
+        (i, t, s, e)
+        for i, (t, s, e) in enumerate(boundaries)
+        if folded in _textnorm.fold(t).lower()
+    ]
+
+
 def get_section_content(
     markdown: str,
     section: int | str,
@@ -698,7 +721,9 @@ def get_section_content(
 
     Args:
         markdown: Full markdown text.
-        section: Integer index or string title (case-insensitive partial match).
+        section: Integer index, or a string title matched as a case-insensitive
+            substring — falling back to a diacritic-folded comparison when
+            nothing matches exactly (see ``_match_section_title``).
         offset: Starting character offset within the section. Defaults to 0.
             Use ``next_offset`` from a previous call to page through.
         max_chars: Slice size in characters. Defaults to 16000 (~4000 tokens).
@@ -743,8 +768,7 @@ def get_section_content(
         else:
             return {"error": f"Section index {section} out of range (0-{len(boundaries) - 1})"}
     else:
-        query = section.lower()
-        matches = [(i, t, s, e) for i, (t, s, e) in enumerate(boundaries) if query in t.lower()]
+        matches = _match_section_title(section, boundaries)
         if len(matches) == 1:
             resolved_index, title, start, end = matches[0]
         elif len(matches) > 1:

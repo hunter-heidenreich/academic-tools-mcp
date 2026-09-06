@@ -357,6 +357,35 @@ class TestGetSectionContent:
         assert "error" in result
         assert "Ambiguous" in result["error"]
 
+    def test_ascii_query_finds_accented_title(self):
+        """An agent typing the ASCII spelling of an accented heading still
+        lands on it — the exact pass misses, the diacritic-folded pass hits."""
+        md = "## Résumé\n\nUn résumé.\n\n## Methods\n\nBody.\n"
+        result = get_section_content(md, "Resume")
+        assert result["title"] == "Résumé"
+
+    def test_accented_query_finds_ascii_title(self):
+        md = "## Resume\n\nA summary.\n\n## Methods\n\nBody.\n"
+        result = get_section_content(md, "Résumé")
+        assert result["title"] == "Resume"
+
+    def test_exact_match_wins_over_folded(self):
+        """Folding runs only when the exact pass finds nothing, so a paper
+        carrying both spellings resolves instead of erroring as ambiguous."""
+        md = "## Resume\n\nA.\n\n## Résumé\n\nB.\n"
+        assert get_section_content(md, "Resume")["title"] == "Resume"
+        assert get_section_content(md, "Résumé")["title"] == "Résumé"
+
+    def test_folded_pass_can_still_be_ambiguous(self):
+        md = "## Résumé\n\nA.\n\n## Resumé\n\nB.\n"
+        result = get_section_content(md, "Resume")
+        assert "Ambiguous" in result["error"]
+
+    def test_folded_miss_still_lists_available_titles(self):
+        md = "## Résumé\n\nA.\n"
+        result = get_section_content(md, "Nonexistent")
+        assert "Available" in result["error"]
+
     def test_preamble_by_index(self):
         result = get_section_content(_H2_MARKDOWN, 0)
         assert result["title"] == "Preamble"

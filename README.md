@@ -302,7 +302,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
         _doi.py           DOI normalization — one home, every caller
         _useragent.py     the outbound User-Agent — one home, every client
         _stats.py         per-provider counters, DEBUG_REQUESTS logging
-        _textnorm.py      offset-preserving case folding
+        _textnorm.py      diacritic folding + maps back to original offsets
         config.py         .env + environment resolution
 ```
 
