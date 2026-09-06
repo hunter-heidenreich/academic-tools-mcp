@@ -92,17 +92,13 @@ def _extract_snippet(
     if not query_terms:
         return _collapse(markdown[:_SNIPPET_CHARS]), None
 
-    # Word boundaries, so "drop" doesn't hit inside "dropout". One alternation
-    # over all the terms rather than a pass each — these documents reach
-    # megabytes and this runs once per winner — longest alternative first so an
-    # overlapping pair ("attention" / "attentions") reports the longer. The
-    # matched text *is* the term: both sides are transformed identically.
-    #
-    # index_map is required even on the normalize=False path: str.lower() is
-    # not length-preserving (U+0130 'İ' → 'i' + combining dot), so a raw
+    # Not a raw str.lower(): 'İ' lowercases to two chars, so an unmapped
     # m.start() drifts past the match.
     lowered, index_map = _textnorm.lower_with_map(markdown, fold=normalize)
+    # Longest first — \b settles "attention" against "attentions" on its own,
+    # but not a split on the hyphen or dot _content_tokens keeps intact.
     alternation = "|".join(re.escape(t) for t in sorted(query_terms, key=len, reverse=True))
+    # One pass for every term: megabyte documents, once per winner.
     pattern = re.compile(rf"\b(?:{alternation})\b")
     hits: list[tuple[int, str]] = [
         (index_map[m.start()], m.group(0)) for m in pattern.finditer(lowered)

@@ -250,6 +250,24 @@ class TestExtractSnippet:
         # and over the lone "delta" the window must drop on its way past.
         assert "beta" in snippet and "gamma" in snippet
 
+    def test_a_term_that_prefixes_another_is_not_swallowed_by_it(self):
+        """The alternation is ordered longest-first, and that is load-bearing.
+
+        Word boundaries settle "attention" against "attentions" on their own.
+        They do not settle a pair that splits on the hyphen or dot
+        ``_content_tokens`` deliberately keeps: shortest-first, "self" matches
+        inside "self-attention" because the hyphen is a real boundary, and both
+        hits are recorded under the same term. The passage then counts one
+        distinct term where it holds two, and loses to a later cluster.
+        """
+        gap = "filler word here. " * 20  # wider than the window
+        body = "self self-attention " + gap + "gamma delta " + gap
+        terms = {"self", "self-attention", "gamma", "delta"}
+
+        _, offset = cache_search._extract_snippet(body, terms)
+
+        assert body[offset:].startswith("self self-attention")
+
     def test_falls_back_to_head_when_no_match(self):
         body = "introduction " * 50
         snippet, offset = cache_search._extract_snippet(body, {"missing"})
