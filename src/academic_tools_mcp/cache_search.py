@@ -33,9 +33,7 @@ _MAX_TOP_K = 50
 # stay one token each. Snippet terms only — FTS5 tokenises the corpus.
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9\-.]*[a-z0-9]|[a-z0-9]")
 
-# Deliberately far shorter than a standard English list: over-stripping hurts
-# recall on phrasal queries, and "all" / "no" / "not" / "very" carry content
-# in this domain. Don't grow it.
+# Don't grow it: "all" / "no" / "not" / "very" carry content in this domain.
 _STOPWORD_TEXT = """
 a an the and or but
 of to in on at for with by from as into about over under between
