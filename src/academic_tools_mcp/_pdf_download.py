@@ -87,11 +87,11 @@ def is_definitive_failure(result: dict[str, Any]) -> bool:
 
     Only these are worth negative-caching. **This is an allowlist — an explicit
     ``retryable: False`` and nothing else.** A denylist ("anything not marked
-    retryable") reads as equivalent and is not: ``_http.error_dict`` tags only
-    ``LocalBackpressureError`` with ``retryable``, so a timeout, a 5xx and a 429
-    all arrive carrying no ``retryable`` key at all. Under a denylist every one
-    of them is classified permanent and cached for the full TTL — precisely the
-    failures that resolve themselves on retry.
+    retryable") reads as equivalent and is not: ``_http.error_dict`` flags its
+    transient branches ``retryable: True``, but leaves "other 4xx" carrying no
+    ``retryable`` key at all — a paywalled 403 is not something we know to be
+    permanent and paper-intrinsic. Under a denylist that unknown is classified
+    definitive and cached for the full TTL.
 
     A ``MAX_PDF_BYTES`` abort is excluded despite being non-retryable: it is a
     config choice a cap bump fixes, not a fact about the paper, and caching it

@@ -391,11 +391,11 @@ class TestCachedHit:
 class TestIsDefinitiveFailure:
     """An allowlist, not a denylist — and the difference is a live bug class.
 
-    ``_http.error_dict`` sets ``retryable`` on ``LocalBackpressureError``
-    alone. Every other branch (429, 5xx, other 4xx, timeout, transport) says
-    "Transient — retry." in prose and carries no such key. A denylist
-    ("anything not marked retryable") therefore classifies all of them as
-    permanent and negative-caches them for the full TTL.
+    ``_http.error_dict`` marks every *transient* branch ``retryable: True``,
+    but its "other 4xx" branch carries no ``retryable`` key at all: a 403 from
+    a paywall is not something we know is permanent and paper-intrinsic. Under
+    a denylist ("anything not marked retryable") that unknown is classified as
+    definitive and negative-cached for the full TTL.
     """
 
     def test_an_explicit_non_retryable_error_counts(self):
@@ -421,11 +421,32 @@ class TestIsDefinitiveFailure:
             ),
         ],
     )
-    def test_transport_errors_carry_no_retryable_key_and_must_not_count(self, exc):
+    def test_transient_errors_are_flagged_retryable_and_must_not_count(self, exc):
         from academic_tools_mcp import _http
 
         result = _http.error_dict("Test", exc)
-        assert "retryable" not in result, "the premise of this test changed"
+        assert result["retryable"] is True, (
+            "every transient branch of error_dict must carry the flag; "
+            "oa_download and tools/graph branch on it"
+        )
+        assert not _pdf_download.is_definitive_failure(result)
+
+    def test_an_unclassified_4xx_must_not_count(self):
+        """The case that makes the allowlist load-bearing.
+
+        A 403 gets no ``retryable`` key either way — we don't know whether the
+        paywall is permanent. A denylist would negative-cache it for the TTL.
+        """
+        from academic_tools_mcp import _http
+
+        request = httpx.Request("GET", "http://x")
+        result = _http.error_dict(
+            "Test",
+            httpx.HTTPStatusError(
+                "x", request=request, response=httpx.Response(403, request=request)
+            ),
+        )
+        assert "retryable" not in result
         assert not _pdf_download.is_definitive_failure(result)
 
     def test_a_size_cap_abort_does_not_count(self):
