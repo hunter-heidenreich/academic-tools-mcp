@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from academic_tools_mcp import _clients, cache
+from academic_tools_mcp import _clients, _stems
 from academic_tools_mcp.providers import arxiv, biorxiv
 
 from ._download_fakes import passthrough_slot as _passthrough_slot
@@ -36,7 +36,7 @@ def _dest(mod, identifier: str) -> Path:
     canonical = (
         arxiv.canonical_arxiv_id(identifier) if mod is arxiv else biorxiv.canonical_key(identifier)
     )
-    return cache.cache_dir(mod.NAMESPACE, "pdfs") / mod._pdf_filename(canonical)
+    return _stems.pdf_path(mod.NAMESPACE, canonical)
 
 
 def _setup(mod, identifier: str, monkeypatch) -> None:

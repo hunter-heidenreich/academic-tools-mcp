@@ -15,14 +15,19 @@ def _new_temp(dst: Path) -> tuple[int, Path]:
 
 
 def write_text(path: Path, payload: str) -> None:
-    """Write ``payload`` to ``path``, never exposing a half-written file.
+    r"""Write ``payload`` to ``path``, never exposing a half-written file.
 
     UTF-8 is hardcoded, not a parameter: readers decode UTF-8, so anything else
     writes a file the next read deletes as corrupt.
+
+    Invariant: the bytes on disk are exactly ``payload.encode("utf-8")``, which
+    is what lets a caller checksum the string instead of re-reading the file.
+    ``newline=""`` is what holds it — the default translates ``\n`` to
+    ``os.linesep``.
     """
     fd, tmp_path = _new_temp(path)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(payload)
         os.replace(tmp_path, path)
     except BaseException:

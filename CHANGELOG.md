@@ -17,6 +17,39 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A paper's section index could permanently describe a different document.**
+  `store_markdown_and_index` wrote the markdown and then re-read the file to
+  checksum it. Full-mode `convert_paper` is the one markdown writer that holds
+  only the global conversion lock and never the per-paper `sections_lock` —
+  which `import_paper` does hold for the same path — so a write landing in that
+  window left an entry holding document X's sections under document Y's
+  checksum. A matching checksum is exactly what suppresses a re-parse, so the
+  wrong titles were served for that paper indefinitely. The checksum now comes
+  from the text that was parsed, making the entry correct by construction; a
+  losing writer's entry mismatches disk and self-heals on the next read.
+  ([#91])
+- **`convert_paper` could corrupt the text of a converted paper.** The rewrite
+  that strips unresolvable image paths stopped at the first `)` *inside* the
+  path, so `![Figure 1](fig(1).png)` became `![Figure 1]().png)` — the tail
+  read as body content by every downstream reader, including corpus search.
+  Converter filenames derive from the PDF stem, and an Elsevier-PII DOI carries
+  parentheses. A caption containing brackets was skipped entirely, leaving a
+  path into the deleted extraction directory in agent-visible markdown. Both
+  are fixed and both are now pinned by test. ([#91])
+- **`convert_paper(mode="fast")` mislabelled a paper's provenance.** Re-reading
+  an already-converted paper whose entry predates `conversion_mode` — `null`,
+  meaning nobody knows what produced it — relabelled it `"fast"` and wrote that
+  claim to disk permanently, while `mode="full"` answers `null` for the
+  identical state. Both branches now answer `null`. ([#91])
+- **The startup filename sweep could break a download in flight.** It renamed
+  every file under `pdfs/` and `markdown/`, including another process's
+  in-flight `.tmp`, whose stem still carries the destination's legacy
+  characters — making that writer's atomic rename fail. It now only touches
+  `.pdf` and `.md`. ([#91])
+- **`PDF_CONVERT_TIMEOUT=none` and its fast-mode twin are now exercised.** The
+  documented "disable the timeout" branch had never run in either mode.
+  ([#91])
+
 - **An unclassified OpenAlex failure no longer tells the agent to hand-fetch
   the PDF.** `oa_download` decided whether to attach its "fetch it yourself and
   call `import_paper`" hatch with a *denylist* — anything not explicitly flagged
@@ -29,8 +62,38 @@ grouped by milestone rather than per commit.
   under a `%PDF-` promise — now carries the hatch it was missing, while a
   size-cap abort and a 0-byte 200 still do not. ([#90])
 
+### Changed
+
+- **The PDF pipeline is a package.** `papers.py` (1340 lines, six
+  responsibilities) is now `papers/{sections,index,convert}.py` over a new
+  `_stems.py` naming layer, with `papers/__init__.py` re-exporting the public
+  surface — every `papers.X` spelling still resolves. `safe_stem` and the path
+  builders moved below the pipeline, so `providers/{arxiv,biorxiv,acl_anthology}`
+  and `manual` no longer import the PDF *converter* (and its subprocess, temp-dir
+  and signal machinery) just to name a file. Four identical `_pdf_filename`
+  bodies collapse into `_stems.pdf_path`, the two conversion modes' copy-pasted
+  subprocess handling into one driver, and `cache_search`'s private copy of
+  "which heading levels are title-level" into `papers.first_section_heading`.
+  ([#91])
+- **Converter output is post-processed off the event loop.** The read side of
+  the pipeline was already thread-offloaded and the write side was not: a
+  thesis-sized markdown's rewrite, parse, hash and write ran inline while the
+  loop served every other tool call. ([#91])
+
 ### Added
 
+
+- **Property tests for artifact naming and the section index.**
+  `tests/test_papers_properties.py` pins five invariants an example suite can
+  only sample: `safe_stem` is injective over arbitrary text and its output is
+  always a fixed point of the startup migration; the sweep never merges two
+  papers onto one file; every index `parse_sections` hands an agent is one
+  `get_paper_section` accepts, for any document a converter can emit; and the
+  chaining contract `find_in_paper` promises —
+  `get_paper_section(id, hit.section_index, offset=hit.char_offset)` lands on
+  the match — holds through the fold-and-map round trip `normalize=True` takes.
+  The pipeline modules are at 100% line coverage; `papers.py` was the only
+  large module below it. ([#91])
 
 - **Property tests for identifier routing and the arXiv re-file sweep**
   (`tests/test_manual_properties.py`). Three invariants that examples had been
@@ -2065,3 +2128,4 @@ grouped by milestone rather than per commit.
 [#88]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/88
 [#89]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/89
 [#90]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/90
+[#91]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/91

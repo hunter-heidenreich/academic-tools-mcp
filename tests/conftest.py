@@ -186,14 +186,18 @@ def _reset_conversion_state(monkeypatch: pytest.MonkeyPatch) -> None:
     ``_current_conversion`` and ``_section_locks`` are reset for the same
     reason ``_reset_pooled_state`` resets throttles: a test that errors
     mid-conversion must not leak "busy" state into the next one.
+
+    Patched on the submodule that *owns* each name, never on the ``papers``
+    facade: the facade re-exports by value, so a patch there rebinds an alias
+    nothing reads and the reset silently does nothing.
     """
     import asyncio
 
-    from academic_tools_mcp import papers
+    from academic_tools_mcp.papers import convert, index
 
-    monkeypatch.setattr(papers, "_global_convert_lock", asyncio.Lock())
-    monkeypatch.setattr(papers, "_current_conversion", None)
-    monkeypatch.setattr(papers, "_section_locks", type(papers._section_locks)())
+    monkeypatch.setattr(convert, "_global_convert_lock", asyncio.Lock())
+    monkeypatch.setattr(convert, "_current_conversion", None)
+    monkeypatch.setattr(index, "_section_locks", type(index._section_locks)())
 
 
 @pytest.fixture(autouse=True)
@@ -235,3 +239,34 @@ def _block_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket, "create_connection", guarded_create_connection)
+
+
+# ---------------------------------------------------------------------------
+# Opt-in conversion fixtures
+#
+# In conftest rather than a helper module so the suites take them by name: an
+# imported fixture shadows the parameter it is requested under.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_cache(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The cache one level below ``tmp_path``.
+
+    The autouse ``_isolate_cache_root`` already redirects the root; the
+    conversion suites want ``tmp_path`` itself free for the PDF and the
+    extraction dir.
+    """
+    from academic_tools_mcp import cache
+
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    return tmp_path
+
+
+@pytest.fixture
+def real_pdf(tmp_path: Any) -> Any:
+    """A PDF that exists. ``convert_pdf`` checks before spawning; the bytes
+    never matter, because every subprocess in these suites is faked."""
+    pdf = tmp_path / "fake.pdf"
+    pdf.write_bytes(b"%PDF-1.4 stub")
+    return pdf

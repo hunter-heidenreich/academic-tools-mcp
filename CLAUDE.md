@@ -26,7 +26,7 @@ Releases are cut deliberately, not per-merge. Calendar versioning: rename `[Unre
 
 ## Where the detail lives
 
-**Layered design — tools never hit the API directly. Every API client uses every shared module.** Deep per-module detail (atomic writes, throttle/backpressure, single-flight slots, provider quirks, PDF subprocess gating, tool shapes and error contracts) lives in `.claude/rules/*.md`, each auto-loading from its own `paths:` frontmatter when you touch a matching file. `python-design.md` covers every file under `src/`.
+**Layered design — tools never hit the API directly. Every API client uses every shared module.** Deep per-module detail (atomic writes, throttle/backpressure, single-flight slots, provider quirks, PDF subprocess gating, tool shapes and error contracts) lives in `.claude/rules/*.md`, each auto-loading from its own `paths:` frontmatter when you touch a matching file. `python-design.md` covers every file under `src/`. The PDF pipeline is a package — `papers/{sections,index,convert}.py` over the `_stems.py` naming layer; `pipeline.md` § Layout says which seam is which.
 
 Adding a new API provider or a new OpenAlex entity: use the `add-provider` skill.
 

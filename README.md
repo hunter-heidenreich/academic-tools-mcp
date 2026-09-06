@@ -287,8 +287,9 @@ server.py            thin entry: re-exports mcp + tools, registers the
   │                    opencitations.py  wikipedia.py  acl_anthology.py
   │
   ├── PDF + content  manual.py         local-file import + identifier dispatch
-  │                  papers.py         PDF → markdown → sections; global
-  │                                    single-conversion lock; find_in_markdown
+  │                  papers/           sections.py  markdown structure + search
+  │                                    index.py     the section index + its lock
+  │                                    convert.py   converter subprocess + gate
   │                  cache_search.py   BM25 over cached markdown (SQLite FTS5)
   │                  bibtex.py         BibTeX generation
   │                  _pdf_download.py  streaming download, size cap, cached-download protocol
@@ -305,6 +306,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
         _useragent.py     the outbound User-Agent — one home, every client
         _stats.py         per-provider counters, DEBUG_REQUESTS logging
         _textnorm.py      diacritic folding + maps back to original offsets
+        _stems.py         cache artifact naming — one sanitizer, every path
         config.py         .env + environment resolution
 ```
 

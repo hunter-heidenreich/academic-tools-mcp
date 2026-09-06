@@ -19,9 +19,9 @@ Generic file-based JSON cache under `.cache/<namespace>/<entity>/`, keyed by SHA
 
 **Counters partition, they don't overlap.** `cache_hits` / `negative_hits` are booked by `get` / `get_negative` when a lookup is *served from disk*; `cache_misses` is booked immediately before `fetch` — it means "went upstream". A read that finds nothing counts nothing, which is why `openalex._fetch_chunk` books its own misses (it bypasses `cached_lookup`) and why `papers`' sections reads move no counter at all. PDF downloads are outside this series entirely.
 
-**`CACHE_ROOT` is bound at import** (`_resolve_cache_root()` at module scope; `CACHE_DIR` relocates it for installed-wheel / read-only-tree deployments). `tests/conftest.py` monkeypatches that single attribute, so any module needing the test redirect reads `cache.CACHE_ROOT` at call time (`cache_search`, `papers.migrate_legacy_stems`) rather than capturing it at import. Don't hide it behind a function without updating conftest.
+**`CACHE_ROOT` is bound at import** (`_resolve_cache_root()` at module scope; `CACHE_DIR` relocates it for installed-wheel / read-only-tree deployments). `tests/conftest.py` monkeypatches that single attribute, so any module needing the test redirect reads `cache.CACHE_ROOT` at call time (`cache_search`, `_stems.migrate_legacy_stems`) rather than capturing it at import. Don't hide it behind a function without updating conftest.
 
-**Cross-module surface — renames here break callers.** `cache_dir` and `CACHE_ROOT` are public because the path builders live elsewhere (`providers/*.pdf_path`, `papers.markdown_path`, `cache_search`). Anything reached from another module gets a public name; a leading underscore here means genuinely internal. `_pdf_download.stream_to_file` writes its own temp-and-rename rather than calling `atomic`, because it enforces a byte cap while streaming.
+**Cross-module surface — renames here break callers.** `cache_dir` and `CACHE_ROOT` are public because the path builders live elsewhere (`_stems.pdf_path` / `markdown_path`, `cache_search`). Anything reached from another module gets a public name; a leading underscore here means genuinely internal. `_pdf_download.stream_to_file` writes its own temp-and-rename rather than calling `atomic`, because it enforces a byte cap while streaming.
 
 **Lifetime**
 

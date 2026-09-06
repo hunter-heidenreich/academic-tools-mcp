@@ -108,10 +108,10 @@ class TestConfigEnvScrubbed:
 
 class TestConversionStateReset:
     def test_convert_lock_starts_unlocked(self):
-        assert not papers._global_convert_lock.locked()
+        assert not papers.convert._global_convert_lock.locked()
 
     def test_current_conversion_starts_empty(self):
-        assert papers._current_conversion is None
+        assert papers.convert._current_conversion is None
 
     def test_section_locks_start_empty(self):
-        assert len(papers._section_locks) == 0
+        assert len(papers.index._section_locks) == 0

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, TypedDict
 from urllib.parse import unquote
 
-from . import _doi, _pdf_download, _stats, atomic, cache, papers
+from . import _doi, _pdf_download, _stats, _stems, atomic, cache, papers
 from .providers import acl_anthology, arxiv, biorxiv
 
 NAMESPACE = "manual"
@@ -130,8 +130,10 @@ def migrate_misrouted_arxiv() -> int:
                 continue
             moved += 1
             if entity == "markdown":
-                # ``sections_key`` is ``safe_stem``, so the stem is the key.
-                cache.invalidate(NAMESPACE, "sections", path.stem)
+                # The stem is already ``safe_stem`` output, so the key is
+                # derived from it rather than re-sanitized: ``safe_stem`` is
+                # not idempotent and would re-encode its own escapes.
+                cache.invalidate(NAMESPACE, "sections", _stems.sections_key_for_stem(path.stem))
     return moved
 
 
@@ -166,6 +168,14 @@ def _misrouted_arxiv_id(stem: str) -> str | None:
     Both candidates, because the stem alone doesn't say whether an ``_`` was a
     slash: ``arxiv%3A2301.00001`` carries none, ``arxiv%3Ahep-th_9901001``
     does. Repair then decode is the order ``cache_search`` inverts stems in.
+
+    Deliberately *not* ``cache_search._filename_to_canonical``, despite being
+    the same shape of operation. That one repairs the slash with each
+    namespace's own anchored grammar, which is right for a stem that namespace
+    wrote — and wrong here: these stems were written under the legacy
+    ``manual`` key rule, which keeps an ``arXiv:`` prefix that
+    ``_ARXIV_OLDSTYLE_STEM_RE`` (``^archive_number$``) can never match. Sharing
+    the grammar makes the sweep miss the prefixed spellings it exists for.
     """
     for candidate in (stem, stem.replace("_", "/", 1)):
         recovered = unquote(candidate)
@@ -179,24 +189,13 @@ def _misrouted_arxiv_id(stem: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _pdf_filename(canonical: str) -> str:
-    """Build a PDF filename from a canonical identifier.
-
-    Routes through ``papers.safe_stem``, the single sanitizer shared by the
-    PDF, markdown and sections paths, so a manual import can't disagree with a
-    provider about which file belongs to which paper. A freeform label can
-    carry anything, and this name reaches the converter's ``bash -c``.
-    """
-    return papers.safe_stem(canonical) + ".pdf"
-
-
 def _manual_pdf_path(canonical: str) -> Path:
     """PDF path in the manual namespace (fallback only).
 
     Folds its argument first, like every provider's ``pdf_path``, so a raw
     spelling can't build a path the cache never writes.
     """
-    return cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(_doi.canonical(canonical))
+    return _stems.pdf_path(NAMESPACE, _doi.canonical(canonical))
 
 
 # ---------------------------------------------------------------------------

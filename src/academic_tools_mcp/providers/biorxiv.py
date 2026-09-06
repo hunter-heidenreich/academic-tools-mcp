@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from .. import _clients, _doi, _http, _pdf_download, _singleflight, _useragent, cache, papers
+from .. import _clients, _doi, _http, _pdf_download, _singleflight, _stems, _useragent, cache
 from .._throttle import Throttle
 
 NAMESPACE = "biorxiv"
@@ -344,21 +344,10 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     )
 
 
-def _pdf_filename(canonical: str) -> str:
-    """Build a PDF filename from a canonical DOI.
-
-    Routes through ``papers.safe_stem`` — the single sanitizer shared by the
-    PDF, markdown, and sections paths — so this provider can't disagree with
-    the others about which file belongs to which paper. Ordinary bioRxiv DOIs
-    map to the same name as before.
-    """
-    return papers.safe_stem(canonical) + ".pdf"
-
-
 def pdf_path(doi: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
     canonical = canonical_key(doi)
-    return cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    return _stems.pdf_path(NAMESPACE, canonical)
 
 
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -379,7 +368,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     callers for the same DOI share one download via single-flight.
     """
     canonical = canonical_key(doi)
-    dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    dest = _stems.pdf_path(NAMESPACE, canonical)
 
     async def _fetch() -> dict[str, Any]:
         # Need paper metadata to get the PDF URL. force_refresh is threaded
