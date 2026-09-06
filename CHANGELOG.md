@@ -17,6 +17,13 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **An unreadable directory under `.cache/` stopped the server from starting.**
+  The startup sweep that renames pre-`safe_stem` filenames guarded only the
+  rename itself, so a `PermissionError` from listing a cache subdirectory
+  propagated out of the FastMCP lifespan. It is documented as best-effort and
+  now behaves that way: an unwalkable directory is skipped and left for the
+  next run, and the rest of the cache is still swept. ([#92])
+
 - **A paper's section index could permanently describe a different document.**
   `store_markdown_and_index` wrote the markdown and then re-read the file to
   checksum it. Full-mode `convert_paper` is the one markdown writer that holds
@@ -2129,3 +2136,4 @@ grouped by milestone rather than per commit.
 [#89]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/89
 [#90]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/90
 [#91]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/91
+[#92]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/92

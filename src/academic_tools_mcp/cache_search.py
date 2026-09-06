@@ -643,7 +643,7 @@ def search(
         # bm25() is negative, most-relevant first. No floor: FTS5 returns only
         # rows that matched, so a low score is a weak term, not a non-match.
         score = -float(row["score"])
-        path = cache.cache_dir(row["ns"], "markdown") / f"{row['stem']}.md"
+        path = papers.markdown_path_for_stem(row["ns"], row["stem"])
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
