@@ -86,18 +86,18 @@ def _isolate_cache_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     """Point the on-disk cache at this test's private ``tmp_path``.
 
     A safety net, not a convenience: 12 of the test modules never patched
-    ``cache._CACHE_ROOT`` themselves, so a single missed monkeypatch wrote
+    ``cache.CACHE_ROOT`` themselves, so a single missed monkeypatch wrote
     into the operator's real ``.cache/`` (which reaches tens of GB on a
     working install). Tests that need a different layout still override this
     — a later ``monkeypatch.setattr`` in the test body wins, and the many
     that set it to this same ``tmp_path`` are now simply redundant.
 
-    ``cache_search`` reads ``cache._CACHE_ROOT`` at call time rather than
+    ``cache_search`` reads ``cache.CACHE_ROOT`` at call time rather than
     caching it, so patching the one attribute covers the search index too.
     """
     from academic_tools_mcp import cache
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 
 
 @pytest.fixture(autouse=True)

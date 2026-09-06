@@ -498,7 +498,7 @@ class TestConvertPdfCachePaths:
     @pytest.fixture
     def isolated_cache(self, tmp_path, monkeypatch):
         # Redirect the cache root so each test runs against a clean filesystem
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         return tmp_path
 
     @pytest.fixture
@@ -794,7 +794,7 @@ class TestConvertPdfSubprocessFailures:
 
     @pytest.fixture
     def isolated_cache(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         return tmp_path
 
     @pytest.fixture
@@ -990,7 +990,7 @@ class TestConvertPdfTempDirCleanup:
 
     @pytest.fixture
     def isolated_cache(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         return tmp_path
 
     @pytest.fixture
@@ -1378,7 +1378,7 @@ class TestConvertPdfFastMode:
 
     @pytest.fixture
     def isolated_cache(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         return tmp_path
 
     @pytest.fixture
@@ -1635,7 +1635,7 @@ class TestMigrateLegacyStems:
         assert (d / "a b.pdf").exists() and (d / "a%20b.pdf").exists()
 
     def test_missing_cache_root_is_not_an_error(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "does-not-exist")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "does-not-exist")
         assert papers.migrate_legacy_stems() == 0
 
     def test_ignores_unrelated_entities(self, tmp_path):

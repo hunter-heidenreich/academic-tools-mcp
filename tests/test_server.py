@@ -846,7 +846,7 @@ class TestFindInPaper:
 
     @pytest.fixture
     def isolated_cache(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / ".cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / ".cache")
         return tmp_path / ".cache"
 
     @pytest.mark.asyncio

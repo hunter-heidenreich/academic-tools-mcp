@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from . import _doi, _pdf_download, _stats, cache, papers
+from . import _doi, _pdf_download, _stats, atomic, cache, papers
 
 NAMESPACE = "manual"
 
@@ -308,7 +308,7 @@ def import_local_pdf(
     # Atomic copy: a crash / disk-full mid-copy can't leave a half-written
     # canonical PDF (which _pdf_download.is_usable_pdf would then reject).
     try:
-        cache._atomic_copy(source, dest)
+        atomic.copy(source, dest)
         # Inside the same try: the size read is part of landing the file, and
         # a concurrent unlink between the two must surface as this error, not
         # as an OSError out of the tool.

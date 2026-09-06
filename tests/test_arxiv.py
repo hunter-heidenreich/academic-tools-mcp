@@ -287,7 +287,7 @@ class TestGetPaperSingleFlight:
     async def test_concurrent_same_id_collapses_to_one_fetch(self, tmp_path, monkeypatch):
         from academic_tools_mcp import _clients, _singleflight, cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 
@@ -340,7 +340,7 @@ class TestGetPaperSingleFlight:
         # every attempt and burn through the throttle budget.
         from academic_tools_mcp import _clients, _singleflight, cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 
@@ -400,7 +400,7 @@ class TestGetPaperSingleFlight:
         cached record might be stale (e.g. a new version uploaded)."""
         from academic_tools_mcp import _clients, _singleflight, cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 
@@ -464,7 +464,7 @@ class TestGetPaperSingleFlight:
         # which defeats the point.
         from academic_tools_mcp import _clients, _singleflight, cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 
@@ -526,7 +526,7 @@ def _reset_throttle(monkeypatch, tmp_path):
     """
     from academic_tools_mcp import _singleflight, cache
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
 

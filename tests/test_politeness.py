@@ -271,7 +271,7 @@ class TestStatsAccuracy:
                 entity="things",
                 canonical="k",
                 fetch=fetch,
-                positive_ttl=None,
+                positive_ttl=999.0,
             )
         )
 
@@ -279,17 +279,17 @@ class TestStatsAccuracy:
         assert counters["cache_misses"] == 1, counters
         assert counters.get("cache_hits", 0) == 0
 
-    def test_count_false_suppresses_both_counters(self, tmp_path):
+    def test_count_false_suppresses_the_hit_counter(self, tmp_path):
+        """A warming probe reads to decide whether to overwrite; it is not a
+        lookup being served, so it must not show up as one."""
         from academic_tools_mcp import _stats, cache
 
         _stats.reset()
-        cache.get("probe", "things", "absent", count=False)
         cache.put("probe", "things", "present", {"a": 1})
         cache.get("probe", "things", "present", count=False)
+        cache.get("probe", "things", "absent", count=False)
 
-        counters = _stats.snapshot()["providers"].get("probe", {})
-        assert counters.get("cache_misses", 0) == 0
-        assert counters.get("cache_hits", 0) == 0
+        assert _stats.snapshot()["providers"].get("probe", {}) == {}
 
 
 async def _noop_sleep(_seconds):

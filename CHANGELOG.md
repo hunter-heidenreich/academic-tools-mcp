@@ -17,6 +17,21 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Property and unit tests for the shared cache.** `tests/test_cache_properties.py`
+  pins what every provider leans on and no example set covers: any JSON object
+  round-trips through `put`/`get` unchanged, `get_negative` returns the payload
+  minus only its own `_expires_at` slot, the positive and `_neg/` halves never
+  shadow each other, and `_cache_key` is injective over the near-miss pairs a
+  lossy key function would fold together (case, whitespace, Unicode
+  normalisation). The example suite gained the arms nothing exercised: the
+  three TTL/sweep boundaries — an entry aged exactly `max_age_seconds` still
+  hits, a negative entry at its exact expiry is still live, a `.tmp` exactly at
+  the orphan cutoff is swept — the `BaseException` temp-file cleanup both
+  atomic writers promise, and three `cached_lookup` contracts: `positive_ttl`
+  reaching `get`, a raising `fetch` propagating without caching anything, and
+  the in-slot re-check sparing a follower promoted after its leader was
+  cancelled mid-write. ([#87])
+
 - **Property and unit tests for the corpus search engine, at full branch
   coverage.** `tests/test_cache_search_properties.py` pins the three invariants
   no example set can cover: a hit's `canonical_id` round-trips back through
@@ -399,6 +414,23 @@ grouped by milestone rather than per commit.
   walk would have deleted every other namespace's postings. ([#86])
 
 ### Fixed
+
+- **`cache_misses` now means "went upstream".** It was booked by `cache.get`
+  whenever no *positive* entry was found, so every negative-cache hit was also
+  billed a miss — a known-bad DOI queried 100 times reported 100 misses despite
+  one upstream call — and every read of purely local data (the sections index)
+  inflated it too. It is now booked immediately before a `fetch`, so
+  `cache_hits`, `negative_hits` and `cache_misses` partition served lookups
+  instead of overlapping. Visible via `get_server_stats` under
+  `ENABLE_DEBUG_TOOLS=1`. ([#87])
+
+- **`_atomic_copy` no longer backdates its in-flight temp file.** `shutil.copystat`
+  carried the source's mtime onto the temp before the rename, so importing a PDF
+  older than `_ORPHAN_TMP_AGE_SECONDS` presented `gc_orphan_tmp_files` with a live
+  temp that read as an orphan; a sweep racing the copy (a second server starting
+  against a shared `CACHE_DIR`) unlinked it and `import_paper` failed with a
+  `FileNotFoundError` from the rename. The destination now takes its own write
+  time and only the source's mode. ([#87])
 
 - **Old-style arXiv ids now reach the arXiv namespace whatever their case or
   subject class.** `manual._ARXIV_OLD_RE` matched a non-lowercased id against
@@ -1278,6 +1310,7 @@ grouped by milestone rather than per commit.
   the lock is never actually contended. That accident is no longer
   load-bearing. ([#47])
 
+
 ## [2026.09.04] — 2026-09-04
 
 ### Fixed
@@ -1926,3 +1959,4 @@ grouped by milestone rather than per commit.
 [#84]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/84
 [#85]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/85
 [#86]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/86
+[#87]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/87

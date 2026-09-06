@@ -14,7 +14,7 @@ from academic_tools_mcp import cache, papers
 
 class TestCacheRootIsolation:
     def test_cache_root_points_at_this_tests_tmp_path(self, tmp_path):
-        assert tmp_path == cache._CACHE_ROOT
+        assert tmp_path == cache.CACHE_ROOT
 
     def test_cache_writes_land_under_tmp_path(self, tmp_path):
         cache.put("arxiv", "papers", "2301.00001", {"title": "x"})
@@ -24,8 +24,8 @@ class TestCacheRootIsolation:
 
     def test_a_test_can_still_override_the_root(self, tmp_path, monkeypatch):
         other = tmp_path / "elsewhere"
-        monkeypatch.setattr(cache, "_CACHE_ROOT", other)
-        assert other == cache._CACHE_ROOT
+        monkeypatch.setattr(cache, "CACHE_ROOT", other)
+        assert other == cache.CACHE_ROOT
 
 
 class TestNetworkBlocked:

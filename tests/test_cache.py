@@ -1,6 +1,8 @@
 import contextlib
 import json
 
+import pytest
+
 from academic_tools_mcp import cache
 
 
@@ -200,6 +202,73 @@ def test_max_age_seconds_keeps_fresh_entry(tmp_path, monkeypatch):
     assert cache.get("openalex", "works", "fresh", max_age_seconds=3600) == {"title": "Fresh"}
 
 
+# ---------------------------------------------------------------------------
+# TTL / sweep boundaries — exactly at the limit must fall on the safe side
+# ---------------------------------------------------------------------------
+
+
+def test_entry_at_exactly_max_age_still_hits(tmp_path, monkeypatch):
+    """`age > max_age_seconds` — an entry aged exactly the TTL is still fresh.
+    The clock is frozen so the assertion is about the comparison, not about how
+    long the test itself took."""
+    import os
+
+    cache.put("openalex", "works", "edge", {"title": "Edge"})
+    path = tmp_path / "openalex" / "works" / f"{cache._cache_key('edge')}.json"
+    now = 1_700_000_000.0
+    os.utime(path, (now - 60.0, now - 60.0))
+    monkeypatch.setattr(cache.time, "time", lambda: now)
+
+    assert cache.get("openalex", "works", "edge", max_age_seconds=60.0) == {"title": "Edge"}
+    assert path.exists(), "an entry exactly at the TTL must not be swept"
+
+    # One second past it, the same entry is a miss and self-heals.
+    assert cache.get("openalex", "works", "edge", max_age_seconds=59.0) is None
+    assert not path.exists()
+
+
+def test_negative_entry_at_exactly_its_expiry_is_still_live(tmp_path, monkeypatch):
+    """`expires_at < time.time()` — an entry at its exact expiry instant is
+    still served, matching get()'s boundary on the positive side."""
+    now = 1_700_000_000.0
+    monkeypatch.setattr(cache.time, "time", lambda: now)
+    cache.put_negative("arxiv", "papers", "edge-neg", {"error": "404"}, ttl_seconds=0.0)
+
+    assert cache.get_negative("arxiv", "papers", "edge-neg") == {"error": "404"}
+
+    # A hair past it, the same entry is a miss and is unlinked.
+    monkeypatch.setattr(cache.time, "time", lambda: now + 0.001)
+    assert cache.get_negative("arxiv", "papers", "edge-neg") is None
+    assert not cache._neg_path("arxiv", "papers", "edge-neg").exists()
+
+
+def test_gc_sweeps_a_tmp_file_at_exactly_the_cutoff(tmp_path, monkeypatch):
+    """`st_mtime > cutoff` — a temp exactly at the cutoff age is swept, and one
+    a hair younger is not. Erring towards sweeping is safe only because no
+    writer backdates its temp file."""
+    import os
+
+    stale = tmp_path / "ns" / "ent" / "a.tmp"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("x")
+    fresh = tmp_path / "ns" / "ent" / "b.tmp"
+    fresh.write_text("x")
+
+    now = 1_700_000_000.0
+    os.utime(stale, (now - 3600.0, now - 3600.0))
+    os.utime(fresh, (now - 3599.0, now - 3599.0))
+    monkeypatch.setattr(cache.time, "time", lambda: now)
+
+    assert cache.gc_orphan_tmp_files(max_age_seconds=3600.0) == 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+# ---------------------------------------------------------------------------
+# invalidate
+# ---------------------------------------------------------------------------
+
+
 def test_invalidate_drops_positive_and_negative(tmp_path, monkeypatch):
     """force_refresh drops both halves so a previously-404'd identifier
     can resolve on the retry — a stale negative wouldn't expire for 24h
@@ -253,7 +322,7 @@ def test_gc_orphan_tmp_files_removes_old_tmps(tmp_path, monkeypatch):
 def test_gc_orphan_tmp_files_no_cache_dir(tmp_path, monkeypatch):
     """First boot has no .cache yet; sweep must not error."""
     nonexistent = tmp_path / "does-not-exist"
-    monkeypatch.setattr(cache, "_CACHE_ROOT", nonexistent)
+    monkeypatch.setattr(cache, "CACHE_ROOT", nonexistent)
     assert cache.gc_orphan_tmp_files() == 0
 
 
@@ -386,6 +455,16 @@ def test_get_negative_preserves_underscore_payload_keys(tmp_path, monkeypatch):
     assert "_expires_at" not in cached
 
 
+def test_put_negative_reserves_the_expires_at_key(tmp_path, monkeypatch):
+    """_expires_at is this module's bookkeeping slot, so a payload carrying it
+    has it overwritten on write and stripped on read. No caller does this; the
+    test pins the documented behaviour rather than an accident."""
+    cache.put_negative("arxiv", "papers", "reserved", {"error": "x", "_expires_at": "mine"})
+
+    cached = cache.get_negative("arxiv", "papers", "reserved")
+    assert cached == {"error": "x"}
+
+
 # ---------------------------------------------------------------------------
 # Configurable cache root
 # ---------------------------------------------------------------------------
@@ -400,71 +479,6 @@ def test_resolve_cache_root_honors_env(tmp_path, monkeypatch):
 
     monkeypatch.delenv("CACHE_DIR", raising=False)
     assert cache._resolve_cache_root().name == ".cache"
-
-
-# ---------------------------------------------------------------------------
-# Atomic primitives: _atomic_write_text / _atomic_copy
-# ---------------------------------------------------------------------------
-
-
-def test_atomic_write_text_roundtrips_utf8(tmp_path):
-    """_atomic_write_text writes UTF-8 regardless of host locale and lands
-    the file in place."""
-    path = tmp_path / "nested" / "note.md"
-    payload = "## Café\n\nMüller, François-René — 数据\n"
-    cache._atomic_write_text(path, payload)
-    assert path.read_text(encoding="utf-8") == payload
-
-
-def test_atomic_write_text_no_torn_file_on_failure(tmp_path, monkeypatch):
-    """If the rename fails, the canonical path is never created and the
-    sibling temp is cleaned up — a reader can't see a half-written file."""
-    path = tmp_path / "note.md"
-
-    def boom(*_a, **_kw):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(cache.os, "replace", boom)
-
-    import pytest
-
-    with pytest.raises(OSError):
-        cache._atomic_write_text(path, "some content")
-
-    assert not path.exists()
-    assert list(tmp_path.glob("*.tmp")) == []
-
-
-def test_atomic_copy_roundtrips_bytes_and_metadata(tmp_path):
-    """_atomic_copy reproduces the source bytes and lands the file in place."""
-    src = tmp_path / "src.bin"
-    body = b"%PDF-1.4 binary \x00\x01\x02 payload"
-    src.write_bytes(body)
-    dst = tmp_path / "sub" / "dst.bin"
-
-    cache._atomic_copy(src, dst)
-    assert dst.read_bytes() == body
-
-
-def test_atomic_copy_no_torn_file_on_failure(tmp_path, monkeypatch):
-    """A copy that blows up mid-stream leaves no canonical file (the failure
-    mode a plain shutil.copy to dst would torn-write) and no leftover temp."""
-    src = tmp_path / "src.pdf"
-    src.write_bytes(b"%PDF-1.4 source bytes")
-    dst = tmp_path / "dst.pdf"
-
-    def boom(*_a, **_kw):
-        raise OSError("copy interrupted")
-
-    monkeypatch.setattr(cache.shutil, "copyfileobj", boom)
-
-    import pytest
-
-    with pytest.raises(OSError):
-        cache._atomic_copy(src, dst)
-
-    assert not dst.exists()
-    assert list(tmp_path.glob("*.tmp")) == []
 
 
 # ---------------------------------------------------------------------------
@@ -668,3 +682,132 @@ def test_cached_lookup_uses_custom_single_flight_key(tmp_path, monkeypatch):
     assert refs == {"kind": "references"}
     assert cites == {"kind": "citations"}
     assert sorted(order) == ["citations", "references"], "distinct keys must not coalesce"
+
+
+def test_cached_lookup_refetches_once_the_positive_ttl_expires(tmp_path, monkeypatch):
+    """positive_ttl is wired through to get()'s max_age_seconds: an entry past
+    it drives a fresh fetch rather than being served stale."""
+    import asyncio
+    import os
+
+    from academic_tools_mcp import _singleflight
+
+    cache.put("openalex", "works", "10.1/x", {"id": "stale"})
+    path = tmp_path / "openalex" / "works" / f"{cache._cache_key('10.1/x')}.json"
+    old = path.stat().st_mtime - 3600
+    os.utime(path, (old, old))
+
+    calls = 0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        cache.put("openalex", "works", "10.1/x", {"id": "fresh"})
+        return {"id": "fresh"}
+
+    async def lookup(ttl):
+        return await cache.cached_lookup(
+            single_flight=_singleflight.SingleFlight(),
+            namespace="openalex",
+            entity="works",
+            canonical="10.1/x",
+            positive_ttl=ttl,
+            fetch=fetch,
+        )
+
+    assert asyncio.run(lookup(60.0)) == {"id": "fresh"}
+    assert calls == 1, "an entry past positive_ttl must not be served"
+
+    # The refreshed entry is now within the TTL, so the next lookup is a hit.
+    assert asyncio.run(lookup(3600.0)) == {"id": "fresh"}
+    assert calls == 1
+
+
+def test_cached_lookup_propagates_fetch_failure_and_caches_nothing(tmp_path, monkeypatch):
+    """A raising fetch is a transient failure, not a result: it reaches the
+    caller, nothing is written to either cache half, and the single-flight slot
+    is free so the next caller retries instead of inheriting the exception."""
+    import asyncio
+
+    from academic_tools_mcp import _singleflight
+
+    sf = _singleflight.SingleFlight()
+    calls = 0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("upstream exploded")
+
+    async def lookup():
+        return await cache.cached_lookup(
+            single_flight=sf,
+            namespace="openalex",
+            entity="works",
+            canonical="10.1/x",
+            positive_ttl=999.0,
+            fetch=fetch,
+        )
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="upstream exploded"):
+            asyncio.run(lookup())
+
+    assert calls == 2, "a failure must not be cached in the single-flight slot"
+    assert cache.get("openalex", "works", "10.1/x") is None
+    assert cache.get_negative("openalex", "works", "10.1/x") is None
+
+
+def test_cached_lookup_inner_recheck_spares_a_promoted_follower(tmp_path, monkeypatch):
+    """The in-slot re-check earns its keep when a leader is cancelled after it
+    has written the cache but before its future resolves. Single-flight then
+    promotes a follower to run the factory again — and the re-check is the only
+    thing standing between that promotion and a duplicate upstream call."""
+    import asyncio
+
+    from academic_tools_mcp import _singleflight
+
+    sf = _singleflight.SingleFlight()
+    calls = 0
+
+    async def run():
+        wrote = asyncio.Event()
+        may_write = asyncio.Event()
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                # A duplicate call is the failure this test is about; return
+                # a marker rather than blocking, so the regression shows up as
+                # a failed assertion and not a hung suite.
+                return {"id": "re-fetched"}
+            await may_write.wait()
+            cache.put("openalex", "works", "10.1/x", {"id": "from-the-leader"})
+            wrote.set()
+            await asyncio.sleep(3600)  # cancelled here, before the slot resolves
+            raise AssertionError("unreachable")
+
+        def lookup():
+            return cache.cached_lookup(
+                single_flight=sf,
+                namespace="openalex",
+                entity="works",
+                canonical="10.1/x",
+                positive_ttl=999.0,
+                fetch=fetch,
+            )
+
+        leader = asyncio.create_task(lookup())
+        await asyncio.sleep(0)  # let the leader claim the slot and enter fetch
+        follower = asyncio.create_task(lookup())
+        await asyncio.sleep(0)  # follower's outer check misses; it joins the slot
+
+        may_write.set()
+        await wrote.wait()
+        leader.cancel()
+        return await asyncio.wait_for(follower, timeout=5)
+
+    result = asyncio.run(run())
+    assert result == {"id": "from-the-leader"}
+    assert calls == 1, "the promoted follower must read the leader's entry, not re-fetch"

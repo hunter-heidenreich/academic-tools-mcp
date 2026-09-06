@@ -23,7 +23,7 @@ from academic_tools_mcp import cache, manual, papers, server
 @pytest.fixture
 def isolated_cache(tmp_path, monkeypatch):
     # Redirect the cache root so each test runs against a clean filesystem.
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     return tmp_path
 
 

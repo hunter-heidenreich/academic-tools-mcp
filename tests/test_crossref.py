@@ -213,7 +213,7 @@ def _reset_crossref(monkeypatch, tmp_path):
     """
     from academic_tools_mcp import _singleflight, cache
 
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(crossref, "_single_flight", _singleflight.SingleFlight())
 

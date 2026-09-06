@@ -108,7 +108,7 @@ class TestCancellationKillsTheConverter:
         pdf = tmp_path / "p.pdf"
         pdf.write_bytes(b"%PDF-1.4\n")
         monkeypatch.setenv("PDF_CONVERTER", "sleep 60")
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         started: list[object] = []
         real_exec = asyncio.create_subprocess_exec
@@ -140,7 +140,7 @@ class TestFindInPaperReadHardening:
 
     @pytest.fixture
     def converted(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = papers.markdown_path("manual", "paper-x")
         md.parent.mkdir(parents=True, exist_ok=True)
         md.write_text("# T\n\nSchrödinger and naïve café résumé.\n", encoding="utf-8")
@@ -189,7 +189,7 @@ class TestUnindexableDocumentsAreReported:
 
     @pytest.fixture
     def corpus(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "english.md").write_text("# A\n\nTransformer attention.\n", encoding="utf-8")
@@ -277,7 +277,7 @@ class TestUnindexableDocumentsAreReported:
 
     @pytest.mark.asyncio
     async def test_clean_corpus_stays_lean(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "english.md").write_text("# A\n\nTransformer attention.\n", encoding="utf-8")
@@ -288,7 +288,7 @@ class TestUnindexableDocumentsAreReported:
         assert "unindexable_note" not in result
 
     def test_an_empty_document_is_reported(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "blank.md").write_text("", encoding="utf-8")
@@ -320,7 +320,7 @@ class TestNonLatinDocumentsAreIndexedNotReported:
 
     @pytest.fixture
     def corpus(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "russian.md").write_text("# Сети\n\nнейронных сетей.\n", encoding="utf-8")
@@ -350,7 +350,7 @@ class TestNonLatinDocumentsAreIndexedNotReported:
         # A documented limit of ``unicode61``, not a defect: it does not
         # segment CJK, so a run delimited by whitespace or punctuation is one
         # token. Pinned so a future tokenizer change is a deliberate choice.
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "run.md").write_text("# 研究\n\n注意力機構の研究。\n", encoding="utf-8")

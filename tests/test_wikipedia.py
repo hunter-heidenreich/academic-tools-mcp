@@ -441,7 +441,7 @@ class TestGetSummaryForceRefresh:
 
         from academic_tools_mcp import cache
 
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
 
         calls = 0

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import _stats, cache, papers
+from academic_tools_mcp import _stats, atomic, cache, papers
 
 
 class TestCacheWriteFailureIsAbsorbed:
@@ -26,7 +26,7 @@ class TestCacheWriteFailureIsAbsorbed:
         def enospc(*a, **kw):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr(cache, "_atomic_write_json", enospc)
+        monkeypatch.setattr(atomic, "write_text", enospc)
 
     def test_put_returns_false_instead_of_raising(self, full_disk):
         assert cache.put("arxiv", "papers", "2301.00001", {"title": "T"}) is False
@@ -59,7 +59,7 @@ class TestCacheWriteFailureIsAbsorbed:
             namespace="arxiv",
             entity="papers",
             canonical="2301.00001",
-            positive_ttl=None,
+            positive_ttl=999.0,
             fetch=fetch,
         )
         assert result == {"title": "Fetched"}
@@ -68,7 +68,7 @@ class TestCacheWriteFailureIsAbsorbed:
         def boom(*a, **kw):
             raise ValueError("a real bug")
 
-        monkeypatch.setattr(cache, "_atomic_write_json", boom)
+        monkeypatch.setattr(atomic, "write_text", boom)
         with pytest.raises(ValueError, match="a real bug"):
             cache.put("arxiv", "papers", "x", {"a": 1})
 
@@ -106,7 +106,7 @@ class TestEmptyConversion:
 class TestConverterSubprocessPlumbing:
     @pytest.fixture
     def pdf(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         # The suite loads the operator's real .env, so PDF_CONVERTER_VENV can
         # be set on a developer machine and prepends `source ... &&` to the
         # command. That changes the shell's parse and made these tests depend
