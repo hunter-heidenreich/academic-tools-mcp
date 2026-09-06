@@ -138,9 +138,7 @@ def _extract_snippet(
 # introduced is decidable. These namespaces have exactly one such prefix.
 _NAMESPACE_DOI_PREFIXES = {"biorxiv": "10.1101/", "acl_anthology": "10.18653/v1/"}
 
-# manual holds publisher DOIs, not the freeform labels its name suggests. The
-# registrant is digits only, so the first "_" after it is the slash; a suffix
-# carrying further slashes round-trips imperfectly, and a label passes through.
+# manual holds publisher DOIs, not the freeform labels its name suggests.
 _MANUAL_DOI_STEM_RE = re.compile(rf"^({_doi.REGISTRANT_PATTERN})_")
 
 # "archive[.subject]_NNNNNNN[vN]"; new-style ids start with a digit and pass through.
