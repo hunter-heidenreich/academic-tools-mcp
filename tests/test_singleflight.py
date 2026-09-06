@@ -6,7 +6,7 @@ tests instead pin the class's own contract directly — the parts the
 integration tests can't isolate:
 
 - N concurrent callers for one key share a single factory run; followers
-  never invoke their own factory.
+  never invoke their own factory, and receive the leader's *object*.
 - The slot is dropped after resolution, so it is *not* a cache: the next
   call re-runs the factory.
 - A raising factory propagates the *same* exception to every waiter and is
@@ -24,15 +24,18 @@ coalescing can be observed.
 import asyncio
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
+from academic_tools_mcp import _singleflight
 from academic_tools_mcp._singleflight import SingleFlight
 
 
-async def _drain() -> None:
+async def _drain(rounds: int = 5) -> None:
     """Yield enough times for all currently-scheduled tasks to reach their
     next ``await`` point — i.e. for followers to register on the in-flight
     future before the test releases the leader."""
-    for _ in range(5):
+    for _ in range(rounds):
         await asyncio.sleep(0)
 
 
@@ -55,6 +58,27 @@ async def test_concurrent_same_key_collapses_to_one_factory_run():
 
     assert calls == 1, f"expected one factory run, got {calls}"
     assert results == ["result"] * 5
+    assert sf._inflight == {}, "in-flight slot leaked after resolution"
+
+
+@pytest.mark.asyncio
+async def test_followers_receive_the_leaders_object_not_a_copy():
+    """Identity, not just equality: ``cache.cached_lookup`` deep-copies per
+    caller precisely because this class does not, and
+    ``openalex._fetch_chunk`` skips that copy on the strength of it."""
+    sf = SingleFlight()
+    release = asyncio.Event()
+
+    async def factory():
+        await release.wait()
+        return {"work": "payload"}
+
+    tasks = [asyncio.create_task(sf.do("k", factory)) for _ in range(3)]
+    await _drain()
+    release.set()
+    results = await asyncio.gather(*tasks)
+
+    assert all(r is results[0] for r in results)
 
 
 @pytest.mark.asyncio
@@ -106,6 +130,7 @@ async def test_slot_dropped_after_resolution_reruns_factory():
 
     assert (r1, r2) == (1, 2)
     assert calls == 2
+    assert sf._inflight == {}
 
 
 @pytest.mark.asyncio
@@ -208,6 +233,50 @@ async def test_tuple_keys_are_independent_namespaces():
     assert work_calls == 1
 
 
+@settings(deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(
+    keys=st.lists(st.sampled_from(["a", "b", "c", ("t", 1)]), min_size=1, max_size=12),
+)
+def test_property_one_run_per_distinct_key(keys):
+    """For any multiset of concurrent callers: one factory run per *distinct*
+    key, every caller for a key gets that key's leader object, and no slot
+    outlives resolution.
+
+    Hypothesis rather than a ninth hand-written fan-in example — the rule is
+    about arbitrary key multisets, not about any one arrangement of five
+    callers. Driven under ``asyncio.run`` because Hypothesis cannot itself run
+    an async test function.
+    """
+
+    async def scenario():
+        sf = SingleFlight()
+        runs: dict = {}
+        release = asyncio.Event()
+
+        def make(key):
+            async def factory():
+                runs[key] = runs.get(key, 0) + 1
+                await release.wait()
+                return {"key": key}  # a fresh object per run
+
+            return factory
+
+        tasks = [asyncio.create_task(sf.do(k, make(k))) for k in keys]
+        await _drain(len(keys) + 5)  # every caller registers before we release
+        release.set()
+        results = await asyncio.gather(*tasks)
+
+        assert runs == dict.fromkeys(set(keys), 1)
+        first_for: dict = {}
+        for key, result in zip(keys, results, strict=True):
+            assert result == {"key": key}
+            # Identity: one object per key, shared by all its callers.
+            assert result is first_for.setdefault(key, result)
+        assert sf._inflight == {}
+
+    asyncio.run(scenario())
+
+
 class TestLeaderCancellationDoesNotCancelFollowers:
     """A cancelled leader used to cancel every follower with it.
 
@@ -247,6 +316,45 @@ class TestLeaderCancellationDoesNotCancelFollowers:
 
         assert await follower == "taken-over"
         assert runs == 2
+
+    @pytest.mark.asyncio
+    async def test_taking_over_reopens_the_slot_for_later_followers(self):
+        """The new leader must register its own slot, or a takeover would
+        silently un-coalesce every caller still queued behind it."""
+        sf = SingleFlight()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        runs = 0
+
+        async def hang():
+            nonlocal runs
+            runs += 1
+            started.set()
+            await asyncio.sleep(3600)
+
+        async def takeover():
+            nonlocal runs
+            runs += 1
+            await release.wait()
+            return "taken-over"
+
+        leader = asyncio.create_task(sf.do("k", hang))
+        await started.wait()
+        f1 = asyncio.create_task(sf.do("k", takeover))
+        f2 = asyncio.create_task(sf.do("k", takeover))
+        await _drain()
+
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+        await _drain()  # one follower leads; the other must attach to it
+        release.set()
+
+        assert await f1 == "taken-over"
+        assert await f2 == "taken-over"
+        # One cancelled leader + exactly one takeover, not one run per follower.
+        assert runs == 2
+        assert sf._inflight == {}, "in-flight slot leaked after takeover"
 
     @pytest.mark.asyncio
     async def test_follower_that_is_itself_cancelled_still_raises(self):
@@ -297,7 +405,7 @@ class TestLeaderCancellationDoesNotCancelFollowers:
         assert all(r is results[0] for r in results)
 
     @pytest.mark.asyncio
-    async def test_slot_is_released_after_takeover(self):
+    async def test_slot_is_released_when_the_leader_is_cancelled(self):
         sf = SingleFlight()
         started = asyncio.Event()
 
@@ -314,9 +422,64 @@ class TestLeaderCancellationDoesNotCancelFollowers:
         assert sf._inflight == {}, "in-flight slot leaked after cancellation"
 
     @pytest.mark.asyncio
-    async def test_uses_the_running_loop(self):
-        # get_event_loop is deprecated inside a coroutine; it would create or
-        # fetch a thread loop when none is running, which is never wanted here.
+    async def test_repeated_leader_cancellation_falls_back_to_running_it(self, monkeypatch):
+        """``_MAX_FOLLOW_ATTEMPTS`` exhausted: rather than spin, the caller runs
+        the factory itself, unslotted.
+
+        The bound is patched to 1 so a single cancelled leader reaches the
+        fallback deterministically; at the shipped value it takes that many
+        cancelled leaders in a row, which no ordinary workload produces.
+        """
+        monkeypatch.setattr(_singleflight, "_MAX_FOLLOW_ATTEMPTS", 1)
+        sf = SingleFlight()
+        started = asyncio.Event()
+        running_unslotted = asyncio.Event()
+        release = asyncio.Event()
+        runs = 0
+
+        async def hang():
+            nonlocal runs
+            runs += 1
+            started.set()
+            await asyncio.sleep(3600)
+
+        async def own():
+            nonlocal runs
+            runs += 1
+            running_unslotted.set()
+            await release.wait()
+            return "ran-it-myself"
+
+        leader = asyncio.create_task(sf.do("k", hang))
+        await started.wait()
+        follower = asyncio.create_task(sf.do("k", own))
+        await asyncio.sleep(0)
+
+        leader.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await leader
+
+        await running_unslotted.wait()
+        # The distinguishing observation: a caller that had taken over would be
+        # holding the slot right now. The fallback runs outside it, so this
+        # assertion is what separates the two paths — the result alone does not.
+        assert sf._inflight == {}, "the fallback must not claim an in-flight slot"
+        release.set()
+
+        assert await follower == "ran-it-myself"
+        assert runs == 2
+
+    @pytest.mark.asyncio
+    async def test_does_not_use_get_event_loop(self, monkeypatch):
+        """``asyncio.get_event_loop`` is deprecated inside a coroutine (it
+        would create or fetch a thread loop when none is running). Make the
+        deprecated call fail outright so the assertion is about which API the
+        leader reaches for, not merely that the happy path works."""
+
+        def boom():
+            raise AssertionError("get_event_loop called; use get_running_loop")
+
+        monkeypatch.setattr(asyncio, "get_event_loop", boom)
         sf = SingleFlight()
 
         async def factory():

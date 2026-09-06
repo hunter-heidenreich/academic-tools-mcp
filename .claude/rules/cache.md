@@ -41,6 +41,12 @@ The one home for the force_refresh → check → single-flight → in-slot re-ch
 
 `SingleFlight.do(key, factory)` collapses N concurrent calls for the same key into one execution; followers `await` the same future and share the leader's outcome — success or failure, and the *same object*. The slot is dropped after resolution, so a failure is never cached.
 
-Cancellation is the subtle part: a leader's cancellation must not propagate to followers (one takes over, bounded by `_MAX_TAKEOVERS`), and a follower's must not reach the leader — hence `asyncio.shield`.
+Cancellation is the subtle part, and neither direction may leak — the module docstring points here rather than restating it.
+
+- **A cancelled leader must not fail its followers.** The leader's task ending (an agent's tool call timing out, say) says nothing about the followers' lifetimes, so the `CancelledError` set on the shared future is not theirs to honour: a follower that is not itself cancelling takes over as the new leader and runs the factory. `_self_is_cancelling` — `Task.cancelling()`, the 3.11 cancel/uncancel protocol — is what tells the two apart.
+- **A cancelled follower must not reach the leader**, which is what `asyncio.shield` is for. Cancelling a task cancels the future it is suspended on, and for a follower that is the *shared* future: unshielded, one follower giving up cancels the slot out from under everybody, the leader's `set_result` raises `InvalidStateError` into its own caller in place of a good result, and every remaining follower re-runs the factory.
+- **`_MAX_FOLLOW_ATTEMPTS` bounds failed *follows*, not takeovers** — a caller that wins the slot returns and never comes back round the loop. Exhausting it means leaders were cancelled that many times in a row, and the caller then runs the factory itself, unslotted, rather than spinning.
+
+The leader registers its future *before* its first await, and nothing suspends between `do`'s check and that insert (awaiting a coroutine runs its body inline), so the slot cannot be double-claimed. Keep both halves await-free.
 
 Providers reach `do` through a protocol wrapper — `cache.cached_lookup` or its file-on-disk sibling `_pdf_download.cached_download` — and the wrapper is what deep-copies per caller. One deliberate direct caller: `openalex._fetch_chunk`, which skips the copy on purpose (see `.claude/rules/providers.md`). Don't assume every `do` result is deep-copied downstream.
