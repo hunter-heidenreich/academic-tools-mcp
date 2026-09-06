@@ -10,10 +10,27 @@ either fails confusingly or — worse — passes for the wrong reason.
 This autouse fixture clears all of that before each test runs.
 """
 
-import importlib
+import sys
+from collections.abc import Iterator
+from types import ModuleType
 from typing import Any
 
 import pytest
+
+_PACKAGE_PREFIX = "academic_tools_mcp."
+
+
+def _imported_package_modules() -> Iterator[ModuleType]:
+    """Yield every already-imported module of the package.
+
+    A scan rather than a hand-maintained list of provider paths: that list had
+    to stay in sync with ``_stats``' own copy and nothing enforced it. Imports
+    nothing, so the fixture can't pull half the package into a test that never
+    touches it.
+    """
+    for name, module in list(sys.modules.items()):
+        if name.startswith(_PACKAGE_PREFIX):
+            yield module
 
 
 @pytest.fixture(autouse=True)
@@ -36,30 +53,19 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
     # isn't contaminated by counts from prior tests.
     _stats.reset()
 
-    # For every provider module reset the shared Throttle and single-flight
-    # registry. Throttle.reset() rebuilds the lock + semaphore because
-    # asyncio.Lock / Semaphore bind to the running event loop on first await —
-    # a stale instance from the previous test's loop fails with a "bound to a
-    # different event loop" error if reused — and zeroes pending /
-    # last_request_time so an error path that raised before the finally block
-    # can't leak `pending` into the next test.
-    for module_path in (
-        "providers.arxiv",
-        "providers.openalex",
-        "providers.biorxiv",
-        "providers.crossref",
-        "providers.opencitations",
-        "providers.wikipedia",
-        "providers.acl_anthology",
-        "oa_download",
-    ):
-        try:
-            module: Any = importlib.import_module(f"academic_tools_mcp.{module_path}")
-        except ImportError:
-            continue
-        throttle = getattr(module, "_throttle", None)
-        if throttle is not None:
-            throttle.reset()
+    # Throttle.reset() rebuilds the lock + semaphore because asyncio.Lock /
+    # Semaphore bind to the running event loop on first await — a stale
+    # instance from the previous test's loop fails with a "bound to a different
+    # event loop" error if reused — and zeroes pending / last_request_time so an
+    # error path that raised before the finally block can't leak `pending` into
+    # the next test. Same discovery seam the snapshot samples through, so a new
+    # provider is covered here without an edit.
+    for throttle in _stats.throttles():
+        throttle.reset()
+
+    # Single-flight registries and crossref's search gate hang off the module,
+    # not the throttle, so they need the wider scan.
+    for module in _imported_package_modules():
         # Crossref paces search separately from singles (different upstream
         # limit); its lock binds to the running event loop just as a
         # Throttle's does, so it needs the same per-test rebuild.

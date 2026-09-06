@@ -470,6 +470,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
             pdf_url,
             dest,
             slot_factory=lambda: _request_slot(pdf_url),
+            namespace=NAMESPACE,
             provider_label="arXiv",
             timeout=_PDF_TIMEOUT_SECONDS,
             not_found_message=f"No PDF found for arXiv ID: {arxiv_id}",

@@ -232,6 +232,27 @@ class TestImportLocalPdf:
         assert result["size_bytes"] > 0
         assert result["cached"] is False
 
+    def test_copy_failure_is_an_error_dict_and_is_counted(self, tmp_path, monkeypatch):
+        """A full disk during the copy owes the same contract as a failed
+        ``cache.put``: an error dict rather than a raised OSError, and a
+        ``cache_write_failures`` tick so the operator can see the disk."""
+        from academic_tools_mcp import _stats, cache
+
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake content")
+
+        def _full_disk(source, dest):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(cache, "_atomic_copy", _full_disk)
+
+        result = manual.import_local_pdf(str(pdf), "10.1038/test-nospace")
+
+        assert "error" in result
+        assert "Could not copy" in result["error"]
+        counters = _stats.snapshot()["providers"]["manual"]
+        assert counters["cache_write_failures"] == 1, counters
+
     def test_cached_on_second_import(self, tmp_path):
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake content")

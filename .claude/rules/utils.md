@@ -36,8 +36,9 @@ Diacritic folding for search: `papers.find_in_markdown` and `cache_search` (both
 
 ## config.py
 
-`get(key)` is the accessor for every runtime setting — the roster, defaults and semantics live in `README.md` § Configuration. Config never arrives as a tool parameter.
+`get(key)` is the accessor for every runtime setting, `flag(key)` the accessor for the boolean ones — the roster, defaults and semantics live in `README.md` § Configuration. Config never arrives as a tool parameter.
 
+- **`flag` is the single home for env-var truthiness** (`_TRUE_VALUES`, whitespace-stripped, case-insensitive). A call site that spells its own `in ("1", "true", …)` is how one flag comes to accept `yes` and another not to; both current callers (`server._DEBUG_TOOLS_ENABLED`, `_stats.debug_requests_enabled`) route through it.
 - **Where a setting is read decides whether an operator needs a restart.** `get` re-reads `os.environ` on every call, so a read at the point of use (`_pdf_download.resolve_max_pdf_bytes`, the `*_MAILTO` header builders) picks up an exported change immediately, while a value captured at import (`server._DEBUG_TOOLS_ENABLED`, crossref's `_resolve_policy()` constants) is fixed for the process. Default to reading at the point of use; capture at import only when you want the startup snapshot.
 - **`get` reads an empty string as unset**, so a present-but-blank `CROSSREF_MAILTO=` behaves exactly like omitting the line. Not cosmetic: it drops Crossref to the public tier, lowering concurrency *and* both request rates — see `.claude/rules/providers.md` § Crossref.
 - **The `.env` *file* is resolved once at import**, first existing candidate wins (the order is in the module docstring; `ENV_FILE` records the winner). A project-root-only rule would point inside the virtualenv from `site-packages` and silently disable every env var for an installed wheel; an unreadable candidate is skipped rather than fatal. Editing the file needs a restart. **Real environment variables always win** regardless — `load_dotenv` runs without `override`.

@@ -17,6 +17,23 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`get_server_stats` now reports PDF write failures.** `cache_write_failures`
+  counted a failed `cache.put` but not a failed PDF write — and a PDF is the
+  largest write the server makes, so the write most likely to hit a full disk
+  was the one invisible in the counter that exists to show it. Both
+  `_pdf_download.stream_to_file` and `manual.import_local_pdf` now count under
+  the provider's cache namespace, in the same row as its other counters.
+  ([#81])
+
+- **Guard tests for the counters an operator reads.** Nothing pinned that the
+  snapshot's rows are copies (a caller stripping a key before logging edited
+  the live counters), that a provider's in-flight sample lands in the row
+  holding its cache counters rather than a second row of its own, or that
+  `snapshot()` does not import modules in order to measure them. The
+  `reset()` test could not fail: an `or` whose first branch passed trivially.
+  `config.flag` and the `DEBUG_REQUESTS` spellings are covered directly.
+  ([#81])
+
 - **`stream_to_file`'s in-slot re-check and cap boundary are now actually
   tested.** The re-check is the `cached_download` protocol's core concurrency
   guarantee — a caller that missed the outer check picks up the leader's
@@ -293,6 +310,25 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **A new provider no longer has to be registered in two hand-maintained
+  lists to be visible.** `_stats._PROVIDER_MODULES` and the reset fixture in
+  `tests/conftest.py` each named the same eight modules; a provider missing
+  from the first reported no in-flight count, and one missing from the second
+  leaked throttle state between tests. Both now discover throttles by scanning
+  imported modules, and `snapshot()` no longer imports a provider as a side
+  effect of sampling it. In-flight is filed under the throttle's own
+  `namespace` instead of a name derived from the module path, so a provider
+  whose module name and cache namespace differ can no longer split into two
+  rows. ([#81])
+
+- **`DEBUG_REQUESTS` and `ENABLE_DEBUG_TOOLS` parsed truthiness separately.**
+  Two copies of the same `in ("1", "true", "yes", "on")` tuple, either of which
+  could drift; `_stats` also read `os.environ` directly rather than through
+  `config`, so a `DEBUG_REQUESTS` set in `.env` depended on some other module
+  having loaded it first. Both now route through `config.flag`, which also
+  strips surrounding whitespace — a trailing space in a `.env` line is a typo,
+  not a request to disable the flag. ([#81])
 
 - **A full or read-only disk no longer escapes `download_pdf` as a raised
   `OSError`.** `stream_to_file` caught only `_http.HTTPX_ERRORS`, so an ENOSPC
@@ -1587,3 +1623,4 @@ grouped by milestone rather than per commit.
 [#77]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/77
 [#78]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/78
 [#79]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/79
+[#81]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/81

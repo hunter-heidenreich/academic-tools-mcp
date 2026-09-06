@@ -1,73 +1,40 @@
 """Per-provider counters and optional request logging.
 
-In-process metrics for operational visibility. ``snapshot()`` returns a
-plain nested dict suitable for printing or logging; no external
-dependencies, no HTTP endpoint, no persistence across restarts.
+In-process metrics for an operator: no dependencies, no endpoint, no
+persistence. ``snapshot()`` names every counter; ``grep _stats.incr`` finds
+who moves them. Not an MCP tool — agents must not branch on operational data.
 
-Wired into:
-  - cache.py: ``cache_hits`` / ``cache_misses`` on ``get``,
-    ``negative_hits`` on ``get_negative``, ``cache_write_failures`` on a
-    write that could not land.
-  - _throttle.Throttle.slot: ``backpressure_refusals`` when the burst cap
-    rejects, and ``http_calls`` only when ``count_request=True``.
-  - _http.get_with_retry: ``http_calls`` per attempt, ``http_retries`` per
-    transient retry.
+Two invariants callers must hold:
 
-Counters are keyed by provider name (the same string each module uses
-for its cache namespace), so cache and HTTP stats line up cleanly.
-
-Not exposed as an MCP tool — agents should not branch on operational
-data. Operators inspect via ``_stats.snapshot()`` from a debug script
-or a future internal endpoint.
-
-DEBUG_REQUESTS env var (``1`` / ``true`` / ``yes`` / ``on``) enables
-per-request stderr logging of throttle waits. Runtime-checked so it can
-be flipped without restarting.
+- **Key by the module's cache namespace**, so its cache and HTTP counters
+  share one row.
+- **``incr`` is event-loop-thread only** — an unsynchronised
+  read-modify-write, so a caller under ``asyncio.to_thread`` loses counts.
 """
 
-from __future__ import annotations
-
-import importlib
-import os
 import sys
 from collections import defaultdict
-from typing import Any
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
+
+from . import config
+
+if TYPE_CHECKING:
+    from ._throttle import Throttle
 
 _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
-
-# Names of provider modules whose ``_throttle.pending`` count we sample for
-# real-time in-flight reporting. Kept in sync with the modules listed
-# in tests/conftest.py's reset fixture.
-_PROVIDER_MODULES = (
-    "providers.arxiv",
-    "providers.openalex",
-    "providers.biorxiv",
-    "providers.crossref",
-    "providers.opencitations",
-    "providers.wikipedia",
-    "providers.acl_anthology",
-    "oa_download",
-)
+_PACKAGE_PREFIX = f"{__name__.rsplit('.', 1)[0]}."
 
 
-def incr(provider: str, metric: str, n: int = 1) -> None:
-    """Increment a per-provider counter. Cheap and lock-free.
-
-    Provider names are free-form but should match the cache namespace
-    used by that module ("arxiv", "openalex", etc.) so HTTP and cache
-    counters line up under the same key in the snapshot.
-    """
-    _counters[provider][metric] += n
+def incr(provider: str, metric: str) -> None:
+    """Increment a per-provider counter."""
+    _counters[provider][metric] += 1
 
 
 def debug_requests_enabled() -> bool:
-    """Re-read DEBUG_REQUESTS from the environment on every call.
-
-    Lets an operator flip the flag without restarting the server, and
-    lets tests monkeypatch ``os.environ`` per-case without a fixture.
-    """
-    return os.environ.get("DEBUG_REQUESTS", "").lower() in ("1", "true", "yes", "on")
+    """Whether DEBUG_REQUESTS is set; re-read per call so it flips without a restart."""
+    return config.flag("DEBUG_REQUESTS")
 
 
 def log_request(provider: str, url: str, wait_seconds: float) -> None:
@@ -85,54 +52,40 @@ def log_request(provider: str, url: str, wait_seconds: float) -> None:
     )
 
 
-def snapshot() -> dict[str, Any]:
-    """Return a snapshot of counters plus live in-flight counts.
+def throttles() -> Iterator["Throttle"]:
+    """Yield the shared ``Throttle`` of every already-imported package module.
 
-    Shape::
-
-        {
-          "providers": {
-            "arxiv": {
-              "cache_hits": 42,
-              "cache_misses": 5,
-              "negative_hits": 1,
-              "http_calls": 5,
-              "http_retries": 0,
-              "backpressure_refusals": 0,
-              "cache_write_failures": 0,
-              "in_flight": 0,
-            },
-            ...
-          }
-        }
-
-    Counter values are cumulative since process start (or the last
-    ``reset()``). ``in_flight`` is sampled live from each provider's
-    ``_throttle.pending`` counter.
+    Scanned, never imported: sampling a provider must not load it. Matched by
+    attribute because a runtime ``Throttle`` import would close a cycle.
     """
-    out: dict[str, dict[str, int]] = {}
-    for provider, metrics in _counters.items():
-        out[provider] = dict(metrics)
+    for name, module in list(sys.modules.items()):
+        if not name.startswith(_PACKAGE_PREFIX):
+            continue
+        throttle = getattr(module, "_throttle", None)
+        if throttle is None:
+            continue
+        # A module that binds the *name* `_throttle` to something else — the
+        # `_throttle` module itself, say — is not a provider.
+        if hasattr(throttle, "pending") and hasattr(throttle, "namespace"):
+            yield throttle
 
-    # Sample live in-flight from each provider module. Modules with no
-    # _pending attribute (or that haven't been imported yet) are skipped.
-    for module_path in _PROVIDER_MODULES:
-        # Snapshot key is the short module name (``arxiv``, ``oa_download``) so
-        # in-flight stats line up with the cache-namespace-keyed counters even
-        # though providers now live under the ``providers`` subpackage.
-        key = module_path.rsplit(".", 1)[-1]
-        try:
-            mod = importlib.import_module(f"academic_tools_mcp.{module_path}")
-        except ImportError:
-            continue
-        # In-flight is the open-slot count on the module's shared Throttle.
-        # (Fall back to a legacy ``_pending`` global for any module not yet
-        # migrated.)
-        throttle = getattr(mod, "_throttle", None)
-        pending = throttle.pending if throttle is not None else getattr(mod, "_pending", None)
-        if pending is None:
-            continue
-        out.setdefault(key, {})["in_flight"] = int(pending)
+
+def snapshot() -> dict[str, Any]:
+    """Return the counters plus a live in-flight sample.
+
+    ``{"providers": {<namespace>: {<counter>: int}}}``, where the counters are
+    ``cache_hits``, ``cache_misses``, ``negative_hits``, ``http_calls``,
+    ``http_retries``, ``backpressure_refusals`` and ``cache_write_failures``,
+    cumulative since process start (or the last ``reset()``), plus an
+    ``in_flight`` sampled live from ``Throttle.pending``. Rows are copies, so
+    mutating the result cannot corrupt the counters.
+    """
+    out: dict[str, dict[str, int]] = {
+        provider: dict(metrics) for provider, metrics in list(_counters.items())
+    }
+
+    for throttle in throttles():
+        out.setdefault(throttle.namespace, {})["in_flight"] = throttle.pending
 
     return {"providers": out}
 

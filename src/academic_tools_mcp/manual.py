@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import _doi, _pdf_download, cache, papers
+from . import _doi, _pdf_download, _stats, cache, papers
 
 NAMESPACE = "manual"
 
@@ -246,6 +246,9 @@ def import_local_pdf(
         # as an OSError out of the tool.
         size_bytes = dest.stat().st_size
     except OSError as e:
+        # Same counter as cache.put's write failure: one row an operator can
+        # read to see a full or read-only disk, whatever kind of write hit it.
+        _stats.incr(target["namespace"], "cache_write_failures")
         return {"error": f"Could not copy {file_path} into the cache: {e}"}
 
     result: dict[str, Any] = {

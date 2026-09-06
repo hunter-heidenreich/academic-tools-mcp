@@ -71,3 +71,20 @@ def get(key: str) -> str | None:
     ``CROSSREF_MAILTO=`` behaves the same as omitting the line.
     """
     return os.environ.get(key) or None
+
+
+# The spelling of "on" an operator may reasonably use in a shell or a .env.
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def flag(key: str) -> bool:
+    """Whether a boolean config key is enabled.
+
+    The single home for env-var truthiness: anything outside ``_TRUE_VALUES``
+    (including unset and empty) is off, so two call sites can't disagree about
+    whether ``YES`` or ``on`` counts. Surrounding whitespace is stripped — a
+    ``.env`` line with a trailing space is a typo, not a request to disable
+    the feature. Read at call time, so a caller that re-checks per request
+    picks up a change without a restart.
+    """
+    return (os.environ.get(key) or "").strip().lower() in _TRUE_VALUES

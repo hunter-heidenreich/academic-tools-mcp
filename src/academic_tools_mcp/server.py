@@ -88,12 +88,7 @@ __all__ = [
 # operator who wants to inspect cumulative cache/HTTP counters from
 # within Claude Code itself, without dropping into a Python REPL.
 
-_DEBUG_TOOLS_ENABLED = (config.get("ENABLE_DEBUG_TOOLS") or "").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
+_DEBUG_TOOLS_ENABLED = config.flag("ENABLE_DEBUG_TOOLS")
 
 if _DEBUG_TOOLS_ENABLED:
 
