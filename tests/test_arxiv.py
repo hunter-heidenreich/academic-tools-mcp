@@ -797,3 +797,40 @@ class TestVersionedIdentity:
         v2 = manual.resolve_target("2301.00001v2")["pdf_path"]
         bare = manual.resolve_target("2301.00001")["pdf_path"]
         assert len({str(v1), str(v2), str(bare)}) == 3
+
+
+class TestArxivPrefixNormalization:
+    """``arXiv:2301.00001`` is the form arXiv's own "Cite as" box prints.
+
+    Left unstripped it was neither an arXiv shape (so the router sent the
+    paper to the ``manual`` namespace) nor a valid ``id_list`` value, and the
+    canonical key carried the prefix — a second cache entry for one paper.
+    """
+
+    @pytest.mark.parametrize(
+        ("spelling", "expected"),
+        [
+            ("arXiv:2301.00001", "2301.00001"),
+            ("arxiv:2301.00001", "2301.00001"),
+            ("ARXIV:2301.00001", "2301.00001"),
+            ("arXiv: 2301.00001", "2301.00001"),
+            ("  arXiv:2301.00001v2  ", "2301.00001v2"),
+            ("arXiv:hep-th/9901001", "hep-th/9901001"),
+            # Prefix stripped before the URL handling, as `_doi.normalize`
+            # does for `doi:` — both nested forms occur in the wild.
+            ("arXiv:https://arxiv.org/abs/2301.00001", "2301.00001"),
+            ("arXiv:arXiv:2301.00001", "2301.00001"),
+        ],
+    )
+    def test_the_prefix_is_stripped(self, spelling, expected):
+        assert arxiv._normalize_arxiv_id(spelling) == expected
+        assert arxiv.canonical_arxiv_id(spelling) == expected.lower()
+
+    def test_normalization_is_idempotent(self):
+        for spelling in ("arXiv:2301.00001", "arXiv:arXiv:2301.00001", "2301.00001", "notes"):
+            once = arxiv._normalize_arxiv_id(spelling)
+            assert arxiv._normalize_arxiv_id(once) == once
+
+    def test_a_string_that_merely_contains_arxiv_is_untouched(self):
+        assert arxiv._normalize_arxiv_id("my-arxiv:notes") == "my-arxiv:notes"
+        assert arxiv._normalize_arxiv_id("arxivorama") == "arxivorama"

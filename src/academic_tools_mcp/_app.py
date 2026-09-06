@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import _clients, cache, papers
+from . import _clients, cache, cache_search, manual, papers
 
 
 @asynccontextmanager
@@ -23,14 +23,17 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[None]:
     On startup: sweep ``.cache/`` for stale ``*.tmp`` files left behind
     by killed writers from previous runs, then rename any cached PDF or
     markdown still using a pre-``safe_stem`` filename so it isn't silently
-    orphaned. Both are cheap and idempotent. New clients are pooled lazily
-    on first use, so we don't pre-build them here.
+    orphaned, then move any cached file whose identifier now routes to the
+    arXiv namespace out of ``manual``. All three are cheap and idempotent.
+    New clients are pooled lazily on first use, so we don't pre-build them
+    here.
 
     On shutdown: close every pooled httpx.AsyncClient so we don't leak
     sockets if the server is stopped while clients are idle.
     """
     cache.gc_orphan_tmp_files()
     papers.migrate_legacy_stems()
+    manual.migrate_misrouted_arxiv()
     try:
         yield
     finally:
@@ -431,11 +434,13 @@ _CACHE_SEARCH_TOP_K = Annotated[
     int,
     Field(
         description=(
-            "Maximum number of hits to return (1-50, default 10). "
-            "Hits are ranked by BM25; ties go to the first-seen file "
-            "in alphabetical order."
+            f"Maximum number of hits to return (1-{cache_search._MAX_TOP_K}, "
+            "default 10). Hits are ranked by BM25; ties go to the first-seen "
+            "file in alphabetical order."
         ),
         ge=1,
-        le=50,
+        # Bound to the engine's own cap rather than a transcribed number, so
+        # the two can't drift apart.
+        le=cache_search._MAX_TOP_K,
     ),
 ]

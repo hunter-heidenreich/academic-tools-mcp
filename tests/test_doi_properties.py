@@ -74,7 +74,14 @@ def test_doi_shape_survives_every_spelling(doi: str) -> None:
     assert _doi.looks_like_doi(f"doi: {doi}")
 
 
-@given(dois)
+# `dois` may generate any registrant, including the ones a provider owns:
+# `10.1101/x` is a bioRxiv DOI and routes there, not to OpenAlex. Excluded from
+# the dispatch property, whose subject is the *shape* test, not the roster.
+_PROVIDER_REGISTRANTS = ("10.1101/", "10.18653/")
+generic_dois = dois.filter(lambda d: not d.startswith(_PROVIDER_REGISTRANTS))
+
+
+@given(generic_dois)
 def test_dispatch_uses_the_same_shape_test_as_the_cache_key(doi: str) -> None:
     """`resolve_metadata_source` routes on `looks_like_doi`, not a forked regex.
 

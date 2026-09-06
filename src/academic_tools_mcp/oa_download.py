@@ -18,8 +18,6 @@ cache namespace so ``convert_paper`` and the rest of the pipeline find it
 with no duplicate download.
 """
 
-from __future__ import annotations
-
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any

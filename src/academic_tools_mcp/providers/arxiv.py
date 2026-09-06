@@ -141,11 +141,25 @@ def _normalize_arxiv_id(arxiv_id: str) -> str:
 
     Accepts:
       - bare ID: 2301.00001, 2301.00001v2, hep-th/9901001
+      - ``arXiv:`` prefix in any case, with or without a space
       - abstract URL: https://arxiv.org/abs/2301.00001v2
       - PDF URL: https://arxiv.org/pdf/2301.00001v2.pdf
       - PDF URL without extension: https://arxiv.org/pdf/2301.00001v2
+
+    A string that is not recognisably an arXiv ID is returned stripped but
+    otherwise untouched — the caller decides whether that is an error.
+
+    Idempotent for every input, which is what the prefix loop buys: a single
+    pass leaves ``arXiv:arXiv:2301.00001`` keying separately from its own
+    output. The prefix is stripped **before** the URL handling for the same
+    reason ``_doi.normalize`` strips ``doi:`` first — ``arXiv:https://...``
+    occurs in pasted citations.
     """
     arxiv_id = arxiv_id.strip()
+
+    while arxiv_id[:6].lower() == "arxiv:":
+        arxiv_id = arxiv_id[6:].strip()
+
     m = _ARXIV_URL_RE.match(arxiv_id)
     if m:
         return m.group(1)

@@ -63,7 +63,11 @@ _CHARS_PER_TOKEN = 4
 #   "# Foo"   -> (1, "Foo")
 #   "## Bar"  -> (2, "Bar")
 #   "### Baz" -> (3, "Baz")
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+# The *pattern* is the shared unit, not the compiled object: this module scans
+# line by line while ``cache_search._extract_title`` scans a whole document, so
+# the two need different flags but must agree on what a heading is.
+HEADING_PATTERN = r"^(#{1,6})\s+(.+)$"
+_HEADING_RE = re.compile(HEADING_PATTERN)
 
 # Built-in converter command templates.
 # {input} = PDF path, {output_dir} = temp extraction directory.
@@ -458,7 +462,7 @@ _SUB_LEVEL: int = 3
 # ---------------------------------------------------------------------------
 #
 # Four readers depend on these boundaries agreeing: parse_sections,
-# find_in_markdown, get_section_content and cache_search._section_for_offset.
+# find_in_markdown, get_section_content and cache_search.search.
 # They must all come from here — a second implementation is agent-visible, not
 # merely untidy. Drop the empty-section filter and a search hit names a section
 # the reader's index does not have; return a title instead of an index and the
