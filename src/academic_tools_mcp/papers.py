@@ -289,6 +289,11 @@ def _needs_stem_migration(stem: str) -> bool:
     return not _MIGRATED_STEM_RE.match(stem)
 
 
+# The two artifact kinds this sweep renames; anything else in these directories
+# (a temp file mid-write, an editor backup) is left alone.
+_MIGRATABLE_SUFFIXES = frozenset({".pdf", ".md"})
+
+
 def migrate_legacy_stems() -> int:
     """Rename cached PDFs/markdown written under the old filename rules.
 
@@ -323,12 +328,15 @@ def migrate_legacy_stems() -> int:
             for path in entity_dir.iterdir():
                 if not path.is_file():
                     continue
+                # Artifacts only. ``atomic._new_temp`` names an in-flight write
+                # ``<dst.name>.<rand>.tmp``, whose stem still carries the
+                # destination's legacy characters — renaming it makes the
+                # writer's ``os.replace`` raise ``FileNotFoundError``.
+                if path.suffix not in _MIGRATABLE_SUFFIXES:
+                    continue
                 if not _needs_stem_migration(path.stem):
                     continue
-                target_stem = safe_stem(path.stem)
-                if target_stem == path.stem:
-                    continue
-                target = path.with_name(target_stem + path.suffix)
+                target = path.with_name(safe_stem(path.stem) + path.suffix)
                 if target.exists():
                     # Already migrated (or a genuine collision) — leave both
                     # in place rather than destroying data.
@@ -373,14 +381,30 @@ def _make_extraction_dir(canonical: str) -> Path:
 
 
 def markdown_checksum(md_path: Path) -> str:
-    """Compute SHA-256 hex digest of a markdown file.
+    """SHA-256 hex digest of a markdown file, or ``""`` if it doesn't exist.
 
-    Used for cache invalidation — if the markdown changes, sections must be re-parsed.
-    Returns empty string if the file doesn't exist.
+    Used for cache invalidation — if the markdown changes, sections must be
+    re-parsed. A writer that already holds the text checksums it with
+    :func:`checksum_text` instead.
     """
     if not md_path.exists():
         return ""
     return hashlib.sha256(md_path.read_bytes()).hexdigest()
+
+
+def checksum_text(markdown: str) -> str:
+    """SHA-256 hex digest of markdown held in memory.
+
+    Invariant: agrees with :func:`markdown_checksum` of the file
+    ``atomic.write_text`` writes from the same string — that writer pins
+    ``newline=""`` so the bytes on disk are exactly the UTF-8 encoding.
+
+    A writer must checksum the string it parsed, never re-read the file it just
+    wrote: the two are separated by a window in which another writer can land,
+    and an index stamped with the *other* document's checksum matches disk
+    forever and so is never re-parsed.
+    """
+    return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
 
 def markdown_path(namespace: str, canonical: str) -> Path:
@@ -466,7 +490,7 @@ def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
 # Fixed heading levels: H1 and H2 both open a new section (converters
 # disagree on which level to use for the top), H3 is tracked as the
 # sub-heading level, everything deeper is ignored.
-_SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
+SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
 _SUB_LEVEL: int = 3
 
 
@@ -504,26 +528,35 @@ class Section:
         return "\n".join(lines[self.start : self.end]).strip()
 
 
-def section_boundaries(markdown: str) -> list[Section]:
-    """Split ``markdown`` into sections at H1/H2 headings.
+def _scan(markdown: str) -> tuple[list[Section], bool]:
+    """The one heading scan: ``(spans, any_real_section_heading)``.
 
     H1 and H2 both open a section (converters disagree about which level is
     the document title), H3 is collected as a sub-heading, H4+ are ignored.
-    Sections whose body is blank are dropped, so indices returned here are
+    Sections whose body is blank are dropped, so the indices returned here are
     the indices ``get_section_content`` accepts.
+
+    Detection is returned alongside rather than recomputed, so the two callers
+    that need both make one pass over the document instead of two.
+
+    Lines are matched one at a time because ``_HEADING_RE`` is anchored with
+    ``^``/``$`` and compiled without ``re.MULTILINE`` — scanning the whole
+    document with it would only ever match at position 0.
     """
     lines = markdown.split("\n")
     spans: list[Section] = []
     title = "Preamble"
     start = 0
     h3s: list[str] = []
+    detected = False
 
     for i, line in enumerate(lines):
         m = _HEADING_RE.match(line)
         if not m:
             continue
         level = len(m.group(1))
-        if level in _SECTION_LEVELS:
+        if level in SECTION_LEVELS:
+            detected = True
             spans.append(Section(title, start, i, h3s))
             title = m.group(2).strip()
             start = i + 1
@@ -532,7 +565,12 @@ def section_boundaries(markdown: str) -> list[Section]:
             h3s.append(m.group(2).strip())
 
     spans.append(Section(title, start, len(lines), h3s))
-    return [sp for sp in spans if sp.body(lines)]
+    return [sp for sp in spans if sp.body(lines)], detected
+
+
+def section_boundaries(markdown: str) -> list[Section]:
+    """Split ``markdown`` into sections at H1/H2 headings. See :func:`_scan`."""
+    return _scan(markdown)[0]
 
 
 def has_detected_sections(markdown: str) -> bool:
@@ -544,13 +582,22 @@ def has_detected_sections(markdown: str) -> bool:
     ``pdftotext``'s layout mode, notably — hits this, and it is concentrated
     in the largest documents (theses), where navigation matters most.
     """
-    # Iterate lines rather than finditer: _HEADING_RE is anchored with ^/$ but
-    # compiled without re.MULTILINE, so scanning the whole document would only
-    # ever match at position 0. Every other caller matches it per line.
-    return any(
-        (m := _HEADING_RE.match(line)) is not None and len(m.group(1)) in _SECTION_LEVELS
-        for line in markdown.split("\n")
-    )
+    return _scan(markdown)[1]
+
+
+def first_section_heading(markdown: str) -> str | None:
+    """The document's first H1/H2 heading text, or ``None`` if it has none.
+
+    The single home for "what counts as the title-level heading", so a reader
+    of the corpus index and a reader of the section index cannot disagree about
+    which levels open a section. Not ``section_boundaries(md)[0].title``, which
+    is ``"Preamble"`` for the span before the first heading.
+    """
+    for line in markdown.split("\n"):
+        m = _HEADING_RE.match(line)
+        if m is not None and len(m.group(1)) in SECTION_LEVELS:
+            return m.group(2).strip()
+    return None
 
 
 def section_at_offset(markdown: str, offset: int) -> tuple[int, str] | None:
@@ -566,16 +613,19 @@ def section_at_offset(markdown: str, offset: int) -> tuple[int, str] | None:
     if not spans:
         return None
 
-    # Character offset -> line index, counting the "\n" split consumed.
-    line_no = markdown.count("\n", 0, min(offset, len(markdown)))
-    for index, sp in enumerate(spans):
-        if sp.start <= line_no < sp.end:
-            return index, sp.title
-    # Offsets inside a heading line fall between spans; attribute them to the
-    # section that heading opens, which is what a reader would expect.
+    # Character offset -> line index: the count of newlines strictly before it.
+    # ``str.count`` clamps its own ``end``, so no min() is needed.
+    line_no = markdown.count("\n", 0, offset)
+    # Spans are ordered and disjoint, so the first one ending past ``line_no``
+    # is the one containing it — an explicit ``start <= line_no`` pass ahead of
+    # this can never pick a different span. Offsets *between* spans (a heading
+    # line) therefore resolve to the section that heading opens, except where
+    # that section was dropped as empty, in which case they resolve to the next
+    # surviving one. Both are indices ``get_section_content`` accepts.
     for index, sp in enumerate(spans):
         if line_no < sp.end:
             return index, sp.title
+    # Past the last surviving span: a trailing empty section was filtered out.
     last = len(spans) - 1
     return last, spans[last].title
 
@@ -589,7 +639,21 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
 
     Content before the first section heading is captured as a "Preamble" section.
     """
-    lines = markdown.split("\n")
+    return _section_dicts(markdown.split("\n"), section_boundaries(markdown))
+
+
+def parse_sections_and_detect(markdown: str) -> tuple[list[dict[str, Any]], bool]:
+    """:func:`parse_sections` and :func:`has_detected_sections` in one scan.
+
+    What every writer of a sections-cache entry wants: the entry carries both,
+    and computing them separately walks the document twice.
+    """
+    spans, detected = _scan(markdown)
+    return _section_dicts(markdown.split("\n"), spans), detected
+
+
+def _section_dicts(lines: list[str], spans: list[Section]) -> list[dict[str, Any]]:
+    """Render scanned spans as the agent-facing section index."""
     return [
         {
             "index": index,
@@ -599,7 +663,7 @@ def parse_sections(markdown: str) -> list[dict[str, Any]]:
             # returns and counts, so the index and the reader agree.
             "approx_tokens": max(1, len(sp.body(lines)) // _CHARS_PER_TOKEN),
         }
-        for index, sp in enumerate(section_boundaries(markdown))
+        for index, sp in enumerate(spans)
     ]
 
 
@@ -819,6 +883,19 @@ def get_section_content(
     }
 
 
+def _read_markdown(md_path: Path) -> str | None:
+    """Read cached markdown as UTF-8, or ``None`` if it isn't there.
+
+    One read, no ``exists()`` ahead of it: the check-then-read has a window a
+    concurrent ``drop_derived`` fits through, and the answer is the same either
+    way.
+    """
+    try:
+        return md_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
 async def _reparse_sections_locked(
     namespace: str,
     canonical: str,
@@ -835,16 +912,21 @@ async def _reparse_sections_locked(
     Returns ``{sections, markdown_checksum, conversion_mode}`` or ``None`` when
     the markdown is missing — covering both "never converted" and the race where
     a concurrent ``force_refresh`` cascade unlinks the file after an ``exists()``
-    check (every unlinker holds this same lock, so a non-empty checksum means the
-    file is stable for the rest of this call). The re-parse runs off the event
-    loop and reads UTF-8 explicitly so a non-UTF-8 host locale can't mis-decode.
+    check (every unlinker holds this same lock, so a successful read means the
+    file is stable for the rest of this call).
+
+    The read and the re-parse each run off the event loop, and the read is
+    explicit UTF-8 so a non-UTF-8 host locale can't mis-decode. The checksum
+    comes from the text that was read, not a second pass over the file, so it
+    and the parsed sections always describe the same bytes.
     """
     if force_refresh:
         cache.invalidate(namespace, "sections", sections_key(canonical))
 
-    current_checksum = markdown_checksum(md_path)
-    if not current_checksum:
+    text = await asyncio.to_thread(_read_markdown, md_path)
+    if text is None:
         return None
+    current_checksum = checksum_text(text)
 
     cached = cache.get(namespace, "sections", sections_key(canonical))
     if cached is not None:
@@ -854,24 +936,20 @@ async def _reparse_sections_locked(
             and stored_checksum == current_checksum
             and cached.get("sections") is not None
             # An entry predating ``sections_detected`` is re-parsed rather than
-            # read with a guessed default. Re-parsing is a file read and a
-            # regex pass — no subprocess, no network — so computing the true
-            # answer is cheaper than the cost of reporting a wrong one, which
-            # is an agent told a heading-free thesis "has one section".
+            # read with a guessed default. Re-parsing is a regex pass over text
+            # already in hand — no subprocess, no network — so computing the
+            # true answer is cheaper than the cost of reporting a wrong one,
+            # which is an agent told a heading-free thesis "has one section".
             and cached.get("sections_detected") is not None
         ):
             return cached
 
     # No/stale sections cache (or a legacy entry missing the parsed sections) —
-    # re-parse the markdown and refresh the cache, preserving any recorded
-    # conversion_mode so a re-parse doesn't lose the full-vs-fast provenance.
+    # re-parse and refresh, preserving any recorded conversion_mode: a re-parse
+    # produces no new evidence about what converted the file.
     recorded_mode = cached.get("conversion_mode") if cached is not None else None
 
-    def _read_and_parse() -> tuple[list[dict[str, Any]], bool]:
-        text = md_path.read_text(encoding="utf-8")
-        return parse_sections(text), has_detected_sections(text)
-
-    sections, detected = await asyncio.to_thread(_read_and_parse)
+    sections, detected = await asyncio.to_thread(parse_sections_and_detect, text)
     payload = {
         "sections": sections,
         "sections_detected": detected,
@@ -935,8 +1013,7 @@ def store_markdown_and_index(
     # and non-ASCII content survives a non-UTF-8 host locale.
     atomic.write_text(md_path, markdown)
 
-    sections = parse_sections(markdown)
-    detected = has_detected_sections(markdown)
+    sections, detected = parse_sections_and_detect(markdown)
     cache.put(
         namespace,
         "sections",
@@ -944,7 +1021,7 @@ def store_markdown_and_index(
         {
             "sections": sections,
             "sections_detected": detected,
-            "markdown_checksum": markdown_checksum(md_path),
+            "markdown_checksum": checksum_text(markdown),
             "conversion_mode": mode,
         },
     )
@@ -955,6 +1032,18 @@ def store_markdown_and_index(
         "cached": False,
         "conversion_mode": mode,
     }
+
+
+# ``![caption](path)``, tolerating one level of nesting on each side.
+#
+# Both halves are load-bearing against real converter output. A flat
+# ``\([^)]*\)`` stops at the first ``)`` *inside* the path, so
+# ``![cap](fig(1).png)`` rewrites to ``![cap]().png)`` — the tail becomes body
+# text the agent reads as content. Converter leaf filenames derive from the PDF
+# stem, and an Elsevier-PII DOI carries parentheses. A flat ``\[([^\]]*)\]``
+# likewise skips ``![a [b] c](path)`` entirely, leaving a dead extraction-dir
+# path in agent-visible markdown.
+_IMAGE_LINK_RE = re.compile(r"!\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\((?:[^()]|\([^()]*\))*\)")
 
 
 def _finalize_markdown(
@@ -974,11 +1063,10 @@ def _finalize_markdown(
     # Normalise trailing whitespace line-by-line.
     markdown = "\n".join(line.rstrip() for line in raw_markdown.split("\n"))
 
-    # Strip unused image paths: ``![caption](path)`` → ``![caption]()``
-    # The path points into the extraction temp dir, which is removed as soon as
-    # the conversion returns, so it can never resolve. When there is a caption,
-    # keep the caption text and drop the path.
-    markdown = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"![\1]()", markdown)
+    # Strip unused image paths: ``![caption](path)`` → ``![caption]()``. The path
+    # points into the extraction temp dir, removed as soon as the conversion
+    # returns, so it can never resolve; the caption is kept.
+    markdown = _IMAGE_LINK_RE.sub(r"![\1]()", markdown)
 
     return store_markdown_and_index(namespace, canonical, md_path, markdown, mode)
 
@@ -1003,40 +1091,20 @@ async def _convert_fast(
     async with sections_lock(namespace, canonical):
         # A racing fast caller may have written the markdown between the outer
         # cached-check and our acquiring this lock — re-check before spawning.
-        # Guard the read: a concurrent force_refresh / download cascade may have
-        # unlinked it after exists() returned True (see convert_pdf), in which
-        # case we fall through and (re-)extract rather than crashing.
-        cached_markdown: str | None = None
-        if md_path.exists():
-            try:
-                cached_markdown = md_path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                cached_markdown = None
-        if cached_markdown is not None:
-            sections = parse_sections(cached_markdown)
-            detected = has_detected_sections(cached_markdown)
-            # Preserve a recorded "full" mode: re-reading a full-quality
-            # conversion through mode="fast" must not relabel it as degraded.
-            existing = cache.get(namespace, "sections", sections_key(canonical))
-            recorded_mode = existing.get("conversion_mode") if existing is not None else None
-            mode_tag = recorded_mode or "fast"
-            cache.put(
-                namespace,
-                "sections",
-                sections_key(canonical),
-                {
-                    "sections": sections,
-                    "sections_detected": detected,
-                    "markdown_checksum": markdown_checksum(md_path),
-                    "conversion_mode": mode_tag,
-                },
-            )
+        # The shared re-parser returns None when the file is gone (a concurrent
+        # force_refresh cascade unlinked it), so we fall through and extract.
+        # Going through it rather than assembling an entry here is what keeps
+        # ``conversion_mode`` honest: it preserves a recorded mode and leaves a
+        # legacy ``null`` alone, where a local ``recorded_mode or "fast"``
+        # stamps a paper nobody has evidence about as degraded.
+        cached = await _reparse_sections_locked(namespace, canonical, md_path)
+        if cached is not None:
             return {
                 "markdown_path": str(md_path),
-                "sections": sections,
-                "sections_detected": detected,
+                "sections": cached["sections"],
+                "sections_detected": cached["sections_detected"],
                 "cached": True,
-                "conversion_mode": mode_tag,
+                "conversion_mode": cached.get("conversion_mode"),
             }
 
         try:
@@ -1133,7 +1201,9 @@ async def _convert_fast(
                 "pdf_size_mb": round(pdf_size_mb, 1),
             }
 
-        return _finalize_markdown(namespace, canonical, md_path, markdown, "fast")
+        return await asyncio.to_thread(
+            _finalize_markdown, namespace, canonical, md_path, markdown, "fast"
+        )
 
 
 async def convert_pdf(
@@ -1328,9 +1398,15 @@ async def convert_pdf(
                 }
 
             source_md = candidates[0]
-            return _finalize_markdown(
-                namespace, canonical, md_path, source_md.read_text(encoding="utf-8"), "full"
-            )
+
+            # Read + post-process + write + parse in one worker hop: a
+            # thesis-sized markdown is megabytes of regex and hashing, and the
+            # event loop is serving every other tool call meanwhile.
+            def _read_and_finalize() -> dict[str, Any]:
+                raw = source_md.read_text(encoding="utf-8")
+                return _finalize_markdown(namespace, canonical, md_path, raw, "full")
+
+            return await asyncio.to_thread(_read_and_finalize)
         finally:
             # Clean up the temp extraction dir on every exit — success *and*
             # all four failure paths (spawn error, timeout, non-zero exit,

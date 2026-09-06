@@ -648,14 +648,14 @@ class TestConvertPdfCachePaths:
         monkeypatch.setattr(papers, "_section_locks", OrderedDict())
 
         parse_calls = 0
-        real_parse = papers.parse_sections
+        real_parse = papers.parse_sections_and_detect
 
         def counting_parse(markdown):
             nonlocal parse_calls
             parse_calls += 1
             return real_parse(markdown)
 
-        monkeypatch.setattr(papers, "parse_sections", counting_parse)
+        monkeypatch.setattr(papers, "parse_sections_and_detect", counting_parse)
 
         results = await asyncio.gather(
             convert_pdf(Path("/nonexistent.pdf"), ns, canonical),
@@ -1724,3 +1724,362 @@ class TestApproxTokensAgreeAcrossTools:
             papers.parse_sections(lean)[0]["approx_tokens"]
             == papers.parse_sections(padded)[0]["approx_tokens"]
         )
+
+
+# ---------------------------------------------------------------------------
+# The transforms convert_pdf applies to converter output
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeMarkdown:
+    """``_finalize_markdown``'s two rewrites, previously asserted nowhere.
+
+    ``manual.import_markdown`` pins the *opposite* side (an operator's own file
+    is stored verbatim), which left the converter side — the one that runs on
+    every conversion — unguarded.
+    """
+
+    def _finalize(self, tmp_path, monkeypatch, raw):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "finalize")
+        papers._finalize_markdown("test", "finalize", md_path, raw, "full")
+        return md_path.read_text(encoding="utf-8")
+
+    def test_image_paths_are_stripped_but_captions_kept(self, tmp_path, monkeypatch):
+        out = self._finalize(tmp_path, monkeypatch, "![Figure 1](images/fig1.png)\n")
+        assert out == "![Figure 1]()\n"
+
+    def test_a_parenthesised_image_path_does_not_leak_into_the_body(self, tmp_path, monkeypatch):
+        # A flat ``\([^)]*\)`` stops at the first ``)`` inside the path and
+        # leaves ``.png)`` behind as body text the agent reads as content.
+        # Converter leaf filenames derive from the PDF stem, and an Elsevier
+        # PII DOI carries parentheses.
+        raw = "![Figure 1](images/10.1002_(sici)_fig1.png)\n"
+        out = self._finalize(tmp_path, monkeypatch, raw)
+        assert out == "![Figure 1]()\n"
+        assert ".png" not in out
+
+    def test_a_bracketed_caption_still_loses_its_path(self, tmp_path, monkeypatch):
+        # A flat ``\[([^\]]*)\]`` skips this entirely, leaving a path into the
+        # deleted extraction dir in agent-visible markdown.
+        out = self._finalize(tmp_path, monkeypatch, "![see [1] for detail](/tmp/x/f.png)\n")
+        assert out == "![see [1] for detail]()\n"
+
+    def test_ordinary_links_are_untouched(self, tmp_path, monkeypatch):
+        out = self._finalize(tmp_path, monkeypatch, "See [the paper](https://example.org/a).\n")
+        assert out == "See [the paper](https://example.org/a).\n"
+
+    def test_trailing_whitespace_is_normalised_per_line(self, tmp_path, monkeypatch):
+        out = self._finalize(tmp_path, monkeypatch, "## A   \n\nbody\t\n")
+        assert out == "## A\n\nbody\n"
+
+
+class TestStoredChecksumDescribesTheStoredText:
+    """The sections index must never describe a document other than the one
+    whose checksum it carries.
+
+    ``store_markdown_and_index`` used to re-read the file to checksum it, and
+    ``convert_pdf``'s full mode calls it without holding ``sections_lock``
+    (only the global conversion lock), while ``import_paper`` writes the same
+    path *with* that lock. A write landing in the gap left an entry holding
+    document X's sections under document Y's checksum — and since
+    ``_reparse_sections_locked`` accepts any entry whose checksum matches disk,
+    it was never re-parsed.
+    """
+
+    def test_checksum_comes_from_the_parsed_text_not_the_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "racy")
+
+        ours = "## Ours\n\nour body\n"
+        theirs = "## Theirs\n\ntheir body\n"
+
+        real_write = papers.atomic.write_text
+
+        def write_then_lose_the_race(path, payload):
+            real_write(path, payload)
+            # A concurrent writer lands between the write and the checksum.
+            # Only the markdown — atomic.write_text is also the cache's writer.
+            if path == md_path:
+                real_write(path, theirs)
+
+        monkeypatch.setattr(papers.atomic, "write_text", write_then_lose_the_race)
+        stored = papers.store_markdown_and_index("test", "racy", md_path, ours, "full")
+
+        entry = cache.get("test", "sections", papers.sections_key("racy"))
+        assert [s["title"] for s in stored["sections"]] == ["Ours"]
+        # The entry describes our text, so it must carry our checksum — not the
+        # one on disk, which would make it match forever.
+        assert entry["markdown_checksum"] == papers.checksum_text(ours)
+        assert entry["markdown_checksum"] != papers.markdown_checksum(md_path)
+
+    def test_checksum_text_agrees_with_the_file_the_writer_wrote(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "agree")
+        # Non-ASCII and every newline shape: atomic.write_text pins newline=""
+        # so the bytes on disk are exactly the UTF-8 encoding of the payload.
+        text = "## Gutiérrez\n\nline one\nline two\n"
+        papers.store_markdown_and_index("test", "agree", md_path, text, "full")
+        assert papers.checksum_text(text) == papers.markdown_checksum(md_path)
+
+    @pytest.mark.asyncio
+    async def test_a_mismatched_entry_self_heals_on_the_next_read(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "heal")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("## Real\n\nreal body\n", encoding="utf-8")
+        cache.put(
+            "test",
+            "sections",
+            papers.sections_key("heal"),
+            {
+                "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
+                "sections_detected": True,
+                "markdown_checksum": papers.checksum_text("## Other\n\nother\n"),
+                "conversion_mode": "full",
+            },
+        )
+        payload = await papers.get_or_parse_sections("test", "heal")
+        assert [s["title"] for s in payload["sections"]] == ["Real"]
+
+
+class TestMigrateLegacyStemsSkips:
+    """What the sweep must leave alone. It runs at startup over directories
+    other writers are using, and every rename it gets wrong orphans a file or
+    breaks a write in flight.
+    """
+
+    def test_a_temp_file_mid_write_is_not_renamed(self, tmp_path):
+        # ``atomic._new_temp`` names an in-flight write
+        # ``<dst.name>.<rand>.tmp``, whose stem still carries the destination's
+        # legacy characters. Renaming it makes the writer's os.replace raise
+        # FileNotFoundError and lose the download.
+        d = tmp_path / "manual" / "pdfs"
+        d.mkdir(parents=True)
+        live = d / "my paper.pdf.a1b2c3.tmp"
+        live.write_text("x")
+
+        assert papers.migrate_legacy_stems() == 0
+        assert live.exists()
+
+    def test_a_non_directory_namespace_entry_is_skipped(self, tmp_path):
+        (tmp_path / "stray-file").write_text("x")
+        assert papers.migrate_legacy_stems() == 0
+
+    def test_a_subdirectory_inside_an_entity_dir_is_skipped(self, tmp_path):
+        nested = tmp_path / "manual" / "markdown" / "a dir"
+        nested.mkdir(parents=True)
+        assert papers.migrate_legacy_stems() == 0
+        assert nested.is_dir()
+
+    def test_a_rename_that_fails_leaves_the_file_for_the_next_run(self, tmp_path, monkeypatch):
+        d = tmp_path / "manual" / "markdown"
+        d.mkdir(parents=True)
+        legacy = d / "my paper.md"
+        legacy.write_text("x")
+
+        def refuse(self, target):
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(Path, "rename", refuse)
+        assert papers.migrate_legacy_stems() == 0
+        assert legacy.exists()
+
+
+class TestMarkdownChecksum:
+    def test_a_missing_file_checksums_to_empty(self, tmp_path):
+        assert papers.markdown_checksum(tmp_path / "nope.md") == ""
+
+    def test_an_empty_file_is_not_confused_with_a_missing_one(self, tmp_path):
+        empty = tmp_path / "empty.md"
+        empty.write_text("")
+        assert papers.markdown_checksum(empty) == papers.checksum_text("")
+        assert papers.markdown_checksum(empty) != ""
+
+
+class TestSectionsLockRacingConstructor:
+    """Two coroutines constructing the lock for one paper must end up with the
+    same object — a second ``Lock`` would silently drop mutual exclusion.
+    """
+
+    def test_the_losing_constructor_returns_the_winners_lock(self, monkeypatch):
+        from collections import OrderedDict
+
+        winner = asyncio.Lock()
+
+        class RacedMap(OrderedDict):
+            def setdefault(self, key, default):
+                # Stand in for a constructor that lost: the entry is already
+                # there by the time this call lands.
+                super().setdefault(key, winner)
+                return super().__getitem__(key)
+
+        monkeypatch.setattr(papers, "_section_locks", RacedMap())
+        assert papers.sections_lock("ns", "c") is winner
+
+
+class TestFirstSectionHeading:
+    """The single home for 'which heading levels are title-level', so the
+    corpus index and the section index cannot disagree.
+    """
+
+    def test_finds_an_h1(self):
+        assert papers.first_section_heading("# Attention\n\nbody\n") == "Attention"
+
+    def test_finds_an_h2(self):
+        assert papers.first_section_heading("## Attention\n\nbody\n") == "Attention"
+
+    def test_skips_preamble_prose(self):
+        assert papers.first_section_heading("some prose\n\n## Real\n\nb\n") == "Real"
+
+    def test_an_h3_is_not_title_level(self):
+        assert papers.first_section_heading("### Sub\n\nbody\n") is None
+
+    def test_a_headingless_document_has_none(self):
+        assert papers.first_section_heading("just prose\n") is None
+
+    def test_the_first_of_several_wins(self):
+        assert papers.first_section_heading("# A\n\nx\n\n# B\n\ny\n") == "A"
+
+
+class TestSectionAtOffsetPastTheLastSection:
+    def test_an_offset_in_a_trailing_empty_section_resolves_to_the_last_real_one(self):
+        # "# B" opens a section with no body, so it is filtered out and the
+        # offset lands past every surviving span.
+        markdown = "# A\n\nbody\n\n# B\n\n\n"
+        offset = markdown.index("# B")
+        assert papers.section_at_offset(markdown, offset) == (0, "A")
+
+    def test_an_offset_past_the_end_of_the_document_still_resolves(self):
+        markdown = "# A\n\nbody\n\n# B\n\n\n"
+        index, title = papers.section_at_offset(markdown, len(markdown) * 10)
+        assert (index, title) == (0, "A")
+        assert "error" not in papers.get_section_content(markdown, index)
+
+
+class TestGetOrParseSectionsForceRefresh:
+    @pytest.mark.asyncio
+    async def test_force_refresh_drops_the_index_so_the_next_read_reparses(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "forced")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("## Real\n\nbody\n", encoding="utf-8")
+
+        # A stale entry whose checksum *matches* disk: without the drop it
+        # would be served, because the checksum gate sees nothing wrong.
+        cache.put(
+            "test",
+            "sections",
+            papers.sections_key("forced"),
+            {
+                "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
+                "sections_detected": True,
+                "markdown_checksum": papers.checksum_text("## Real\n\nbody\n"),
+                "conversion_mode": "full",
+            },
+        )
+
+        served = await papers.get_or_parse_sections("test", "forced")
+        assert [s["title"] for s in served["sections"]] == ["Stale"]
+
+        refreshed = await papers.get_or_parse_sections("test", "forced", force_refresh=True)
+        assert [s["title"] for s in refreshed["sections"]] == ["Real"]
+
+
+class TestDisabledTimeouts:
+    """``PDF_CONVERT_TIMEOUT=none`` (and its fast-mode twin) are documented in
+    the README and in the timeout error messages, but the branch they select —
+    awaiting ``communicate()`` with no ``wait_for`` around it — had never run.
+    """
+
+    @pytest.fixture
+    def isolated_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        return tmp_path
+
+    @pytest.fixture
+    def real_pdf(self, tmp_path):
+        pdf = tmp_path / "fake.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        return pdf
+
+    def _no_wait_for(self, monkeypatch):
+        """Any use of wait_for on this path is the bug under test."""
+
+        async def _fail(*args, **kwargs):
+            raise AssertionError("a disabled timeout must not wrap communicate() in wait_for")
+
+        monkeypatch.setattr(asyncio, "wait_for", _fail)
+
+    @pytest.mark.asyncio
+    async def test_full_mode_runs_unbounded(self, isolated_cache, real_pdf, monkeypatch, tmp_path):
+        monkeypatch.setenv("PDF_CONVERT_TIMEOUT", "none")
+        assert papers._resolve_convert_timeout() is None
+
+        extract = tmp_path / "extract"
+        extract.mkdir()
+        (extract / "fake.md").write_text("## Done\n\nbody\n")
+        monkeypatch.setattr(papers, "_make_extraction_dir", lambda canonical: extract)
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        async def _spawn(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+        self._no_wait_for(monkeypatch)
+
+        result = await convert_pdf(real_pdf, "test", "unbounded-full")
+        assert [s["title"] for s in result["sections"]] == ["Done"]
+        assert result["conversion_mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_runs_unbounded(self, isolated_cache, real_pdf, monkeypatch):
+        monkeypatch.setenv("PDF_FAST_CONVERT_TIMEOUT", "0")
+        assert papers._resolve_fast_convert_timeout() is None
+
+        class FakeProc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"## Done\n\nbody\n", b""
+
+        async def _spawn(*args, **kwargs):
+            return FakeProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+        self._no_wait_for(monkeypatch)
+
+        result = await convert_pdf(real_pdf, "test", "unbounded-fast", mode="fast")
+        assert [s["title"] for s in result["sections"]] == ["Done"]
+        assert result["conversion_mode"] == "fast"
+
+
+class TestResolveFastConvertTimeoutBoundaries:
+    """The fast resolver had four of the eight cases its full-mode twin has.
+    Both delegate to ``config.number``, so the gap was provenance, not risk —
+    but the env var an operator actually sets was unpinned at the boundary.
+    """
+
+    def _resolve(self, monkeypatch, value):
+        monkeypatch.setenv("PDF_FAST_CONVERT_TIMEOUT", value)
+        return papers._resolve_fast_convert_timeout()
+
+    def test_zero_disables(self, monkeypatch):
+        assert self._resolve(monkeypatch, "0") is None
+
+    def test_negative_disables(self, monkeypatch):
+        assert self._resolve(monkeypatch, "-1") is None
+
+    def test_float_seconds(self, monkeypatch):
+        assert self._resolve(monkeypatch, "2.5") == 2.5
+
+    def test_non_finite_falls_back_to_default(self, monkeypatch):
+        assert self._resolve(monkeypatch, "nan") == _DEFAULT_FAST_CONVERT_TIMEOUT
+        assert self._resolve(monkeypatch, "inf") == _DEFAULT_FAST_CONVERT_TIMEOUT

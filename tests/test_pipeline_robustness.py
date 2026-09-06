@@ -134,6 +134,42 @@ class TestCancellationKillsTheConverter:
         assert proc.returncode is not None, "converter was orphaned on cancellation"
         assert proc.returncode in (-signal.SIGKILL, signal.SIGKILL, 137, -9)
 
+    @pytest.mark.asyncio
+    async def test_cancelling_a_fast_extraction_kills_the_subprocess(self, monkeypatch, tmp_path):
+        """The fast path owns a second copy of the cancellation handler.
+
+        It runs outside the global conversion lock, so nothing else would stop
+        an orphaned extractor from holding the per-paper lock's work open.
+        """
+        pdf = tmp_path / "p.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        monkeypatch.setenv("PDF_FAST_CONVERTER", "sleep 60")
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+
+        started: list[object] = []
+        real_exec = asyncio.create_subprocess_exec
+
+        async def spy(*args, **kwargs):
+            proc = await real_exec(*args, **kwargs)
+            started.append(proc)
+            return proc
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+
+        task = asyncio.create_task(papers.convert_pdf(pdf, "manual", "p", mode="fast"))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if started:
+                break
+        assert started, "fast extractor never started"
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        proc = started[0]
+        assert proc.returncode is not None, "fast extractor was orphaned on cancellation"
+        assert proc.returncode in (-signal.SIGKILL, signal.SIGKILL, 137, -9)
+
 
 class TestFindInPaperReadHardening:
     """The one pipeline read path that relied on the host locale."""
