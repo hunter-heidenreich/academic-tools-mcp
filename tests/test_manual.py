@@ -1,4 +1,5 @@
 import contextlib
+import errno
 
 import pytest
 
@@ -585,6 +586,82 @@ class TestImportAtomicityAndEncoding:
         result = manual.import_local_pdf(str(pdf), ident)
         assert result["cached"] is False
         assert dest.read_bytes() == b"%PDF-1.4 real content"
+
+    def test_cache_hit_survives_an_unlink_between_the_check_and_the_stat(
+        self, tmp_path, monkeypatch
+    ):
+        """The cached-hit branch goes through ``_pdf_download.cached_hit``,
+        not a local check-then-stat, so a PDF unlinked in that window is a
+        miss we re-import rather than an OSError out of the tool."""
+        from pathlib import Path
+
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        pdf = tmp_path / "real.pdf"
+        pdf.write_bytes(b"%PDF-1.4 real content")
+        ident = "10.1234/unlink-race"
+
+        dest = manual.pdf_path(ident)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"%PDF-1.4 already here")
+
+        real_stat = Path.stat
+        seen = {"n": 0}
+
+        def vanishing_stat(self, *args, **kwargs):
+            # Let is_usable_pdf's stat through; fail the size read after it.
+            if self == dest:
+                seen["n"] += 1
+                # Stats on dest, in order: exists(), is_usable_pdf's, then
+                # cached_hit's size read. Fail only the third — the one that
+                # used to sit outside any try. The copy re-creates the file,
+                # so later stats succeed.
+                if seen["n"] == 3:
+                    raise OSError("file vanished")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", vanishing_stat)
+
+        result = manual.import_local_pdf(str(pdf), ident)
+
+        assert "error" not in result
+        assert result["cached"] is False
+        assert dest.read_bytes() == b"%PDF-1.4 real content"
+
+    def test_a_failed_size_read_after_the_copy_is_an_error_not_an_oserror(
+        self, tmp_path, monkeypatch
+    ):
+        """The size read is inside the copy's ``try``: it is part of landing
+        the file, so a vanished destination surfaces on the ``{error}``
+        contract rather than raising out of the tool."""
+        from pathlib import Path
+
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / "cache")
+
+        pdf = tmp_path / "real.pdf"
+        pdf.write_bytes(b"%PDF-1.4 real content")
+        ident = "10.1234/post-copy-race"
+        dest = manual.pdf_path(ident)
+
+        real_stat = Path.stat
+
+        def vanishing_stat(self, *args, **kwargs):
+            if self == dest:
+                # ENOENT so Path.exists() reads it as "absent" rather than
+                # re-raising, the way a real concurrent unlink behaves.
+                raise OSError(errno.ENOENT, "file vanished")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", vanishing_stat)
+
+        result = manual.import_local_pdf(str(pdf), ident)
+
+        assert "error" in result
+        assert "file vanished" in result["error"]
 
     def test_import_local_pdf_atomic_copy_no_torn_file(self, tmp_path, monkeypatch):
         import shutil

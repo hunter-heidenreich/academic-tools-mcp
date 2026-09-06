@@ -8,13 +8,20 @@ for 404 / transport / partial-write paths.
 from __future__ import annotations
 
 import contextlib
+import errno
+import tempfile
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
 from academic_tools_mcp import _pdf_download
+
+# stream_to_file takes an explicit timeout — no default, so every caller states
+# one. Short here: nothing in these tests reaches a real socket.
+_TIMEOUT = 5.0
 
 
 @contextlib.asynccontextmanager
@@ -62,6 +69,14 @@ class TestResolveMaxPdfBytes:
         monkeypatch.setenv("MAX_PDF_BYTES", "not-a-number")
         assert _pdf_download.resolve_max_pdf_bytes() == _pdf_download._DEFAULT_MAX_PDF_BYTES
 
+    @pytest.mark.parametrize("negative", ["-1", "-200000000"])
+    def test_a_negative_cap_does_not_disable_the_guard(self, monkeypatch, negative):
+        """``-1`` reads as an "unlimited" idiom in other tools. Here it is a
+        typo, and honouring it would silently remove the disk guard — the one
+        thing this cap exists to provide. Falls back to the default instead."""
+        monkeypatch.setenv("MAX_PDF_BYTES", negative)
+        assert _pdf_download.resolve_max_pdf_bytes() == _pdf_download._DEFAULT_MAX_PDF_BYTES
+
 
 class TestStreamToFile:
     @pytest.mark.asyncio
@@ -77,6 +92,7 @@ class TestStreamToFile:
             dest,
             slot_factory=_passthrough_slot,
             provider_label="Test",
+            timeout=_TIMEOUT,
         )
 
         assert "error" not in result
@@ -100,6 +116,7 @@ class TestStreamToFile:
             slot_factory=_passthrough_slot,
             provider_label="Test",
             not_found_message="No PDF found.",
+            timeout=_TIMEOUT,
         )
 
         assert result == {"error": "No PDF found.", "retryable": False}
@@ -124,6 +141,7 @@ class TestStreamToFile:
             dest,
             slot_factory=_passthrough_slot,
             provider_label="Test",
+            timeout=_TIMEOUT,
         )
 
         assert "error" in result
@@ -132,6 +150,127 @@ class TestStreamToFile:
         assert result["retryable"] is False
         assert not dest.exists()
         assert not list(tmp_path.glob("*.tmp"))
+
+    @pytest.mark.asyncio
+    async def test_exactly_at_the_cap_succeeds(self, tmp_path: Path, monkeypatch):
+        """The other side of the boundary. The abort condition is
+        ``written + len(chunk) > max_bytes``, so a PDF of exactly
+        MAX_PDF_BYTES must land — off-by-one here rejects legitimate papers
+        that happen to sit on the limit."""
+        monkeypatch.setenv("MAX_PDF_BYTES", "10")
+        dest = tmp_path / "exact.pdf"
+        chunks = [b"%PDF-1.4 ", b"x"]  # 9 + 1 == 10
+        client = MagicMock()
+        client.stream = MagicMock(return_value=_mock_stream_response(chunks=chunks)())
+
+        result = await _pdf_download.stream_to_file(
+            client,
+            "http://example.com/x.pdf",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="Test",
+            timeout=_TIMEOUT,
+        )
+
+        assert "error" not in result
+        assert result["size_bytes"] == 10
+        assert dest.stat().st_size == 10
+
+    @pytest.mark.asyncio
+    async def test_one_byte_past_the_cap_aborts(self, tmp_path: Path, monkeypatch):
+        """...and one byte past it must not."""
+        monkeypatch.setenv("MAX_PDF_BYTES", "10")
+        dest = tmp_path / "over.pdf"
+        chunks = [b"%PDF-1.4 ", b"xx"]  # 9 + 2 == 11
+        client = MagicMock()
+        client.stream = MagicMock(return_value=_mock_stream_response(chunks=chunks)())
+
+        result = await _pdf_download.stream_to_file(
+            client,
+            "http://example.com/x.pdf",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="Test",
+            timeout=_TIMEOUT,
+        )
+
+        assert result["max_bytes"] == 10
+        assert not dest.exists()
+        assert not list(tmp_path.glob("*.tmp"))
+
+    @pytest.mark.asyncio
+    async def test_a_write_failure_returns_an_error_not_an_oserror(self, tmp_path: Path):
+        """A full or read-only disk must reach the agent as ``{error,
+        retryable: True}``.
+
+        ``cache.put`` already refuses to let an ENOSPC escape as a raised
+        OSError out of an MCP tool; the PDF write path is the other place
+        this server touches the disk after paying for a response, and it
+        owes the same contract. Retryable, so it also stays out of the
+        negative cache — a full disk is not a fact about the paper.
+        """
+        dest = tmp_path / "nospace.pdf"
+        client = MagicMock()
+        client.stream = MagicMock(return_value=_mock_stream_response()())
+
+        real_open = tempfile.NamedTemporaryFile
+
+        class _FullDisk:
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+                self.name = wrapped.name
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self._wrapped.close()
+                return False
+
+            def write(self, _data):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        def _fake(*args, **kwargs):
+            return _FullDisk(real_open(*args, **kwargs))
+
+        with mock.patch.object(tempfile, "NamedTemporaryFile", _fake):
+            result = await _pdf_download.stream_to_file(
+                client,
+                "http://example.com/x.pdf",
+                dest,
+                slot_factory=_passthrough_slot,
+                provider_label="arXiv",
+                timeout=_TIMEOUT,
+            )
+
+        assert "error" in result
+        assert "arXiv" in result["error"]
+        assert result["retryable"] is True
+        assert not _pdf_download.is_definitive_failure(result), (
+            "a full disk must not be negative-cached against the paper"
+        )
+        assert not dest.exists()
+        assert not list(tmp_path.glob("*.tmp")), "the partial temp file was left behind"
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_response_never_touches_the_disk(self, tmp_path: Path):
+        """The temp file is created only once the response is worth writing,
+        so a 404 leaves the destination directory uncreated entirely."""
+        dest = tmp_path / "nested" / "missing.pdf"
+        client = MagicMock()
+        client.stream = MagicMock(return_value=_mock_stream_response(status_code=404)())
+
+        result = await _pdf_download.stream_to_file(
+            client,
+            "http://example.com/x.pdf",
+            dest,
+            slot_factory=_passthrough_slot,
+            provider_label="Test",
+            timeout=_TIMEOUT,
+        )
+
+        assert "error" in result
+        assert not dest.parent.exists()
 
     @pytest.mark.asyncio
     async def test_transport_error_cleans_up(self, tmp_path: Path):
@@ -153,6 +292,7 @@ class TestStreamToFile:
             dest,
             slot_factory=_passthrough_slot,
             provider_label="Test",
+            timeout=_TIMEOUT,
         )
 
         assert "error" in result
@@ -175,6 +315,7 @@ class TestStreamToFile:
             dest,
             slot_factory=_passthrough_slot,
             provider_label="Test",
+            timeout=_TIMEOUT,
         )
         assert "error" not in result
         assert result["size_bytes"] == 1024 * 1024
@@ -230,6 +371,7 @@ async def test_a_streaming_4xx_returns_the_status_not_a_response_not_read(tmp_pa
             slot_factory=_passthrough_slot,
             provider_label="OA download",
             require_pdf=True,
+            timeout=_TIMEOUT,
         )
     finally:
         await client.aclose()
@@ -250,6 +392,7 @@ async def test_a_streaming_404_still_short_circuits_before_the_body_read(tmp_pat
             slot_factory=_passthrough_slot,
             provider_label="OA download",
             not_found_message="Open-access PDF not found",
+            timeout=_TIMEOUT,
         )
     finally:
         await client.aclose()
@@ -269,6 +412,7 @@ async def test_a_streaming_success_is_never_buffered(tmp_path):
             slot_factory=_passthrough_slot,
             provider_label="OA download",
             require_pdf=True,
+            timeout=_TIMEOUT,
         )
     finally:
         await client.aclose()
@@ -315,6 +459,7 @@ class TestEmptyBodyRejected:
             dest,
             slot_factory=_passthrough_slot,
             provider_label="arXiv",
+            timeout=_TIMEOUT,
         )
 
         assert "error" in result
@@ -335,6 +480,7 @@ class TestEmptyBodyRejected:
             dest,
             slot_factory=_passthrough_slot,
             provider_label="arXiv",
+            timeout=_TIMEOUT,
         )
 
         assert "error" not in result
@@ -378,6 +524,26 @@ class TestCachedHit:
         p.write_bytes(b"%PDF-1.4\nxyz")
         hit = _pdf_download.cached_hit(p)
         assert hit == {"path": str(p), "size_bytes": 12, "cached": True}
+
+    def test_an_unlink_between_the_check_and_the_stat_is_a_miss(self, tmp_path, monkeypatch):
+        """The race cached_hit exists to absorb: a concurrent unlink after
+        ``is_usable_pdf`` says yes but before the size read. Callers must get
+        a miss they can re-download, not an OSError out of an MCP tool."""
+        p = tmp_path / "real.pdf"
+        p.write_bytes(b"%PDF-1.4\nxyz")
+
+        real_stat = Path.stat
+        seen = {"n": 0}
+
+        def vanishing_stat(self, *args, **kwargs):
+            seen["n"] += 1
+            # Let is_usable_pdf's stat through; fail the size read after it.
+            if seen["n"] > 1 and self == p:
+                raise OSError("file vanished")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", vanishing_stat)
+        assert _pdf_download.cached_hit(p) is None
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +702,100 @@ class TestCachedDownload:
         await asyncio.gather(*(self._call(dest, fetch, single_flight=sf) for _ in range(4)))
 
         assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_the_in_slot_recheck_serves_a_file_written_after_the_outer_check(
+        self, tmp_path, monkeypatch
+    ):
+        """The protocol's core concurrency guarantee.
+
+        A caller misses the outer check, then waits on the single-flight slot
+        while a leader for the same key lands the PDF. Re-checking *inside*
+        the slot is what makes it pick up those bytes instead of re-streaming
+        a file that is already on disk. Simulated by failing only the outer
+        ``cached_hit`` — the same window the leader writes into.
+        """
+        dest = tmp_path / "p.pdf"
+        real_cached_hit = _pdf_download.cached_hit
+        checks = {"n": 0}
+
+        def leader_writes_between_the_checks(path):
+            checks["n"] += 1
+            if checks["n"] == 1:
+                return None  # outer check: the leader has not written yet
+            _pdf(dest)  # ...and lands the file before we re-check in the slot
+            return real_cached_hit(path)
+
+        monkeypatch.setattr(_pdf_download, "cached_hit", leader_writes_between_the_checks)
+
+        async def fetch():
+            raise AssertionError("the in-slot re-check must short-circuit before fetch")
+
+        result = await self._call(dest, fetch)
+
+        assert result["cached"] is True
+        assert checks["n"] == 2, "both the outer check and the in-slot re-check must run"
+
+    @pytest.mark.asyncio
+    async def test_the_in_slot_recheck_serves_a_negative_entry_written_after_the_outer_check(
+        self, tmp_path, monkeypatch
+    ):
+        """Same window, negative half: a leader that recorded a definitive
+        failure while this caller waited must not be re-fetched."""
+        from academic_tools_mcp import cache
+
+        dest = tmp_path / "p.pdf"  # never created — cached_hit misses naturally
+        checks = {"n": 0}
+
+        def leader_records_between_the_checks(*args, **kwargs):
+            checks["n"] += 1
+            if checks["n"] == 1:
+                return None
+            return {"error": "gone", "retryable": False}
+
+        monkeypatch.setattr(cache, "get_negative", leader_records_between_the_checks)
+
+        async def fetch():
+            raise AssertionError("the in-slot re-check must short-circuit before fetch")
+
+        result = await self._call(dest, fetch)
+
+        assert result == {"error": "gone", "retryable": False}
+        assert checks["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_skips_the_in_slot_recheck(self, tmp_path, monkeypatch):
+        """The deliberate divergence from ``cache.cached_lookup``.
+
+        Re-checking under force_refresh would make a refresh a no-op whenever
+        a usable PDF is already on disk — exactly the case force_refresh
+        exists to fix (a corrupt or superseded cached file). So the forced
+        path must reach ``fetch`` even with a good file and a negative entry
+        both present.
+        """
+        from academic_tools_mcp import cache
+
+        dest = _pdf(tmp_path / "p.pdf", b"%PDF-1.4 stale")
+        cache.put_negative("testns", "downloads", "10.1234/x", {"error": "gone"})
+
+        def must_not_be_consulted(path):
+            raise AssertionError("force_refresh must not check the cached artifact")
+
+        monkeypatch.setattr(_pdf_download, "cached_hit", must_not_be_consulted)
+
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            dest.write_bytes(b"%PDF-1.4 fresh")
+            return {"path": str(dest), "size_bytes": 14, "cached": False}
+
+        result = await self._call(dest, fetch, force_refresh=True)
+
+        assert calls == 1
+        assert result["cached"] is False
+        assert dest.read_bytes() == b"%PDF-1.4 fresh"
 
     @pytest.mark.asyncio
     async def test_a_definitive_failure_is_negative_cached(self, tmp_path):

@@ -25,6 +25,10 @@ from academic_tools_mcp import (
 )
 from academic_tools_mcp.providers import openalex
 
+# stream_to_file takes an explicit timeout — no default, so every caller states
+# one. Short here: nothing in these tests reaches a real socket.
+_TIMEOUT = 5.0
+
 _DOI = "10.1162/tacl_a_00001"
 
 
@@ -406,6 +410,7 @@ class TestRequirePdfGuard:
             slot_factory=_passthrough_slot,
             provider_label="OA download",
             require_pdf=True,
+            timeout=_TIMEOUT,
         )
         assert "error" in result and result["retryable"] is False
         assert not dest.exists()
@@ -426,6 +431,7 @@ class TestRequirePdfGuard:
             slot_factory=_passthrough_slot,
             provider_label="OA download",
             require_pdf=True,
+            timeout=_TIMEOUT,
         )
         assert "error" in result and result["retryable"] is False
         assert "%PDF-" in result["error"]
@@ -446,6 +452,7 @@ class TestRequirePdfGuard:
             slot_factory=_passthrough_slot,
             provider_label="OA download",
             require_pdf=True,
+            timeout=_TIMEOUT,
         )
         assert "error" not in result
         assert dest.read_bytes() == b"%PDF-1.5 body"
@@ -463,6 +470,7 @@ class TestRequirePdfGuard:
             slot_factory=_passthrough_slot,
             provider_label="OA download",
             require_pdf=True,
+            timeout=_TIMEOUT,
         )
         assert "error" not in result
         assert dest.read_bytes() == b"%PDF-1.5 body"

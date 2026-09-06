@@ -185,8 +185,10 @@ def invalidate(namespace: str, entity: str, identifier: str) -> None:
     pos = cache_dir(namespace, entity) / f"{_cache_key(identifier)}.json"
     neg = _neg_path(namespace, entity, identifier)
     for p in (pos, neg):
-        with contextlib.suppress(FileNotFoundError, OSError):
-            p.unlink()
+        # FileNotFoundError is an OSError; suppressing the base class covers
+        # the absent-file case and every other unlink failure alike.
+        with contextlib.suppress(OSError):
+            p.unlink(missing_ok=True)
 
 
 async def cached_lookup(

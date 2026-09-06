@@ -61,6 +61,9 @@ _NEG_TTL_SECONDS = 3600.0
 # can 404 for minutes after its metadata is live.
 _NEG_ENTITY = "downloads"
 
+# PDF downloads are larger than a metadata call; use a generous timeout.
+_PDF_TIMEOUT_SECONDS = 60.0
+
 # Positive cache TTL. arXiv records are stable per-version, but a bare id
 # keys on "whatever is current", so an entry cached today wouldn't reflect a
 # revision uploaded next week. 14 days is long enough that an active session
@@ -468,7 +471,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
             dest,
             slot_factory=lambda: _request_slot(pdf_url),
             provider_label="arXiv",
-            timeout=60.0,
+            timeout=_PDF_TIMEOUT_SECONDS,
             not_found_message=f"No PDF found for arXiv ID: {arxiv_id}",
         )
 

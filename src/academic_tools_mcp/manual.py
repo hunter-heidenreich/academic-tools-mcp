@@ -12,6 +12,7 @@ so the native pipeline tools find it — no duplicates.  Unrecognised identifier
 fall back to the ``manual`` namespace.
 """
 
+import contextlib
 import re
 from pathlib import Path
 from typing import Any
@@ -164,18 +165,6 @@ def pdf_path(identifier: str) -> Path:
     return resolve_target(identifier)["pdf_path"]
 
 
-def _looks_like_cached_pdf(path: Path) -> bool:
-    """Whether an existing cached PDF should be trusted as a hit.
-
-    Thin alias for ``_pdf_download.is_usable_pdf``, the single home for this
-    check — the native PDF providers and ``convert_paper`` guard on it too, so
-    the rule cannot drift between the imported and downloaded paths. Kept as a
-    name because callers and tests in this module read better with the local
-    spelling.
-    """
-    return _pdf_download.is_usable_pdf(path)
-
-
 def _invalidate_derived(namespace: str, canonical: str) -> None:
     """Drop cached markdown + section index for a paper.
 
@@ -185,12 +174,8 @@ def _invalidate_derived(namespace: str, canonical: str) -> None:
     rather than return previously-converted text.
     """
     md_path = papers.markdown_path(namespace, canonical)
-    try:
-        md_path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
+    with contextlib.suppress(OSError):
+        md_path.unlink(missing_ok=True)
     cache.invalidate(namespace, "sections", papers.sections_key(canonical))
 
 
@@ -240,19 +225,26 @@ def import_local_pdf(
     dest = target["pdf_path"]
 
     existed = dest.exists()
-    if not force_refresh and existed and _looks_like_cached_pdf(dest):
-        return {
-            "identifier": _normalize_identifier(identifier),
-            "namespace": target["namespace"],
-            "path": str(dest),
-            "size_bytes": dest.stat().st_size,
-            "cached": True,
-        }
+    if not force_refresh:
+        # Through cached_hit, not a local check-then-stat: it owns the stat,
+        # so a concurrent unlink between the usability check and the size
+        # read is a miss we re-import, not an OSError out of this function.
+        hit = _pdf_download.cached_hit(dest)
+        if hit is not None:
+            return {
+                "identifier": _normalize_identifier(identifier),
+                "namespace": target["namespace"],
+                **hit,
+            }
 
     # Atomic copy: a crash / disk-full mid-copy can't leave a half-written
-    # canonical PDF (which _looks_like_cached_pdf would then have to reject).
+    # canonical PDF (which _pdf_download.is_usable_pdf would then reject).
     try:
         cache._atomic_copy(source, dest)
+        # Inside the same try: the size read is part of landing the file, and
+        # a concurrent unlink between the two must surface as this error, not
+        # as an OSError out of the tool.
+        size_bytes = dest.stat().st_size
     except OSError as e:
         return {"error": f"Could not copy {file_path} into the cache: {e}"}
 
@@ -260,7 +252,7 @@ def import_local_pdf(
         "identifier": _normalize_identifier(identifier),
         "namespace": target["namespace"],
         "path": str(dest),
-        "size_bytes": dest.stat().st_size,
+        "size_bytes": size_bytes,
         "cached": False,
     }
 
