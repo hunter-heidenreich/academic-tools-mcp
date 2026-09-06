@@ -276,7 +276,12 @@ def safe_stem(canonical: str) -> str:
 # native-safe or already migrated. Re-running ``safe_stem`` on it would encode
 # its own ``%`` escapes (``a%20b`` -> ``a%2520b``), so the sweep must test this
 # first: ``safe_stem`` is deliberately not idempotent, the migration is.
-_MIGRATED_STEM_RE = re.compile(r"\A[A-Za-z0-9._%-]*\Z")
+#
+# Invariant: this class is exactly ``safe_stem``'s output alphabet, so its own
+# output is never seen as legacy. ``~`` belongs to it even though
+# ``_SAFE_STEM_KEEP`` omits it — ``quote`` leaves the RFC 3986 unreserved set
+# alone, so ``~`` passes through unencoded.
+_MIGRATED_STEM_RE = re.compile(r"\A[A-Za-z0-9._%~-]*\Z")
 
 
 def _needs_stem_migration(stem: str) -> bool:
@@ -386,6 +391,22 @@ def markdown_path(namespace: str, canonical: str) -> Path:
 def sections_key(canonical: str) -> str:
     """Cache key for section index JSON."""
     return safe_stem(canonical)
+
+
+def drop_derived(namespace: str, canonical: str) -> None:
+    """Drop a paper's converted markdown and its section index.
+
+    The single home for the force_refresh cascade: whenever the PDF underneath
+    is replaced, both halves are stale, and dropping only one leaves a reader
+    matching a checksum against bytes that no longer exist.
+
+    Caller must hold :func:`sections_lock` for the same paper — every unlinker
+    of the markdown takes it. Best-effort: a file that can't be unlinked leaves
+    the sections entry dropped anyway, so the next read re-parses.
+    """
+    with contextlib.suppress(OSError):
+        markdown_path(namespace, canonical).unlink()
+    cache.invalidate(namespace, "sections", sections_key(canonical))
 
 
 # Per-paper async lock so two concurrent reads of the same paper don't both
@@ -1149,9 +1170,7 @@ async def convert_pdf(
         # can't catch a half-cleared state (markdown gone, stale sections
         # entry still pointing at the old checksum).
         async with sections_lock(namespace, canonical):
-            if md_path.exists():
-                md_path.unlink()
-            cache.invalidate(namespace, "sections", sections_key(canonical))
+            drop_derived(namespace, canonical)
 
     # If the markdown is already cached, never re-run the slow conversion —
     # re-parse from the existing markdown if the sections cache is missing or

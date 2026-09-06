@@ -1,13 +1,12 @@
 """PDF pipeline tools: download / convert / sections / section / import."""
 
 import asyncio
-import contextlib
 from pathlib import Path
 from typing import Annotated, Any
 
 from pydantic import Field
 
-from .. import _pdf_download, cache, manual, oa_download, papers
+from .. import _pdf_download, manual, oa_download, papers
 from .._app import (
     _SECTION_HARNESS_CAP,
     ALLOW_OA_URL,
@@ -94,16 +93,10 @@ async def _download_pdf_by_provider(
     # a cache hit (cached True) or a failure (handled by the "error" guard).
     if force_refresh and "error" not in result and result.get("cached") is False:
         canonical = target["canonical"]
-        md_path = papers.markdown_path(ns, canonical)
-        # Hold the per-paper sections lock while dropping both halves so a
-        # concurrent convert_pdf can't read a half-cleared state (and so its
-        # cached-markdown read can't race this unlink into a FileNotFoundError).
+        # Under the per-paper lock so a concurrent convert_pdf can't read a
+        # half-cleared state.
         async with papers.sections_lock(ns, canonical):
-            # Already gone (FileNotFoundError) or any other unlink failure is
-            # non-fatal — the goal is only to drop now-stale markdown.
-            with contextlib.suppress(OSError):
-                md_path.unlink()
-            cache.invalidate(ns, "sections", papers.sections_key(canonical))
+            papers.drop_derived(ns, canonical)
         result["cascaded_invalidated"] = ["markdown", "sections"]
 
     return result
@@ -393,9 +386,11 @@ async def import_paper(
     Returns ``{identifier, namespace, size_bytes, cached}`` for PDFs, or
     ``{identifier, namespace, section_count, cached}`` for markdown — call
     get_paper_sections for the full section index with previews.
+    ``identifier`` is the canonical cache key the file was filed under, which
+    may differ from what you passed (``arXiv:2301.00001v2`` → ``2301.00001v2``).
 
-    Errors: file not found, not a valid PDF, non-UTF-8 markdown, or
-    unsupported extension → ``{error}``.
+    Errors: file not found, blank identifier, not a valid PDF, non-UTF-8
+    markdown, or unsupported extension → ``{error}``.
     """
     ext = Path(file_path).suffix.lower()
 
@@ -410,7 +405,7 @@ async def import_paper(
     # Invariant: both branches hold ``papers.sections_lock`` across the write.
     # Each replaces the markdown / section-index pair that convert_pdf and the
     # force_refresh cascade mutate under the same lock — the PDF branch via
-    # manual._invalidate_derived, which unlinks the markdown. Without it a
+    # papers.drop_derived, which unlinks the markdown. Without it a
     # concurrent reader can see a half-replaced state, or lose the file between
     # its exists() check and its read.
     target = manual.resolve_target(identifier)

@@ -24,7 +24,8 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[None]:
     by killed writers from previous runs, then rename any cached PDF or
     markdown still using a pre-``safe_stem`` filename so it isn't silently
     orphaned, then move any cached file whose identifier now routes to the
-    arXiv namespace out of ``manual``. All three are cheap and idempotent.
+    arXiv namespace out of ``manual``, renaming it to the stem that namespace
+    reads. All three are cheap and idempotent.
     New clients are pooled lazily on first use, so we don't pre-build them
     here.
 

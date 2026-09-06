@@ -18,5 +18,6 @@ Mirror `providers/biorxiv.py` — it is the fullest instance of the shape (both 
 
 1. Nothing to register: `_stats.throttles()` and the conftest reset fixture both discover the module's `_throttle` by scanning imported modules. Give the `Throttle` the module's own `NAMESPACE` — a test asserts they match, because in-flight and cache counters are filed under it.
 2. Add env vars to `.env.example` and load via `config.get()`.
-3. Add tools in the matching `tools/*.py` module.
-4. Tests covering normalization, parsing, backpressure, 404 negative-cache, and TTL eviction / `force_refresh` if relevant.
+3. If the provider serves PDFs, add a `_Route` row to `manual._ROUTES` (`claims`, `NAMESPACE`, `canonical_key`, `pdf_path`) — position it before the generic-DOI fallback — and, if it also serves metadata, an entry in `manual._METADATA_SOURCE_BY_NAMESPACE`. Without the row nothing routes to the new namespace. If its ids need a slash restored from a stem, `cache_search._restore_slashes` needs a clause too, or corpus hits won't chain back.
+4. Add tools in the matching `tools/*.py` module.
+5. Tests covering normalization, parsing, backpressure, 404 negative-cache, and TTL eviction / `force_refresh` if relevant.

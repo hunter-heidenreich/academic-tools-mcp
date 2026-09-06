@@ -1243,6 +1243,26 @@ class TestSafeStem:
         assert papers._needs_stem_migration("2301.00001") is False
         assert papers._needs_stem_migration("10.1101_2021.01.01.123") is False
         assert papers._needs_stem_migration("a%20b") is False
+        # "~" is unreserved, so `quote` passes it through: it is safe_stem
+        # output, not a legacy name. Read as legacy, the sweep re-encodes the
+        # "%" beside it and orphans the file it just renamed.
+        assert papers._needs_stem_migration("notes~draft%202024") is False
+
+    def test_safe_stem_output_is_never_seen_as_legacy(self):
+        """Invariant: the migration gate accepts everything safe_stem emits.
+
+        Otherwise startup renames a correctly-written file to a stem the path
+        builder never produces, and the paper reports "not converted yet".
+        """
+        for canonical in [
+            "notes~draft 2024",
+            "10.1038/s41586-024-00001-1",
+            "hep-th/9901001v2",
+            'x"$(touch pwned)`id`;rm -rf /|y',
+            "Grüße/Übung 1",
+        ]:
+            stem = papers.safe_stem(canonical)
+            assert papers._needs_stem_migration(stem) is False
 
     def test_keeps_normal_doi_and_arxiv_ids(self):
         # Normal identifiers are unchanged except for the legacy / -> _ map,

@@ -32,7 +32,8 @@ from .test_doi_properties import dois
 
 # Real old-style archives, hyphenated and not, with and without a subject
 # class. The subject class is the case the router rejected outright: its
-# separating "." was missing from `_ARXIV_OLD_RE`, so `math.GT/0309136` landed
+# separating "." was missing from the router's old-style shape, so
+# `math.GT/0309136` landed
 # in `manual` under a canonical key that was already arXiv's.
 _OLD_ARCHIVES = ["hep-th", "hep-ph", "cs", "math", "cond-mat", "astro-ph", "nlin", "q-bio"]
 _OLD_SUBJECTS = ["", ".GT", ".CO", ".stat-mech", ".soft"]
