@@ -110,6 +110,20 @@ class TestCrossrefPoolSelection:
         monkeypatch.setenv("CROSSREF_MAILTO", "me@example.org")
         assert crossref.in_polite_pool() is True
 
+    @pytest.mark.parametrize("blank", ["   ", "\t", "\n"])
+    def test_a_blank_mailto_does_not_buy_the_polite_tier(self, monkeypatch, blank):
+        """The pool and the header must agree on what "configured" means.
+
+        ``normalize_mailto`` strips, so a whitespace-only address never reaches
+        the User-Agent. When ``config.get`` did not strip, the same value was
+        still truthy here — so we claimed the polite tier's rates while sending
+        no contact at all, the exact failure this class exists to prevent.
+        """
+        monkeypatch.setenv("CROSSREF_MAILTO", blank)
+        assert crossref.in_polite_pool() is False
+        assert crossref._resolve_policy() == (1, pytest.approx(0.2), pytest.approx(1.0))
+        assert "mailto:" not in crossref._build_headers()["User-Agent"]
+
     def test_search_is_paced_separately_from_singles(self):
         # Search used to share the singles throttle entirely, so its tighter
         # limit was never enforced in either tier.

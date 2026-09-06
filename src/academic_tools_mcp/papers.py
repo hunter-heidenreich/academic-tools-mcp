@@ -134,23 +134,15 @@ def _resolve_timeout(env_var: str, default: float) -> float | None:
 
     Returns the timeout in seconds, or None to disable the timeout entirely:
 
-    - unset / empty / non-numeric ("not-a-number") -> the default;
-    - "none" / "off" / "disabled" / "0" / any value <= 0 -> disabled (None);
+    - unset / empty / non-numeric ("not-a-number") / non-finite -> the default;
+    - ``config._DISABLE_VALUES`` or any value <= 0 -> disabled (None);
     - a positive number -> that many seconds.
+
+    ``on_nonpositive="disable"`` is the half that differs from
+    ``MAX_PDF_BYTES``: a non-positive timeout is a second disable idiom here,
+    where a non-positive size cap is a typo.
     """
-    raw = config.get(env_var)
-    if raw is None:
-        return default
-    raw = raw.strip().lower()
-    if raw in {"none", "off", "disabled", "0"}:
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    if value <= 0:
-        return None
-    return value
+    return config.number(env_var, default, cast=float, on_nonpositive="disable")
 
 
 def _resolve_convert_timeout() -> float | None:

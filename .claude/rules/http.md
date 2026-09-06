@@ -43,7 +43,9 @@ Each provider keeps thin **module-level wrappers** that delegate to its instance
 
 ## _stats.py
 
-Per-provider counters plus a live `in_flight` sample read from the `Throttle.pending` of every throttle a module holds (`snapshot()` documents the shape).
+Per-provider counters plus a live `in_flight` sample read from the `Throttle.pending` of every throttle a module holds, under a `providers` key, alongside `env_file` (`snapshot()` documents the shape).
+
+- **`env_file` is the only way an operator can see which `.env` won.** `config.ENV_FILE` is resolved once at import and read nowhere else; from an installed wheel the winning file is rarely the one they just edited. It rides the existing `ENABLE_DEBUG_TOOLS` gate, so no agent-facing surface changes — a config path is operator data.
 
 - **`throttles()` discovers by scanning `sys.modules`, not from a list of module paths.** A new provider is sampled the moment it is imported, and `snapshot()` stays a read — importing a module in order to measure it would report in-flight rows for providers the process never used. `tests/conftest.py` resets through the same seam, so there is no second list to keep in sync. It scans **every module attribute, matched on the type's name** (an `isinstance` would close an import cycle; a `hasattr` shape check matches any module-level `MagicMock` a test leaves behind), and dedupes by identity — so a module that grows a *second* throttle cannot drop out of the reset seam, and `snapshot()` **sums** `in_flight` per namespace rather than assigning it.
 - **`in_flight` is filed under `throttle.namespace`**, the same string the module's cache and HTTP counters use, so a provider can never split into two rows. That `Throttle(namespace=…)` equals the module's own `NAMESPACE` is pinned by a test, not by convention.

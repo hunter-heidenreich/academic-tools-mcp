@@ -17,7 +17,7 @@ Converter-agnostic PDF-to-markdown pipeline and section-level access.
 - **A malformed template surfaces as `{error, retryable: False}`, never a raised exception.** `str.format` raises `KeyError` / `IndexError` / `ValueError`, none of them `OSError`, so `_format_template` narrows them to `ConverterTemplateError` — and **both** builders must stay inside their caller's `try`, on the fast path too.
 - **Every derived path routes through `papers.safe_stem()`** — PDF, markdown, sections key, extraction-dir prefix — so they can never disagree about which file belongs to which paper. It percent-encodes rather than collapsing, because collapsing would merge `a b` and `a_b` onto one file; `/` → `_` is the one deliberate exception, unreachable for real identifiers.
 - **`safe_stem` is not idempotent** (`a%20b` → `a%2520b`), so anything re-deriving a stem must gate on `_MIGRATED_STEM_RE` first. `migrate_legacy_stems()`, run once at startup, is the idempotent wrapper.
-- `_resolve_convert_timeout()` reads `PDF_CONVERT_TIMEOUT` (same disable vocabulary as `MAX_PDF_BYTES`; see its docstring).
+- `_resolve_convert_timeout()` reads `PDF_CONVERT_TIMEOUT` through `config.number`, which owns the disable vocabulary. It passes `on_nonpositive="disable"` — unlike `MAX_PDF_BYTES`, a non-positive timeout is a second way to say "off" rather than a typo.
 
 ### Full conversion — `convert_pdf()`
 

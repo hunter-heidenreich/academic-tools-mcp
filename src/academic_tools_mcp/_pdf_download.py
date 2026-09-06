@@ -80,23 +80,17 @@ def resolve_max_pdf_bytes() -> int | None:
     """Resolve the MAX_PDF_BYTES env var.
 
     Returns the cap in bytes, or None to disable it. The disable vocabulary is
-    exactly "none" / "off" / "disabled" / "0". Anything else — unset, empty,
-    unparseable, or a non-positive number — falls back to the default, so a
-    mistyped cap can't silently drop the disk guard.
+    ``config._DISABLE_VALUES``. Anything else — unset, empty, unparseable, or
+    a non-positive number — falls back to the default, so a mistyped cap can't
+    silently drop the disk guard: "-1" is an unlimited idiom elsewhere, but
+    here it's a typo, which is what ``on_nonpositive="default"`` says.
     """
-    raw = config.get("MAX_PDF_BYTES")
-    if raw is None:
-        return _DEFAULT_MAX_PDF_BYTES
-    raw = raw.strip().lower()
-    if raw in {"none", "off", "disabled", "0"}:
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        return _DEFAULT_MAX_PDF_BYTES
-    # Only the vocabulary above disables. "-1" is an unlimited idiom elsewhere;
-    # here it's a typo, and honouring it would remove the guard entirely.
-    return value if value > 0 else _DEFAULT_MAX_PDF_BYTES
+    return config.number(
+        "MAX_PDF_BYTES",
+        _DEFAULT_MAX_PDF_BYTES,
+        cast=int,
+        on_nonpositive="default",
+    )
 
 
 async def stream_to_file(

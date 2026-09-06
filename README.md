@@ -48,18 +48,20 @@ All configuration is via environment variables in `.env`. Nothing is required to
 | `CROSSREF_MAILTO` | No | Your email — joins the Crossref [polite pool](https://www.crossref.org/documentation/retrieve-metadata/rest-api/). Not just a courtesy: the client picks its rate limits from whether this is set (10 req/sec singles / 3 search / 3 concurrent with it; 5 / 1 / 1 without). |
 | `ARXIV_MAILTO` | No | Your email, appended to the arXiv User-Agent. A descriptive agent is sent either way — arXiv's edge throttles generic library agents far harder. |
 | `CACHE_DIR` | No | Where the on-disk cache lives (default: `.cache/` beside the project). Set it when running from an installed wheel. |
-| `ACADEMIC_TOOLS_ENV_FILE` | No | Explicit path to the `.env` to load, overriding the search order |
+| `ACADEMIC_TOOLS_ENV_FILE` | No | Explicit path to the `.env` to load. Authoritative: when set it is the *only* candidate, so a path that isn't there means no `.env` rather than a silent fallback to another file. |
 | `MAX_PDF_BYTES` | No | Cap on a single PDF download (default `200000000` ≈ 200 MB). `none` / `off` / `disabled` / `0` disables; any other unparseable value (including a negative one) falls back to the default. |
 | `WIKIPEDIA_MAILTO` | No | Your email — required by [Wikimedia policy](https://meta.wikimedia.org/wiki/User-Agent_policy) for the User-Agent header |
 | `PDF_CONVERTER` | No | PDF-to-markdown backend: `mineru` (default), `marker`, or a custom command (see [PDF Pipeline](#pdf-pipeline)) |
 | `PDF_CONVERTER_VENV` | No | Path to a virtualenv to activate before running the converter (e.g. `~/.venvs/mineru`) |
-| `PDF_CONVERT_TIMEOUT` | No | Hard timeout for a single PDF→markdown conversion in seconds (default `1800` = 30 min). Set to `none` / `off` / `disabled` to disable. |
+| `PDF_CONVERT_TIMEOUT` | No | Hard timeout for a single PDF→markdown conversion in seconds (default `1800` = 30 min). Set to `none` / `off` / `disabled` / `0`, or any value `<= 0`, to disable. Unparseable or non-finite falls back to the default. |
 | `PDF_FAST_CONVERTER` | No | Backend for `convert_paper(mode="fast")`: `pdftotext` (default, needs poppler-utils), `pymupdf` (needs the `fast` extra), or a custom command |
-| `PDF_FAST_CONVERT_TIMEOUT` | No | Hard timeout for a fast extraction in seconds (default `120`) |
+| `PDF_FAST_CONVERT_TIMEOUT` | No | Hard timeout for a fast extraction in seconds (default `120`). Same disable rules as `PDF_CONVERT_TIMEOUT`. |
 | `DEBUG_REQUESTS` | No | `1` logs every throttled GET to **stderr** (never stdout — that's the JSON-RPC stream). Re-read per call, so it can be flipped without a restart. |
-| `ENABLE_DEBUG_TOOLS` | No | `1` registers a `get_server_stats` tool exposing per-provider counters. Off by default so agents don't see operational data. Read at import — needs a restart. |
+| `ENABLE_DEBUG_TOOLS` | No | `1` registers a `get_server_stats` tool exposing per-provider counters and the `.env` that won at import. Off by default so agents don't see operational data. Read at import — needs a restart. |
 
-`.env` is looked for in order: `ACADEMIC_TOOLS_ENV_FILE`, the project root (source checkouts), `$PWD/.env`, then `$XDG_CONFIG_HOME/academic-tools-mcp/.env` (falling back to `~/.config`). Real environment variables always win over the file.
+Setting `ACADEMIC_TOOLS_ENV_FILE` makes that file the only candidate. Otherwise `.env` is looked for in order: the project root (source checkouts), `$PWD/.env`, then `$XDG_CONFIG_HOME/academic-tools-mcp/.env` (falling back to `~/.config`). Real environment variables always win over the file, and a file that is unreadable or isn't UTF-8 is skipped rather than fatal.
+
+Every value has its surrounding whitespace stripped, and one that is left empty reads as unset — a trailing space in a `.env` line is a typo, not a setting. Whitespace *inside* a value (a converter command template, a path) is preserved.
 
 ## Usage
 

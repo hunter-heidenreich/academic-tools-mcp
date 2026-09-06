@@ -17,6 +17,26 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`config.number`, the single home for a limit an operator can turn off,**
+  and `env_file` in `get_server_stats`. The disable vocabulary
+  (`none` / `off` / `disabled` / `0`) was spelled once in `_pdf_download` and
+  again in `papers`, and the copies had drifted: fractions, exponents and
+  `inf` were honoured as timeouts but rejected as size caps. The one
+  difference that is deliberate — a non-positive `MAX_PDF_BYTES` keeps the
+  disk guard while a non-positive timeout disables it — is now the explicit
+  `on_nonpositive` argument rather than a divergence between two copies.
+  `get_server_stats` additionally reports `env_file`, the `.env` that won at
+  import, which nothing could observe before. ([#88])
+
+- **The test suite no longer reads the operator's `.env`.** `config` loads it
+  into `os.environ` at import, so the suite's behaviour depended on whose
+  machine it ran on — `ENABLE_DEBUG_TOOLS=1`, which the project's own docs
+  document, failed the test asserting the debug tool is unregistered.
+  `conftest` now clears every setting before the package is imported and again
+  per test, pinning `ACADEMIC_TOOLS_ENV_FILE` at a committed empty file, with
+  an AST scan of `src/` keeping the roster from going stale. ([#88])
+
+
 - **Property and unit tests for the shared cache.** `tests/test_cache_properties.py`
   pins what every provider leans on and no example set covers: any JSON object
   round-trips through `put`/`get` unchanged, `get_negative` returns the payload
@@ -184,6 +204,14 @@ grouped by milestone rather than per commit.
   already green locally; CI pins that bar rather than chasing it. ([#47])
 
 ### Changed
+
+- **Config values are stripped of surrounding whitespace, and
+  `ACADEMIC_TOOLS_ENV_FILE` is authoritative.** A trailing space in a `.env`
+  line is a typo, not a setting, so `get` now strips it and reads a
+  whitespace-only value as unset — matching `flag`, which always did. And a
+  named `.env` that isn't there now means "no `.env`" rather than falling
+  through to the project root, `$PWD` or `$XDG_CONFIG_HOME`: a typo'd path was
+  silently loading a different file's settings. ([#88])
 
 - **Citation keys pick a better title word and a fuller surname.** Particle
   detection gained BibTeX's own case rule — a lowercase word before the surname
@@ -414,6 +442,25 @@ grouped by milestone rather than per commit.
   walk would have deleted every other namespace's postings. ([#86])
 
 ### Fixed
+
+- **A whitespace-only `CROSSREF_MAILTO` no longer claims the polite pool.**
+  `" "` was truthy, so `in_polite_pool()` said yes and the client took the
+  polite tier's 10 req/sec and 3 concurrent — while `normalize_mailto`
+  correctly dropped the address, so those requests carried no contact at all.
+  Requesting at twice the public rate anonymously is exactly what the polite
+  pool's terms forbid. ([#88])
+
+- **A `.env` that isn't UTF-8 no longer crashes the server at startup.**
+  `load_dotenv` raises `UnicodeDecodeError`, which is not an `OSError`, so a
+  file saved as UTF-16 escaped the guard meant to skip unreadable candidates
+  and aborted the import — the console script would not start. It is now
+  skipped like any other unusable candidate, as are a deleted working
+  directory and an unresolvable home directory. ([#88])
+
+- **A non-finite `PDF_CONVERT_TIMEOUT` no longer reaches `asyncio.wait_for`.**
+  `float("nan")` is neither `> 0` nor `<= 0`, so it passed both branches of
+  the resolver and became a deadline no elapsed time could satisfy. `nan` and
+  `inf` now fall back to the default. ([#88])
 
 - **`cache_misses` now means "went upstream".** It was booked by `cache.get`
   whenever no *positive* entry was found, so every negative-cache hit was also
@@ -1960,3 +2007,4 @@ grouped by milestone rather than per commit.
 [#85]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/85
 [#86]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/86
 [#87]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/87
+[#88]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/88

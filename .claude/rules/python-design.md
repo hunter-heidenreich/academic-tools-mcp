@@ -41,7 +41,7 @@ Keep comments **brief** and reserve them for what the code cannot say about itse
 
 ## Testing — pytest, hypothesis, ZOMBIES
 
-`pytest` is the runner; async tests carry an explicit `@pytest.mark.asyncio` because `asyncio_mode = "strict"` is pinned in `pyproject.toml` rather than inherited. Four autouse fixtures in `tests/conftest.py` isolate every test: pooled-client and throttle state reset, cache root redirected to `tmp_path`, conversion state cleared, and **real network blocked** — a test that needs a response fakes the transport, never the internet. The coverage floor lives in the CI step, deliberately not in `addopts`, so a single-file run doesn't fail it.
+`pytest` is the runner; async tests carry an explicit `@pytest.mark.asyncio` because `asyncio_mode = "strict"` is pinned in `pyproject.toml` rather than inherited. Five autouse fixtures in `tests/conftest.py` isolate every test: operator configuration scrubbed from the environment, pooled-client and throttle state reset, cache root redirected to `tmp_path`, conversion state cleared, and **real network blocked** — a test that needs a response fakes the transport, never the internet. The config scrub has a second half a fixture cannot do: `conftest` clears the roster and pins `ACADEMIC_TOOLS_ENV_FILE` at module scope, *above its own package imports*, because `server._DEBUG_TOOLS_ENABLED`, `cache.CACHE_ROOT` and crossref's pacing constants are captured at import. Add a setting, add it to `_CONFIG_ENV_VARS` — `test_conftest_guards` AST-scans `src/` for `config.get`/`flag`/`number` keys and fails if the roster is narrower. The coverage floor lives in the CI step, deliberately not in `addopts`, so a single-file run doesn't fail it.
 
 **Cover the ZOMBIES** when deciding what to test:
 

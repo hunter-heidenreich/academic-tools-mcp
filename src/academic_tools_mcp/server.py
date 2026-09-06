@@ -101,7 +101,8 @@ if _DEBUG_TOOLS_ENABLED:
         counters tracked by ``_stats.snapshot()``: cache_hits / cache_misses
         / negative_hits, http_calls / http_retries, backpressure_refusals,
         cache_write_failures, and live in_flight counts. Cumulative since
-        process start.
+        process start. Also reports ``env_file`` — the ``.env`` that won at
+        import, or null if none did.
 
         Use this when something feels slow or rate-limit-pressured to see
         which provider is hitting the network vs. serving from cache.

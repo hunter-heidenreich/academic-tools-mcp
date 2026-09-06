@@ -203,6 +203,26 @@ class TestSnapshot:
         row = _stats.snapshot()["providers"][oa_download.NAMESPACE]
         assert row == {"cache_hits": 1, "in_flight": 2}
 
+    def test_reports_which_env_file_won(self, monkeypatch, tmp_path):
+        """``config.ENV_FILE`` is otherwise unobservable.
+
+        An operator debugging "my CACHE_DIR isn't taking effect" needs to know
+        which of the candidate files the process actually read — from an
+        installed wheel that is rarely the one they just edited. Reported as a
+        string: a ``Path`` is not JSON-serialisable, and this rides the MCP
+        boundary.
+        """
+        from academic_tools_mcp import config
+
+        monkeypatch.setattr(config, "ENV_FILE", tmp_path / "chosen.env")
+        assert _stats.snapshot()["env_file"] == str(tmp_path / "chosen.env")
+
+    def test_env_file_is_null_when_no_file_was_found(self, monkeypatch):
+        from academic_tools_mcp import config
+
+        monkeypatch.setattr(config, "ENV_FILE", None)
+        assert _stats.snapshot()["env_file"] is None
+
     def test_rows_are_copies(self):
         """The snapshot is a report, not a handle: an operator printing it,
         or a caller stripping a key before logging, must not edit the live
