@@ -22,6 +22,7 @@ from typing import Any, NamedTuple
 from urllib.parse import unquote
 
 from . import _doi, _textnorm, cache, papers
+from .providers import arxiv
 
 # Enough to tell "variational dropout" from "dropout regularisation"; more is bloat.
 _SNIPPET_CHARS = 200
@@ -146,8 +147,12 @@ _NAMESPACE_DOI_PREFIXES = {"biorxiv": "10.1101/", "acl_anthology": "10.18653/v1/
 # manual holds publisher DOIs, not the freeform labels its name suggests.
 _MANUAL_DOI_STEM_RE = re.compile(rf"^({_doi.REGISTRANT_PATTERN})_")
 
-# "archive[.subject]_NNNNNNN[vN]"; new-style ids start with a digit and pass through.
-_ARXIV_OLDSTYLE_STEM_RE = re.compile(r"^([a-z][a-z.\-]*)_(\d{7}(?:v\d+)?)$")
+# "archive[.subject]_NNNNNNN[vN]"; new-style ids start with a digit and pass
+# through. Same grammar the router matches on, from the same source, so a stem
+# this inverts can never be one `manual` refuses to send here.
+_ARXIV_OLDSTYLE_STEM_RE = re.compile(
+    rf"^({arxiv.OLD_ARCHIVE_PATTERN})_({arxiv.OLD_NUMBER_PATTERN})$"
+)
 
 
 def _filename_to_canonical(namespace: str, stem: str) -> str:

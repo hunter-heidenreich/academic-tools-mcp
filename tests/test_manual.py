@@ -6,66 +6,6 @@ import pytest
 from academic_tools_mcp import atomic, manual
 
 # ---------------------------------------------------------------------------
-# Identifier normalization
-# ---------------------------------------------------------------------------
-
-
-class TestNormalizeIdentifier:
-    def test_bare_doi(self):
-        assert (
-            manual._normalize_identifier("10.1038/s41586-024-00001-1")
-            == "10.1038/s41586-024-00001-1"
-        )
-
-    def test_doi_prefix(self):
-        assert (
-            manual._normalize_identifier("doi:10.1038/s41586-024-00001-1")
-            == "10.1038/s41586-024-00001-1"
-        )
-
-    def test_doi_prefix_uppercase(self):
-        assert (
-            manual._normalize_identifier("DOI:10.1038/s41586-024-00001-1")
-            == "10.1038/s41586-024-00001-1"
-        )
-
-    def test_https_doi_url(self):
-        assert (
-            manual._normalize_identifier("https://doi.org/10.1038/s41586-024-00001-1")
-            == "10.1038/s41586-024-00001-1"
-        )
-
-    def test_dx_doi_url(self):
-        assert (
-            manual._normalize_identifier("https://dx.doi.org/10.1038/s41586-024-00001-1")
-            == "10.1038/s41586-024-00001-1"
-        )
-
-    def test_freeform_label(self):
-        assert manual._normalize_identifier("my-paper-2024") == "my-paper-2024"
-
-    def test_strips_whitespace(self):
-        assert (
-            manual._normalize_identifier("  10.1038/s41586-024-00001-1  ")
-            == "10.1038/s41586-024-00001-1"
-        )
-
-
-class TestCanonicalKey:
-    def test_lowercases_doi(self):
-        assert manual._canonical_key("10.1038/S41586-024-00001-1") == "10.1038/s41586-024-00001-1"
-
-    def test_lowercases_freeform(self):
-        assert manual._canonical_key("My-Paper-2024") == "my-paper-2024"
-
-    def test_normalizes_url(self):
-        assert (
-            manual._canonical_key("https://doi.org/10.1038/S41586-024-00001-1")
-            == "10.1038/s41586-024-00001-1"
-        )
-
-
-# ---------------------------------------------------------------------------
 # PDF filename
 # ---------------------------------------------------------------------------
 
@@ -546,13 +486,16 @@ class TestImportForceRefresh:
         # Without force_refresh, re-import is a cache hit and old bytes survive.
         hit = manual.import_local_pdf(str(v2), ident)
         assert hit["cached"] is True
-        assert manual.pdf_path(ident).read_bytes() == b"%PDF-1.4 version ONE"
+        assert manual.resolve_target(ident)["pdf_path"].read_bytes() == b"%PDF-1.4 version ONE"
 
         # With force_refresh, new bytes land and derived state is dropped.
         refreshed = manual.import_local_pdf(str(v2), ident, force_refresh=True)
         assert refreshed["cached"] is False
         assert refreshed["cascaded_invalidated"] == ["markdown", "sections"]
-        assert manual.pdf_path(ident).read_bytes() == b"%PDF-1.4 version TWO is strictly longer"
+        assert (
+            manual.resolve_target(ident)["pdf_path"].read_bytes()
+            == b"%PDF-1.4 version TWO is strictly longer"
+        )
         assert not md_path.exists()
         assert cache.get(namespace, "sections", papers.sections_key(canonical)) is None
 
@@ -600,7 +543,7 @@ class TestImportAtomicityAndEncoding:
         pdf.write_bytes(b"%PDF-1.4 real content")
         ident = "10.1234/zero-byte"
 
-        dest = manual.pdf_path(ident)
+        dest = manual.resolve_target(ident)["pdf_path"]
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"")  # truncated/torn leftover from an interrupted import
 
@@ -624,7 +567,7 @@ class TestImportAtomicityAndEncoding:
         pdf.write_bytes(b"%PDF-1.4 real content")
         ident = "10.1234/unlink-race"
 
-        dest = manual.pdf_path(ident)
+        dest = manual.resolve_target(ident)["pdf_path"]
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b"%PDF-1.4 already here")
 
@@ -666,7 +609,7 @@ class TestImportAtomicityAndEncoding:
         pdf = tmp_path / "real.pdf"
         pdf.write_bytes(b"%PDF-1.4 real content")
         ident = "10.1234/post-copy-race"
-        dest = manual.pdf_path(ident)
+        dest = manual.resolve_target(ident)["pdf_path"]
 
         real_stat = Path.stat
 
@@ -694,7 +637,7 @@ class TestImportAtomicityAndEncoding:
         pdf = tmp_path / "p.pdf"
         pdf.write_bytes(b"%PDF-1.4 content")
         ident = "10.1234/atomic-copy"
-        dest = manual.pdf_path(ident)
+        dest = manual.resolve_target(ident)["pdf_path"]
 
         def boom(*_a, **_kw):
             raise OSError("copy interrupted")
@@ -810,7 +753,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
 
     @pytest.mark.asyncio
     async def test_pdf_import_holds_the_sections_lock(self, tmp_path, monkeypatch):
-        """The PDF branch cascades through manual._invalidate_derived, which
+        """The PDF branch cascades through papers.drop_derived, which
         unlinks the markdown — the same file _reparse_sections_locked reads
         under this lock between its exists() check and its read."""
         import asyncio
@@ -855,7 +798,7 @@ class TestImportPaperTool:
         refreshed = await server.import_paper(str(v2), ident, force_refresh=True)
         assert refreshed["cached"] is False
         assert refreshed["cascaded_invalidated"] == ["markdown", "sections"]
-        assert manual.pdf_path(ident).read_bytes() == b"%PDF-1.4 TWO is longer"
+        assert manual.resolve_target(ident)["pdf_path"].read_bytes() == b"%PDF-1.4 TWO is longer"
 
     @pytest.mark.asyncio
     async def test_markdown_force_refresh_slims_to_section_count(self, tmp_path, monkeypatch):
@@ -878,6 +821,162 @@ class TestImportPaperTool:
 
 
 # ---------------------------------------------------------------------------
+# Argument checks and the read-failure branches
+# ---------------------------------------------------------------------------
+
+
+class TestBlankIdentifier:
+    """A blank identifier keys the empty string, so every blank import collides.
+
+    ``safe_stem("")`` is ``""``: the paper cached as ``.pdf`` / ``.md`` and the
+    next blank import was served the first one as ``cached: True``.
+    """
+
+    @pytest.mark.parametrize("identifier", ["", "   ", "doi:", "DOI: "])
+    def test_a_pdf_import_is_rejected(self, tmp_path, identifier):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake content")
+
+        result = manual.import_local_pdf(str(pdf), identifier)
+
+        assert "Blank identifier" in result["error"]
+
+    @pytest.mark.parametrize("identifier", ["", "   ", "doi:", "DOI: "])
+    def test_a_markdown_import_is_rejected(self, tmp_path, identifier):
+        md = tmp_path / "paper.md"
+        md.write_text("## Intro\n\nHello.")
+
+        result = manual.import_markdown(str(md), identifier)
+
+        assert "Blank identifier" in result["error"]
+
+    def test_nothing_is_written_to_the_cache(self, tmp_path):
+        from academic_tools_mcp import cache
+
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake content")
+
+        manual.import_local_pdf(str(pdf), "  ")
+
+        assert not (cache.CACHE_ROOT / "manual" / "pdfs").exists()
+
+
+class TestSourceAndCacheReadFailures:
+    """Every read in the import path returns ``{error}``, never a raw OSError."""
+
+    def test_an_unreadable_source_pdf_is_an_error(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake content")
+        resolved = pdf.resolve()
+        real_open = Path.open
+
+        def refusing_open(self, *args, **kwargs):
+            if self == resolved:
+                raise OSError(errno.EACCES, "Permission denied")
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", refusing_open)
+
+        result = manual.import_local_pdf(str(pdf), "10.1038/unreadable-pdf")
+
+        assert "Could not read file" in result["error"]
+
+    def test_an_unreadable_source_markdown_is_an_error(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        md = tmp_path / "paper.md"
+        md.write_text("## Intro\n\nHello.")
+        resolved = md.resolve()
+        real_read_text = Path.read_text
+
+        def refusing_read_text(self, *args, **kwargs):
+            if self == resolved:
+                raise OSError(errno.EACCES, "Permission denied")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", refusing_read_text)
+
+        result = manual.import_markdown(str(md), "10.1038/unreadable-md")
+
+        assert "Could not read file" in result["error"]
+
+    def test_corrupt_cached_markdown_is_reported_as_corrupt(self, tmp_path):
+        """The cached re-read is explicit UTF-8, so non-UTF-8 bytes are an error."""
+        from academic_tools_mcp import papers
+
+        md = tmp_path / "paper.md"
+        md.write_text("## Intro\n\nHello.")
+        ident = "10.1038/corrupt-cache"
+        assert "error" not in manual.import_markdown(str(md), ident)
+
+        target = manual.resolve_target(ident)
+        papers.markdown_path(target["namespace"], target["canonical"]).write_bytes(b"\xff\xfe# T")
+
+        result = manual.import_markdown(str(md), ident)
+
+        assert "not valid UTF-8" in result["error"]
+        assert "force_refresh=True" in result["error"]
+
+    def test_an_unreadable_cached_markdown_is_an_error(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from academic_tools_mcp import papers
+
+        md = tmp_path / "paper.md"
+        md.write_text("## Intro\n\nHello.")
+        ident = "10.1038/unreadable-cache"
+        assert "error" not in manual.import_markdown(str(md), ident)
+
+        target = manual.resolve_target(ident)
+        cached_path = papers.markdown_path(target["namespace"], target["canonical"])
+        real_read_text = Path.read_text
+
+        def refusing_read_text(self, *args, **kwargs):
+            if self == cached_path:
+                raise OSError(errno.EIO, "I/O error")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", refusing_read_text)
+
+        result = manual.import_markdown(str(md), ident)
+
+        assert "Could not read cached markdown" in result["error"]
+
+
+class TestResponseIdentifierIsTheCacheKey:
+    """The echoed identifier is the key the file is filed under, not the input."""
+
+    def test_an_arxiv_prefix_is_dropped(self, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake content")
+
+        result = manual.import_local_pdf(str(pdf), "arXiv:2301.00001v2")
+
+        assert result["identifier"] == "2301.00001v2"
+        assert result["namespace"] == "arxiv"
+
+    def test_a_doi_is_folded_and_stripped_of_its_url(self, tmp_path):
+        md = tmp_path / "paper.md"
+        md.write_text("## Intro\n\nHello.")
+
+        result = manual.import_markdown(str(md), "https://doi.org/10.1038/S41586-024-00002-2")
+
+        assert result["identifier"] == "10.1038/s41586-024-00002-2"
+
+    def test_the_echo_is_what_a_later_call_routes_on(self, tmp_path):
+        pdf = tmp_path / "paper.pdf"
+        pdf.write_bytes(b"%PDF-1.4 fake content")
+
+        first = manual.import_local_pdf(str(pdf), "arXiv:2301.00002")
+        again = manual.import_local_pdf(str(pdf), first["identifier"])
+
+        assert again["cached"] is True
+        assert again["identifier"] == first["identifier"]
+
+
+# ---------------------------------------------------------------------------
 # Old-style arXiv routing, and the migration that follows it
 # ---------------------------------------------------------------------------
 
@@ -885,8 +984,8 @@ class TestImportPaperTool:
 class TestOldStyleArxivRouting:
     """An old-style arXiv id belongs to arXiv whatever its case or subject class.
 
-    ``_ARXIV_OLD_RE`` was matched against a *non*-lowercased id with no "." in
-    its archive class, so `math.GT/0309136` and `HEP-TH/9901001` fell through
+    The old-style shape was matched against a *non*-lowercased id with no "."
+    in its archive class, so `math.GT/0309136` and `HEP-TH/9901001` fell through
     to the `manual` namespace — under a canonical key that was already arXiv's.
     Two spellings of one paper then cached, downloaded and converted twice.
     """
@@ -962,6 +1061,12 @@ class TestMigrateMisroutedArxiv:
         return tmp_path
 
     def test_moves_only_the_misrouted_files(self, misrouted):
+        """Each file lands under the stem the arXiv namespace reads.
+
+        A prefixed stem is not a plain move: the legacy ``manual`` key kept the
+        ``arXiv:`` prefix, so reusing the source name files the paper under a
+        stem no arXiv lookup ever builds.
+        """
         assert manual.migrate_misrouted_arxiv() == 8
 
         for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
@@ -970,8 +1075,8 @@ class TestMigrateMisroutedArxiv:
             assert {p.name for p in arxiv_dir.iterdir()} == {
                 f"cond-mat.stat-mech_0501001{suffix}",
                 f"hep-th_9901001v2{suffix}",
-                f"arxiv%3A2301.00001{suffix}",
-                f"arxiv%3Ahep-th_9901001{suffix}",
+                f"2301.00001{suffix}",
+                f"hep-th_9901001{suffix}",
             }
             assert {p.name for p in manual_dir.iterdir()} == {
                 f"my-imported-paper{suffix}",
@@ -1014,10 +1119,36 @@ class TestMigrateMisroutedArxiv:
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         assert manual.migrate_misrouted_arxiv() == 0
 
-    def test_a_migrated_paper_is_findable_under_its_arxiv_identifier(self, misrouted):
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "cond-mat.stat-mech/0501001",
+            "hep-th/9901001v2",
+            # The prefixed spellings: findable only because the destination
+            # name is rebuilt from the recovered id, not copied from the source.
+            "arXiv:2301.00001",
+            "arXiv:hep-th/9901001",
+        ],
+    )
+    def test_a_migrated_paper_is_findable_under_its_arxiv_identifier(self, misrouted, identifier):
         from academic_tools_mcp import papers
 
         manual.migrate_misrouted_arxiv()
 
-        target = manual.resolve_target("cond-mat.stat-mech/0501001")
+        target = manual.resolve_target(identifier)
         assert papers.markdown_path(target["namespace"], target["canonical"]).exists()
+
+    def test_a_moved_markdown_drops_its_stale_manual_section_index(self, misrouted):
+        """The index is namespaced, so the entry left behind is unreachable."""
+        from academic_tools_mcp import cache, papers
+
+        # The legacy manual key: `_doi.normalize` strips `doi:`, not `arXiv:`.
+        canonical = "arxiv:2301.00001"
+        md_path = papers.markdown_path("manual", canonical)
+        papers.store_markdown_and_index("manual", canonical, md_path, "# T", "imported")
+        assert cache.get("manual", "sections", papers.sections_key(canonical)) is not None
+
+        manual.migrate_misrouted_arxiv()
+
+        assert cache.get("manual", "sections", papers.sections_key(canonical)) is None
+        assert papers.markdown_path("arxiv", "2301.00001").exists()

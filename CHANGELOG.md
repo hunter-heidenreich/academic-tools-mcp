@@ -17,6 +17,15 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Property tests for identifier routing and the arXiv re-file sweep**
+  (`tests/test_manual_properties.py`). Three invariants that examples had been
+  standing in for: storage and metadata agree about which ids are arXiv's, the
+  sweep lands a file exactly where `resolve_target` looks for it, and
+  `_pdf_filename` output stays inside `safe_stem`'s alphabet for arbitrary
+  text. The second and third each failed on first run — they are the two
+  `Fixed` entries below. Every read-failure branch in `manual.py` is covered
+  too, taking the module to 100%. ([#89])
+
 - **`config.number`, the single home for a limit an operator can turn off,**
   and `env_file` in `get_server_stats`. The disable vocabulary
   (`none` / `off` / `disabled` / `0`) was spelled once in `_pdf_download` and
@@ -204,6 +213,16 @@ grouped by milestone rather than per commit.
   already green locally; CI pins that bar rather than chasing it. ([#47])
 
 ### Changed
+
+- **`import_paper` echoes the canonical cache key, and rejects a blank
+  identifier.** The `identifier` field carried the caller's spelling
+  DOI-normalized, which is not the key the file was filed under
+  (`arXiv:2301.00001v2` was echoed verbatim while the PDF cached as
+  `2301.00001v2`); it now returns the routed canonical, so an agent can route
+  on what it gets back. A blank identifier (`""`, whitespace, a bare `doi:`)
+  is now an error: it keyed the empty string, cached the paper as `.pdf` /
+  `.md`, and served every later blank import the *first* one as
+  `cached: True`. ([#89])
 
 - **Config values are stripped of surrounding whitespace, and
   `ACADEMIC_TOOLS_ENV_FILE` is authoritative.** A trailing space in a `.env`
@@ -442,6 +461,27 @@ grouped by milestone rather than per commit.
   walk would have deleted every other namespace's postings. ([#86])
 
 ### Fixed
+
+- **The startup sweep no longer re-files an `arXiv:`-prefixed paper under a
+  name the arXiv namespace never reads.** `migrate_misrouted_arxiv` moved
+  cached files out of `manual` under their existing filename, on the premise
+  that the stem was already arXiv's. It is — but only for the spellings whose
+  legacy key equalled the arXiv one: that key is `_doi.canonical`, which
+  strips `doi:` and not `arXiv:`, so a paper imported as `arXiv:2301.00001`
+  was stored as `arxiv%3A2301.00001` and landed in a namespace that only ever
+  looks for `2301.00001`. It was moved, and still unreachable. The destination
+  name is now rebuilt from the recovered id, and the orphaned `manual` section
+  index is dropped so the next read re-parses. ([#89])
+
+- **A cached paper whose identifier contains `~` is no longer orphaned at the
+  next startup.** `quote` leaves the RFC 3986 unreserved set alone, so
+  `safe_stem` emits `~` while `_MIGRATED_STEM_RE` — the gate that decides
+  whether a stem predates `safe_stem` — did not accept it. A stem carrying
+  both a `~` and a percent-escape was therefore read as legacy and re-encoded
+  (`notes~draft%202024` → `notes~draft%25202024`), so `migrate_legacy_stems`
+  renamed a correct file to a name the path builder never produces and the
+  paper reported "not converted yet" — the exact orphaning that sweep exists
+  to prevent. ([#89])
 
 - **A whitespace-only `CROSSREF_MAILTO` no longer claims the polite pool.**
   `" "` was truthy, so `in_polite_pool()` said yes and the client took the
@@ -2008,3 +2048,4 @@ grouped by milestone rather than per commit.
 [#86]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/86
 [#87]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/87
 [#88]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/88
+[#89]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/89

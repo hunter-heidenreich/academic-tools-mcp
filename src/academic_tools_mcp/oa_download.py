@@ -168,7 +168,7 @@ async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[
     via single-flight.
     """
     target = manual.resolve_target(identifier)
-    dest = Path(target["pdf_path"])
+    dest = target["pdf_path"]
 
     async def _fetch() -> dict[str, Any]:
         return await _resolve_and_download(identifier, dest, force_refresh=force_refresh)

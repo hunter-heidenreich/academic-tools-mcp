@@ -24,7 +24,7 @@ from ..bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bi
 from ..providers import arxiv, biorxiv, crossref, openalex
 
 
-def _canonical_for_source(source: str | None, identifier: str) -> str | None:
+def _canonical_for_source(source: manual.MetadataSource | None, identifier: str) -> str | None:
     """Return the provider's canonical form of ``identifier``.
 
     Echoed back to agents as ``_canonical_id`` on every metadata
@@ -67,7 +67,10 @@ _OPENALEX_METADATA_HINT = (
     "Check the DOI format or use search_crossref_by_title to find the correct DOI."
 )
 
-_METADATA_HINT_BY_SOURCE = {
+# Total over ``MetadataSource``: ``_enrich_error`` indexes it with whatever
+# ``resolve_metadata_source`` returned, on the error path, where a KeyError
+# would be least likely to be caught in review.
+_METADATA_HINT_BY_SOURCE: dict[manual.MetadataSource, str] = {
     "arxiv": _ARXIV_METADATA_HINT,
     "biorxiv": _BIORXIV_METADATA_HINT,
     "openalex": _OPENALEX_METADATA_HINT,
@@ -76,7 +79,7 @@ _METADATA_HINT_BY_SOURCE = {
 
 async def _fetch_source(
     identifier: str, *, force_refresh: bool = False
-) -> tuple[str | None, str | None, dict[str, Any]]:
+) -> tuple[manual.MetadataSource | None, str | None, dict[str, Any]]:
     """Resolve an identifier and fetch its raw provider object.
 
     Centralizes the dispatch ritual the unified paper tools share: resolve the
@@ -206,7 +209,7 @@ def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) ->
 
 
 def _format_metadata_by_source(
-    source: str, obj: dict[str, Any], canonical_id: str | None
+    source: manual.MetadataSource, obj: dict[str, Any], canonical_id: str | None
 ) -> dict[str, Any]:
     """Dispatch a raw provider object to its per-source metadata formatter.
 

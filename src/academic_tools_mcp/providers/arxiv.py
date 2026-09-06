@@ -135,6 +135,18 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
 # canonical cache key.
 _ARXIV_URL_RE = re.compile(r"https?://arxiv\.org/(?:abs|pdf)/([^?#]+?)(?:\.pdf)?(?:[?#].*)?$")
 
+# The two ID forms. Exported as patterns because ``cache_search`` matches the
+# old-style one over ``safe_stem``'s ``_`` rather than ``/``; a second spelling
+# there would let it invert a stem that never routes here.
+# ``math.GT``/``cond-mat.stat-mech`` are why the archive class carries ``.``.
+VERSION_PATTERN = r"(?:v\d+)?"
+NEW_ID_PATTERN = rf"\d{{4}}\.\d{{4,5}}{VERSION_PATTERN}"
+OLD_ARCHIVE_PATTERN = r"[a-z][a-z.\-]*"
+OLD_NUMBER_PATTERN = rf"\d{{7}}{VERSION_PATTERN}"
+
+_NEW_ID_RE = re.compile(rf"^{NEW_ID_PATTERN}$")
+_OLD_ID_RE = re.compile(rf"^{OLD_ARCHIVE_PATTERN}/{OLD_NUMBER_PATTERN}$")
+
 
 def _normalize_arxiv_id(arxiv_id: str) -> str:
     """Normalize an arXiv identifier to a bare ID (with version if present).
@@ -185,6 +197,20 @@ def canonical_arxiv_id(arxiv_id: str) -> str:
     vary in case upstream); the API request itself keeps the original case.
     """
     return _normalize_arxiv_id(arxiv_id).lower()
+
+
+def is_arxiv_id(identifier: str) -> bool:
+    """Whether *identifier* is an arXiv ID in any of its spellings.
+
+    The shape test ``manual``'s two dispatchers route on, beside
+    ``biorxiv.is_biorxiv_doi`` and ``acl_anthology.is_acl_doi``. Tests the
+    canonical form, so the ``arXiv:`` prefix, an abs/pdf URL and upstream's
+    varying case are all handled before the shape is looked at. An id this
+    rejects still keys exactly as arXiv would, so it lands in ``manual`` and
+    the same paper caches, downloads and converts twice.
+    """
+    canonical = canonical_arxiv_id(identifier)
+    return bool(_NEW_ID_RE.match(canonical) or _OLD_ID_RE.match(canonical))
 
 
 def base_arxiv_id(arxiv_id: str) -> str:
