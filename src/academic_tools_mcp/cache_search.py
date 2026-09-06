@@ -134,25 +134,16 @@ def _extract_snippet(
 # Filename → identifier inversion per namespace
 # ---------------------------------------------------------------------------
 
-# Inverting safe_stem's "/" -> "_" is namespace-specific, because a DOI suffix
-# may legitimately contain "_": only a slash a known prefix introduced is
-# decidable.
-_NAMESPACE_PREFIX_REPAIRS: dict[str, list[tuple[str, str]]] = {
-    # bioRxiv DOIs are always "10.1101/<suffix>" — exactly one slash.
-    "biorxiv": [("10.1101_", "10.1101/")],
-    # ACL Anthology DOIs are always "10.18653/v1/<suffix>" — two slashes.
-    "acl_anthology": [("10.18653_v1_", "10.18653/v1/")],
-}
+# A DOI suffix may legitimately contain "_", so only a slash a known prefix
+# introduced is decidable. These namespaces have exactly one such prefix.
+_NAMESPACE_DOI_PREFIXES = {"biorxiv": "10.1101/", "acl_anthology": "10.18653/v1/"}
 
-# Most of the manual namespace is publisher DOIs, not the freeform labels the
-# name suggests. The registrant is digits only, so the first "_" after it is
-# unambiguously the slash; a suffix carrying further slashes round-trips
-# imperfectly, and a label doesn't match and passes through.
+# manual holds publisher DOIs, not the freeform labels its name suggests. The
+# registrant is digits only, so the first "_" after it is the slash; a suffix
+# carrying further slashes round-trips imperfectly, and a label passes through.
 _MANUAL_DOI_STEM_RE = re.compile(rf"^({_doi.REGISTRANT_PATTERN})_")
 
-# "archive[.subject]_NNNNNNN[vN]" — every old-style archive, dotted or
-# hyphenated, with the version canonical_arxiv_id keeps. New-style ids start
-# with a digit and pass through.
+# "archive[.subject]_NNNNNNN[vN]"; new-style ids start with a digit and pass through.
 _ARXIV_OLDSTYLE_STEM_RE = re.compile(r"^([a-z][a-z.\-]*)_(\d{7}(?:v\d+)?)$")
 
 
@@ -177,10 +168,10 @@ def _restore_slashes(namespace: str, stem: str) -> str:
         return f"{m.group(1)}/{m.group(2)}" if m else stem
     if namespace == "manual":
         return _MANUAL_DOI_STEM_RE.sub(r"\1/", stem, count=1)
-    repairs = _NAMESPACE_PREFIX_REPAIRS.get(namespace, [])
-    for needle, replacement in repairs:
-        if stem.startswith(needle):
-            return replacement + stem[len(needle) :]
+    prefix = _NAMESPACE_DOI_PREFIXES.get(namespace, "")
+    stemmed = prefix.replace("/", "_")
+    if prefix and stem.startswith(stemmed):
+        return prefix + stem[len(stemmed) :]
     return stem
 
 
