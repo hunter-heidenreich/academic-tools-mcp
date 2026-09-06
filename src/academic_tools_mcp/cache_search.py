@@ -628,19 +628,19 @@ def search(
     finally:
         con.close()
 
-    unique_query_terms = _snippet_terms(query, normalize=normalize)
+    terms = _snippet_terms(query, normalize=normalize)
     out: list[dict[str, Any]] = []
     for row in rows:
         # bm25() is negative, most-relevant first. No floor: FTS5 returns only
         # rows that matched, so a low score is a weak term, not a non-match.
         score = -float(row["score"])
-        path = cache._CACHE_ROOT / row["ns"] / "markdown" / f"{row['stem']}.md"
+        path = cache.cache_dir(row["ns"], "markdown") / f"{row['stem']}.md"
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         title = _extract_title(text)
-        snippet, snippet_offset = _extract_snippet(text, unique_query_terms, normalize=normalize)
+        snippet, snippet_offset = _extract_snippet(text, terms, normalize=normalize)
         # Never a local heading scan: a copy of papers' drops the empty-section
         # filter and names a section get_paper_section would refuse.
         found = (
