@@ -529,9 +529,8 @@ def _fts_query(query: str) -> str:
     Returns ``""`` when nothing survives filtering, which the caller must treat
     as an empty result — an empty MATCH expression is a syntax error to FTS5.
     """
-    # Deduplicated case-insensitively, because FTS5 is: ORing a term with its
-    # own other spelling counts it twice in the score. The original spelling is
-    # what gets emitted — folding is the tokenizer's job, not ours.
+    # Keyed case-insensitively because FTS5 is — a term ORed with its own other
+    # spelling scores twice. Emitted as typed: folding is the tokenizer's job.
     by_token: dict[str, str] = {}
     for word in _query_words(query):
         by_token.setdefault(word.lower(), word)
