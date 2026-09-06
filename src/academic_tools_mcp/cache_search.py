@@ -336,14 +336,12 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
         version = None
 
     if version == _SCHEMA_VERSION:
-        # The meta row is written last, so its presence means the tables exist.
-        # Returning keeps the common open read-only; otherwise every connection
-        # opens a write transaction, and a search opens three.
+        # Written last, so its presence means the tables exist. Keeps the open
+        # read-only; otherwise a search opens three write transactions.
         return
 
-    # Any other version rebuilds, including one that could not be read: a value
-    # we cannot parse says nothing about the shape of the tables under it, so
-    # stamping them current would certify a schema nobody has checked.
+    # An unreadable version says nothing about the tables under it: rebuild,
+    # don't certify.
     for table in ("fts", "fts_norm", "files", "meta"):
         con.execute(f"DROP TABLE IF EXISTS {table}")
 
@@ -381,10 +379,8 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     con.execute("DELETE FROM fts_norm WHERE rowid = ?", (rowid,))
     con.execute("INSERT INTO fts(rowid, body) VALUES (?, ?)", (rowid, text))
     con.execute("INSERT INTO fts_norm(rowid, body) VALUES (?, ?)", (rowid, text))
-    # A document FTS5 derives no terms from can never match; recording *why*
-    # keeps it reportable rather than merely absent. The probe must agree with
-    # ``unicode61`` on what a term is — an ASCII-biased test calls a Japanese
-    # or Cyrillic paper unusable when the index holds it fine.
+    # Must agree with ``unicode61`` on what a term is: an ASCII-biased probe
+    # calls a Japanese or Cyrillic paper unusable when the index holds it fine.
     if _ALNUM_RE.search(text) is None:
         return "no_indexable_tokens"
     return None
@@ -428,9 +424,8 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                     else:
                         reason = None
 
-                    # Storing the stat that *did* succeed would freeze the
-                    # failure — a lock that cleared, or a chmod, leaves mtime
-                    # alone, so the retry would never fire.
+                    # Storing the stat that succeeded freezes the failure: a
+                    # chmod leaves mtime alone, so no retry would ever fire.
                     recorded_mtime = _UNREADABLE_MTIME if reason else found.mtime_ns
 
                     if existing is None:
@@ -452,8 +447,7 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                         con.execute("DELETE FROM fts_norm WHERE rowid = ?", (rowid,))
                     con.execute("UPDATE files SET unindexable = ? WHERE rowid = ?", (reason, rowid))
 
-                # Prune: every indexed row the walk did not return. This is
-                # why _scan_markdown must stay unfiltered.
+                # Every indexed row the walk missed — why it stays unfiltered.
                 for key, (rowid, _m, _s) in known.items():
                     if key in seen:
                         continue
@@ -493,9 +487,8 @@ def unindexable(
     return [{"namespace": r["ns"], "stem": r["stem"], "reason": r["unindexable"]} for r in rows]
 
 
-# ``unicode61``'s separators, so the query splits the way the corpus did.
-# Splitting on NUL is also what keeps one out of the bind — sqlite3 cannot bind
-# a string containing one at all.
+# ``unicode61``'s separators, so the query splits the way the corpus did — and
+# sqlite3 cannot bind a string containing a NUL at all.
 _QUERY_SPLIT_RE = re.compile(r"[\s\x00]+")
 
 
@@ -595,9 +588,8 @@ def search(
     if top_k <= 0:
         return []
     top_k = min(top_k, _MAX_TOP_K)
-    # Gate on the MATCH expression, never on the word regex: a wholly non-Latin
-    # query tokenises to nothing under that ASCII regex, and FTS5 would have
-    # matched it.
+    # Gate on the MATCH expression, never the word regex: a non-Latin query
+    # tokenises to nothing under it, and FTS5 would have matched.
     match_expr = _fts_query(query)
     if not match_expr:
         return []
@@ -631,10 +623,8 @@ def search(
     unique_query_terms = _snippet_terms(query, normalize=normalize)
     out: list[dict[str, Any]] = []
     for row in rows:
-        # bm25() is negative, most-relevant first; flip it so the response
-        # reads "higher is better". No score floor: FTS5 returns only rows that
-        # matched, so a low score means "matched on a term with little
-        # discriminative value", not "did not match".
+        # bm25() is negative, most-relevant first. No floor: FTS5 returns only
+        # rows that matched, so a low score is a weak term, not a non-match.
         score = -float(row["score"])
         path = cache._CACHE_ROOT / row["ns"] / "markdown" / f"{row['stem']}.md"
         try:
@@ -653,10 +643,8 @@ def search(
             {
                 "namespace": row["ns"],
                 "canonical_id": _filename_to_canonical(row["ns"], row["stem"]),
-                # Significant figures, not decimal places: a degenerate IDF
-                # clamps to 1e-6 and the length normalisation scales it below
-                # 1e-7, which any fixed number of decimals reports as 0.0 —
-                # breaking the invariant that every hit scores above zero.
+                # Significant figures, not decimals: a degenerate IDF scales
+                # below 1e-7, which any fixed decimals report as 0.0.
                 "score": float(f"{score:.6g}"),
                 "title": title,
                 "snippet": snippet,
