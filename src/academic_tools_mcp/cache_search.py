@@ -124,11 +124,9 @@ def _extract_snippet(
                 best_distinct = len(counts)
                 best_offset = off
 
-    # Nothing to centre on is just the head of the document. One exit, so the
-    # snippet cannot come out shaped two ways: a raw slice would render a
-    # crossed heading boundary as "## Methods\n\n\n\nWe trained...".
     start = 0 if best_offset is None else max(0, best_offset - half)
     snippet = markdown[start : start + _SNIPPET_CHARS]
+    # Collapsed, or one crossing a heading renders as "## Methods\n\n\n\nWe trained...".
     return re.sub(r"\s+", " ", snippet.strip()), best_offset
 
 
