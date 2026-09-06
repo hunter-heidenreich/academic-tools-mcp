@@ -26,6 +26,9 @@ class TestConverterTemplateErrors:
             "mytool --in {input} --out {outputdir}",  # unknown placeholder
             "mytool --in {0}",  # positional
             "mytool --in {input",  # unbalanced brace
+            "mytool --in {input.nope}",  # attribute access -> AttributeError
+            "mytool --in {input[nope]}",  # subscript -> TypeError
+            "mytool --in {input:>99999999999999}",  # width spec -> MemoryError
         ],
     )
     def test_full_builder_raises_named_error(self, monkeypatch, template, tmp_path):
@@ -34,7 +37,10 @@ class TestConverterTemplateErrors:
             papers.convert._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
         assert "PDF_CONVERTER" in str(exc.value)
 
-    @pytest.mark.parametrize("template", ["mytool {nope}", "mytool {input"])
+    @pytest.mark.parametrize(
+        "template",
+        ["mytool {nope}", "mytool {input", "mytool {input.nope}", "mytool {input[nope]}"],
+    )
     def test_fast_builder_raises_named_error(self, monkeypatch, template, tmp_path):
         monkeypatch.setenv("PDF_FAST_CONVERTER", template)
         with pytest.raises(papers.ConverterTemplateError) as exc:

@@ -37,41 +37,26 @@ from .index import (
     store_markdown_and_index,
 )
 
-# Default subprocess timeout for PDF→markdown conversion. Big PDFs on
-# CPU-only MinerU runs can legitimately take 20+ minutes, so we err
-# generous. Tunable via PDF_CONVERT_TIMEOUT (seconds); "0"/"none"/"off"/
-# "disabled"/any value <= 0 disables it (empty/garbage falls back here).
+# Generous: a CPU-only MinerU run on a big PDF legitimately takes 20+ minutes.
 _DEFAULT_PDF_CONVERT_TIMEOUT = 1800.0
 
-# Default timeout for the lightweight "fast" extraction path. Text-only
-# extraction is seconds, not minutes, so the ceiling is tight. Tunable via
-# PDF_FAST_CONVERT_TIMEOUT (seconds); same disable rules as the full timeout.
+# Tight: text-only extraction is seconds, not minutes.
 _DEFAULT_FAST_CONVERT_TIMEOUT = 120.0
 
-# At most one full conversion server-wide: it can pin a CPU/GPU for tens of
-# minutes, and running several just thrashes. A second caller gets a structured
-# "busy" error rather than queueing — one that wanted to wait could have.
+# One full conversion server-wide: it can pin a CPU/GPU for tens of minutes,
+# and running several just thrashes.
 _global_convert_lock = asyncio.Lock()
 _current_conversion: dict[str, Any] | None = None
 
 
-# Built-in converter command templates.
-# {input} = PDF path, {output_dir} = temp extraction directory.
-# {input} / {output_dir} are substituted with shlex-quoted values, so the
-# templates use BARE placeholders — do NOT wrap them in quotes yourself.
+# Built-in PDF_CONVERTER backends.
 _CONVERTERS: dict[str, str] = {
     "mineru": "mineru -p {input} -o {output_dir}",
     "marker": "marker_single {input} --output_dir {output_dir}",
 }
 
-# Built-in lightweight ("fast") extractor command templates. Unlike the heavy
-# converters above, these emit extracted text to *stdout* (not an output dir)
-# and produce plain text, not structured markdown — a deliberately degraded
-# fallback. {input} = PDF path, {python} = the server's own interpreter (so the
-# bundled pymupdf runner resolves against the env where the optional `[fast]`
-# extra is installed).
-# Like _CONVERTERS, {input} / {python} are substituted shlex-quoted — bare
-# placeholders only.
+# Built-in PDF_FAST_CONVERTER backends. {python} points the bundled pymupdf
+# runner at the env where the optional `[fast]` extra is installed.
 _FAST_CONVERTERS: dict[str, str] = {
     "pdftotext": "pdftotext -layout {input} -",
     "pymupdf": "{python} -m academic_tools_mcp._fast_extract {input}",
@@ -84,10 +69,9 @@ def _busy_error(pdf_size_mb: float) -> dict[str, Any]:
     Says what is running and for how long, so an agent can decide whether to
     back off briefly or move on.
 
-    The unlocked read of ``_current_conversion`` is safe: it is a single
-    GIL-protected load of either a fully-populated dict or ``None``, and the
-    defaults cover the cleared-but-still-locked window. Worst case the response
-    says "unknown/unknown, 0s" — never a crash, never a partial read.
+    Reads ``_current_conversion`` unlocked, once: nothing here awaits, so the
+    snapshot cannot change underfoot. The defaults hold the answer to
+    "unknown/unknown, 0s" rather than a crash if it is ever read cleared.
     """
     snapshot = _current_conversion or {}
     started_at = snapshot.get("started_at")
@@ -102,6 +86,7 @@ def _busy_error(pdf_size_mb: float) -> dict[str, Any]:
         ),
         "retryable": True,
         "busy": True,
+        "conversion_mode": "full",
         "in_progress": {
             "namespace": namespace,
             "canonical": canonical,
@@ -112,18 +97,7 @@ def _busy_error(pdf_size_mb: float) -> dict[str, Any]:
 
 
 def _resolve_timeout(env_var: str, default: float) -> float | None:
-    """Resolve a subprocess timeout from an env var.
-
-    Returns the timeout in seconds, or None to disable the timeout entirely:
-
-    - unset / empty / non-numeric ("not-a-number") / non-finite -> the default;
-    - ``config._DISABLE_VALUES`` or any value <= 0 -> disabled (None);
-    - a positive number -> that many seconds.
-
-    ``on_nonpositive="disable"`` is the half that differs from
-    ``MAX_PDF_BYTES``: a non-positive timeout is a second disable idiom here,
-    where a non-positive size cap is a typo.
-    """
+    """Resolve a subprocess timeout from an env var: seconds, or None for no timeout."""
     return config.number(env_var, default, cast=float, on_nonpositive="disable")
 
 
@@ -140,13 +114,10 @@ def _resolve_fast_convert_timeout() -> float | None:
 class ConverterTemplateError(ValueError):
     """A PDF_CONVERTER / PDF_FAST_CONVERTER template could not be filled in.
 
-    ``str.format`` raises ``KeyError`` on an unknown placeholder, ``IndexError``
-    on a positional one (``{0}``), and ``ValueError`` on an unbalanced brace —
-    none of them an ``OSError``. Narrowing them to one named error is what lets
-    both builders' callers hold the ``{error, retryable: False}`` contract and
-    name the env var, rather than surfacing a bare ``KeyError('outputdir')``.
-
-    Invariant: both builders stay inside their caller's ``try``.
+    Every way ``str.format`` can fail on operator text becomes this one named
+    error — an open set, so don't re-narrow the ``except`` to the few you can
+    name. Invariant: both builders stay inside their caller's ``try``, which is
+    what holds the ``{error, retryable: False}`` contract.
     """
 
 
@@ -154,7 +125,7 @@ def _format_template(template: str, env_var: str, **values: str) -> str:
     """Fill in a converter command template, or raise ConverterTemplateError."""
     try:
         return template.format(**values)
-    except (KeyError, IndexError, ValueError) as e:
+    except Exception as e:
         placeholders = ", ".join(f"{{{k}}}" for k in values)
         raise ConverterTemplateError(
             f"{env_var} is not a usable command template ({e!r}). "
@@ -163,31 +134,34 @@ def _format_template(template: str, env_var: str, **values: str) -> str:
         ) from e
 
 
+def _setup_error(detail: object) -> str:
+    """The message for a full conversion that never reached the converter."""
+    return (
+        f"Could not start PDF converter subprocess: {detail}. "
+        "Check that bash is on PATH and that the PDF_CONVERTER / "
+        "PDF_CONVERTER_VENV env vars point at a usable command."
+    )
+
+
 def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
     """Build the shell command for PDF-to-markdown conversion.
 
-    Reads PDF_CONVERTER and PDF_CONVERTER_VENV from environment.
-    PDF_CONVERTER can be a named backend ("mineru", "marker") or a custom
-    command template containing {input} and {output_dir} placeholders. Those
-    placeholders are substituted with **shell-quoted** values, so a custom
-    template MUST use bare ``{input}`` / ``{output_dir}`` (not ``"{input}"``) —
-    wrapping them yourself double-quotes the already-quoted value and breaks
-    paths. This keeps a path with shell metacharacters from being interpreted
-    by ``bash -c``.
-    PDF_CONVERTER_VENV is an optional path to a virtualenv to activate first.
+    ``PDF_CONVERTER`` is a named backend (``_CONVERTERS``) or a custom template;
+    ``PDF_CONVERTER_VENV`` optionally names a virtualenv to activate first.
+    ``{python}`` is this server's interpreter, so a converter installed beside
+    it can be run without ``PDF_CONVERTER_VENV`` at all.
     """
     converter = config.get("PDF_CONVERTER") or "mineru"
 
-    # Named backend or custom command template
     template = _CONVERTERS.get(converter, converter)
     cmd = _format_template(
         template,
         "PDF_CONVERTER",
         input=shlex.quote(str(pdf_path)),
         output_dir=shlex.quote(str(output_dir)),
+        python=shlex.quote(sys.executable),
     )
 
-    # Optionally activate a venv before running
     venv = config.get("PDF_CONVERTER_VENV")
     if venv:
         activate = Path(venv).expanduser() / "bin" / "activate"
@@ -199,18 +173,12 @@ def _build_converter_command(pdf_path: Path, output_dir: Path) -> str:
 def _build_fast_converter_command(pdf_path: Path) -> str:
     """Build the shell command for lightweight ("fast") text extraction.
 
-    Reads PDF_FAST_CONVERTER from environment. It can be a named backend
-    ("pdftotext" — the default — or "pymupdf") or a custom command template
-    containing an {input} placeholder (use it BARE — the value is substituted
-    shell-quoted, so wrapping it in quotes yourself breaks paths). The command
-    MUST emit the extracted text to stdout. {python} expands to the server's
-    own interpreter so the bundled pymupdf runner resolves against the env
-    where the optional `[fast]` extra is installed.
+    ``PDF_FAST_CONVERTER`` is a named backend (``_FAST_CONVERTERS``, default
+    ``pdftotext``) or a custom template. Whichever it is, the command **must**
+    emit the extracted text to stdout and its diagnostics to stderr.
     """
     converter = config.get("PDF_FAST_CONVERTER") or "pdftotext"
     template = _FAST_CONVERTERS.get(converter, converter)
-    # str.format ignores the unused {python} key for templates (e.g. pdftotext)
-    # that don't reference it.
     return _format_template(
         template,
         "PDF_FAST_CONVERTER",
@@ -222,17 +190,13 @@ def _build_fast_converter_command(pdf_path: Path) -> str:
 async def _kill_process_group(proc: "asyncio.subprocess.Process") -> None:
     """SIGKILL a converter's whole process group and reap it, best-effort.
 
-    ``start_new_session=True`` puts the converter and anything it spawns in a
-    fresh group, so killing the group takes down the tree — killing ``proc``
-    alone would only kill the wrapping ``bash`` and orphan a MinerU run that
-    keeps eating CPU/GPU.
-
-    Guarded on ``returncode`` because signalling an already-reaped pid can in
-    principle reach a recycled process group.
+    The group, not ``proc``: killing the wrapper alone orphans a MinerU run that
+    keeps eating CPU/GPU. Guarded on ``returncode`` because signalling an
+    already-reaped pid can in principle reach a recycled group.
     """
     if proc.returncode is not None:
         return
-    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+    with contextlib.suppress(OSError):
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     with contextlib.suppress(TimeoutError, ProcessLookupError):
         await asyncio.wait_for(proc.wait(), timeout=5.0)
@@ -264,24 +228,13 @@ _RunOutcome = _Completed | _SpawnFailed | _TimedOut
 async def _run_command(cmd: str, timeout_seconds: float | None) -> _RunOutcome:
     """Run a converter under ``bash -c`` and capture both streams.
 
-    The one home for the control flow both conversion modes need, so a change
-    to the cancellation or timeout discipline cannot land in one and miss the
-    other. What each mode says *about* an outcome stays with that mode: the
-    messages differ, and so does how the two streams are combined.
+    The one subprocess driver, so cancellation and timeout discipline cannot
+    diverge between the two modes; each mode still words its own outcomes.
 
-    ``start_new_session=True`` puts the converter and anything it spawns in a
-    fresh process group, so a timeout can SIGKILL the tree rather than just the
-    wrapping ``bash`` and orphan a MinerU run that keeps eating CPU/GPU.
-
-    stdout and stderr are kept on separate pipes and never merged with
-    ``2>&1``: the fast path captures stdout as the document, and the full path
-    appends stderr last so a chatty converter cannot push its real error out of
-    the truncated tail.
-
-    On cancellation — client disconnect, tool-call cancellation, shutdown — the
-    tree is killed and ``CancelledError`` re-raised. Neither caller's
-    ``finally`` signals the child, so without this a converter keeps running
-    with its output directory deleted underneath it and is never reaped.
+    ``start_new_session=True`` so a kill reaches the whole tree, not just the
+    wrapping ``bash``. The streams stay on separate pipes — never ``2>&1`` —
+    because the fast path captures stdout as the document. Cancellation kills
+    the tree here and re-raises: neither caller's ``finally`` signals the child.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -310,38 +263,61 @@ async def _run_command(cmd: str, timeout_seconds: float | None) -> _RunOutcome:
         await _kill_process_group(proc)
         raise
 
+    # ``returncode`` is ``int | None``; after communicate() it is set, and a
+    # default beats an assertion that could fire in production.
     return _Completed(stdout or b"", stderr or b"", proc.returncode or 0)
 
 
 def _decode(raw: bytes) -> str:
-    """Decode converter output, replacing undecodable bytes.
-
-    A crashing converter can emit binary noise, and that must reach the agent
-    as a truncated message rather than a UnicodeDecodeError.
-    """
+    """Decode converter output; a crashing converter can emit binary noise."""
     return raw.decode("utf-8", errors="replace")
+
+
+def _shallowest_first(extract_dir: Path, pattern: str) -> list[Path]:
+    """Glob converter output shallowest-first, then by name.
+
+    MinerU emits several ``.md`` files per run and glob order is
+    filesystem-dependent, so both candidate passes share this one ordering.
+    """
+    return sorted(
+        extract_dir.glob(pattern),
+        key=lambda q: (len(q.relative_to(extract_dir).parts), str(q)),
+    )
 
 
 def _make_extraction_dir(canonical: str) -> Path:
     """Create a fresh, private temp dir for converter output.
 
-    ``mkdtemp`` (mode 0700, unguessable suffix) rather than a predictable
-    ``/tmp/pdf-convert-<canonical>``, which invites a symlink or pre-creation
-    attack and collides across instances. The caller removes it in a ``finally``.
+    ``mkdtemp`` rather than a predictable ``/tmp/pdf-convert-<canonical>``,
+    which invites a symlink attack and collides across instances. The caller
+    removes it in a ``finally``.
     """
     return Path(tempfile.mkdtemp(prefix=f"pdf-convert-{safe_stem(canonical)}-"))
 
 
-# ``![caption](path)``, tolerating one level of nesting on each side.
-#
-# Both halves are load-bearing against real converter output. A flat
-# ``\([^)]*\)`` stops at the first ``)`` *inside* the path, so
-# ``![cap](fig(1).png)`` rewrites to ``![cap]().png)`` — the tail becomes body
-# text the agent reads as content. Converter leaf filenames derive from the PDF
-# stem, and an Elsevier-PII DOI carries parentheses. A flat ``\[([^\]]*)\]``
-# likewise skips ``![a [b] c](path)`` entirely, leaving a dead extraction-dir
-# path in agent-visible markdown.
+# ``![caption](path)``, tolerating one level of nesting on each side — both
+# halves are load-bearing against real converter output. A flat ``\([^)]*\)``
+# stops at the first ``)`` inside the path (``![cap](fig(1).png)`` leaves
+# ``.png)`` behind as body text), and a flat ``\[([^\]]*)\]`` skips
+# ``![a [b] c](path)`` entirely, leaving a dead path in agent-visible markdown.
 _IMAGE_LINK_RE = re.compile(r"!\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\((?:[^()]|\([^()]*\))*\)")
+
+
+def _cached_response(md_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """Shape a ``_reparse_sections_locked`` payload as a conversion response.
+
+    Invariant: the same keys as :func:`store_markdown_and_index` returns, so an
+    agent never feature-detects between a cached and a fresh conversion.
+    ``conversion_mode`` is ``.get``: an entry predating the field answers
+    ``null``, and nobody may guess on its behalf.
+    """
+    return {
+        "markdown_path": str(md_path),
+        "sections": payload["sections"],
+        "sections_detected": payload["sections_detected"],
+        "cached": True,
+        "conversion_mode": payload.get("conversion_mode"),
+    }
 
 
 def _finalize_markdown(
@@ -358,12 +334,10 @@ def _finalize_markdown(
     part of :func:`store_markdown_and_index`: an imported markdown file is the
     operator's own text, and rewriting its image links would be data loss.
     """
-    # Normalise trailing whitespace line-by-line.
     markdown = "\n".join(line.rstrip() for line in raw_markdown.split("\n"))
 
-    # Strip unused image paths: ``![caption](path)`` → ``![caption]()``. The path
-    # points into the extraction temp dir, removed as soon as the conversion
-    # returns, so it can never resolve; the caption is kept.
+    # Image paths point into the extraction dir, deleted on return, so they can
+    # never resolve. The caption is kept.
     markdown = _IMAGE_LINK_RE.sub(r"![\1]()", markdown)
 
     return store_markdown_and_index(namespace, canonical, md_path, markdown, mode)
@@ -377,33 +351,25 @@ async def _convert_fast(
 ) -> dict[str, Any]:
     """Lightweight text extraction, run *outside* the global conversion lock.
 
-    Shells out to PDF_FAST_CONVERTER (default ``pdftotext``) capturing stdout,
-    then caches the text as markdown via the shared finaliser. Deliberately
-    degraded: plain text, no tables/equations/figures, no real headings. Cheap
-    and not GPU-bound, so it never serialises behind a heavy MinerU conversion
-    and never returns a ``busy`` error. The per-paper sections lock serialises
-    concurrent fast calls on the same paper so they don't both spawn and race
-    the cache write; stderr is captured separately so stdout stays clean text.
+    Cheap and not GPU-bound, so it never queues behind a heavy conversion and
+    can never return ``busy``. Its only serialisation is the per-paper sections
+    lock, which keeps two callers on one paper from both spawning.
     """
     md_path = markdown_path(namespace, canonical)
     async with sections_lock(namespace, canonical):
-        # A racing fast caller may have written the markdown between the outer
-        # cached-check and our acquiring this lock — re-check before spawning.
-        # The shared re-parser returns None when the file is gone (a concurrent
-        # force_refresh cascade unlinked it), so we fall through and extract.
-        # Going through it rather than assembling an entry here is what keeps
-        # ``conversion_mode`` honest: it preserves a recorded mode and leaves a
-        # legacy ``null`` alone, where a local ``recorded_mode or "fast"``
-        # stamps a paper nobody has evidence about as degraded.
+        # A racing caller may have written the markdown since the outer check.
+        # Going through the shared re-parser rather than assembling an entry
+        # here is what keeps ``conversion_mode`` honest; None means the file is
+        # gone, so fall through and extract.
         cached = await _reparse_sections_locked(namespace, canonical, md_path)
         if cached is not None:
-            return {
-                "markdown_path": str(md_path),
-                "sections": cached["sections"],
-                "sections_detected": cached["sections_detected"],
-                "cached": True,
-                "conversion_mode": cached.get("conversion_mode"),
-            }
+            return _cached_response(md_path, cached)
+
+        failed = {
+            "retryable": False,
+            "conversion_mode": "fast",
+            "pdf_size_mb": round(pdf_size_mb, 1),
+        }
 
         try:
             cmd = _build_fast_converter_command(pdf_path)
@@ -411,17 +377,8 @@ async def _convert_fast(
             # Invariant: a malformed PDF_FAST_CONVERTER surfaces as
             # {error, retryable: False}, never a raised exception. The builder
             # must stay inside this try.
-            return {
-                "error": str(e),
-                "retryable": False,
-                "conversion_mode": "fast",
-            }
+            return {"error": str(e), **failed}
         outcome = await _run_command(cmd, _resolve_fast_convert_timeout())
-        failed = {
-            "retryable": False,
-            "conversion_mode": "fast",
-            "pdf_size_mb": round(pdf_size_mb, 1),
-        }
 
         if isinstance(outcome, _SpawnFailed):
             return {
@@ -458,7 +415,8 @@ async def _convert_fast(
             }
 
         markdown = _decode(outcome.stdout)
-        # pdftotext separates pages with a form-feed; turn it into a blank line.
+        # A form-feed page break becomes a line break (the pdftotext
+        # convention; harmless for a backend that emits none).
         markdown = markdown.replace("\f", "\n")
         if not markdown.strip():
             return {
@@ -467,9 +425,7 @@ async def _convert_fast(
                     "The PDF may be image-only/scanned — try full conversion (MinerU "
                     "runs OCR) instead."
                 ),
-                "retryable": False,
-                "conversion_mode": "fast",
-                "pdf_size_mb": round(pdf_size_mb, 1),
+                **failed,
             }
 
         return await asyncio.to_thread(
@@ -494,59 +450,53 @@ async def convert_pdf(
         force_refresh: If True, drop any cached markdown + section index
             for this paper so the converter re-runs. Use after replacing the
             source PDF or upgrading the converter.
-        mode: ``"full"`` (default) runs the heavy converter (MinerU/Marker)
-            under the global single-conversion lock. ``"fast"`` runs a
-            lightweight text extractor (PDF_FAST_CONVERTER, default
-            ``pdftotext``) outside that lock — a deliberately degraded path
-            that never serialises or returns ``busy``, useful when the full
-            converter times out or is unavailable.
+        mode: ``"full"`` (default) or ``"fast"`` — see the module docstring.
 
     Returns:
         Dict with markdown_path, sections, cached, conversion_mode, or an error.
     """
+    if mode not in ("full", "fast"):
+        # The MCP boundary types this Literal, so only a direct library caller
+        # gets here — and a typo must not silently start a 20-minute run.
+        return {
+            "error": f"Unknown conversion mode {mode!r}. Use 'full' or 'fast'.",
+            "retryable": False,
+        }
+
     md_path = markdown_path(namespace, canonical)
 
     if force_refresh:
-        # Drop both halves under the per-paper lock so a concurrent reader
-        # can't catch a half-cleared state (markdown gone, stale sections
-        # entry still pointing at the old checksum).
+        # Both halves under one lock, so a reader can't catch a half-cleared
+        # state: markdown gone, sections entry still on the old checksum.
         async with sections_lock(namespace, canonical):
             drop_derived(namespace, canonical)
 
-    # If the markdown is already cached, never re-run the slow conversion —
-    # re-parse from the existing markdown if the sections cache is missing or
-    # stale (handled by the shared _reparse_sections_locked, which also returns
-    # None if the file vanished under the lock so we fall through to conversion).
+    # Cached markdown never re-runs the converter; a missing or stale sections
+    # entry only costs a re-parse. None means the file vanished under the lock,
+    # so fall through and convert.
     if md_path.exists():
         async with sections_lock(namespace, canonical):
             payload = await _reparse_sections_locked(namespace, canonical, md_path)
             if payload is not None:
-                return {
-                    "markdown_path": str(md_path),
-                    "sections": payload["sections"],
-                    # Invariant: the response shape is the same cached or
-                    # fresh, so an agent never feature-detects.
-                    "sections_detected": payload["sections_detected"],
-                    "cached": True,
-                    "conversion_mode": payload.get("conversion_mode"),
-                }
+                return _cached_response(md_path, payload)
 
-    if not pdf_path.exists():
-        return {"error": f"PDF not found at: {pdf_path}"}
+    # One stat, no exists() ahead of it: the check-then-stat has a window a
+    # concurrent unlink fits through, and the answer is the same either way.
+    # Deliberately unnamed: no cache filesystem path crosses the MCP boundary,
+    # and _strip_internal_paths only drops path-valued *keys*.
+    try:
+        pdf_size_bytes = pdf_path.stat().st_size
+    except OSError:
+        return {"error": "PDF not found in the cache.", "retryable": False}
 
-    # Report PDF size so callers can gauge feasibility
-    pdf_size_bytes = pdf_path.stat().st_size
+    # Reported on every error from here down, so callers can gauge feasibility.
     pdf_size_mb = pdf_size_bytes / (1024 * 1024)
 
-    # Fast path: lightweight extraction outside the global lock. Never
-    # serialises behind a heavy conversion and never returns a busy error.
     if mode == "fast":
         return await _convert_fast(pdf_path, namespace, canonical, pdf_size_mb)
 
-    # Global single-conversion gate. The check-then-acquire is safe
-    # because asyncio.Lock.acquire() on an uncontended lock returns
-    # without yielding — no other coroutine can sneak in between
-    # `if locked()` and `async with`.
+    # Check-then-acquire is safe: acquiring an uncontended asyncio.Lock returns
+    # without yielding, so nothing can slip between these two statements.
     if _global_convert_lock.locked():
         return _busy_error(pdf_size_mb)
 
@@ -557,40 +507,27 @@ async def convert_pdf(
             "canonical": canonical,
             "started_at": time.monotonic(),
         }
-        # Bound before the try so the finally can always clean it up, even if
-        # subprocess setup throws before the assignment below.
+        # Bound before the try so the finally can clean up a setup that threw.
         extract_dir: Path | None = None
         try:
-            timeout = _resolve_convert_timeout()
-
-            failed = {"retryable": False, "pdf_size_mb": round(pdf_size_mb, 1)}
+            failed = {
+                "retryable": False,
+                "conversion_mode": "full",
+                "pdf_size_mb": round(pdf_size_mb, 1),
+            }
 
             try:
                 extract_dir = _make_extraction_dir(canonical)
                 converter_cmd = _build_converter_command(pdf_path, extract_dir)
             except (OSError, ConverterTemplateError) as e:
-                # Setup failed: a malformed PDF_CONVERTER template or temp-dir
-                # creation. Distinct from a converter that ran and failed.
-                return {
-                    "error": (
-                        f"Could not start PDF converter subprocess: {e}. "
-                        "Check that bash is on PATH and that the PDF_CONVERTER / "
-                        "PDF_CONVERTER_VENV env vars point at a usable command."
-                    ),
-                    **failed,
-                }
+                # A bad template or an unwritable temp dir — distinct from a
+                # converter that ran and failed.
+                return {"error": _setup_error(e), **failed}
 
-            outcome = await _run_command(converter_cmd, timeout)
+            outcome = await _run_command(converter_cmd, _resolve_convert_timeout())
 
             if isinstance(outcome, _SpawnFailed):
-                return {
-                    "error": (
-                        f"Could not start PDF converter subprocess: {outcome.error}. "
-                        "Check that bash is on PATH and that the PDF_CONVERTER / "
-                        "PDF_CONVERTER_VENV env vars point at a usable command."
-                    ),
-                    **failed,
-                }
+                return {"error": _setup_error(outcome.error), **failed}
 
             if isinstance(outcome, _TimedOut):
                 return {
@@ -605,53 +542,37 @@ async def convert_pdf(
                 }
 
             if outcome.returncode != 0:
-                # Invariant: stderr is appended *last*, so a converter that logs
-                # progress to stdout cannot push its real error out of the
-                # 500-char tail. (Guarded by
-                # tests/test_failure_modes.py::TestConverterSubprocessPlumbing.)
+                # Invariant: stderr last, so a converter that logs progress to
+                # stdout can't push its real error out of the 500-char tail.
                 output = _decode(outcome.stdout) + _decode(outcome.stderr)
                 return {
                     "error": f"PDF conversion failed (exit {outcome.returncode}): {output[-500:]}",
                     **failed,
                 }
 
-            # Find the generated markdown file in the output directory
+            # Prefer a file named after the PDF, else any .md.
             stem = pdf_path.stem
-            # Sorted: glob order is filesystem-dependent and MinerU emits
-            # several .md files per run, so an unsorted pick is nondeterministic
-            # about which one becomes the paper.
-            candidates = sorted(extract_dir.glob(f"**/{stem}.md"))
-
-            if not candidates:
-                # Try any .md file in the output
-                # Deterministic fallback: shallowest path first, then by name,
-                # so a top-level output beats one nested in a subdirectory.
-                candidates = sorted(
-                    extract_dir.glob("**/*.md"),
-                    key=lambda q: (len(q.relative_to(extract_dir).parts), str(q)),
-                )
+            candidates = _shallowest_first(extract_dir, f"**/{stem}.md") or _shallowest_first(
+                extract_dir, "**/*.md"
+            )
 
             if not candidates:
                 return {
                     "error": f"PDF converter produced no markdown output (PDF: {pdf_size_mb:.1f} MB).",
-                    "retryable": False,
-                    "pdf_size_mb": round(pdf_size_mb, 1),
+                    **failed,
                 }
 
             source_md = candidates[0]
 
-            # Read + post-process + write + parse in one worker hop: a
-            # thesis-sized markdown is megabytes of regex and hashing, and the
-            # event loop is serving every other tool call meanwhile.
+            # One worker hop for read + rewrite + write + parse: a thesis is
+            # megabytes of regex and hashing, and the loop is serving other calls.
             def _read_and_finalize() -> dict[str, Any]:
                 raw = source_md.read_text(encoding="utf-8")
                 return _finalize_markdown(namespace, canonical, md_path, raw, "full")
 
             return await asyncio.to_thread(_read_and_finalize)
         finally:
-            # Clean up the temp extraction dir on every exit — success *and*
-            # all four failure paths (spawn error, timeout, non-zero exit,
-            # no-markdown) — so failed conversions don't leak /tmp dirs.
+            # Every exit path, so a failed conversion can't leak a /tmp dir.
             if extract_dir is not None:
                 shutil.rmtree(extract_dir, ignore_errors=True)
             _current_conversion = None

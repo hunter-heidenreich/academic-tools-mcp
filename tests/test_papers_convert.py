@@ -11,12 +11,14 @@ from pathlib import Path
 import pytest
 
 from academic_tools_mcp import cache, papers
-from academic_tools_mcp.papers import convert_pdf
+from academic_tools_mcp.papers import convert_pdf, store_markdown_and_index
 from academic_tools_mcp.papers.convert import (
     _DEFAULT_FAST_CONVERT_TIMEOUT,
     _DEFAULT_PDF_CONVERT_TIMEOUT,
     _build_converter_command,
     _build_fast_converter_command,
+    _busy_error,
+    _cached_response,
     _resolve_convert_timeout,
     _resolve_fast_convert_timeout,
 )
@@ -1025,3 +1027,370 @@ class TestDisabledTimeouts:
         result = await convert_pdf(real_pdf, "test", "unbounded-fast", mode="fast")
         assert [s["title"] for s in result["sections"]] == ["Done"]
         assert result["conversion_mode"] == "fast"
+
+
+# ---------------------------------------------------------------------------
+# The error contract: shape, provenance, and the values inside it
+# ---------------------------------------------------------------------------
+
+
+class TestErrorShape:
+    """Invariant: every ``convert_pdf`` error names the mode that produced it
+    and whether retrying can help, so an agent never feature-detects across the
+    two paths — the same rule the success shape holds.
+    """
+
+    @pytest.fixture
+    def no_spawn(self, monkeypatch):
+        async def _fail(*args, **kwargs):
+            raise AssertionError("this path must not reach the subprocess")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
+
+    @pytest.mark.asyncio
+    async def test_unknown_mode_is_rejected_before_any_work(
+        self, isolated_cache, real_pdf, no_spawn
+    ):
+        # The MCP boundary types this Literal, so only a direct library caller
+        # reaches here — and a typo must not start a 20-minute full conversion.
+        md_path = papers.markdown_path("test", "bad-mode")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("## A\n\nbody\n", encoding="utf-8")
+
+        result = await convert_pdf(real_pdf, "test", "bad-mode", mode="fasst", force_refresh=True)
+        assert "Unknown conversion mode" in result["error"]
+        assert result["retryable"] is False
+        # No conversion_mode: "fasst" is not in the published vocabulary.
+        assert "conversion_mode" not in result
+        # The guard sits above the cascade, so nothing was dropped.
+        assert md_path.exists(), "a mode typo destroyed the cached markdown"
+
+    @pytest.mark.asyncio
+    async def test_missing_pdf_never_names_a_cache_path(self, isolated_cache, tmp_path):
+        # No cache filesystem path crosses the MCP boundary, and the tool
+        # layer's _strip_internal_paths only drops path-valued *keys*.
+        missing = tmp_path / "nope.pdf"
+        result = await convert_pdf(missing, "test", "missing")
+        assert result["retryable"] is False
+        assert str(missing) not in result["error"]
+        assert "nope.pdf" not in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_unlinked_under_us_is_a_miss(self, isolated_cache, real_pdf, monkeypatch):
+        """The size stat has no exists() ahead of it, so a cascade that unlinks
+        the PDF mid-call is a clean miss rather than a FileNotFoundError.
+        """
+
+        real_stat = Path.stat
+
+        def _gone(self, *args, **kwargs):
+            if self == real_pdf:
+                raise FileNotFoundError(self)
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", _gone)
+        result = await convert_pdf(real_pdf, "test", "vanished")
+        assert result["error"] == "PDF not found in the cache."
+        assert result["retryable"] is False
+
+    @pytest.mark.asyncio
+    async def test_full_mode_failures_are_tagged_full(self, isolated_cache, real_pdf, monkeypatch):
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec", spawning(fake_proc(returncode=1, stderr=b"boom"))
+        )
+        result = await convert_pdf(real_pdf, "test", "tagged-full")
+        assert result["conversion_mode"] == "full"
+        assert result["retryable"] is False
+
+    @pytest.mark.asyncio
+    async def test_busy_defaults_when_the_snapshot_is_already_cleared(self):
+        """The window between clearing ``_current_conversion`` and releasing the
+        lock: the unlocked read must degrade to placeholders, never crash.
+        """
+        result = _busy_error(3.14159)
+        assert result["busy"] is True
+        assert result["conversion_mode"] == "full"
+        assert result["in_progress"] == {
+            "namespace": "unknown",
+            "canonical": "unknown",
+            "elapsed_seconds": 0.0,
+        }
+        # Rounded for the agent, not echoed at full float precision.
+        assert result["pdf_size_mb"] == 3.1
+        assert "unknown/unknown" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_pdf_size_is_reported_in_rounded_megabytes(
+        self, isolated_cache, tmp_path, monkeypatch
+    ):
+        pdf = tmp_path / "big.pdf"
+        pdf.write_bytes(b"%PDF-1.4" + b"x" * (3 * 1024 * 1024 - 8))  # exactly 3.0 MB
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawning(fake_proc(returncode=1)))
+        result = await convert_pdf(pdf, "test", "sized")
+        assert result["pdf_size_mb"] == 3.0
+        assert "3.0 MB" not in result["error"]  # non-zero exit doesn't interpolate size
+
+
+# ---------------------------------------------------------------------------
+# Fast-mode plumbing the end-to-end tests don't pin
+# ---------------------------------------------------------------------------
+
+
+class TestFastModeOutputHandling:
+    @pytest.mark.asyncio
+    async def test_a_form_feed_becomes_a_line_break(self, isolated_cache, real_pdf, monkeypatch):
+        # pdftotext separates pages with a form-feed; left in, it lands in the
+        # cached markdown and in every section body the agent reads.
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            spawning(fake_proc(stdout=b"## A\n\npage one\f## B\n\npage two")),
+        )
+        result = await convert_pdf(real_pdf, "test", "formfeed", mode="fast")
+        assert "error" not in result
+        text = papers.markdown_path("test", "formfeed").read_text(encoding="utf-8")
+        assert "\f" not in text
+        assert "page one\n## B" in text
+
+    @pytest.mark.asyncio
+    async def test_undecodable_stdout_becomes_the_document_without_crashing(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        # The fast path caches stdout *as the document*, so a backend emitting
+        # a stray non-UTF-8 byte must degrade to a replacement char, not raise.
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            spawning(fake_proc(stdout=b"## Intro\n\nca\xc3\x28fe body")),
+        )
+        result = await convert_pdf(real_pdf, "test", "fast-binary", mode="fast")
+        assert "error" not in result, result
+        text = papers.markdown_path("test", "fast-binary").read_text(encoding="utf-8")
+        assert "fe body" in text
+
+    @pytest.mark.asyncio
+    async def test_a_failing_extractor_reports_its_stderr(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        # stderr is where extractors write diagnostics; stdout is the document
+        # channel and is usually empty on failure.
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            spawning(fake_proc(returncode=2, stdout=b"", stderr=b"pdftotext: boom")),
+        )
+        result = await convert_pdf(real_pdf, "test", "fast-stderr", mode="fast")
+        assert "pdftotext: boom" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_stdout_is_the_fallback_when_stderr_is_silent(
+        self, isolated_cache, real_pdf, monkeypatch
+    ):
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            spawning(fake_proc(returncode=2, stdout=b"said it on stdout", stderr=b"")),
+        )
+        result = await convert_pdf(real_pdf, "test", "fast-stdout", mode="fast")
+        assert "said it on stdout" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_fast_callers_spawn_once(self, isolated_cache, real_pdf, monkeypatch):
+        """The per-paper sections lock is the fast path's only serialisation —
+        it runs outside the global gate, so without it two callers both spawn
+        and race the cache write.
+        """
+        monkeypatch.setattr(papers.index, "_section_locks", type(papers.index._section_locks)())
+        spawns = 0
+
+        async def _spawn(*args, **kwargs):
+            nonlocal spawns
+            spawns += 1
+            await asyncio.sleep(0.01)
+            return fake_proc(stdout=b"## Intro\n\nbody")()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+        results = await asyncio.gather(
+            *(convert_pdf(real_pdf, "test", "fast-race", mode="fast") for _ in range(3))
+        )
+
+        assert spawns == 1, f"the sections lock did not serialise the fast path ({spawns} spawns)"
+        assert all("error" not in r for r in results)
+        assert [r["conversion_mode"] for r in results] == ["fast"] * 3
+
+
+class TestModeUpgrade:
+    @pytest.mark.asyncio
+    async def test_a_full_refresh_upgrades_a_fast_conversion(
+        self, isolated_cache, real_pdf, monkeypatch, tmp_path
+    ):
+        """Both modes write the same cache slot — the module's headline claim.
+
+        Without it, a triage `mode="fast"` extraction would permanently shadow
+        the full-quality markdown an agent later asks for.
+        """
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_exec", spawning(fake_proc(stdout=b"plain fast text"))
+        )
+        first = await convert_pdf(real_pdf, "test", "upgrade", mode="fast")
+        assert first["conversion_mode"] == "fast"
+
+        extract = tmp_path / "extract"
+
+        def _make(canonical):
+            extract.mkdir(parents=True, exist_ok=True)
+            (extract / f"{real_pdf.stem}.md").write_text(
+                "# Real Title\n\n## Intro\n\nstructured body\n", encoding="utf-8"
+            )
+            return extract
+
+        monkeypatch.setattr(papers.convert, "_make_extraction_dir", _make)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawning(fake_proc()))
+
+        second = await convert_pdf(real_pdf, "test", "upgrade", force_refresh=True)
+
+        assert second["conversion_mode"] == "full"
+        assert second["cached"] is False
+        entry = cache.get("test", "sections", papers.sections_key("upgrade"))
+        assert entry["conversion_mode"] == "full"
+        assert "structured body" in papers.markdown_path("test", "upgrade").read_text(
+            encoding="utf-8"
+        )
+
+
+class TestExtractionDirFailures:
+    @pytest.fixture
+    def no_spawn(self, monkeypatch):
+        async def _fail(*args, **kwargs):
+            raise AssertionError("this path must not reach the subprocess")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
+
+    @pytest.mark.asyncio
+    async def test_a_temp_dir_that_cannot_be_created_is_a_setup_error(
+        self, isolated_cache, real_pdf, monkeypatch, no_spawn
+    ):
+        """Nothing was created, so the ``finally`` must not try to remove it."""
+
+        def _boom(canonical):
+            raise OSError("read-only /tmp")
+
+        monkeypatch.setattr(papers.convert, "_make_extraction_dir", _boom)
+        result = await convert_pdf(real_pdf, "test", "no-tmp")
+        assert "Could not start PDF converter subprocess" in result["error"]
+        assert "read-only /tmp" in result["error"]
+        assert result["retryable"] is False
+        assert result["conversion_mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_the_shallowest_stem_match_wins(
+        self, isolated_cache, real_pdf, monkeypatch, tmp_path
+    ):
+        """Both candidate passes share one ordering. A plain path sort would
+        pick the nested file here, the opposite of the fallback's rule.
+        """
+        extract = tmp_path / "extract"
+
+        def _make(canonical):
+            # "auto" is MinerU's own subdirectory name, and it sorts *before*
+            # the stem — so a plain path sort picks the nested file here.
+            (extract / "auto").mkdir(parents=True, exist_ok=True)
+            (extract / f"{real_pdf.stem}.md").write_text("# Top\n\ntop\n", encoding="utf-8")
+            (extract / "auto" / f"{real_pdf.stem}.md").write_text(
+                "# Nested\n\nnested\n", encoding="utf-8"
+            )
+            return extract
+
+        monkeypatch.setattr(papers.convert, "_make_extraction_dir", _make)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", spawning(fake_proc()))
+
+        result = await convert_pdf(real_pdf, "test", "depth-tie")
+        text = papers.markdown_path("test", "depth-tie").read_text(encoding="utf-8")
+        assert "error" not in result, result
+        assert text.startswith("# Top"), (
+            "the nested match won a tie the fallback would give the top"
+        )
+
+
+class TestCachedAndFreshShapesAgree:
+    @pytest.mark.asyncio
+    async def test_a_cached_response_carries_the_keys_a_fresh_one_does(
+        self, isolated_cache, tmp_path
+    ):
+        """Invariant: an agent never feature-detects between cached and fresh.
+
+        The two envelopes are built by different functions — this is what makes
+        that claim falsifiable rather than a comment.
+        """
+        md_path = papers.markdown_path("test", "shape")
+        fresh = store_markdown_and_index("test", "shape", md_path, "## A\n\nx\n", "full")
+        payload = cache.get("test", "sections", papers.sections_key("shape"))
+        cached = _cached_response(md_path, payload)
+
+        assert set(cached) == set(fresh)
+        assert cached["cached"] is True and fresh["cached"] is False
+        assert cached["conversion_mode"] == fresh["conversion_mode"] == "full"
+
+
+class TestEveryErrorNamesItsMode:
+    """Invariant: an error says which mode failed and whether retrying helps,
+    so an agent seeing ``{timed_out, conversion_mode: "fast"}`` knows a fast
+    retry is pointless. On an error the tag means "the mode that failed", not
+    the provenance of any markdown — nothing was produced.
+    """
+
+    def _spawn_fail(self):
+        async def _f(*args, **kwargs):
+            raise FileNotFoundError("not installed")
+
+        return _f
+
+    @pytest.mark.parametrize(
+        ("converter", "proc", "spawn_fails"),
+        [
+            ("mytool {nope}", None, False),  # malformed template
+            ("mytool {input}", None, True),  # spawn failure
+            ("mytool {input}", dict(returncode=3, stderr=b"boom"), False),  # non-zero exit
+            ("mytool {input}", dict(returncode=0, stdout=b"   "), False),  # no text
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_fast_errors_are_uniform(
+        self, isolated_cache, real_pdf, monkeypatch, converter, proc, spawn_fails
+    ):
+        monkeypatch.setenv("PDF_FAST_CONVERTER", converter)
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            self._spawn_fail() if spawn_fails else spawning(fake_proc(**(proc or {}))),
+        )
+        result = await convert_pdf(real_pdf, "test", "uniform-fast", mode="fast")
+        assert "error" in result, result
+        assert result["retryable"] is False
+        assert result["conversion_mode"] == "fast"
+        assert "pdf_size_mb" in result
+
+    @pytest.mark.parametrize(
+        ("converter", "proc", "spawn_fails"),
+        [
+            ("mytool {nope}", None, False),
+            ("mytool {input}", None, True),
+            ("mytool {input} {output_dir}", dict(returncode=3, stderr=b"boom"), False),
+            ("mytool {input} {output_dir}", dict(returncode=0), False),  # no markdown
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_full_errors_are_uniform(
+        self, isolated_cache, real_pdf, monkeypatch, converter, proc, spawn_fails
+    ):
+        monkeypatch.setenv("PDF_CONVERTER", converter)
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            self._spawn_fail() if spawn_fails else spawning(fake_proc(**(proc or {}))),
+        )
+        result = await convert_pdf(real_pdf, "test", "uniform-full")
+        assert "error" in result, result
+        assert result["retryable"] is False
+        assert result["conversion_mode"] == "full"
+        assert "pdf_size_mb" in result

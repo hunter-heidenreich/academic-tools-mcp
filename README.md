@@ -179,8 +179,12 @@ The pipeline is **converter-agnostic**. Set `PDF_CONVERTER` in `.env` to choose 
 PDF_CONVERTER=mineru          # default — https://github.com/opendatalab/MinerU
 PDF_CONVERTER=marker          # https://github.com/datalab-to/marker
 
-# Custom command template — use {input} and {output_dir} placeholders
-PDF_CONVERTER=my-tool --in "{input}" --out "{output_dir}"
+# Custom command template. Placeholders: {input} (the PDF), {output_dir}
+# (where to write markdown), {python} (this server's own interpreter).
+# Use them BARE — the values are substituted already shell-quoted, so
+# wrapping one in quotes yourself breaks every path with a space in it.
+PDF_CONVERTER=my-tool --in {input} --out {output_dir}
+PDF_CONVERTER={python} -m my_tool {input} {output_dir}
 ```
 
 If your converter lives in a virtualenv, set `PDF_CONVERTER_VENV`:
@@ -189,7 +193,9 @@ If your converter lives in a virtualenv, set `PDF_CONVERTER_VENV`:
 PDF_CONVERTER_VENV=~/.venvs/mineru
 ```
 
-The converter must accept a PDF input path and an output directory, and produce one or more `.md` files in that directory. The pipeline finds the markdown file automatically.
+The converter must accept a PDF input path and an output directory, and produce one or more `.md` files in that directory. The pipeline picks one deterministically: a file named after the PDF beats any other `.md`, and within each of those two passes the shallowest path wins, then alphabetical order. (MinerU's `<stem>/{auto,ocr,txt}/<stem>.md` layout therefore resolves to `auto`.)
+
+`PDF_FAST_CONVERTER` takes the same `{input}` / `{python}` placeholders, under the same bare-placeholder rule. It has no `{output_dir}`: a fast backend must write the extracted text to **stdout** and its diagnostics to stderr.
 
 **Note:** PDF converters are external tools with their own licenses. [MinerU](https://github.com/opendatalab/MinerU) is AGPL-3.0; [Marker](https://github.com/datalab-to/marker) is GPL. This project invokes them as CLI subprocesses and does not link or import their code. The PDF pipeline is entirely optional — all metadata, BibTeX, and citation tools work without it.
 

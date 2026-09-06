@@ -176,7 +176,10 @@ async def convert_paper(
     before the field existed. Each section entry has
     ``{index, title, h3s, approx_tokens}``.
 
-    Errors: ``{error, retryable, pdf_size_mb?, suggestion}``.
+    Errors: ``{error, retryable, conversion_mode, pdf_size_mb?, suggestion}``.
+    ``conversion_mode`` on an error names the mode that *failed*, so a
+    ``{timed_out: True, conversion_mode: "fast"}`` says a fast retry is
+    pointless.
       - PDF not cached → suggestion points at download_pdf / import_paper.
       - Server already running another conversion (full mode only) →
         ``{busy: True, retryable: True, in_progress: {...}}``. Retry shortly,

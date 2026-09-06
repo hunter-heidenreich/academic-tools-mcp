@@ -15,7 +15,50 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Added
+
+- **`{python}` now works in `PDF_CONVERTER`, not just `PDF_FAST_CONVERTER`.**
+  One placeholder vocabulary across both templates, so a converter installed
+  beside the server can be invoked as `{python} -m my_tool {input} {output_dir}`
+  without pointing `PDF_CONVERTER_VENV` at a virtualenv. ([#93])
+
+### Changed
+
+- **Every `convert_paper` error now carries `conversion_mode` and `retryable`,
+  plus `pdf_size_mb` where the PDF was sized.** Fast-mode failures already named
+  their mode; full-mode ones, the `busy` response and the "PDF not found" guard
+  did not, so an agent had to feature-detect across the two paths to learn which
+  backend had failed. On an error the tag names the mode that *failed* — a
+  `{timed_out: True, conversion_mode: "fast"}` says a fast retry is pointless.
+  ([#93])
+
+- **An unknown `mode` is rejected instead of silently running a full
+  conversion.** The MCP boundary already typed it `Literal["full", "fast"]`, so
+  this is for direct library callers: `mode="fasst"` used to fall through and
+  start a conversion that can take twenty minutes. The guard runs before the
+  `force_refresh` cascade, so a typo can no longer drop cached markdown either.
+  ([#93])
+
 ### Fixed
+
+- **A malformed `PDF_CONVERTER` could still crash `convert_paper`.** The
+  translation to a `{error, retryable: False}` response caught `KeyError`,
+  `IndexError` and `ValueError`, but `str.format`'s failure set is open — an
+  operator typo like `{input.name}` raises `AttributeError`, `{input[0]}`
+  `TypeError`, and an absurd width spec `MemoryError`. Any failure filling in a
+  template is now the one named error the callers expect. ([#93])
+
+- **Which of several converter outputs became the paper depended on how the
+  subdirectories were named.** The pipeline looks for a markdown file named
+  after the PDF and falls back to any `.md`; only the fallback sorted
+  shallowest-first, while the first pass sorted on the whole path and so
+  preferred a nested file whenever the directory name sorted before the stem.
+  One ordering now governs both passes. ([#93])
+
+- **The "PDF not found" error printed an absolute cache path.** No cache
+  filesystem path is supposed to cross the MCP boundary, and the tool layer's
+  scrubber only drops path-valued *keys*, not a path embedded in an error
+  message. ([#93])
 
 - **An unreadable directory under `.cache/` stopped the server from starting.**
   The startup sweep that renames pre-`safe_stem` filenames guarded only the
@@ -2137,3 +2180,4 @@ grouped by milestone rather than per commit.
 [#90]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/90
 [#91]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/91
 [#92]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/92
+[#93]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/93
