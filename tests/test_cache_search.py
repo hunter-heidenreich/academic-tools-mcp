@@ -225,11 +225,13 @@ class TestExtractSnippet:
         snippet, _ = cache_search._extract_snippet(body, {"variational", "dropout"})
         assert "variational dropout" in snippet
 
-    def test_no_terms_falls_back_to_the_head_at_offset_zero(self):
+    def test_no_terms_reports_no_offset(self):
         # Unreachable from `search` (an empty MATCH short-circuits first), but
-        # the direct contract is still "head of document, offset 0".
+        # it is the same "nothing to centre on" case as a term that misses, and
+        # must answer the same way — an offset of 0 would let the caller
+        # attribute whichever section happens to start the document.
         snippet, offset = cache_search._extract_snippet("# Title\n\nBody text.", set())
-        assert offset == 0
+        assert offset is None
         assert snippet.startswith("# Title")
 
     def test_a_repeated_term_leaves_the_sliding_window_correctly(self):

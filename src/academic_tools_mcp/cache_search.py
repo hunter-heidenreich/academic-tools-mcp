@@ -77,7 +77,6 @@ def _extract_title(markdown: str) -> str | None:
 def _extract_snippet(
     markdown: str,
     query_terms: set[str],
-    window: int = _SNIPPET_CHARS,
     *,
     normalize: bool = False,
 ) -> tuple[str, int | None]:
@@ -85,13 +84,13 @@ def _extract_snippet(
 
     "Best matching" = the position with the most distinct query terms in the
     surrounding window, so "variational dropout" cooccurrence beats a lone
-    "dropout". Falls back to the document head, and a ``None`` offset, when no
-    term is found — the caller must not attribute a section to that.
+    "dropout". With nothing to centre on, returns the document head and a
+    ``None`` offset — the caller must not attribute a section to that.
 
     ``char_offset`` indexes the ORIGINAL markdown under either normalisation.
     """
     if not query_terms:
-        return _collapse(markdown[:window]), 0
+        return _collapse(markdown[:_SNIPPET_CHARS]), None
 
     # Word boundaries, so "drop" doesn't hit inside "dropout". One alternation
     # over all the terms rather than a pass each — these documents reach
@@ -110,13 +109,13 @@ def _extract_snippet(
     ]
 
     if not hits:
-        return _collapse(markdown[:window]), None
+        return _collapse(markdown[:_SNIPPET_CHARS]), None
 
-    # Distinct terms within ±window/2 chars, via one sliding window over the
-    # offset-sorted hits: `lo` and `hi` only advance, so a term repeating
-    # densely inside one window costs linear time, not quadratic.
-    hits.sort()
-    half = window // 2
+    # Distinct terms within ±window/2 chars, via one sliding window: `lo` and
+    # `hi` only advance, so a term repeating densely inside one window costs
+    # linear time, not quadratic. No sort — finditer scans left to right and
+    # index_map is monotonic, so the offsets are already ascending.
+    half = _SNIPPET_CHARS // 2
     best_offset = hits[0][0]
     best_distinct = 1
     counts: Counter[str] = Counter()
@@ -137,7 +136,7 @@ def _extract_snippet(
             best_offset = off
 
     start = max(0, best_offset - half)
-    end = min(len(markdown), start + window)
+    end = min(len(markdown), start + _SNIPPET_CHARS)
     return _collapse(markdown[start:end]), best_offset
 
 

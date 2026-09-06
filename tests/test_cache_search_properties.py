@@ -330,3 +330,47 @@ def test_normalizing_is_folding_then_tokenizing(text: str) -> None:
     assert cache_search._content_tokens(text, normalize=True) == cache_search._content_tokens(
         _textnorm.fold(text)
     )
+
+
+# ---------------------------------------------------------------------------
+# The sliding window that picks where to centre a snippet
+# ---------------------------------------------------------------------------
+
+
+def _brute_force_best(markdown: str, terms: set[str], half: int) -> int:
+    """The densest position, by the O(n^2) definition the sliding window replaced."""
+    alternation = "|".join(re.escape(t) for t in sorted(terms, key=len, reverse=True))
+    hits = [(m.start(), m.group(0)) for m in re.finditer(rf"\b(?:{alternation})\b", markdown)]
+    best_offset, best = hits[0][0], 1
+    for offset, _term in hits:
+        distinct = {t for o, t in hits if offset - half <= o <= offset + half}
+        if len(distinct) > best:
+            best, best_offset = len(distinct), offset
+    return best_offset
+
+
+_WORDS = st.sampled_from(["alpha", "beta", "gamma", "delta", "zzz", "the", "and"])
+
+
+@given(st.lists(_WORDS, min_size=1, max_size=120))
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=300)
+def test_the_window_finds_the_densest_cluster(words: list[str]) -> None:
+    """The offset reported is the one with the most distinct terms around it.
+
+    The sliding window replaced an outward walk per hit, and relies on the hits
+    arriving in ascending offset order — which `finditer` plus a monotonic
+    index map give it, with no sort. Nothing else pins that precondition: fed
+    descending hits the window silently centres on the wrong passage, and every
+    example test still passes.
+    """
+    terms = {"alpha", "beta", "gamma", "delta"}
+    markdown = " ".join(words)
+    assume(any(w in terms for w in words))
+
+    _, offset = cache_search._extract_snippet(markdown, terms)
+
+    assert offset is not None
+    half = cache_search._SNIPPET_CHARS // 2
+    expected = _brute_force_best(markdown, terms, half)
+    # Equal-density ties resolve to the earliest, which is what both do.
+    assert offset == expected
