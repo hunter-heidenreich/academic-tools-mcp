@@ -457,6 +457,13 @@ grouped by milestone rather than per commit.
   from the other. Deduplication is now case-insensitive, while the original
   spelling is what reaches FTS5 — folding is the tokenizer's job. ([#86])
 
+- **A flaky DOI property test is pinned.** `test_doi_properties.dois` generates
+  any registrant, including `1101` — bioRxiv's — so the property asserting that
+  every DOI dispatches to OpenAlex failed on the runs where hypothesis happened
+  to pick it. The dispatch property now excludes the registrants a provider
+  owns; the round-trip properties keep generating them, because a bioRxiv DOI
+  is a case they should cover. ([#86])
+
 - **A busy search index is no longer deleted.** `_connect` treats a database it
   cannot open as corrupt and unlinks it, which is right for "file is not a
   database" — but `sqlite3.OperationalError` is a *subclass* of

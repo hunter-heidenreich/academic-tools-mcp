@@ -47,6 +47,11 @@ _STOPWORDS = frozenset(_STOPWORD_TEXT.split())
 _HEADING_RE = re.compile(papers.HEADING_PATTERN, re.MULTILINE)
 
 
+# ---------------------------------------------------------------------------
+# Titles and snippets — what a hit shows
+# ---------------------------------------------------------------------------
+
+
 def _content_tokens(text: str, *, normalize: bool = False) -> set[str]:
     """Lowercased content words, punctuation stripped, stopwords dropped.
 
@@ -169,7 +174,7 @@ def _restore_slashes(namespace: str, stem: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# BM25 search
+# The corpus on disk
 # ---------------------------------------------------------------------------
 
 
@@ -183,14 +188,6 @@ class _ScannedFile(NamedTuple):
     namespace: str
     stem: str
     path: str
-    mtime_ns: int
-    size: int
-
-
-class _IndexedFile(NamedTuple):
-    """The row already recorded for a cached file."""
-
-    rowid: int
     mtime_ns: int
     size: int
 
@@ -259,6 +256,14 @@ _ALNUM_RE = re.compile(r"[^\W_]")
 _INDEX_LOCK = threading.Lock()
 # Only touched under _INDEX_LOCK, so it needs no lock of its own.
 _LEGACY_SWEPT: set[Path] = set()
+
+
+class _IndexedFile(NamedTuple):
+    """The row already recorded for a cached file."""
+
+    rowid: int
+    mtime_ns: int
+    size: int
 
 
 def _index_path() -> Path:
@@ -496,6 +501,10 @@ def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[d
         con.close()
     return [{"namespace": r["ns"], "stem": r["stem"], "reason": r["unindexable"]} for r in rows]
 
+
+# ---------------------------------------------------------------------------
+# Query and ranking
+# ---------------------------------------------------------------------------
 
 # ``unicode61``'s separators, so the query splits the way the corpus did — and
 # sqlite3 cannot bind a string containing a NUL at all.
