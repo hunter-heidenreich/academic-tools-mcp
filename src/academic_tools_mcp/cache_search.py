@@ -374,15 +374,19 @@ def _sweep_legacy_index() -> None:
 
 
 def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | None:
-    """Insert one document's postings. Returns an ``unindexable`` reason or None."""
+    """Replace one document's postings. Returns an ``unindexable`` reason or None.
+
+    A document with no terms is left out of both tables rather than inserted
+    and then declared unusable, so it is absent exactly like an unreadable one.
+    """
     con.execute("DELETE FROM fts WHERE rowid = ?", (rowid,))
     con.execute("DELETE FROM fts_norm WHERE rowid = ?", (rowid,))
-    con.execute("INSERT INTO fts(rowid, body) VALUES (?, ?)", (rowid, text))
-    con.execute("INSERT INTO fts_norm(rowid, body) VALUES (?, ?)", (rowid, text))
     # Must agree with ``unicode61`` on what a term is: an ASCII-biased probe
     # calls a Japanese or Cyrillic paper unusable when the index holds it fine.
     if _ALNUM_RE.search(text) is None:
         return "no_indexable_tokens"
+    con.execute("INSERT INTO fts(rowid, body) VALUES (?, ?)", (rowid, text))
+    con.execute("INSERT INTO fts_norm(rowid, body) VALUES (?, ?)", (rowid, text))
     return None
 
 

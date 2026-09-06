@@ -205,6 +205,29 @@ class TestUnindexableDocumentsAreReported:
         assert stems == {"punctuation", "emoji"}
         assert all(r["reason"] == "no_indexable_tokens" for r in reported)
 
+    def test_a_tokenless_document_leaves_no_postings(self, corpus):
+        """Absent from the index, exactly as an unreadable paper is.
+
+        It used to be inserted into both tables and *then* declared unusable,
+        leaving a row that can never match — a different on-disk state for the
+        same "not searchable" answer.
+        """
+        cache_search.search("transformer")
+        con = cache_search._connect()
+        try:
+            rowids = {
+                r["rowid"]
+                for r in con.execute(
+                    "SELECT rowid FROM files WHERE unindexable = 'no_indexable_tokens'"
+                )
+            }
+            assert rowids, "the fixture seeds two tokenless papers"
+            for table in ("fts", "fts_norm"):
+                indexed = {r[0] for r in con.execute(f"SELECT rowid FROM {table}")}
+                assert not (rowids & indexed)
+        finally:
+            con.close()
+
     def test_indexable_documents_are_not_reported(self, corpus):
         assert "english" not in {r["stem"] for r in cache_search.unindexable()}
 
