@@ -3,7 +3,7 @@ import errno
 
 import pytest
 
-from academic_tools_mcp import atomic, manual
+from academic_tools_mcp import _stems, atomic, manual
 
 # ---------------------------------------------------------------------------
 # PDF filename
@@ -13,24 +13,28 @@ from academic_tools_mcp import atomic, manual
 class TestPdfFilename:
     def test_doi_slashes_replaced(self):
         assert (
-            manual._pdf_filename("10.1038/s41586-024-00001-1") == "10.1038_s41586-024-00001-1.pdf"
+            _stems.pdf_path(manual.NAMESPACE, "10.1038/s41586-024-00001-1").name
+            == "10.1038_s41586-024-00001-1.pdf"
         )
 
     def test_colons_replaced(self):
-        assert manual._pdf_filename("some:label") == "some%3Alabel.pdf"
+        assert _stems.pdf_path(manual.NAMESPACE, "some:label").name == "some%3Alabel.pdf"
 
     def test_space_and_underscore_do_not_collide(self):
         # Regression: both used to become "a_b.pdf", so importing "a b" after
         # "a_b" silently replaced the other paper's cached PDF.
-        assert manual._pdf_filename("a b") != manual._pdf_filename("a_b")
+        assert (
+            _stems.pdf_path(manual.NAMESPACE, "a b").name
+            != _stems.pdf_path(manual.NAMESPACE, "a_b").name
+        )
 
     def test_freeform(self):
-        assert manual._pdf_filename("my-paper") == "my-paper.pdf"
+        assert _stems.pdf_path(manual.NAMESPACE, "my-paper").name == "my-paper.pdf"
 
     def test_strips_shell_metacharacters(self):
         # The filename is fed to the converter subprocess, so an exotic
         # identifier must not carry shell metacharacters into the name.
-        name = manual._pdf_filename('x"$(touch pwned)`id`;rm /|y')
+        name = _stems.pdf_path(manual.NAMESPACE, 'x"$(touch pwned)`id`;rm /|y').name
         assert name.endswith(".pdf")
         for bad in ('"', "$", "(", ")", "`", ";", "|", " ", "/"):
             assert bad not in name

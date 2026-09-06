@@ -10,7 +10,7 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import _clients, _http, _pdf_download, _singleflight, _useragent, cache, config, papers
+from .. import _clients, _http, _pdf_download, _singleflight, _stems, _useragent, cache, config
 from .._throttle import Throttle
 
 # Parsing the arXiv Atom feed can fail two ways: a malformed/truncated body
@@ -448,21 +448,10 @@ async def search_papers(
     }
 
 
-def _pdf_filename(canonical: str) -> str:
-    """Build a PDF filename from a canonical arXiv ID.
-
-    Routes through ``papers.safe_stem`` — the single sanitizer shared by the
-    PDF, markdown, and sections paths — so this provider can't disagree with
-    the others about which file belongs to which paper. Real arXiv ids are
-    ``[A-Za-z0-9./-]`` only, so they map to the same name as before.
-    """
-    return papers.safe_stem(canonical) + ".pdf"
-
-
 def pdf_path(arxiv_id: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
     canonical = canonical_arxiv_id(arxiv_id)
-    return cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    return _stems.pdf_path(NAMESPACE, canonical)
 
 
 async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -483,7 +472,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     callers for the same ID share one download via single-flight.
     """
     canonical = canonical_arxiv_id(arxiv_id)
-    dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(canonical)
+    dest = _stems.pdf_path(NAMESPACE, canonical)
 
     async def _fetch() -> dict[str, Any]:
         # Need the paper metadata to find the PDF URL. force_refresh is

@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from .. import _clients, _doi, _pdf_download, _singleflight, _useragent, cache, papers
+from .. import _clients, _doi, _pdf_download, _singleflight, _stems, _useragent
 from .._throttle import Throttle
 
 NAMESPACE = "acl_anthology"
@@ -150,17 +150,6 @@ def pdf_url(anthology_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _pdf_filename(anthology_id: str) -> str:
-    """Build a filesystem/shell-safe PDF filename from an Anthology ID.
-
-    Routes through ``papers.safe_stem`` (same as the manual import path) so
-    the filename — which reaches the ``bash -c`` converter — can't carry shell
-    metacharacters. Real Anthology IDs are ``[A-Za-z0-9.-]`` only, so they map
-    to the same name as before (no cache migration); ``/`` still folds to ``_``.
-    """
-    return papers.safe_stem(anthology_id) + ".pdf"
-
-
 def pdf_path(doi: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet).
 
@@ -171,7 +160,7 @@ def pdf_path(doi: str) -> Path:
     aid = doi_to_anthology_id(doi)
     if aid is None:
         raise ValueError(f"Not an ACL Anthology DOI: {doi}")
-    return cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(aid)
+    return _stems.pdf_path(NAMESPACE, aid)
 
 
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -190,7 +179,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     if aid is None:
         return {"error": f"Not an ACL Anthology DOI: {doi}"}
 
-    dest = cache.cache_dir(NAMESPACE, "pdfs") / _pdf_filename(aid)
+    dest = _stems.pdf_path(NAMESPACE, aid)
     url = pdf_url(aid)
 
     async def _fetch() -> dict[str, Any]:

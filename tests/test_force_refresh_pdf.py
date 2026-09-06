@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from academic_tools_mcp import cache
+from academic_tools_mcp import _stems
 from academic_tools_mcp.providers import acl_anthology, arxiv, biorxiv
 
 from ._download_fakes import install_stream as _install_stream
@@ -50,17 +50,17 @@ _ACL_DOI = "10.18653/v1/P16-1160"
 
 def _arxiv_dest() -> Path:
     canonical = arxiv.canonical_arxiv_id(_ARXIV_ID)
-    return cache.cache_dir(arxiv.NAMESPACE, "pdfs") / arxiv._pdf_filename(canonical)
+    return _stems.pdf_path(arxiv.NAMESPACE, canonical)
 
 
 def _biorxiv_dest() -> Path:
     canonical = biorxiv.canonical_key(_BIORXIV_DOI)
-    return cache.cache_dir(biorxiv.NAMESPACE, "pdfs") / biorxiv._pdf_filename(canonical)
+    return _stems.pdf_path(biorxiv.NAMESPACE, canonical)
 
 
 def _acl_dest() -> Path:
     aid = acl_anthology.doi_to_anthology_id(_ACL_DOI)
-    return cache.cache_dir(acl_anthology.NAMESPACE, "pdfs") / acl_anthology._pdf_filename(aid)
+    return _stems.pdf_path(acl_anthology.NAMESPACE, aid)
 
 
 def _setup_provider(name: str, monkeypatch) -> tuple[Path, callable]:

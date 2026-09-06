@@ -32,7 +32,7 @@ def _reset_section_locks(monkeypatch):
     # Start every test from a clean per-paper lock dict so a lock acquired
     # in one test can't leak into another (and so a held lock is the one the
     # tool re-derives by key).
-    monkeypatch.setattr(papers, "_section_locks", OrderedDict())
+    monkeypatch.setattr(papers.index, "_section_locks", OrderedDict())
 
 
 def _seed_markdown(namespace, canonical, body):

@@ -45,9 +45,6 @@ if then than so such
 """
 _STOPWORDS = frozenset(_STOPWORD_TEXT.split())
 
-_HEADING_RE = re.compile(papers.HEADING_PATTERN, re.MULTILINE)
-
-
 # ---------------------------------------------------------------------------
 # Titles and snippets — what a hit shows
 # ---------------------------------------------------------------------------
@@ -71,13 +68,11 @@ def _content_tokens(text: str, *, normalize: bool = False) -> set[str]:
 def _extract_title(markdown: str) -> str | None:
     """Return the first H1 or H2 in the document, or ``None``.
 
-    Either level, because converters disagree on which one a paper title gets.
+    Delegated, never a local scan: which levels count as title-level is
+    ``papers``' policy, and a copy here drifts the moment that changes — a hit
+    would report a heading the reader's own section index does not open on.
     """
-    for match in _HEADING_RE.finditer(markdown):
-        level = len(match.group(1))
-        if level <= 2:
-            return match.group(2).strip()
-    return None
+    return papers.first_section_heading(markdown)
 
 
 def _extract_snippet(

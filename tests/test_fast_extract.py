@@ -102,7 +102,7 @@ class TestExtraction:
         assert "Hello from a real PDF" in capsys.readouterr().out
 
     def test_runs_as_a_module_end_to_end(self, tmp_path):
-        # The contract papers._convert_fast relies on: `python -m ... <pdf>`
+        # The contract papers.convert._convert_fast relies on: `python -m ... <pdf>`
         # emits text on stdout and exits 0. Nothing tested this for real.
         doc = pymupdf.open()
         doc.new_page().insert_text((72, 72), "Module entry point works")

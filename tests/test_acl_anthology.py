@@ -1,5 +1,6 @@
 import pytest
 
+from academic_tools_mcp import _stems
 from academic_tools_mcp.providers import acl_anthology
 
 # ---------------------------------------------------------------------------
@@ -211,15 +212,18 @@ class TestPdfFilename:
     def test_new_format_unchanged(self):
         # Regression: real ACL IDs must map to the same filename as before
         # (no cache migration) — all chars are in the safe set.
-        assert acl_anthology._pdf_filename("2023.acl-long.1") == "2023.acl-long.1.pdf"
+        assert (
+            _stems.pdf_path(acl_anthology.NAMESPACE, "2023.acl-long.1").name
+            == "2023.acl-long.1.pdf"
+        )
 
     def test_old_format_unchanged(self):
-        assert acl_anthology._pdf_filename("P16-1160") == "P16-1160.pdf"
+        assert _stems.pdf_path(acl_anthology.NAMESPACE, "P16-1160").name == "P16-1160.pdf"
 
     def test_metacharacters_neutralized(self):
         # Defense-in-depth: shell/path metacharacters never reach the filename.
         # They are percent-encoded (injective) rather than collapsed to "_".
-        assert acl_anthology._pdf_filename("foo;bar") == "foo%3Bbar.pdf"
+        assert _stems.pdf_path(acl_anthology.NAMESPACE, "foo;bar").name == "foo%3Bbar.pdf"
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ Three invariants stronger than any example set:
   spellings whose legacy ``manual`` key happened to equal the arXiv one — the
   ``arXiv:`` prefix, which the manual key kept and the arXiv key drops, is the
   counterexample an example suite missed.
-* ``_pdf_filename`` output reaches a ``bash -c`` command line, so its safety
+* ``_stems.pdf_path`` output reaches a ``bash -c`` command line, so its safety
   claim has to hold for arbitrary text, not for the identifiers someone thought
   of.
 
@@ -22,7 +22,7 @@ file makes with ``from .test_doi_properties import dois``.
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, cache, cache_search, manual, papers
+from academic_tools_mcp import _doi, _stems, cache, cache_search, manual, papers
 
 from .test_cache_search_properties import (
     arxiv_new_ids,
@@ -140,8 +140,8 @@ def test_a_pdf_filename_is_filesystem_and_shell_safe(canonical: str) -> None:
     stem the path builder never produces. ``~`` is the character that broke
     that agreement.
     """
-    name = manual._pdf_filename(canonical)
+    name = _stems.pdf_path(manual.NAMESPACE, canonical).name
 
     assert name.endswith(".pdf")
-    assert papers._MIGRATED_STEM_RE.match(name.removesuffix(".pdf"))
+    assert _stems._MIGRATED_STEM_RE.match(name.removesuffix(".pdf"))
     assert "/" not in name

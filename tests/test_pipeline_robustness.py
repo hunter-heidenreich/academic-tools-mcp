@@ -31,30 +31,30 @@ class TestConverterTemplateErrors:
     def test_full_builder_raises_named_error(self, monkeypatch, template, tmp_path):
         monkeypatch.setenv("PDF_CONVERTER", template)
         with pytest.raises(papers.ConverterTemplateError) as exc:
-            papers._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
+            papers.convert._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
         assert "PDF_CONVERTER" in str(exc.value)
 
     @pytest.mark.parametrize("template", ["mytool {nope}", "mytool {input"])
     def test_fast_builder_raises_named_error(self, monkeypatch, template, tmp_path):
         monkeypatch.setenv("PDF_FAST_CONVERTER", template)
         with pytest.raises(papers.ConverterTemplateError) as exc:
-            papers._build_fast_converter_command(tmp_path / "x.pdf")
+            papers.convert._build_fast_converter_command(tmp_path / "x.pdf")
         assert "PDF_FAST_CONVERTER" in str(exc.value)
 
     def test_error_names_the_valid_placeholders(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PDF_CONVERTER", "mytool {wrong}")
         with pytest.raises(papers.ConverterTemplateError) as exc:
-            papers._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
+            papers.convert._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
         assert "{input}" in str(exc.value) and "{output_dir}" in str(exc.value)
 
     def test_valid_templates_still_build(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PDF_CONVERTER", "mytool --in {input} --out {output_dir}")
-        cmd = papers._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
+        cmd = papers.convert._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
         assert "x.pdf" in cmd and "out" in cmd
 
     def test_literal_braces_can_be_doubled(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PDF_CONVERTER", "mytool {{literal}} {input} {output_dir}")
-        cmd = papers._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
+        cmd = papers.convert._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
         assert "{literal}" in cmd
 
     @pytest.mark.asyncio
@@ -92,7 +92,7 @@ class TestCancellationKillsTheConverter:
         proc = await asyncio.create_subprocess_exec("sleep", "60", start_new_session=True)
         assert proc.returncode is None
 
-        await papers._kill_process_group(proc)
+        await papers.convert._kill_process_group(proc)
 
         assert proc.returncode is not None, "process was not reaped"
 
@@ -101,7 +101,7 @@ class TestCancellationKillsTheConverter:
         proc = await asyncio.create_subprocess_exec("true", start_new_session=True)
         await proc.wait()
         # Must not signal a pid that may have been recycled.
-        await papers._kill_process_group(proc)
+        await papers.convert._kill_process_group(proc)
 
     @pytest.mark.asyncio
     async def test_cancelling_a_conversion_kills_the_subprocess(self, monkeypatch, tmp_path):
