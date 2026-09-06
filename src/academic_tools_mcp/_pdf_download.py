@@ -10,8 +10,6 @@ than 2× the PDF, and the size cap fires partway through rather than after the
 whole response is already buffered in RAM.
 """
 
-from __future__ import annotations
-
 import contextlib
 import copy
 import os

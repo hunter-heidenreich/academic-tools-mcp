@@ -8,8 +8,6 @@ The version is read from installed distribution metadata, never written as a
 literal. Contact scrubbing and the other invariants: ``.claude/rules/utils.md``.
 """
 
-from __future__ import annotations
-
 import re
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version

@@ -11,8 +11,6 @@ Design rationale — the contentless index, the two tokenizer tables, the
 ``.claude/rules/search.md``, which loads whenever this file is opened.
 """
 
-from __future__ import annotations
-
 import contextlib
 import os
 import re
