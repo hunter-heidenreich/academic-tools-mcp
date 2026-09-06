@@ -1,11 +1,13 @@
 """Tests for the BM25 search over cached markdown files."""
 
+import os
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import cache, cache_search, papers, server
+from academic_tools_mcp import cache, cache_search, manual, papers, server
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -13,14 +15,20 @@ from academic_tools_mcp import cache, cache_search, papers, server
 
 
 @pytest.fixture
-def isolated_cache(tmp_path, monkeypatch):
-    """Redirect the cache root to a fresh tmp dir for each test.
+def isolated_cache():
+    """The per-test cache root, already redirected by ``conftest``.
 
-    cache_search reads cache._CACHE_ROOT directly, so monkeypatching
-    that single attribute is enough to sandbox the whole search.
+    A second redirect here would only move the corpus somewhere the other
+    suites don't look; ``_isolate_cache_root`` is autouse and points
+    ``cache._CACHE_ROOT`` at this test's ``tmp_path``, which is what
+    ``cache_search`` reads at call time.
     """
-    monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path / ".cache")
-    return tmp_path / ".cache"
+    return cache._CACHE_ROOT
+
+
+def _raise_oserror(*args, **kwargs):
+    """Stand-in for a stat/unlink that fails."""
+    raise OSError("nope")
 
 
 def _seed_markdown(root, namespace: str, filename_stem: str, body: str):
@@ -147,6 +155,14 @@ class TestSectionForOffset:
         md = "## Methods\n\n### Setup\n\ndetails go here\n"
         assert cache_search._section_for_offset(md, md.index("details")) == (0, "Methods")
 
+    def test_a_negative_offset_resolves_to_no_section(self):
+        # `search` never produces one, but the (None, None) contract is what
+        # lets the caller destructure unconditionally.
+        assert cache_search._section_for_offset("# A\n\nbody\n", -1) == (None, None)
+
+    def test_a_document_with_no_sections_resolves_to_no_section(self):
+        assert cache_search._section_for_offset("", 0) == (None, None)
+
     def test_offset_before_first_heading_is_the_preamble(self):
         # Previously returned None, leaving a preamble hit with no navigation
         # at all — even though get_section_content *does* expose that text as
@@ -210,6 +226,29 @@ class TestExtractSnippet:
         )
         snippet, _ = cache_search._extract_snippet(body, {"variational", "dropout"})
         assert "variational dropout" in snippet
+
+    def test_no_terms_falls_back_to_the_head_at_offset_zero(self):
+        # Unreachable from `search` (an empty MATCH short-circuits first), but
+        # the direct contract is still "head of document, offset 0".
+        snippet, offset = cache_search._extract_snippet("# Title\n\nBody text.", set())
+        assert offset == 0
+        assert snippet.startswith("# Title")
+
+    def test_a_repeated_term_leaves_the_sliding_window_correctly(self):
+        # The window slides over the hits keeping a per-term count; a term
+        # repeated inside one window must be decremented, not dropped, or the
+        # window forgets it is still present and mis-scores the next position.
+        gap = "..." * 200
+        markdown = (
+            "alpha alpha alpha " * 5 + gap + " delta " + gap + " alpha alpha beta gamma " + gap
+        )
+        snippet, offset = cache_search._extract_snippet(
+            markdown, {"alpha", "beta", "gamma", "delta"}
+        )
+        assert offset is not None
+        # The cluster carrying three terms wins over the denser alpha-only run
+        # and over the lone "delta" the window must drop on its way past.
+        assert "beta" in snippet and "gamma" in snippet
 
     def test_falls_back_to_head_when_no_match(self):
         body = "introduction " * 50
@@ -311,6 +350,50 @@ class TestFilenameToCanonical:
         # inverse and can't manufacture an escape that was never there.
         stem = papers.safe_stem("10.1234/a%2fb")
         assert cache_search._filename_to_canonical("manual", stem) == "10.1234/a%2fb"
+
+    def test_arxiv_old_style_keeps_its_version(self):
+        # canonical_arxiv_id deliberately keeps the version, so a versioned
+        # old-style stem occurs and must invert like any other.
+        assert cache_search._filename_to_canonical("arxiv", "hep-th_9901001v2") == (
+            "hep-th/9901001v2"
+        )
+
+    def test_a_namespace_repair_that_does_not_apply_passes_through(self):
+        # A bioRxiv stem that does not carry the registrant prefix has no
+        # decidable slash to restore.
+        assert cache_search._filename_to_canonical("biorxiv", "weird_stem") == "weird_stem"
+
+    def test_an_unknown_namespace_passes_through(self):
+        assert cache_search._filename_to_canonical("openalex", "10.1234_x") == "10.1234_x"
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "hep-th/9901001",
+            "hep-th/9901001v2",
+            "HEP-TH/9901001",
+            "math.GT/0309136",
+            "cond-mat.stat-mech/0501001",
+            "2301.00001",
+            "2301.00001v2",
+            "10.1101/2024.01.01.123",
+            "10.18653/v1/2023.acl-long.1",
+            "10.1038/s41586-021-03819-2",
+            "my-imported-paper",
+        ],
+    )
+    def test_round_trips_through_the_namespace_the_router_assigns(self, identifier):
+        """The composed contract: a hit's canonical_id chains back into the tools.
+
+        The namespace comes from ``resolve_target``, not from the test — a
+        shape asserted against a namespace the router never assigns is a green
+        test over a dead branch.
+        """
+        target = manual.resolve_target(identifier)
+        stem = papers.safe_stem(target["canonical"])
+        assert (
+            cache_search._filename_to_canonical(target["namespace"], stem) == (target["canonical"])
+        )
 
     def test_round_trips_every_namespace(self):
         # The property that matters: safe_stem -> _filename_to_canonical is
@@ -519,33 +602,110 @@ class TestSearch:
         hits = cache_search.search("attention", top_k=99999)
         assert len(hits) <= cache_search._MAX_TOP_K
 
-    def test_handles_unreadable_file(self, isolated_cache, monkeypatch):
-        # A file vanishing mid-walk (concurrent eviction, etc.) must
-        # not fail the whole search — skip and continue.
+    def test_a_hit_the_snippet_scan_cannot_locate_reports_no_section(self, isolated_cache):
+        """FTS5 and the snippet scan disagree about "_", and the hit says so.
+
+        ``unicode61`` treats "_" as a separator, so "attention_model" indexes
+        as two tokens and the query matches — but Python's word boundary counts
+        "_" as a word character, so the boundary scan finds nothing. The hit is
+        real; it just comes back uncentred, and must report that honestly
+        rather than naming whichever section happens to hold offset 0.
+        """
         _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "2301.00001",
-            "# Real\n\nattention here.\n",
-        )
-        ghost = _seed_markdown(
-            isolated_cache,
-            "arxiv",
-            "ghost",
-            "doesn't matter\n",
+            isolated_cache, "arxiv", "p", "# T\n\n## Body\n\nthe attention_model was used.\n"
         )
 
-        original_read = type(ghost).read_text
+        (hit,) = cache_search.search("attention")
+
+        assert hit["char_offset"] is None
+        assert hit["section"] is None
+        assert hit["section_index"] is None
+        assert hit["score"] > 0
+
+    @staticmethod
+    def _break_reads_of(monkeypatch, filename):
+        """Make ``read_text`` raise for one markdown file, leaving others alone."""
+        original_read = Path.read_text
 
         def selective_read(self, *args, **kwargs):
-            if self.name == "ghost.md":
+            if self.name == filename:
                 raise OSError("vanished")
             return original_read(self, *args, **kwargs)
 
-        monkeypatch.setattr(type(ghost), "read_text", selective_read)
+        monkeypatch.setattr(Path, "read_text", selective_read)
+
+    def test_unreadable_file_does_not_fail_the_refresh(self, isolated_cache, monkeypatch):
+        # A file that cannot be read at index time is flagged, not fatal.
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# Real\n\nattention here.\n")
+        _seed_markdown(isolated_cache, "arxiv", "ghost", "attention too\n")
+
+        self._break_reads_of(monkeypatch, "ghost.md")
         hits = cache_search.search("attention")
-        # The real paper still surfaces; the ghost is skipped silently.
-        assert any(h["canonical_id"] == "2301.00001" for h in hits)
+
+        assert [h["canonical_id"] for h in hits] == ["2301.00001"]
+
+    def test_a_winner_that_vanishes_before_the_snippet_read_is_skipped(
+        self, isolated_cache, monkeypatch
+    ):
+        """A concurrent eviction between the MATCH and the snippet re-read.
+
+        The patch goes in *after* the index is warm on purpose: installed
+        earlier, the refresh flags the file unreadable and deletes its
+        postings, so it never reaches the winner loop this covers at all.
+        """
+        _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# Real\n\nattention here.\n")
+        _seed_markdown(isolated_cache, "arxiv", "ghost", "# Ghost\n\nattention too.\n")
+        assert len(cache_search.search("attention")) == 2
+
+        self._break_reads_of(monkeypatch, "ghost.md")
+        hits = cache_search.search("attention")
+
+        assert [h["canonical_id"] for h in hits] == ["2301.00001"]
+
+    def test_a_long_document_matching_a_universal_term_still_scores_above_zero(
+        self, isolated_cache
+    ):
+        """The documented invariant: every returned hit scores strictly above zero.
+
+        FTS5 clamps a degenerate IDF (a term in every document) to 1e-6, then
+        the BM25 length normalisation scales it *down* — a long document lands
+        near 5e-08, which any fixed number of decimal places reports as 0.0.
+        """
+        _seed_markdown(
+            isolated_cache,
+            "arxiv",
+            "long",
+            "# Long\n\ncommon " + " ".join(f"w{j}" for j in range(40000)),
+        )
+        for i in range(40):
+            _seed_markdown(isolated_cache, "arxiv", f"tiny{i}", f"# T{i}\n\ncommon tiny\n")
+
+        hits = cache_search.search("common", top_k=50)
+
+        assert len(hits) == 41
+        assert all(h["score"] > 0 for h in hits)
+        assert [h for h in hits if h["canonical_id"] == "long"]
+
+    def test_scores_are_corpus_global_not_per_namespace(self, isolated_cache):
+        # `namespace` selects which documents come back, not how they rank.
+        _seed_markdown(isolated_cache, "arxiv", "a", "# A\n\nattention model here.\n")
+        _seed_markdown(isolated_cache, "manual", "b", "# B\n\nattention attention model.\n")
+
+        unfiltered = {h["canonical_id"]: h["score"] for h in cache_search.search("attention")}
+        filtered = cache_search.search("attention", namespace="manual")
+
+        assert [h["canonical_id"] for h in filtered] == ["b"]
+        assert filtered[0]["score"] == unfiltered["b"]
+
+    def test_top_k_boundary_and_clamp(self, isolated_cache):
+        # Exactly at the cap must pass; one past it must clamp. A one-document
+        # corpus makes both assertions vacuous.
+        cap = cache_search._MAX_TOP_K
+        for i in range(cap + 5):
+            _seed_markdown(isolated_cache, "arxiv", f"p{i:03d}", f"# P{i}\n\nattention model.\n")
+
+        assert len(cache_search.search("attention", top_k=cap)) == cap
+        assert len(cache_search.search("attention", top_k=cap + 1)) == cap
 
 
 # ---------------------------------------------------------------------------
@@ -757,10 +917,15 @@ class TestIncrementalIndex:
         assert len(self._index_rows()) == 8
 
     def test_index_dir_not_walked(self, isolated_cache):
+        # Asserted against the walker the refresh actually runs: the reserved
+        # dir holds the database, not markdown, so indexing it would index the
+        # index.
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention\n")
         cache_search.search("attention")
-        walked = list(cache_search._iter_markdown_files(None))
-        assert all(ns != cache_search._INDEX_DIRNAME for ns, _ in walked)
+        assert cache_search._index_path().exists()
+        walked = cache_search._scan_markdown()
+        assert all(ns != cache_search._INDEX_DIRNAME for ns, _, _, _ in walked)
+        assert all(ns != cache_search._INDEX_DIRNAME for ns, _ in self._index_rows())
 
     def test_legacy_json_index_is_swept_away(self, isolated_cache):
         legacy = cache_search._legacy_index_path()
@@ -771,6 +936,262 @@ class TestIncrementalIndex:
         cache_search.search("attention")
 
         assert not legacy.exists(), "the replaced 193 MB JSON index should be removed"
+
+
+class TestIndexFailuresAreNotSilent:
+    """A gap in the index must reach the agent, never look like "no results".
+
+    ``unindexable`` exists because a paper absent from the index is invisible
+    to BM25 but silently so. The same argument applies to an index that cannot
+    be read at all.
+    """
+
+    def test_a_transient_read_failure_is_retried_not_frozen(self, isolated_cache, monkeypatch):
+        """A file untouched since a failed read must still be picked up later.
+
+        Recording the stat that succeeded alongside the failure would freeze
+        it: the ``(mtime, size)`` signal would match forever, so a lock that
+        cleared or a chmod (which leaves mtime alone) would never be noticed.
+        """
+        path = _seed_markdown(isolated_cache, "arxiv", "locked", "# L\n\nattention here.\n")
+        original_read = Path.read_text
+        broken = True
+
+        def selective_read(self, *args, **kwargs):
+            if broken and self.name == "locked.md":
+                raise OSError("locked")
+            return original_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", selective_read)
+        assert cache_search.search("attention") == []
+        assert [r["reason"] for r in cache_search.unindexable()] == ["unreadable"]
+
+        broken = False  # the lock cleared; the file itself never changed
+        assert path.stat().st_mtime_ns == path.stat().st_mtime_ns
+
+        hits = cache_search.search("attention")
+        assert [h["canonical_id"] for h in hits] == ["locked"]
+        assert cache_search.unindexable() == []
+
+    def test_a_real_io_failure_reports_the_unreadable_reason(self, isolated_cache, monkeypatch):
+        # The engine's own `unreadable` path, not a monkeypatched `unindexable`.
+        _seed_markdown(isolated_cache, "arxiv", "ghost", "# G\n\nattention.\n")
+        original_read = Path.read_text
+
+        def selective_read(self, *args, **kwargs):
+            if self.name == "ghost.md":
+                raise OSError("vanished")
+            return original_read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", selective_read)
+        cache_search.search("attention")
+
+        assert cache_search.unindexable() == [
+            {"namespace": "arxiv", "stem": "ghost", "reason": "unreadable"}
+        ]
+
+    def test_unindexable_without_refresh_does_not_walk_the_corpus(
+        self, isolated_cache, monkeypatch
+    ):
+        """``refresh=False`` is a contract, not an optimisation.
+
+        ``search_cached_papers`` calls ``search`` (which refreshes) and then
+        reads the flags in the same hop; refreshing again would double the
+        corpus walk on every tool call.
+        """
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        cache_search.search("attention")
+
+        called = False
+
+        def _boom(**kwargs):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(cache_search, "_refresh_index", _boom)
+        assert cache_search.unindexable(refresh=False) == []
+        assert not called
+
+    @staticmethod
+    def _break_the_index(isolated_cache):
+        """Leave the schema version current but drop the table it describes.
+
+        A realistic inconsistency, and the one shape `_connect` cannot heal:
+        the file is a valid database, so there is nothing to discard, and the
+        meta row asserts the tables exist.
+        """
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        assert len(cache_search.search("attention")) == 1
+        con = cache_search._connect()
+        with con:
+            con.execute("DROP TABLE fts")
+        con.close()
+
+    def test_an_unreadable_index_raises_rather_than_reporting_no_hits(self, isolated_cache):
+        """A broken index must not look like an empty corpus.
+
+        Every query word is a quoted phrase, so FTS5 has no syntax error left
+        to raise here — what a blanket catch swallows is an operational
+        failure, answered to the agent as a confident "no paper mentions this".
+        """
+        self._break_the_index(isolated_cache)
+
+        with pytest.raises(sqlite3.OperationalError):
+            cache_search.search("attention")
+
+    @pytest.mark.asyncio
+    async def test_the_tool_reports_an_unreadable_index_as_an_error(self, isolated_cache):
+        self._break_the_index(isolated_cache)
+
+        result = await server.search_cached_papers("attention")
+
+        assert "error" in result
+        assert result["retryable"] is True
+        assert "force_refresh" in result["suggestion"]
+        assert "result_count" not in result
+
+    def test_a_non_integer_schema_version_rebuilds(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        cache_search.search("attention")
+
+        con = cache_search._connect()
+        with con:
+            con.execute("UPDATE meta SET value = 'not a version' WHERE key = 'schema_version'")
+        con.close()
+
+        assert len(cache_search.search("attention")) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_query_that_searched_nothing_reports_no_gaps(self, isolated_cache):
+        """An all-stopword query short-circuits before the refresh, so it has
+        no diagnostic to offer — and must not invent one from a cold index."""
+        _seed_markdown(isolated_cache, "manual", "punctuation", "# ---\n\n... !!!\n")
+
+        result = await server.search_cached_papers("the and of")
+
+        assert result["result_count"] == 0
+        assert "unindexable_count" not in result
+        # No corpus was walked, so the punctuation-only paper is not yet known
+        # to be unindexable — reporting it would be inventing a diagnostic.
+        con = cache_search._connect()
+        try:
+            assert con.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
+        finally:
+            con.close()
+
+
+class TestTheCorpusWalkSurvivesIO:
+    """The walk degrades around what it cannot read; it never fails a search."""
+
+    def test_a_cache_root_that_does_not_exist_is_an_empty_corpus(self, monkeypatch):
+        monkeypatch.setattr(cache, "_CACHE_ROOT", cache._CACHE_ROOT / "never-created")
+        assert cache_search._scan_markdown() == []
+        assert cache_search.search("attention") == []
+
+    def test_a_stray_file_at_the_cache_root_is_not_a_namespace(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        (isolated_cache / "README").write_text("not a namespace")
+
+        assert [ns for ns, _, _, _ in cache_search._scan_markdown()] == ["arxiv"]
+
+    def test_an_unreadable_cache_root_is_an_empty_corpus(self, isolated_cache, monkeypatch):
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        real_scandir = os.scandir
+
+        def guarded(path):
+            if Path(path) == cache._CACHE_ROOT:
+                raise PermissionError("no")
+            return real_scandir(path)
+
+        monkeypatch.setattr(cache_search.os, "scandir", guarded)
+        assert cache_search._scan_markdown() == []
+
+    def test_an_unreadable_namespace_is_skipped_not_fatal(self, isolated_cache, monkeypatch):
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        _seed_markdown(isolated_cache, "manual", "q", "# Q\n\nattention.\n")
+        real_scandir = os.scandir
+
+        def guarded(path):
+            if Path(path).parent.name == "manual":
+                raise PermissionError("no")
+            return real_scandir(path)
+
+        monkeypatch.setattr(cache_search.os, "scandir", guarded)
+        assert [ns for ns, _, _, _ in cache_search._scan_markdown()] == ["arxiv"]
+
+    def test_a_file_that_cannot_be_statted_is_skipped(self, isolated_cache, monkeypatch):
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        _seed_markdown(isolated_cache, "arxiv", "ghost", "# G\n\nattention.\n")
+        real_scandir = os.scandir
+
+        class _UnstattableEntry:
+            """A DirEntry whose stat() fails — the real one is read-only."""
+
+            def __init__(self, entry):
+                self._entry = entry
+                self.name = entry.name
+                self.path = entry.path
+
+            def is_dir(self):
+                return self._entry.is_dir()
+
+            def stat(self):
+                raise OSError("nope")
+
+        def guarded(path):
+            return [_UnstattableEntry(e) if e.name == "ghost.md" else e for e in real_scandir(path)]
+
+        monkeypatch.setattr(cache_search.os, "scandir", guarded)
+        assert [Path(p).stem for _, p, _, _ in cache_search._scan_markdown()] == ["p"]
+
+    def test_a_non_markdown_file_is_ignored(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        (isolated_cache / "arxiv" / "markdown" / "notes.txt").write_text("attention")
+
+        assert [Path(p).stem for _, p, _, _ in cache_search._scan_markdown()] == ["p"]
+
+    def test_a_legacy_index_that_cannot_be_deleted_is_left_alone(self, isolated_cache, monkeypatch):
+        legacy = cache_search._legacy_index_path()
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text("{}")
+        monkeypatch.setattr(Path, "unlink", _raise_oserror)
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+
+        # Best-effort: the search still succeeds.
+        assert len(cache_search.search("attention")) == 1
+
+
+class TestConcurrentRefreshUnderChurn:
+    def test_searches_interleaved_with_writes_leave_a_consistent_index(self, isolated_cache):
+        """The interleaving ``_INDEX_LOCK`` exists for: concurrent *writers*.
+
+        Eight identical searches over a static corpus never contend; this adds
+        and removes files underneath them while they run.
+        """
+        for i in range(6):
+            _seed_markdown(isolated_cache, "arxiv", f"base{i}", f"# B{i}\n\nattention model.\n")
+
+        def churn(i):
+            path = _seed_markdown(
+                isolated_cache, "manual", f"churn{i}", f"# C{i}\n\nattention model.\n"
+            )
+            hits = cache_search.search("attention", top_k=50)
+            path.unlink()
+            return hits
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = [f.result() for f in [pool.submit(churn, i) for i in range(8)]]
+
+        assert all(isinstance(r, list) for r in results)
+        # Whatever the interleaving, the settled index names exactly the files
+        # still on disk.
+        cache_search.search("attention")
+        con = cache_search._connect()
+        try:
+            rows = {(r["ns"], r["stem"]) for r in con.execute("SELECT ns, stem FROM files")}
+        finally:
+            con.close()
+        assert rows == {("arxiv", f"base{i}") for i in range(6)}
 
 
 class TestSnippetOffsetUnderLowercaseExpansion:
@@ -994,6 +1415,21 @@ class TestStopwordsStayOutOfTheMatchExpression:
     def test_stopword_filtering_survives_into_the_match_expression(self):
         assert cache_search._fts_query("the transformer") == '"transformer"'
         assert cache_search._fts_query("the") == ""
+
+    def test_a_quote_in_a_word_is_doubled_not_dropped(self):
+        # Inside a quoted phrase only `"` is special to FTS5, and doubling is
+        # how it is escaped — an unbalanced one would make the whole
+        # expression a syntax error.
+        assert cache_search._fts_query('quote"inside') == '"quote""inside"'
+
+    def test_a_repeated_word_contributes_one_term(self):
+        assert cache_search._fts_query("attention attention") == '"attention"'
+        assert cache_search._fts_query("attention model attention") == ('"attention" OR "model"')
+
+    def test_a_nul_splits_a_query_the_way_the_tokeniser_does(self):
+        # sqlite3 cannot bind a string carrying a NUL at all, and `unicode61`
+        # treats it as a separator, so the query is split on it.
+        assert cache_search._fts_query("attention\x00model") == '"attention" OR "model"'
 
     def test_empty_match_expression_short_circuits_before_indexing(
         self, isolated_cache, monkeypatch

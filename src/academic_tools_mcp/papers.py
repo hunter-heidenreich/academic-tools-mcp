@@ -63,7 +63,11 @@ _CHARS_PER_TOKEN = 4
 #   "# Foo"   -> (1, "Foo")
 #   "## Bar"  -> (2, "Bar")
 #   "### Baz" -> (3, "Baz")
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+# The *pattern* is the shared unit, not the compiled object: this module scans
+# line by line while ``cache_search._extract_title`` scans a whole document, so
+# the two need different flags but must agree on what a heading is.
+HEADING_PATTERN = r"^(#{1,6})\s+(.+)$"
+_HEADING_RE = re.compile(HEADING_PATTERN)
 
 # Built-in converter command templates.
 # {input} = PDF path, {output_dir} = temp extraction directory.

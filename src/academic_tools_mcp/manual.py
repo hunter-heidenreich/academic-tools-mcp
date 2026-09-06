@@ -46,16 +46,22 @@ def _canonical_key(identifier: str) -> str:
 # Provider routing — store in the right namespace automatically
 # ---------------------------------------------------------------------------
 
-# arXiv ID patterns (new-style 2301.00001 and old-style hep-th/9901001)
+# arXiv ID patterns (new-style 2301.00001 and old-style hep-th/9901001).
+# Matched against the *lowercased* id, and the old-style archive class carries
+# "." — old-style ids are dotted (``math.GT/0309136``, ``cond-mat.stat-mech``)
+# and vary in case upstream, exactly as ``canonical_arxiv_id`` documents. An
+# id these reject falls through to the ``manual`` namespace under a canonical
+# key that is *already* the arXiv one, so one paper lands under two
+# namespaces depending on how it was typed.
 _ARXIV_NEW_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$")
-_ARXIV_OLD_RE = re.compile(r"^[a-z-]+/\d{7}(v\d+)?$")
+_ARXIV_OLD_RE = re.compile(r"^[a-z][a-z.\-]*/\d{7}(v\d+)?$")
 
 
 def _is_arxiv_identifier(normalized: str) -> bool:
     """Return True if *normalized* matches an arXiv ID shape."""
     from .providers import arxiv
 
-    candidate = arxiv._normalize_arxiv_id(normalized)
+    candidate = arxiv._normalize_arxiv_id(normalized).lower()
     return bool(_ARXIV_NEW_RE.match(candidate) or _ARXIV_OLD_RE.match(candidate))
 
 
@@ -101,8 +107,9 @@ def resolve_target(identifier: str) -> dict[str, Any]:
     normalized = _normalize_identifier(identifier)
 
     # --- arXiv (not a DOI, so check first) ---
-    arxiv_norm = arxiv._normalize_arxiv_id(normalized)
-    if _ARXIV_NEW_RE.match(arxiv_norm) or _ARXIV_OLD_RE.match(arxiv_norm):
+    # Same predicate as resolve_metadata_source, so storage and metadata can
+    # never disagree about which identifiers are arXiv's.
+    if _is_arxiv_identifier(normalized):
         canonical = arxiv.canonical_arxiv_id(normalized)
         return {
             "namespace": arxiv.NAMESPACE,
@@ -135,6 +142,66 @@ def resolve_target(identifier: str) -> dict[str, Any]:
         "canonical": canonical,
         "pdf_path": _manual_pdf_path(canonical),
     }
+
+
+def migrate_misrouted_arxiv() -> int:
+    """Move cached files that ``resolve_target`` now routes to ``arxiv``.
+
+    Old-style arXiv ids that are dotted (``math.GT/0309136``,
+    ``cond-mat.stat-mech/0501001``) or upper-cased were rejected by
+    ``_ARXIV_OLD_RE`` and fell through to ``manual``, under a canonical key
+    identical to the one ``arxiv`` uses. The stem is therefore unchanged and
+    this is a plain directory move.
+
+    Idempotent and best-effort, like ``papers.migrate_legacy_stems``: a file
+    that can't be moved is left for the next run, an existing target is never
+    overwritten, and the count of moved files is returned. Called once at
+    startup. The sections index keys on a hash, so it re-derives on its own.
+    """
+    from .providers import arxiv
+
+    moved = 0
+    for entity in ("pdfs", "markdown"):
+        source_dir = cache.cache_dir(NAMESPACE, entity)
+        if not source_dir.is_dir():
+            continue
+        for path in sorted(source_dir.iterdir()):
+            if not path.is_file():
+                continue
+            if not _is_misrouted_arxiv_stem(path.stem):
+                continue
+            # cache_dir only builds the path; the arXiv namespace may not
+            # exist yet on a cache that has only ever seen manual imports.
+            target_dir = cache.cache_dir(arxiv.NAMESPACE, entity)
+            target = target_dir / path.name
+            if target.exists():
+                continue
+            try:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                path.rename(target)
+                moved += 1
+            except OSError:
+                continue
+    return moved
+
+
+# An old-style arXiv stem as ``safe_stem`` writes it: the sole "/" became "_",
+# and every other character of an arXiv id is already safe. Deliberately the
+# same shape cache_search inverts — a second spelling would let the migration
+# and the search results disagree about which files are arXiv's.
+_MISROUTED_ARXIV_STEM_RE = re.compile(r"^[a-z][a-z.\-]*_\d{7}(?:v\d+)?$")
+
+
+def _is_misrouted_arxiv_stem(stem: str) -> bool:
+    """Whether a ``manual`` stem is an arXiv id stored in the wrong namespace.
+
+    Restores the one slash ``safe_stem`` collapsed, then asks the router — the
+    same predicate that decides where a paper goes now, so the migration and
+    the routing can't disagree about which files are arXiv's.
+    """
+    if not _MISROUTED_ARXIV_STEM_RE.match(stem):
+        return False
+    return _is_arxiv_identifier(stem.replace("_", "/", 1))
 
 
 # ---------------------------------------------------------------------------

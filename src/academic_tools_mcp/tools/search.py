@@ -1,6 +1,7 @@
 """Search tools: arXiv / Crossref / in-paper / cached corpus / Wikipedia."""
 
 import asyncio
+import sqlite3
 from typing import Annotated, Any
 
 from pydantic import Field
@@ -377,9 +378,16 @@ async def search_cached_papers(
 
     Only papers that actually match a query term are returned, so empty
     results means the cache contains no relevant paper, not that the
-    search failed. Backed by a persistent incremental index: only papers
-    that changed since the last search are re-tokenised, so repeat
-    searches stay fast as the corpus grows.
+    search failed — an index that could not be read comes back as
+    ``{error, retryable: True, suggestion}`` instead, never as zero hits.
+    Backed by a persistent incremental index: only papers that changed
+    since the last search are re-tokenised, so repeat searches stay fast
+    as the corpus grows.
+
+    ``char_offset`` and ``section_index`` are ``null`` when the matched term
+    could not be located in the text — the index and the snippet scan disagree
+    about a few characters, ``_`` among them. The hit is still real; it just
+    cannot be centred, so use find_in_paper to place it.
 
     ``normalize=True`` folds diacritics on both query and documents
     before tokenising, so 'cafe' and 'café' rank identically (useful for
@@ -404,8 +412,11 @@ async def search_cached_papers(
     # event loop on a large corpus. Even at hundreds of papers this is
     # tens of milliseconds, but agents may run searches concurrently
     # with HTTP fetches and we shouldn't starve those.
-    # One hop, not two: `search` refreshes the index, so `unindexable` reads
-    # the same warm state and skips its own corpus walk.
+    # One hop, not two: a `search` that ran refreshes the index, so
+    # `unindexable` reads the same warm state and skips its own corpus walk.
+    # A query that searched nothing (empty after stopword filtering, or
+    # top_k<=0) short-circuits before the refresh and so has no diagnostic to
+    # report either — which is honest: no corpus was consulted.
     def _search_and_diagnose() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         hits = cache_search.search(
             query,
@@ -416,7 +427,22 @@ async def search_cached_papers(
         )
         return hits, cache_search.unindexable(namespace, refresh=False)
 
-    results, skipped = await asyncio.to_thread(_search_and_diagnose)
+    try:
+        results, skipped = await asyncio.to_thread(_search_and_diagnose)
+    except sqlite3.Error as exc:
+        # The index is derived state, so a read failure is recoverable — but
+        # it must never come back as "no paper mentions this". `_connect`
+        # already rebuilds a corrupt file; what reaches here is a locked or
+        # unwritable database.
+        return {
+            "error": f"The local search index could not be read: {exc}",
+            "retryable": True,
+            "suggestion": (
+                "Retry the search. If it keeps failing, call it once with "
+                "force_refresh=True to rebuild the index, or use find_in_paper "
+                "to search a specific paper directly."
+            ),
+        }
     response: dict[str, Any] = {
         "query": query,
         "result_count": len(results),

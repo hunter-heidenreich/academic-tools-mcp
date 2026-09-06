@@ -17,6 +17,24 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Property and unit tests for the corpus search engine, at full branch
+  coverage.** `tests/test_cache_search_properties.py` pins the three invariants
+  no example set can cover: a hit's `canonical_id` round-trips back through
+  `manual.resolve_target` → `papers.safe_stem` → `_filename_to_canonical` for
+  every routable identifier shape, a snippet's `char_offset` slices the
+  *original* markdown back to the term it matched under either normalisation,
+  and `search` answers any string an agent can type with a well-formed list —
+  ordered, every score above zero, every offset inside the document. The
+  example suite gained the arms nothing exercised: a broken index, a real I/O
+  failure reaching `unindexable`, the `refresh=False` contract, the `top_k`
+  cap driven by a corpus larger than it, corpus-global scoring, searches
+  interleaved with corpus churn rather than eight identical reads, and the
+  walk's permission failures. `test_handles_unreadable_file` passed for the
+  wrong reason — its patch went in before the first search, so the refresh
+  flagged the file and deleted its postings, and the winner-read path it
+  claimed to cover was never reached; it is now two tests, one per arm.
+  ([#86])
+
 - **Property and unit tests for BibTeX rendering.** `tests/test_bibtex_properties.py`
   pins the three invariants no example set can cover: a citation key is always
   ASCII `[a-z0-9]`, an escaped field leaves no unescaped LaTeX special and no
@@ -360,7 +378,68 @@ grouped by milestone rather than per commit.
   converted yet" and re-run conversions that take tens of minutes. The sweep is
   idempotent and never overwrites an existing file. ([#48])
 
+- **Corpus search got measurably cheaper per call.** Snippet extraction ran one
+  full-document regex pass per query term and scored each candidate window by
+  walking its neighbours outward; it is now a single alternation pass and one
+  sliding window (3.5× and linear, on a 1.1 MB document). `_ensure_schema`
+  re-asserted the schema version on every connection open — a write transaction
+  each, three per tool call — and now returns without writing when the version
+  already matches. `_sweep_legacy_index` probes once per cache root rather than
+  once per search. Dead code removed: `_iter_markdown_files` had no production
+  caller, and `_scan_markdown`'s never-passed `namespace` parameter was a trap
+  — the refresh prunes every indexed row the walk did not return, so a filtered
+  walk would have deleted every other namespace's postings. ([#86])
+
 ### Fixed
+
+- **Old-style arXiv ids now reach the arXiv namespace whatever their case or
+  subject class.** `manual._ARXIV_OLD_RE` matched a non-lowercased id against
+  an archive class with no `.` in it, so `math.GT/0309136`,
+  `cond-mat.stat-mech/0501001` and `HEP-TH/9901001` all fell through to the
+  `manual` namespace — under a canonical key that was *already* arXiv's. Two
+  spellings of one paper therefore cached, downloaded and converted twice, and
+  a `search_cached_papers` hit on one of them returned a `canonical_id` that
+  chained nowhere. The shape test is now single-homed in
+  `_is_arxiv_identifier`, which both `resolve_target` and
+  `resolve_metadata_source` call. `manual.migrate_misrouted_arxiv()` moves the
+  files already written to the wrong namespace; it runs at startup beside
+  `papers.migrate_legacy_stems`, is idempotent, and never overwrites an
+  existing file. ([#86])
+
+- **A versioned old-style arXiv id no longer produces a dead-end
+  `canonical_id`.** `canonical_arxiv_id` deliberately keeps the version, so
+  `hep-th_9901001v2` is a stem that occurs — but `_ARXIV_OLDSTYLE_STEM_RE` was
+  anchored at seven digits and passed it through un-inverted. ([#86])
+
+- **A hit's score can no longer round to zero.** The response rounded to six
+  decimal *places* on the stated invariant that every returned hit scores
+  above zero. FTS5 clamps a degenerate IDF (a term in every document) to `1e-6`
+  and the BM25 length normalisation then scales it down, so a long paper in a
+  small corpus scores around `5e-08` — reported as `0.0`. Rounding is now to
+  six significant figures; real-corpus scores (0.9–4) render identically.
+  ([#86])
+
+- **A search index that cannot be read is reported, not answered as an empty
+  corpus.** `search` wrapped its query in `except sqlite3.OperationalError:
+  return []`, written for FTS5 syntax errors — but every query word is a quoted
+  phrase, so FTS5 has none left to raise there. What the catch actually
+  swallowed was "database is locked" / "no such table", answering "which paper
+  mentioned X?" with a confident "none". `search_cached_papers` now returns
+  `{error, retryable, suggestion}`, the same contract every other tool uses.
+  ([#86])
+
+- **A paper that was briefly unreadable is retried instead of frozen out.** The
+  refresh recorded the `(mtime, size)` that *succeeded* alongside the failure,
+  so the staleness check matched forever: a lock that cleared, or a `chmod`
+  (which leaves mtime alone), was never noticed and the paper stayed unindexed
+  until `force_refresh`. ([#86])
+
+- **A snippet the scan cannot centre now says so.** `unicode61` treats `_` as a
+  separator while Python's word boundary counts it as a word character, so
+  `attention_model` is findable but not locatable; the hit reported `section`
+  and `char_offset` from offset 0. Both are now `null`, and both
+  head-of-document fallbacks are whitespace-collapsed like any other snippet,
+  so the key means one thing. ([#86])
 
 - **A name that escapes to nothing no longer crashes the author field.** A
   display name of `"{"` passes the blank check and then escapes to the empty
@@ -1791,3 +1870,4 @@ grouped by milestone rather than per commit.
 [#83]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/83
 [#84]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/84
 [#85]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/85
+[#86]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/86

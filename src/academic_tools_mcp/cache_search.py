@@ -38,6 +38,7 @@ import os
 import re
 import sqlite3
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -120,11 +121,12 @@ _STOPWORDS = frozenset(
     }
 )
 
-# Heading regex matching the same shape used by papers.parse_sections.
-_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+# The same pattern papers.parse_sections uses, compiled MULTILINE because this
+# scans a whole document rather than a line.
+_HEADING_RE = re.compile(papers.HEADING_PATTERN, re.MULTILINE)
 
 # Persistent index. Lives in a reserved double-underscore namespace dir
-# that _iter_markdown_files naturally skips (it has no ``markdown/``
+# that _scan_markdown naturally skips (it has no ``markdown/``
 # subdir). Bump _SCHEMA_VERSION to force a full rebuild when the entry
 # schema or tokeniser changes. The lock serialises the load→refresh→save
 # critical section across the worker threads that search() runs in (it is
@@ -137,9 +139,15 @@ _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 _SCHEMA_VERSION = 2
 _INDEX_DIRNAME = "__search_index__"
 _DB_FILENAME = "index.db"
+# Recorded in place of a real mtime for a file that could not be read, so the
+# (mtime, size) signal can never match and the next refresh retries.
+_UNREADABLE_MTIME = -1
 _INDEX_LOCK = threading.Lock()
-# NUL can't occur in a namespace dir name or a filename stem, so it is a
-# collision-free separator for the flat entry key.
+# Cache roots whose legacy JSON index has already been swept. Once per root,
+# not once per refresh: the file it removes exists only on an upgrade from a
+# pre-FTS5 release and can never reappear. Keyed on the root rather than a bare
+# flag so the sweep still runs if _CACHE_ROOT is repointed.
+_LEGACY_SWEPT: set[Path] = set()
 
 
 # A character ``unicode61`` will treat as part of a token: any Unicode letter
@@ -191,10 +199,7 @@ def _section_for_offset(markdown: str, offset: int) -> tuple[int | None, str | N
     an index hits "Ambiguous section title" whenever a paper repeats a heading
     — 10.9% of a real corpus.
     """
-    found = papers.section_at_offset(markdown, offset)
-    if found is None:
-        return None, None
-    return found
+    return papers.section_at_offset(markdown, offset) or (None, None)
 
 
 def _extract_snippet(
@@ -218,7 +223,7 @@ def _extract_snippet(
     aligned with the un-folded text.
     """
     if not query_terms:
-        return markdown[:window].strip(), 0
+        return _collapse(markdown[:window]), 0
 
     # Find every occurrence of every query term, collecting (offset, term).
     # Word-boundary match so "drop" doesn't hit inside "dropout".
@@ -228,52 +233,61 @@ def _extract_snippet(
     # normalize=False: str.lower() is not length-preserving (U+0130 'İ' →
     # 'i' + combining dot), so a raw m.start() would drift past the real match
     # for any doc containing such a char before the hit.
-    hits: list[tuple[int, str]] = []
+    #
+    # One alternation over all terms, not a pass per term: these documents run
+    # to megabytes and this is called once per winner. Longest alternative
+    # first, so an overlapping pair ("attention" / "attentions") reports the
+    # longer. The matched text *is* the term — both sides are already
+    # lowercased and folded identically.
     lowered, index_map = _textnorm.lower_with_map(markdown, fold=normalize)
-    for term in query_terms:
-        # Escape regex metacharacters in the term itself.
-        pattern = re.compile(rf"\b{re.escape(term)}\b")
-        for m in pattern.finditer(lowered):
-            hits.append((index_map[m.start()], term))
+    alternation = "|".join(re.escape(t) for t in sorted(query_terms, key=len, reverse=True))
+    pattern = re.compile(rf"\b(?:{alternation})\b")
+    hits: list[tuple[int, str]] = [
+        (index_map[m.start()], m.group(0)) for m in pattern.finditer(lowered)
+    ]
 
     if not hits:
-        return markdown[:window].strip(), None
+        return _collapse(markdown[:window]), None
 
-    # Score each hit by counting distinct query terms within ±window/2
-    # chars. Sort hits by offset so each window scan only walks nearby hits.
+    # Score each hit by counting distinct query terms within ±window/2 chars,
+    # via one sliding window over the offset-sorted hits: `lo` and `hi` only
+    # ever advance, so this is linear rather than the quadratic it becomes
+    # when one term repeats densely inside a single window.
     hits.sort()
     half = window // 2
     best_offset = hits[0][0]
     best_distinct = 1
-    # For each hit, count distinct terms in [hit - half, hit + half] by
-    # walking neighbours outward until they leave the window. This is
-    # O(hits × hits-in-window), worst-case quadratic when one term repeats
-    # densely within a single window — bounded in practice only because at
-    # most top_k winners are ever passed here.
-    for i, (off, _term) in enumerate(hits):
-        lo = off - half
-        hi = off + half
-        terms_in_window: set[str] = set()
-        # Walk neighbours in both directions until they leave the window
-        for j in range(i, len(hits)):
-            if hits[j][0] > hi:
-                break
-            terms_in_window.add(hits[j][1])
-        for j in range(i - 1, -1, -1):
-            if hits[j][0] < lo:
-                break
-            terms_in_window.add(hits[j][1])
-        if len(terms_in_window) > best_distinct:
-            best_distinct = len(terms_in_window)
+    counts: Counter[str] = Counter()
+    lo = hi = 0
+    for off, _term in hits:
+        while hi < len(hits) and hits[hi][0] <= off + half:
+            counts[hits[hi][1]] += 1
+            hi += 1
+        while hits[lo][0] < off - half:
+            term = hits[lo][1]
+            if counts[term] == 1:
+                del counts[term]
+            else:
+                counts[term] -= 1
+            lo += 1
+        if len(counts) > best_distinct:
+            best_distinct = len(counts)
             best_offset = off
 
     start = max(0, best_offset - half)
     end = min(len(markdown), start + window)
-    snippet = markdown[start:end].strip()
-    # Collapse internal whitespace so a snippet that crosses a heading
-    # boundary doesn't render as "## Methods\n\n\n\nWe trained...".
-    snippet = re.sub(r"\s+", " ", snippet)
-    return snippet, best_offset
+    return _collapse(markdown[start:end]), best_offset
+
+
+def _collapse(snippet: str) -> str:
+    r"""Trim and flatten a snippet's whitespace.
+
+    A snippet that crosses a heading boundary would otherwise render as
+    "## Methods\n\n\n\nWe trained..." — and the head-of-document fallbacks
+    must be shaped the same way as a centred one, or the response key means
+    two different things depending on whether a term was located.
+    """
+    return re.sub(r"\s+", " ", snippet.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +318,11 @@ _MANUAL_DOI_STEM_RE = re.compile(rf"^({_doi.REGISTRANT_PATTERN})_")
 # (e.g. "hep-th/9901001", "cs/0501001", "math.GT/0309136"). canonical_arxiv_id
 # lowercases them and keeps the slash, then the storage step turns it into "_",
 # so the stem is "archive[.subject]_NNNNNNN". This regex inverts ALL archives
-# (not just the hyphenated physics ones) in one shot. New-style IDs start with a
-# digit ("2301.00001") and never match, so they pass through untouched.
-_ARXIV_OLDSTYLE_STEM_RE = re.compile(r"^([a-z][a-z.\-]*)_(\d{7})$")
+# (not just the hyphenated physics ones) in one shot. The version suffix is
+# optional because canonical_arxiv_id deliberately keeps it — "hep-th_9901001v2"
+# is a stem that occurs. New-style IDs start with a digit ("2301.00001") and
+# never match, so they pass through untouched.
+_ARXIV_OLDSTYLE_STEM_RE = re.compile(r"^([a-z][a-z.\-]*)_(\d{7}(?:v\d+)?)$")
 
 
 def _filename_to_canonical(namespace: str, stem: str) -> str:
@@ -342,44 +358,21 @@ def _restore_slashes(namespace: str, stem: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _iter_markdown_files(
-    namespace: str | None = None,
-) -> list[tuple[str, Path]]:
-    """Yield ``(namespace, path)`` for every cached markdown file.
-
-    A single-namespace filter is honoured so an agent that knows it
-    only cares about, say, manual imports doesn't pay to score the
-    whole corpus.
-    """
-    root = cache._CACHE_ROOT
-    if not root.is_dir():
-        return []
-    namespaces = [namespace] if namespace else None
-    out: list[tuple[str, Path]] = []
-    for ns_dir in sorted(root.iterdir()):
-        if not ns_dir.is_dir():
-            continue
-        if namespaces is not None and ns_dir.name not in namespaces:
-            continue
-        md_dir = ns_dir / "markdown"
-        if not md_dir.is_dir():
-            continue
-        for md_path in sorted(md_dir.glob("*.md")):
-            out.append((ns_dir.name, md_path))
-    return out
-
-
-def _scan_markdown(namespace: str | None = None) -> list[tuple[str, Path, int, int]]:
-    """Like ``_iter_markdown_files`` but carries each file's stat inline.
+def _scan_markdown() -> list[tuple[str, Path, int, int]]:
+    """Every cached markdown file as ``(namespace, path, mtime_ns, size)``.
 
     ``os.scandir`` gets the directory entry and its stat in one pass, where
     ``glob`` + a separate ``Path.stat()`` per file costs two. On a
     3,700-paper corpus that walk was 45% of a query's wall time; the refresh
     needs the stat anyway, so there is no reason to fetch it twice.
 
-    Order is not guaranteed — the refresh keys on ``(ns, stem)``, not
-    position. ``_iter_markdown_files`` keeps its sorted contract for callers
-    that do care.
+    **Deliberately unfiltered.** ``_refresh_index`` prunes every indexed row
+    this walk did not return, so restricting it to one namespace would delete
+    every other namespace's postings. Order is not guaranteed either — the
+    refresh keys on ``(ns, stem)``, not position.
+
+    The reserved ``__search_index__`` directory is skipped for free: it holds
+    no ``markdown/`` subdirectory, so its scandir raises and is passed over.
     """
     root = cache._CACHE_ROOT
     if not root.is_dir():
@@ -390,7 +383,7 @@ def _scan_markdown(namespace: str | None = None) -> list[tuple[str, Path, int, i
     except OSError:
         return []
     for ns_entry in namespace_entries:
-        if not ns_entry.is_dir() or (namespace is not None and ns_entry.name != namespace):
+        if not ns_entry.is_dir():
             continue
         md_dir = Path(ns_entry.path) / "markdown"
         try:
@@ -495,7 +488,10 @@ def _open(path: Path) -> sqlite3.Connection:
 
 
 def _ensure_schema(con: sqlite3.Connection) -> None:
-    """Create the schema, rebuilding from scratch on a version mismatch."""
+    """Create the schema, rebuilding from scratch on a version mismatch.
+
+    A no-op — and a read-only one — when the recorded version already matches.
+    """
     version = None
     try:
         row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
@@ -503,12 +499,18 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
     except (sqlite3.DatabaseError, ValueError, TypeError):
         version = None
 
-    if version is not None and version != _SCHEMA_VERSION:
+    if version == _SCHEMA_VERSION:
+        # The meta row is written last, so its presence means the tables it
+        # describes exist. Returning here keeps the common open read-only —
+        # otherwise every connection opens a write transaction to re-assert a
+        # version that already matched, and a search opens three.
+        return
+
+    if version is not None:
         for table in ("fts", "fts_norm"):
             con.execute(f"DROP TABLE IF EXISTS {table}")
         con.execute("DROP TABLE IF EXISTS files")
         con.execute("DROP TABLE IF EXISTS meta")
-        version = None
 
     with con:
         for stmt in _SCHEMA:
@@ -520,7 +522,17 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
 
 
 def _sweep_legacy_index() -> None:
-    """Delete the JSON index this replaced. Best-effort, idempotent."""
+    """Delete the JSON index this replaced. Best-effort, idempotent.
+
+    Runs once per cache root: the file it removes can only be left by an
+    upgrade from a pre-FTS5 release, so probing for it on every refresh is a
+    stat per search, forever, for a file that will never reappear. Called under
+    ``_INDEX_LOCK``, so the set needs no lock of its own.
+    """
+    root = cache._CACHE_ROOT
+    if root in _LEGACY_SWEPT:
+        return
+    _LEGACY_SWEPT.add(root)
     legacy = _legacy_index_path()
     try:
         if legacy.is_file():
@@ -588,17 +600,24 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                     else:
                         reason = None
 
+                    # A read that failed records a signal that can never match,
+                    # so the next refresh retries. Storing the stat that *did*
+                    # succeed would freeze the failure: a lock that cleared, or
+                    # a chmod (which leaves mtime alone), would never be
+                    # noticed and the paper would stay unindexed forever.
+                    recorded_mtime = _UNREADABLE_MTIME if reason else mtime_ns
+
                     if existing is None:
                         cur = con.execute(
                             "INSERT INTO files(ns, stem, mtime_ns, size) VALUES (?,?,?,?)",
-                            (ns, path.stem, mtime_ns, size),
+                            (ns, path.stem, recorded_mtime, size),
                         )
                         rowid = int(cur.lastrowid or 0)
                     else:
                         rowid = existing[0]
                         con.execute(
                             "UPDATE files SET mtime_ns = ?, size = ? WHERE rowid = ?",
-                            (mtime_ns, size, rowid),
+                            (recorded_mtime, size, rowid),
                         )
                     if reason is None:
                         reason = _index_document(con, rowid, text)
@@ -607,6 +626,8 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                         con.execute("DELETE FROM fts_norm WHERE rowid = ?", (rowid,))
                     con.execute("UPDATE files SET unindexable = ? WHERE rowid = ?", (reason, rowid))
 
+                # Prune: every indexed row the walk did not return. This is
+                # why _scan_markdown must stay unfiltered.
                 for key, (rowid, _m, _s) in known.items():
                     if key in seen:
                         continue
@@ -658,7 +679,11 @@ def unindexable(
 # even though the document indexed cleanly as one token. Split on whitespace
 # and let FTS5 apply the same tokenizer to the query that it applied to the
 # corpus.
-_QUERY_SPLIT_RE = re.compile(r"\s+")
+# NUL splits alongside whitespace, for two reasons that agree: ``unicode61``
+# treats it as a token separator, so this is what the corpus was indexed as;
+# and sqlite3 cannot bind a string containing one at all, so a word carrying it
+# would fail the query rather than merely fail to match.
+_QUERY_SPLIT_RE = re.compile(r"[\s\x00]+")
 
 
 def _query_words(query: str) -> list[str]:
@@ -691,15 +716,10 @@ def _fts_query(query: str) -> str:
 
     Returns ``""`` when nothing survives filtering, which the caller treats
     as an empty result — an empty MATCH expression is a syntax error to FTS5.
+    A word that tokenises to nothing (pure punctuation, or quotes alone) needs
+    no special case: FTS5 accepts the phrase and it simply matches nothing.
     """
-    quoted = []
-    for word in _query_words(query):
-        escaped = word.replace('"', '""')
-        # A word that tokenises to nothing (pure punctuation) would make FTS5
-        # reject the whole expression.
-        if not escaped.strip('"'):
-            continue
-        quoted.append(f'"{escaped}"')
+    quoted = [f'"{word.replace(chr(34), chr(34) * 2)}"' for word in _query_words(query)]
     return " OR ".join(dict.fromkeys(quoted))
 
 
@@ -770,6 +790,12 @@ def search(
     ``force_refresh=True`` re-indexes every document regardless of the
     ``(mtime, size)`` staleness signal — a safety valve for the rare case
     where a file changed without either changing.
+
+    Raises ``sqlite3.Error`` if the index cannot be read or written. That is
+    deliberate: every query word is a quoted phrase, so FTS5 has no syntax
+    error left to raise, and swallowing the exception would report a locked or
+    corrupt index to the agent as a confident "no paper mentions this".
+    ``search_cached_papers`` turns it into the standard ``{error, suggestion}``.
     """
     if top_k <= 0:
         return []
@@ -805,9 +831,6 @@ def search(
     con = _connect()
     try:
         rows = con.execute(sql, params).fetchall()
-    except sqlite3.OperationalError:
-        # A query FTS5 cannot parse is an empty result, not a crash.
-        return []
     finally:
         con.close()
 
@@ -835,12 +858,14 @@ def search(
             {
                 "namespace": row["ns"],
                 "canonical_id": _filename_to_canonical(row["ns"], row["stem"]),
-                # Invariant: every returned hit scores above zero. 6 decimals
-                # rather than 3 because FTS5 returns a very small positive
-                # score for a degenerate IDF (a term in every document of a
-                # small corpus), and 3 rounds those to 0.0. Real-corpus scores
-                # are 0.9-4, so readability is unaffected.
-                "score": round(score, 6),
+                # Invariant: every returned hit scores above zero, so the
+                # rounding is to significant figures rather than decimal
+                # places. FTS5 clamps a degenerate IDF (a term in every
+                # document) to 1e-6 and then scales it down by the length
+                # normalisation, so a long document can score 4e-08 — which
+                # any fixed number of decimals reports as 0.0. Real-corpus
+                # scores are 0.9-4 and render identically either way.
+                "score": float(f"{score:.6g}"),
                 "title": title,
                 "snippet": snippet,
                 "section": section,

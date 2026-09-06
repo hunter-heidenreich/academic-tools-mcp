@@ -875,3 +875,119 @@ class TestImportPaperTool:
         assert result["section_count"] == 2
         assert "sections" not in result
         assert "markdown_path" not in result
+
+
+# ---------------------------------------------------------------------------
+# Old-style arXiv routing, and the migration that follows it
+# ---------------------------------------------------------------------------
+
+
+class TestOldStyleArxivRouting:
+    """An old-style arXiv id belongs to arXiv whatever its case or subject class.
+
+    ``_ARXIV_OLD_RE`` was matched against a *non*-lowercased id with no "." in
+    its archive class, so `math.GT/0309136` and `HEP-TH/9901001` fell through
+    to the `manual` namespace — under a canonical key that was already arXiv's.
+    Two spellings of one paper then cached, downloaded and converted twice.
+    """
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "hep-th/9901001",
+            "HEP-TH/9901001",
+            "hep-th/9901001v2",
+            "math.GT/0309136",
+            "cond-mat.stat-mech/0501001",
+            "https://arxiv.org/abs/math.GT/0309136",
+        ],
+    )
+    def test_routes_to_the_arxiv_namespace(self, identifier):
+        assert manual.resolve_target(identifier)["namespace"] == "arxiv"
+        assert manual.resolve_metadata_source(identifier) == "arxiv"
+
+    def test_case_variants_share_one_cache_key(self):
+        upper = manual.resolve_target("HEP-TH/9901001")
+        lower = manual.resolve_target("hep-th/9901001")
+        assert (upper["namespace"], upper["canonical"]) == (lower["namespace"], lower["canonical"])
+        assert upper["pdf_path"] == lower["pdf_path"]
+
+    @pytest.mark.parametrize("identifier", ["10.1101/2024.01.01.123", "10.1038/x", "my-label"])
+    def test_non_arxiv_identifiers_are_unaffected(self, identifier):
+        assert manual.resolve_target(identifier)["namespace"] != "arxiv"
+
+
+class TestMigrateMisroutedArxiv:
+    @pytest.fixture
+    def misrouted(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
+            directory = tmp_path / "manual" / entity
+            directory.mkdir(parents=True)
+            (directory / f"cond-mat.stat-mech_0501001{suffix}").write_text("stale")
+            (directory / f"hep-th_9901001v2{suffix}").write_text("stale")
+            # Genuinely manual: a freeform label and a publisher DOI.
+            (directory / f"my-imported-paper{suffix}").write_text("keep")
+            (directory / f"10.1038_s41586-021-03819-2{suffix}").write_text("keep")
+        return tmp_path
+
+    def test_moves_only_the_misrouted_files(self, misrouted):
+        assert manual.migrate_misrouted_arxiv() == 4
+
+        for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
+            arxiv_dir = misrouted / "arxiv" / entity
+            manual_dir = misrouted / "manual" / entity
+            assert {p.name for p in arxiv_dir.iterdir()} == {
+                f"cond-mat.stat-mech_0501001{suffix}",
+                f"hep-th_9901001v2{suffix}",
+            }
+            assert {p.name for p in manual_dir.iterdir()} == {
+                f"my-imported-paper{suffix}",
+                f"10.1038_s41586-021-03819-2{suffix}",
+            }
+
+    def test_is_idempotent(self, misrouted):
+        assert manual.migrate_misrouted_arxiv() == 4
+        assert manual.migrate_misrouted_arxiv() == 0
+
+    def test_never_overwrites_an_existing_target(self, misrouted):
+        target_dir = misrouted / "arxiv" / "pdfs"
+        target_dir.mkdir(parents=True)
+        (target_dir / "hep-th_9901001v2.pdf").write_text("the real one")
+
+        manual.migrate_misrouted_arxiv()
+
+        assert (target_dir / "hep-th_9901001v2.pdf").read_text() == "the real one"
+        assert (misrouted / "manual" / "pdfs" / "hep-th_9901001v2.pdf").exists()
+
+    def test_a_subdirectory_is_not_a_paper(self, misrouted):
+        (misrouted / "manual" / "pdfs" / "hep-th_9901002").mkdir()
+
+        assert manual.migrate_misrouted_arxiv() == 4
+
+    def test_a_move_that_fails_leaves_the_file_for_the_next_run(self, misrouted, monkeypatch):
+        from pathlib import Path
+
+        def failing_rename(self, target):
+            raise OSError("read-only filesystem")
+
+        monkeypatch.setattr(Path, "rename", failing_rename)
+
+        assert manual.migrate_misrouted_arxiv() == 0
+        assert (misrouted / "manual" / "pdfs" / "hep-th_9901001v2.pdf").exists()
+
+    def test_empty_cache_is_a_no_op(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache
+
+        monkeypatch.setattr(cache, "_CACHE_ROOT", tmp_path)
+        assert manual.migrate_misrouted_arxiv() == 0
+
+    def test_a_migrated_paper_is_findable_under_its_arxiv_identifier(self, misrouted):
+        from academic_tools_mcp import papers
+
+        manual.migrate_misrouted_arxiv()
+
+        target = manual.resolve_target("cond-mat.stat-mech/0501001")
+        assert papers.markdown_path(target["namespace"], target["canonical"]).exists()
