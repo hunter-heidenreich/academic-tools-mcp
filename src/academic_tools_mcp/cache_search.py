@@ -146,15 +146,11 @@ _ARXIV_OLDSTYLE_STEM_RE = re.compile(r"^([a-z][a-z.\-]*)_(\d{7}(?:v\d+)?)$")
 
 
 def _filename_to_canonical(namespace: str, stem: str) -> str:
-    """Invert ``papers.safe_stem`` for the given namespace.
+    """Invert ``papers.safe_stem``: the cache key a stored filename came from.
 
-    ``stem`` is the filename without the ``.md`` extension. Returns the
-    canonical form the original code would have used as a cache key, so the
-    ``canonical_id`` on a hit chains into the paper tools.
-
-    Percent-decoding is unconditional and runs last: ``safe_stem`` encodes a
-    literal ``%`` as ``%25``, so a single ``unquote`` is its exact inverse and
-    can't manufacture an escape that wasn't one.
+    One ``unquote``, and it must stay one — ``safe_stem`` writes a literal
+    ``%`` as ``%25``, so a single pass is its exact inverse and a second would
+    decode an escape that was never one.
     """
     return unquote(_restore_slashes(namespace, stem))
 
