@@ -56,7 +56,7 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
     # Throttle.reset() rebuilds the lock + semaphore because asyncio.Lock /
     # Semaphore bind to the running event loop on first await — a stale
     # instance from the previous test's loop fails with a "bound to a different
-    # event loop" error if reused — and zeroes pending / last_request_time so an
+    # event loop" error if reused — and zeroes pending / the last-start map so an
     # error path that raised before the finally block can't leak `pending` into
     # the next test. Same discovery seam the snapshot samples through, so a new
     # provider is covered here without an edit.

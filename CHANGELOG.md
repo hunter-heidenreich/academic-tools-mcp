@@ -17,6 +17,22 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Property and boundary tests for the shared throttle, plus a policy clamp.**
+  `Throttle`'s three invariants — starts for one key are never closer than
+  `min_gap_seconds`, `pending` and peak concurrency stay inside their caps for
+  any arrival pattern, and the prune bounds the map without dropping a live
+  entry — were prose plus a handful of two-slot examples;
+  `tests/test_throttle_properties.py` holds them over generated inputs on a
+  fake clock. The example suite gained the cases it was missing: `pending` and
+  the semaphore permit released when the body raises (the leak `reset()`'s
+  docstring names), the burst cap driven by real concurrent callers rather
+  than a hand-set `pending`, the concurrency cap under `per_host`, the gap
+  measured between request *starts* rather than durations, and the
+  exactly-at-`_MAX_TRACKED_HOSTS` boundary. `Throttle.__init__` now clamps its
+  numeric policy arguments the way `get_with_retry` clamps `max_attempts` — a
+  typo'd `max_concurrent=0` used to deadlock on `Semaphore(0)` with no timeout,
+  and `max_pending=0` refused every caller. ([#83])
+
 - **`get_server_stats` now reports PDF write failures.** `cache_write_failures`
   counted a failed `cache.put` but not a failed PDF write — and a PDF is the
   largest write the server makes, so the write most likely to hit a full disk
@@ -310,6 +326,25 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **The per-host prune no longer drops a host that is still owed a wait.** The
+  age sweep bounding the last-start map is documented as semantics-preserving —
+  an entry older than `min_gap_seconds` can never produce a wait — but it was
+  handed the caller's *reserved* start (`now + wait`) rather than the real
+  clock, so it swept every entry in `(now - gap, now + wait - gap]` too. Past
+  `_MAX_TRACKED_HOSTS` publisher domains in one session, an open-access
+  download could start a request early against a host it had just fetched from.
+  The gap check also read a recorded start of `0.0` as "never seen", so a
+  monotonic clock reading zero skipped one gap; the map now distinguishes a
+  missing key from a zero timestamp. ([#83])
+
+- **`get_server_stats` no longer hides a second throttle on a provider.**
+  `_stats.throttles()` matched the attribute literally named `_throttle`, and
+  `snapshot()` *assigned* `in_flight` per namespace instead of summing, so a
+  module holding two throttles would have reported one of them and left the
+  other out of the conftest reset seam as well. No provider holds two today —
+  crossref's search gate is a lock, not a `Throttle` — which is exactly why the
+  trap was silent. ([#83])
 
 - **A Greek word ending in a capital sigma is searchable again.**
   `str.lower()` is context-sensitive at a word-final Σ — `"ΟΔΥΣΣΕΥΣ".lower()`
@@ -1647,3 +1682,4 @@ grouped by milestone rather than per commit.
 [#79]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/79
 [#81]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/81
 [#82]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/82
+[#83]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/83

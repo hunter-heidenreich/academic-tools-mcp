@@ -520,7 +520,7 @@ def _reset_throttle(monkeypatch, tmp_path):
     """Point the cache at tmp_path and disable the throttle gap (no real sleeps).
 
     The conftest autouse fixture already resets each provider's ``_throttle``
-    (pending / last_request_time / lock / sem) and ``_single_flight`` between
+    (pending / last-start map / lock / sem) and ``_single_flight`` between
     tests; here we additionally zero the inter-start gap so a multi-request test
     doesn't wait out arxiv's 3 s pacing.
     """
