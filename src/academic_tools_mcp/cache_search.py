@@ -23,8 +23,7 @@ from urllib.parse import unquote
 
 from . import _doi, _textnorm, cache, papers
 
-# Enough to disambiguate "variational dropout" from "dropout regularisation"
-# without bloating the response.
+# Enough to tell "variational dropout" from "dropout regularisation"; more is bloat.
 _SNIPPET_CHARS = 200
 
 # So a noisy query can't pull the whole corpus back in one tool call.
