@@ -1,4 +1,4 @@
-"""Test isolation for module-level pooled state.
+"""Test isolation for module-level pooled state and operator configuration.
 
 The persistent ``httpx.AsyncClient`` pool, single-flight registries, and
 backpressure counters all live as module-level state in
@@ -7,15 +7,66 @@ reset between tests, a stale client from one test (often a MagicMock
 with the wrong canned response) is reused by the next test, which
 either fails confusingly or — worse — passes for the wrong reason.
 
-This autouse fixture clears all of that before each test runs.
+The autouse fixtures below clear all of that before each test runs.
+
+Operator configuration is the half that needs a second mechanism:
+``_scrub_environment`` runs at import because ``server._DEBUG_TOOLS_ENABLED``
+and crossref's pacing constants are read once, at *their* import, and no
+fixture can undo a tool registration that already happened.
+
+Nothing here imports ``academic_tools_mcp`` at module scope — every fixture
+imports inside its body — which is what lets the scrub run first.
 """
 
+import os
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
+
+# Every setting read by `config.get` / `flag` / `number` anywhere in `src/`,
+# kept honest by `test_conftest_guards.TestConfigEnvScrubbed`.
+_CONFIG_ENV_VARS = (
+    "ACADEMIC_TOOLS_ENV_FILE",
+    "ARXIV_MAILTO",
+    "CACHE_DIR",
+    "CROSSREF_MAILTO",
+    "DEBUG_REQUESTS",
+    "ENABLE_DEBUG_TOOLS",
+    "MAX_PDF_BYTES",
+    "OPENALEX_API_KEY",
+    "OPENALEX_MAILTO",
+    "PDF_CONVERTER",
+    "PDF_CONVERTER_VENV",
+    "PDF_CONVERT_TIMEOUT",
+    "PDF_FAST_CONVERTER",
+    "PDF_FAST_CONVERT_TIMEOUT",
+    "WIKIPEDIA_MAILTO",
+    "XDG_CONFIG_HOME",
+)
+
+# Authoritative, so no implicit candidate (project root, $PWD, XDG) is tried.
+_EMPTY_ENV_FILE = str(Path(__file__).parent / "empty.env")
+
+
+def _scrub_environment() -> None:
+    """Clear operator configuration out of ``os.environ``, before any import.
+
+    ``config`` loads the operator's real ``.env`` into ``os.environ`` when it
+    is imported, so without this the suite's behaviour depends on whose
+    machine it runs on: ``ENABLE_DEBUG_TOOLS=1`` — which the project's own
+    docs tell operators to set — registers a tool ``TestDebugToolsGating``
+    asserts is absent.
+    """
+    for name in _CONFIG_ENV_VARS:
+        os.environ.pop(name, None)
+    os.environ["ACADEMIC_TOOLS_ENV_FILE"] = _EMPTY_ENV_FILE
+
+
+_scrub_environment()
 
 _PACKAGE_PREFIX = "academic_tools_mcp."
 
@@ -31,6 +82,27 @@ def _imported_package_modules() -> Iterator[ModuleType]:
     for name, module in list(sys.modules.items()):
         if name.startswith(_PACKAGE_PREFIX):
             yield module
+
+
+@pytest.fixture(autouse=True)
+def _scrub_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear operator configuration from the environment for every test.
+
+    ``_scrub_environment`` covers the settings read once at import; this covers
+    the ones re-read per call, where an ambient value makes a test depend on
+    whose machine it runs on: a developer's ``PDF_CONVERTER_VENV`` prepends
+    ``source … &&`` to the converter command and changes how the shell parses
+    the rest of it. It also contains leaks — ``load_dotenv`` writes straight to
+    ``os.environ``, behind monkeypatch's back, so a test that reloads
+    ``config`` would otherwise poison every test after it.
+
+    ``ACADEMIC_TOOLS_ENV_FILE`` is re-*set* rather than deleted: deleting it
+    would re-admit the operator's real ``.env`` on any reload of ``config``,
+    which is exactly what ``test_config.py`` does repeatedly.
+    """
+    for name in _CONFIG_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ACADEMIC_TOOLS_ENV_FILE", _EMPTY_ENV_FILE)
 
 
 @pytest.fixture(autouse=True)

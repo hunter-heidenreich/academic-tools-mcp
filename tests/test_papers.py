@@ -1295,6 +1295,16 @@ class TestResolveConvertTimeout:
         with self._env("not-a-number"):
             assert _resolve_convert_timeout() == _DEFAULT_PDF_CONVERT_TIMEOUT
 
+    def test_non_finite_falls_back_to_default(self):
+        """``float("nan")`` is neither ``> 0`` nor ``<= 0``.
+
+        It slipped past both branches and reached ``asyncio.wait_for`` as a
+        deadline no elapsed time can ever satisfy.
+        """
+        for word in ("nan", "inf", "-inf"):
+            with self._env(word):
+                assert _resolve_convert_timeout() == _DEFAULT_PDF_CONVERT_TIMEOUT, word
+
 
 # ---------------------------------------------------------------------------
 # _build_fast_converter_command

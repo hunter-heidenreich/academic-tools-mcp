@@ -77,6 +77,11 @@ class TestResolveMaxPdfBytes:
         monkeypatch.setenv("MAX_PDF_BYTES", negative)
         assert _pdf_download.resolve_max_pdf_bytes() == _pdf_download._DEFAULT_MAX_PDF_BYTES
 
+    @pytest.mark.parametrize("raw", ["inf", "nan"])
+    def test_non_finite_does_not_disable_the_guard(self, monkeypatch, raw):
+        monkeypatch.setenv("MAX_PDF_BYTES", raw)
+        assert _pdf_download.resolve_max_pdf_bytes() == _pdf_download._DEFAULT_MAX_PDF_BYTES
+
 
 class TestStreamToFile:
     @pytest.mark.asyncio

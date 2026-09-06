@@ -87,8 +87,9 @@ class TestContactNormalization:
         assert "mailto:" not in _useragent.build(value)
 
     def test_surrounding_whitespace_is_stripped(self):
-        # config.get does not strip, unlike config.flag -- a .env line with a
-        # trailing space is a typo, not a request for a padded header.
+        # Belt and braces: config.get already strips, but normalize_mailto
+        # takes contacts from callers too, and a padded one is a typo rather
+        # than a request for a padded header.
         assert _useragent.build("  me@x.org  ").endswith("; mailto:me@x.org)")
 
     @pytest.mark.parametrize(

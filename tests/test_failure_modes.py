@@ -107,12 +107,8 @@ class TestConverterSubprocessPlumbing:
     @pytest.fixture
     def pdf(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-        # The suite loads the operator's real .env, so PDF_CONVERTER_VENV can
-        # be set on a developer machine and prepends `source ... &&` to the
-        # command. That changes the shell's parse and made these tests depend
-        # on whose machine they ran on.
-        monkeypatch.delenv("PDF_CONVERTER_VENV", raising=False)
-        monkeypatch.delenv("PDF_CONVERT_TIMEOUT", raising=False)
+        # PDF_CONVERTER_VENV / PDF_CONVERT_TIMEOUT are cleared by conftest's
+        # `_scrub_config_env`, not here.
         p = tmp_path / "paper.pdf"
         p.write_bytes(b"%PDF-1.4\n")
         return p

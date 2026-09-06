@@ -85,15 +85,19 @@ def throttles() -> Iterator["Throttle"]:
 def snapshot() -> dict[str, Any]:
     """Return the counters plus a live in-flight sample.
 
-    ``{"providers": {<namespace>: {<counter>: int}}}``. ``cache_hits`` and
-    ``negative_hits`` count lookups served from disk; ``cache_misses`` counts
-    lookups that went upstream, booked at the fetch, so the three series
-    partition served lookups rather than overlapping. Alongside them:
-    ``http_calls``, ``http_retries``, ``backpressure_refusals`` and
-    ``cache_write_failures``,
-    cumulative since process start (or the last ``reset()``), plus an
-    ``in_flight`` sampled live and summed over every ``Throttle`` the namespace
-    owns. Rows are copies, so mutating the result cannot corrupt the counters.
+    ``{"providers": {<namespace>: {<counter>: int}}, "env_file": str | None}``.
+
+    ``env_file`` names the ``.env`` that won at import, or None if none did —
+    the one way an operator can tell which file their settings came from.
+
+    ``cache_hits`` and ``negative_hits`` count lookups served from disk;
+    ``cache_misses`` counts lookups that went upstream, booked at the fetch,
+    so the three series partition served lookups rather than overlapping.
+    Alongside them: ``http_calls``, ``http_retries``, ``backpressure_refusals``
+    and ``cache_write_failures``, cumulative since process start (or the last
+    ``reset()``), plus an ``in_flight`` sampled live and summed over every
+    ``Throttle`` the namespace owns. Rows are copies, so mutating the result
+    cannot corrupt the counters.
     """
     out: dict[str, dict[str, int]] = {
         provider: dict(metrics) for provider, metrics in list(_counters.items())
@@ -104,7 +108,10 @@ def snapshot() -> dict[str, Any]:
         row = out.setdefault(throttle.namespace, {})
         row["in_flight"] = row.get("in_flight", 0) + throttle.pending
 
-    return {"providers": out}
+    return {
+        "providers": out,
+        "env_file": str(config.ENV_FILE) if config.ENV_FILE else None,
+    }
 
 
 def reset() -> None:
