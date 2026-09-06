@@ -540,18 +540,14 @@ def _fts_query(query: str) -> str:
 def _snippet_terms(query: str, *, normalize: bool) -> set[str]:
     """Terms used to centre the snippet on the best-matching passage.
 
-    The union of two views of the query, because neither alone is enough for
-    ``_extract_snippet``'s word-boundary scan: ``_content_tokens`` strips
-    punctuation a raw word would carry in ("transformer." never matches), while
-    the raw words keep what its ASCII-only pattern mangles ("Gutiérrez"). With
-    only one, a hit the index found comes back centred on the document head and
-    with no section — unnavigable.
+    Two views, because neither alone survives ``_extract_snippet``'s
+    word-boundary scan: ``_content_tokens`` strips punctuation a raw word
+    carries in ("transformer." never matches), and the raw words keep what its
+    ASCII-only pattern mangles ("Gutiérrez" into "guti"/"rrez").
     """
-    terms = _content_tokens(query, normalize=normalize)
-    terms.update(
+    return _content_tokens(query, normalize=normalize) | {
         (_textnorm.fold(word) if normalize else word).lower() for word in _query_words(query)
-    )
-    return terms
+    }
 
 
 def search(
