@@ -1078,6 +1078,60 @@ class TestIndexFailuresAreNotSilent:
         assert "force_refresh" in result["suggestion"]
         assert "result_count" not in result
 
+    def test_a_locked_index_is_raised_not_deleted(self, isolated_cache, monkeypatch):
+        """A healthy database that is merely busy must survive the encounter.
+
+        `sqlite3.OperationalError` is a subclass of `sqlite3.DatabaseError`, so
+        the corruption handler used to catch "database is locked" and answer it
+        by unlinking the index — destroying a good file over a condition that
+        clears on its own, and swallowing the very signal `search` raises so an
+        agent never reads a busy index as "no paper mentions this".
+
+        Driven at the seam: a real lock takes sqlite3's 5s busy timeout to
+        surface, which is half again the whole suite's runtime.
+        """
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        cache_search.search("attention")
+        db = cache_search._index_path()
+        before = db.read_bytes()
+
+        def busy(path):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(cache_search, "_open", busy)
+        with pytest.raises(sqlite3.OperationalError):
+            cache_search._connect()
+
+        assert db.read_bytes() == before, "a locked index must not be discarded"
+
+    def test_a_corrupt_index_is_still_discarded(self, isolated_cache):
+        # The other half of the same branch: not a database at all, so there is
+        # nothing to preserve and rebuilding is the only way to answer at all.
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+        cache_search.search("attention")
+        cache_search._index_path().write_bytes(b"not a database")
+
+        assert len(cache_search.search("attention")) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_uncreatable_index_directory_is_reported(self, isolated_cache, monkeypatch):
+        """`_connect` mkdirs, and mkdir raises OSError — not an sqlite3.Error.
+
+        A read-only cache root would otherwise escape the tool's envelope as an
+        unhandled exception rather than the documented {error} shape.
+        """
+        _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
+
+        def unwritable(*args, **kwargs):
+            raise PermissionError("read-only file system")
+
+        monkeypatch.setattr(Path, "mkdir", unwritable)
+        result = await server.search_cached_papers("attention")
+
+        assert "error" in result
+        assert result["retryable"] is True
+        assert "result_count" not in result
+
     def test_a_non_integer_schema_version_rebuilds(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
         cache_search.search("attention")

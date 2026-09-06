@@ -429,11 +429,12 @@ async def search_cached_papers(
 
     try:
         results, skipped = await asyncio.to_thread(_search_and_diagnose)
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError) as exc:
         # The index is derived state, so a read failure is recoverable — but
         # it must never come back as "no paper mentions this". `_connect`
-        # already rebuilds a corrupt file; what reaches here is a locked or
-        # unwritable database.
+        # already rebuilds a corrupt file; what reaches here is a locked
+        # database, or a cache directory that cannot be created or read
+        # (OSError, which is not an sqlite3.Error).
         return {
             "error": f"The local search index could not be read: {exc}",
             "retryable": True,

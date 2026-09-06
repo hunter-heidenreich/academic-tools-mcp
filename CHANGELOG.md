@@ -440,6 +440,16 @@ grouped by milestone rather than per commit.
   six significant figures; real-corpus scores (0.9–4) render identically.
   ([#86])
 
+- **A busy search index is no longer deleted.** `_connect` treats a database it
+  cannot open as corrupt and unlinks it, which is right for "file is not a
+  database" — but `sqlite3.OperationalError` is a *subclass* of
+  `sqlite3.DatabaseError`, so the same handler caught "database is locked" and
+  answered a healthy, momentarily busy index by destroying it. It now re-raises
+  the operational cases and discards only genuine corruption. `search_cached_papers`
+  also catches `OSError`, which `sqlite3.Error` does not cover: a cache
+  directory that cannot be created escaped the error envelope entirely.
+  ([#86])
+
 - **A search index that cannot be read is reported, not answered as an empty
   corpus.** `search` wrapped its query in `except sqlite3.OperationalError:
   return []`, written for FTS5 syntax errors — but every query word is a quoted

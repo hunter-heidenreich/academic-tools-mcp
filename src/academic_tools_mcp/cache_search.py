@@ -297,9 +297,14 @@ def _connect() -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         return _open(path)
+    except sqlite3.OperationalError:
+        # "database is locked", "unable to open" — the file is fine and the
+        # condition may clear. Deleting a healthy index over it would be both
+        # destructive and the silence `search` raises to avoid.
+        raise
     except sqlite3.DatabaseError:
-        # Not a database, or corrupt. The index is derived state — rebuilt
-        # from the markdown on the next refresh — so discard and start over
+        # Not a database, or malformed. The index is derived state, rebuilt
+        # from the markdown on the next refresh, so discard and start over
         # rather than failing every search.
         for suffix in ("", "-wal", "-shm"):
             with contextlib.suppress(OSError):
