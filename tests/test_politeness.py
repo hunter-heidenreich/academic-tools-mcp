@@ -6,33 +6,47 @@ and that an explicit server-side back-off instruction is obeyed in either
 form RFC 9110 permits.
 """
 
+import importlib
+import pkgutil
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
 import httpx
 import pytest
 
-from academic_tools_mcp import _http, _useragent, oa_download
-from academic_tools_mcp.providers import (
-    acl_anthology,
-    arxiv,
-    biorxiv,
-    crossref,
-    openalex,
-    opencitations,
-    wikipedia,
-)
+import academic_tools_mcp
+from academic_tools_mcp import _http, oa_download
+from academic_tools_mcp.providers import crossref
 
-_ALL_CLIENTS = [
-    ("arxiv", arxiv),
-    ("openalex", openalex),
-    ("crossref", crossref),
-    ("wikipedia", wikipedia),
-    ("biorxiv", biorxiv),
-    ("opencitations", opencitations),
-    ("acl_anthology", acl_anthology),
-    ("oa_download", oa_download),
-]
+
+def _discover_clients():
+    """Every module holding a pooled outbound client, found by import scan.
+
+    Deliberately not a hand-maintained list, for the reason ``_stats.throttles``
+    is not one: a new provider is covered the moment it exists, with no second
+    roster to keep in sync. A module qualifies by holding both a ``_get_client``
+    and a ``_throttle`` -- the pair every outbound client has.
+    """
+    found = []
+    for info in pkgutil.walk_packages(
+        academic_tools_mcp.__path__, f"{academic_tools_mcp.__name__}."
+    ):
+        module = importlib.import_module(info.name)
+        if hasattr(module, "_get_client") and hasattr(module, "_throttle"):
+            found.append((info.name.rsplit(".", 1)[-1], module))
+    return sorted(found, key=lambda entry: entry[0])
+
+
+_ALL_CLIENTS = _discover_clients()
+
+
+def test_every_client_module_was_discovered():
+    # Guards the scan itself: if it silently found nothing, every
+    # parametrized politeness check below would vacuously pass.
+    names = [name for name, _ in _ALL_CLIENTS]
+    assert "oa_download" in names
+    assert {"arxiv", "openalex", "crossref", "wikipedia"} <= set(names)
+    assert len(names) == len(set(names))
 
 
 class TestEveryProviderIdentifiesItself:
@@ -52,19 +66,6 @@ class TestEveryProviderIdentifiesItself:
         # which does not exist — defeating the purpose of a contact URL.
         ua = module._get_client().headers.get("user-agent", "")
         assert "github.com/hunter-heidenreich/academic-tools-mcp" in ua
-
-    def test_version_is_the_real_package_version(self):
-        # Was hardcoded "1.0" against a calendar-versioned package.
-        assert "/1.0 (" not in _useragent.build()
-        assert _useragent.package_version() in _useragent.build()
-
-    def test_mailto_is_appended_when_configured(self):
-        assert "mailto:me@example.org" in _useragent.build("me@example.org")
-
-    def test_agent_is_descriptive_even_without_mailto(self):
-        ua = _useragent.build(None)
-        assert ua.startswith("academic-tools-mcp/")
-        assert "mailto:" not in ua
 
 
 class TestCrossrefPoolSelection:

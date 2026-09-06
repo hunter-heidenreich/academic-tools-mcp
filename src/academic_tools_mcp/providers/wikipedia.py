@@ -35,15 +35,6 @@ def _parse_error_dict() -> dict[str, Any]:
     return _http.parse_error_dict("Wikipedia")
 
 
-def _build_user_agent() -> str:
-    """Build the Wikimedia-policy User-Agent from ``WIKIPEDIA_MAILTO``.
-
-    Wikimedia's User-Agent policy asks for a descriptive agent with a way to
-    contact the operator; the shared builder emits exactly that shape.
-    """
-    return _useragent.build(config.get("WIKIPEDIA_MAILTO"))
-
-
 # Rate limiting: ~1 req/sec (well within 1,000 req/hour reader tier).
 # Concurrency cap of 2 lets a search + summary lookup overlap; gap of
 # 1s keeps the sustained rate under the per-hour budget. Gating lives
@@ -61,9 +52,13 @@ _single_flight = _singleflight.SingleFlight()
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
-def _headers() -> dict[str, str]:
-    """Standard headers for Wikipedia API requests."""
-    return {"User-Agent": _build_user_agent()}
+def _build_headers() -> dict[str, str]:
+    """Build request headers from ``WIKIPEDIA_MAILTO``.
+
+    Wikimedia's User-Agent policy asks for a descriptive agent with a way to
+    contact the operator; the shared builder emits exactly that shape.
+    """
+    return _useragent.headers(config.get("WIKIPEDIA_MAILTO"))
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -72,7 +67,7 @@ def _get_client() -> httpx.AsyncClient:
     The User-Agent header (with mailto when configured) is baked in at
     construction so every call meets Wikimedia's identification policy.
     """
-    return _clients.get_client(NAMESPACE, headers=_headers(), timeout=15.0)
+    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=15.0)
 
 
 _throttle = Throttle(

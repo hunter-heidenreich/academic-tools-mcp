@@ -17,6 +17,15 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Property and unit tests for the shared `User-Agent`.** `tests/test_useragent.py`
+  covers the agent's shape, the distribution-metadata version source and its
+  not-installed fallback, and every malformed-contact case; three `hypothesis`
+  properties pin that the agent is always a safe header value, always one
+  balanced comment, and that contact normalization is idempotent. Politeness
+  coverage now discovers client modules by import scan instead of a
+  hand-maintained roster, so a new provider is guarded the moment it exists
+  ([#84]).
+
 - **Property and boundary tests for the shared throttle, plus a policy clamp.**
   `Throttle`'s three invariants — starts for one key are never closer than
   `min_gap_seconds`, `pending` and peak concurrency stay inside their caps for
@@ -326,6 +335,19 @@ grouped by milestone rather than per commit.
   idempotent and never overwrites an existing file. ([#48])
 
 ### Fixed
+
+- **A malformed `*_MAILTO` no longer breaks every outbound request.** The
+  contact address is now scrubbed to printable ASCII minus parens and stripped
+  of a redundant `mailto:` prefix before it reaches the `User-Agent`. A stray
+  CRLF previously injected a header that `httpx` accepted at construction and
+  rejected at send time, degrading every request to a misleading "network
+  error" dict; a non-ASCII address raised `UnicodeEncodeError` inside `httpx`
+  at client construction, outside `HTTPX_ERRORS`, and crashed uncaught. A
+  whitespace-only value emitted a bare `mailto:` ([#84]).
+
+- **`package_version()` is cached.** Every provider's `_get_client` rebuilds its
+  headers per request, so the lookup ran an `importlib.metadata` `sys.path`
+  scan on every outbound call — ~90% of the cost of a pooled-client lookup — for a value that cannot change in-process ([#84]).
 
 - **The per-host prune no longer drops a host that is still owed a wait.** The
   age sweep bounding the last-start map is documented as semantics-preserving —
@@ -1683,3 +1705,4 @@ grouped by milestone rather than per commit.
 [#81]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/81
 [#82]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/82
 [#83]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/83
+[#84]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/84
