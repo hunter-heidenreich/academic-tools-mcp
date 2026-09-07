@@ -1,10 +1,7 @@
 """Thin async client for the Wikipedia API.
 
-Provides search and page summary/existence checking via:
-  - MediaWiki OpenSearch API for title matching
-  - Wikimedia REST API for page summaries and existence verification
-
-No authentication required. Rate-limited to ~1 req/sec as a courtesy.
+MediaWiki OpenSearch for title matching; the Wikimedia REST API for page
+summaries and existence verification. No authentication required.
 """
 
 from typing import Any
@@ -20,53 +17,36 @@ NAMESPACE = "wikipedia"
 _OPENSEARCH_URL = "https://en.wikipedia.org/w/api.php"
 _SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary"
 
-# Both Wikipedia endpoints return JSON; a malformed/truncated 200 body raises
-# ``json.JSONDecodeError`` on ``.json()``. Handled alongside the HTTP errors so
-# the tools always return the uniform ``{error}`` contract rather than crashing
-# on a garbled response. Mirrors crossref/openalex/opencitations.
 _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
-    """Fresh structured error for an unparseable Wikipedia response.
-
-    Delegates to ``_http.parse_error_dict``, the single home for the shape.
-    """
+    """Fresh structured error for an unparseable Wikipedia response."""
     return _http.parse_error_dict("Wikipedia")
 
 
-# Rate limiting: ~1 req/sec (well within 1,000 req/hour reader tier).
-# Concurrency cap of 2 lets a search + summary lookup overlap; gap of
-# 1s keeps the sustained rate under the per-hour budget. Gating lives
-# in ``_throttle``.
+# ~1 req/sec keeps the sustained rate well inside the 1,000/hour reader tier;
+# concurrency of 2 lets a search and a summary lookup overlap.
 _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 1.0
 _MAX_PENDING = 5
 
-# Coalesces concurrent get_summary calls for the same canonical title.
 _single_flight = _singleflight.SingleFlight()
 
-# Positive cache TTL. Wikipedia summaries change as articles are edited;
-# 30 days is long enough to amortise repeated reads in a session and
-# short enough that significant edits surface within a month.
+# Articles are edited continuously; a month bounds how stale a summary gets.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
 def _build_headers() -> dict[str, str]:
-    """Build request headers from ``WIKIPEDIA_MAILTO``.
-
-    Wikimedia's User-Agent policy asks for a descriptive agent with a way to
-    contact the operator; the shared builder emits exactly that shape.
-    """
+    """Headers from ``WIKIPEDIA_MAILTO``. Wikimedia's UA policy wants a contact."""
     return _useragent.headers(config.get("WIKIPEDIA_MAILTO"))
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the pooled AsyncClient for Wikipedia calls.
+    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``.
 
-    Configured here only: ``_clients.get_client`` ignores kwargs on every later
-    call for this namespace, so ``_build_headers`` runs here or nowhere — and
-    Wikimedia's identification policy makes it mandatory, not polite.
+    The headers are mandatory here, not polite: Wikimedia may block an
+    unidentified agent outright.
     """
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=15.0)
 
@@ -136,41 +116,25 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
 async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a page summary from the Wikipedia REST API.
 
-    Returns a dict with title, description, extract (plain text summary),
-    url, and page type. Returns an error dict if the page doesn't exist.
-    Concurrent callers for the same title share one fetch.
-
-    ``force_refresh=True`` drops both positive and negative cache entries
-    before fetching — parity with every other cached getter, useful when an
-    article has been edited since the cached 30-day-TTL fetch or to retry a
-    title that previously 404'd.
+    Returns title, description, extract (plain text), url, and page type, or an
+    error dict if the page doesn't exist.
     """
-    # Normalize: spaces to underscores for the URL path
     url_title = title.strip().replace(" ", "_")
 
-    # Cache key. Wikipedia titles are case-SENSITIVE beyond the first
-    # character (only the leading letter is auto-capitalized), so "PET" and
-    # "Pet" are distinct articles — lowercasing the whole title would collide
-    # them and serve one's summary for the other. Fold only the first letter
-    # (matching MediaWiki's own title normalization) and preserve the rest.
+    # Only the leading letter is auto-capitalized, so "PET" and "Pet" are
+    # distinct articles: folding the whole title would serve one for the other.
     canonical = url_title[:1].upper() + url_title[1:]
 
     async def _fetch() -> dict[str, Any]:
         try:
             client = _get_client()
-            response = await _throttled_get(
-                client,
-                # Percent-encode the whole title segment (safe="" — a slash in
-                # a title like "AC/DC" is part of the title, not a path
-                # separator) so reserved chars (#, ?, /) can't truncate the
-                # request or split the path to the wrong record.
-                f"{_SUMMARY_URL}/{quote(url_title, safe='')}",
-            )
+            # safe="": a slash in a title like "AC/DC" is part of the title,
+            # not a path separator, so the whole segment is escaped.
+            response = await _throttled_get(client, f"{_SUMMARY_URL}/{quote(url_title, safe='')}")
 
             if response.status_code == 404:
-                # ``not_found: True`` distinguishes a definitive 404 from a
-                # transient error so page_exists can tell "doesn't exist" from
-                # "couldn't check". Mirrors openalex.get_work / get_author.
+                # The flag ``page_exists`` reads to tell "doesn't exist" from
+                # "couldn't check".
                 err = {"error": f"Wikipedia page not found: {title}", "not_found": True}
                 cache.put_negative(NAMESPACE, "summaries", canonical, err)
                 return err
@@ -183,8 +147,8 @@ async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, A
             return _http.error_dict("Wikipedia", e)
 
         if not isinstance(data, dict):
-            # Anomalous 200 whose body isn't a JSON object — treat like a parse
-            # failure rather than crashing the data.get(...) calls below.
+            # Wrong shape, not an empty page — the ``data.get`` calls below
+            # would crash on it, and it must never cache for the TTL.
             return _parse_error_dict()
 
         result = {
@@ -219,7 +183,6 @@ async def page_exists(title: str) -> dict[str, Any]:
     summary = await get_summary(title)
 
     if summary.get("not_found"):
-        # Definitive 404 — the page genuinely doesn't exist.
         return {
             "exists": False,
             "is_disambiguation": False,
@@ -227,9 +190,8 @@ async def page_exists(title: str) -> dict[str, Any]:
             "url": None,
         }
     if "error" in summary:
-        # Transient failure (timeout / 5xx / backpressure / parse). We can't
-        # conclude the page is missing — propagate the error as-is so the
-        # caller retries rather than dropping a valid link on a network blip.
+        # Transient: nothing was established, so propagate rather than report a
+        # network blip as confident non-existence.
         return summary
 
     return {
