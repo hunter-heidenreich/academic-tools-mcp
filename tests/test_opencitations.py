@@ -287,14 +287,9 @@ class TestGetCitationsForceRefresh:
 
 
 class TestNotFound:
-    """A 404 is the one branch that writes a *durable* negative entry.
-
-    It carries ``not_found: True`` as every sibling provider's 404 does.
-    ``tools/graph.py`` lists the key in ``_FORWARDED_ERROR_KEYS`` so an agent
-    can tell "OpenCitations has no edges for this DOI" from "OpenCitations was
-    briefly unreachable"; without the flag on either graph provider, that
-    documented signal could never appear on a response.
-    """
+    """The one branch writing a durable negative entry, and the only one that
+    can carry `not_found` — the flag tools/graph.py forwards so an agent can
+    tell "no edges for this DOI" from "OpenCitations was briefly unreachable"."""
 
     @pytest.mark.parametrize(
         ("fetch", "entity"),
@@ -312,8 +307,7 @@ class TestNotFound:
 
         assert entity in result["error"]
         assert result["not_found"] is True
-        # Definitive, so explicitly NOT retryable-flagged.
-        assert "retryable" not in result
+        assert "retryable" not in result  # definitive
 
     @pytest.mark.parametrize("fetch", [opencitations.get_references, opencitations.get_citations])
     @pytest.mark.asyncio
@@ -326,7 +320,7 @@ class TestNotFound:
 
         assert first == second
         assert second["not_found"] is True
-        assert recorder.count == 1  # served from the negative cache
+        assert recorder.count == 1
 
     @pytest.mark.asyncio
     async def test_the_two_directions_cache_separately(self, tmp_path, monkeypatch):
@@ -346,19 +340,14 @@ class TestNotFound:
 
 
 class TestTransportErrors:
-    """A network failure is transient and says nothing about the DOI.
-
-    It reaches the agent through the same ``{error, retryable}`` contract as an
-    unparseable body, and is never negative-cached — a timeout that filed a live
-    DOI as absent would hide its citation graph for the full negative TTL.
-    """
+    """A network failure says nothing about the DOI: same retryable contract as
+    an unparseable body, and never negative-cached."""
 
     @pytest.mark.parametrize("fetch", [opencitations.get_references, opencitations.get_citations])
     @pytest.mark.asyncio
     async def test_surfaces_a_retryable_error(self, tmp_path, monkeypatch, fetch):
         _reset_opencitations(monkeypatch, tmp_path)
-        # retry_attempts down to 1: otherwise the test pays get_with_retry's
-        # one-second backoff floor for a failure it is asserting on.
+        # One attempt, so no get_with_retry backoff sleep.
         monkeypatch.setattr(opencitations._throttle, "retry_attempts", 1)
 
         class StubClient:
