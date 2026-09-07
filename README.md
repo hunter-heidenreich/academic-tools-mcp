@@ -14,7 +14,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [ACL Anthology](https://aclanthology.org/) | PDF download for ACL venue papers (ACL, EMNLP, NAACL, etc.) | None |
 | [Crossref](https://www.crossref.org/) | Reference lists, title search / DOI discovery | Optional email (for polite pool) |
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
-| [Wikipedia](https://www.wikipedia.org/) | Article search, summaries, page existence checks | Optional email (for User-Agent) |
+| [Wikipedia](https://www.wikipedia.org/) | Article search, summaries | Optional email (for User-Agent) |
 
 All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry honouring `Retry-After`, and definitive 404s are negative-cached (24h; 1h for arXiv/bioRxiv, whose identifiers go live mid-session) so retry-happy agents don't burn rate budget on guaranteed misses.
 
@@ -169,7 +169,7 @@ After importing a PDF, use the unified pipeline tools (`convert_paper` → `get_
 | Tool | Description |
 |------|-------------|
 | `search_wikipedia` | Search for articles matching a query |
-| `get_wikipedia_summary` | Title, description, extract, URL, and page type (`standard` / `disambiguation`); errors if the page doesn't exist |
+| `get_wikipedia_summary` | Title, description, extract, URL, and page type (`standard` / `disambiguation`); errors with `not_found` if the page doesn't exist |
 
 ## PDF Pipeline
 

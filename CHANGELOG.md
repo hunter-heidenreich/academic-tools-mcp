@@ -70,6 +70,12 @@ grouped by milestone rather than per commit.
 
 ### Removed
 
+- **`wikipedia.page_exists()` is gone.** It was reachable from no tool and no
+  caller — `get_wikipedia_summary` already answers the same question, returning
+  `type` (`standard` / `disambiguation`), `url`, and `{error, not_found: True}`
+  on a definitive 404. The README no longer advertises "page existence checks"
+  as a Wikipedia capability. ([#100])
+
 - **`papers.HEADING_PATTERN` and `papers.SECTION_LEVELS`.** Both were exported
   so `cache_search` could share the heading grammar; it now delegates
   `first_section_heading()` instead, which is stronger, and neither symbol had
@@ -77,6 +83,36 @@ grouped by milestone rather than per commit.
   `_SECTION_LEVELS`. ([#93])
 
 ### Fixed
+
+- **A Wikipedia title of `.` or `..` no longer caches the REST API's endpoint
+  listing as that article's summary.** Both characters are unreserved, so
+  percent-encoding leaves them and RFC 3986 then *removes* the path segment:
+  `get_wikipedia_summary("..")` requested `/api/rest_v1/page`, whose 200 is a
+  dict and so cleared the shape guard, and the result was cached as the
+  article for the full 30-day TTL. An all-whitespace title emptied the segment
+  for the same effect. Both are now refused before the request is spent, with
+  the same `not_found` a genuine 404 returns. ([#100])
+
+- **`search_wikipedia` now reports a malformed response as retryable instead of
+  as "no articles found".** A body that isn't the 4-element OpenSearch array
+  returned `{"results": []}`, which reads to an agent as a definitive answer
+  and ends its search. Two further shapes are now caught rather than
+  misparsed: a string where a list of titles or URLs belongs (which zipped into
+  per-character "hits" an agent would chain the next tool call onto), and
+  non-string entries inside otherwise valid lists, which are dropped. ([#100])
+
+- **A Wikipedia summary whose `content_urls` has an unexpected shape no longer
+  crashes the tool.** A non-dict at either level raised `AttributeError` — an
+  exception neither the parse nor the transport handler catches — so it reached
+  the agent as a traceback rather than a response. The `url` field now degrades
+  to `""`. ([#100])
+
+- **Every spacing of one Wikipedia title is now one cache entry.**
+  `"Cytochrome P450"`, `"Cytochrome_P450"` and `"Cytochrome  P450"` are one
+  article to MediaWiki, which collapses runs of spaces and underscores alike;
+  they were three cache entries and three requests. Relatedly, a title starting
+  with `ß` asked upstream for the wrong article: Python's `upper()` expands it
+  to `SS`. ([#100])
 
 - **A DOI containing a `.` or `..` path segment no longer fetches — and caches —
   a different record.** Both characters are unreserved, so percent-encoding
@@ -2380,3 +2416,4 @@ grouped by milestone rather than per commit.
 [#97]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/97
 [#98]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/98
 [#99]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/99
+[#100]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/100
