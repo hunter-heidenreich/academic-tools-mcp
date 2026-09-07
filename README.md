@@ -24,6 +24,7 @@ These are properties of the upstream providers rather than of this server, which
 
 - **Diacritics are dropped or mangled** in OpenAlex author names (`Alan Aspuru-Guzik` for `Alán Aspuru-Guzik`). Verify spellings against the publisher's page before quoting a name.
 - **Affiliations are current, not paper-time.** OpenAlex reports where an author works *now*, not where they were when the paper was published — the gap widens for older papers.
+- **A zero from OpenCitations is not a claim of absence.** OpenCitations answers a DOI it has never indexed and a DOI it indexed with zero edges identically — an empty list — so `get_paper_references(source="opencitations")` and `get_paper_citations` returning `total: 0` mean "no edges in this index", not "this paper has no references or citations". Cross-check against Crossref (`get_paper_references_count` reports both).
 - **Preprint and published author lists diverge.** arXiv and the published DOI can list different author sets for the same work. `get_paper_metadata(doi, follow_published=True)` chains a bioRxiv preprint to its journal version, but only once OpenAlex has indexed that version; until then the response carries `followed_published: false` so you can tell you are looking at preprint-era metadata.
 
 ## Setup

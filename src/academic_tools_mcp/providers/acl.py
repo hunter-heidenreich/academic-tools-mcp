@@ -11,39 +11,26 @@ import httpx
 from .. import _clients, _doi, _pdf_download, _singleflight, _stems, _useragent, cache
 from .._throttle import Throttle
 
-# Deliberately not "acl": this is the cache *directory* name and the value an
-# agent passes to `search_cached_papers(namespace=...)`. Folding it to match the
-# module name orphans every cached ACL artifact — it needs a sweep, not an edit.
+# Not "acl": this is the cache *directory* name, so renaming it needs a sweep.
 NAMESPACE = "acl_anthology"
 
-# ACL Anthology DOI prefix — all ACL venue papers use this. Exported for the
-# reason ``_doi`` exports ``REGISTRANT_PATTERN``: ``cache_search`` inverts a
-# stored filename stem and needs the prefix rather than the function, and a
-# second spelling would let the two disagree about what an ACL DOI is.
+# Exported: ``cache_search`` inverts a stored stem with this same prefix.
 ACL_DOI_PREFIX = "10.18653/v1/"
 
 # PDF downloads are larger than a metadata call; use a generous timeout.
 _PDF_TIMEOUT_SECONDS = 60.0
 
-# Pooled client + canonical throttle shape. ACL Anthology has no documented
-# rate limit so the gap is zero, but the burst cap, retry plumbing, and
-# pooled connection still apply — same robustness primitives every other
-# provider gets, just without the per-second pacing. Concurrency cap of 4 —
-# it's a static-file CDN, so we let multiple PDF downloads run in parallel; the
-# burst cap still applies past _MAX_PENDING. The gating lives in ``_throttle``.
+# No documented rate limit, hence no gap. A static-file CDN, so 4 PDF
+# downloads may stream at once; the burst cap still applies past _MAX_PENDING.
 _MAX_CONCURRENT = 4
 _MIN_REQUEST_GAP = 0.0
 _MAX_PENDING = 5
 
-# Definitive download failures are negative-cached so a retrying agent doesn't
-# re-hit the CDN on every call. 24h: these are static camera-ready files, so a
-# 404 means the Anthology ID is wrong or the paper is not posted yet — neither
-# resolves in minutes, unlike the preprint servers' 1h.
+# 24h, not the preprint servers' 1h: a camera-ready file is static, so a 404
+# means a wrong ID or a paper not posted yet — neither resolves in minutes.
 _NEG_ENTITY = "downloads"
 _NEG_TTL_SECONDS = 24 * 60 * 60
 
-# Coalesces concurrent download_pdf calls for the same paper so two
-# tools racing for the same PDF don't both fetch it.
 _single_flight = _singleflight.SingleFlight()
 
 _throttle = Throttle(
@@ -56,12 +43,7 @@ _throttle = Throttle(
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the pooled AsyncClient for ACL Anthology calls.
-
-    Configured here only: ``_clients.get_client`` ignores kwargs on every later
-    call for this namespace, so the UA and ``_PDF_TIMEOUT_SECONDS`` are set here
-    or not at all. PDF-only client, so the download timeout is the default.
-    """
+    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``."""
     return _clients.get_client(
         NAMESPACE, headers=_useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS
     )
@@ -70,8 +52,7 @@ def _get_client() -> httpx.AsyncClient:
 def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
     """ACL Anthology's rate-limit slot (see ``Throttle.slot``).
 
-    Kept module-level so the streaming PDF download's ``slot_factory`` lambda
-    and the test seam resolve a module attribute.
+    Module-level so ``slot_factory`` and the test seam resolve an attribute.
     """
     return _throttle.slot(url)
 
@@ -82,20 +63,11 @@ def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
 
 
 def _strip_acl_prefix(bare: str) -> str | None:
-    """Return the anthology-id suffix if ``bare`` carries the ACL prefix.
+    """Return the anthology-id suffix if ``bare`` carries the ACL prefix, else ``None``.
 
-    DOIs are officially case-insensitive, so the prefix is matched
-    case-insensitively (``10.18653/V1/...`` is just as valid as
-    ``10.18653/v1/...``). The prefix is fixed-length, so we lowercase only
-    the leading slice and cut at ``len(prefix)`` — the suffix is returned
-    untouched for ``_normalize_anthology_id`` to handle. Returns ``None``
-    when ``bare`` is not an ACL DOI.
-
-    An empty or whitespace-only suffix is rejected rather than returned: it
-    names no paper, and ``safe_stem`` maps it to an empty stem, so every
-    ``10.18653/v1/`` would cache as the same ``.pdf``. Rejecting it lets the
-    bare prefix fall through to the generic-DOI route, like any other
-    identifier no provider claims.
+    The prefix is matched case-insensitively (DOIs are), and the suffix comes
+    back untouched for ``_normalize_anthology_id``. An empty suffix is *not* an
+    ACL DOI: ``safe_stem("")`` would cache every ``10.18653/v1/`` as one ``.pdf``.
     """
     if bare[: len(ACL_DOI_PREFIX)].lower() != ACL_DOI_PREFIX:
         return None
@@ -121,20 +93,16 @@ def canonical_key(doi: str) -> str:
     return _doi.canonical(doi)
 
 
-# Old-format Anthology IDs (pre-2020) are <LETTER><2-digit-year>-<digits>, e.g.
-# P16-1160, W04-1013, D14-1162. The aclanthology.org CDN serves them under a
-# case-sensitive path (P16-1160.pdf resolves, p16-1160.pdf 404s), but Crossref
-# hands these DOIs back lowercased. New-format IDs (YYYY.venue-track.n) are
-# lowercase and must stay untouched.
+# Pre-2020 IDs: <LETTER><2-digit-year>-<digits>, e.g. P16-1160, W04-1013.
 _OLD_FORMAT_ID_RE = re.compile(r"^[A-Za-z]\d{2}-\d+$")
 
 
 def _normalize_anthology_id(anthology_id: str) -> str:
     """Uppercase old-format Anthology IDs so the CDN URL resolves.
 
-    Old-format IDs (P16-1160) are case-sensitive on aclanthology.org; new-format
-    IDs (2023.acl-long.1) contain lowercase venue letters that must be preserved.
-    Old-format IDs are letter + digits only, so .upper() is safe for them.
+    The CDN is case-sensitive (``p16-1160.pdf`` 404s) and Crossref hands these
+    back lowercased. New-format IDs (``2023.acl-long.1``) carry lowercase venue
+    letters and must stay untouched.
     """
     if _OLD_FORMAT_ID_RE.match(anthology_id):
         return anthology_id.upper()
@@ -144,12 +112,9 @@ def _normalize_anthology_id(anthology_id: str) -> str:
 def doi_to_anthology_id(doi: str) -> str | None:
     """Extract an ACL Anthology ID from a DOI.
 
-    e.g., "10.18653/v1/2023.acl-long.1" -> "2023.acl-long.1"
-    Returns None if the DOI is not an ACL Anthology DOI.
-
-    The ID addresses the CDN and nothing on disk: every cached artifact keys on
-    ``canonical_key``, so this is the URL segment and the ``anthology_id``
-    provenance field only.
+    e.g., "10.18653/v1/2023.acl-long.1" -> "2023.acl-long.1"; ``None`` if the
+    DOI is not an ACL one. Invariant: the ID addresses the CDN and names nothing
+    on disk — every cached artifact keys on ``canonical_key``.
     """
     suffix = _strip_acl_prefix(_normalize_doi(doi))
     if suffix is None:
@@ -160,10 +125,8 @@ def doi_to_anthology_id(doi: str) -> str | None:
 def pdf_url(anthology_id: str) -> str:
     """Build the direct PDF URL for an Anthology paper.
 
-    ``safe=""`` because an Anthology ID has no path structure: a stray ``/``,
-    ``?`` or ``#`` reaching here from a DOI suffix is part of the (bogus) id,
-    and left literal it would truncate the request to a different resource
-    than the one this function claims to name.
+    ``safe=""``: an Anthology ID has no path structure, so a stray ``/`` from a
+    bogus DOI suffix is an escape, not a separator.
     """
     return f"https://aclanthology.org/{quote(anthology_id, safe='')}.pdf"
 
@@ -176,9 +139,8 @@ def pdf_url(anthology_id: str) -> str:
 def pdf_path(doi: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet).
 
-    Raises ``ValueError`` for a non-ACL DOI rather than returning a sentinel
-    path: a path whose ``.exists()`` is truthy (e.g. ``/dev/null``) would let
-    a non-PDF slip past ``convert_paper``'s existence guard.
+    Raises ``ValueError`` for a non-ACL DOI rather than returning a sentinel: a
+    path whose ``.exists()`` is truthy slips a non-PDF past ``convert_paper``.
     """
     if not is_acl_doi(doi):
         raise ValueError(f"Not an ACL Anthology DOI: {doi}")
@@ -188,14 +150,10 @@ def pdf_path(doi: str) -> Path:
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Download the PDF for an ACL Anthology paper and cache it locally.
 
-    ``force_refresh=True`` re-downloads and atomically replaces the
-    cached PDF. The Anthology occasionally re-issues camera-ready PDFs at
-    the same URL, so this is the escape hatch when the cached file is
-    wrong. The existing cached file is kept if the re-download fails, so a
-    flaky network can't leave you worse off than before.
-
-    Returns a dict with the file path and size, or an error. Concurrent
-    callers for the same DOI share one fetch via single-flight.
+    Returns the file path and size, or an error. ``force_refresh=True``
+    re-downloads and atomically replaces the cached PDF — the Anthology
+    occasionally re-issues a camera-ready at the same URL — keeping the
+    existing file if the re-download fails.
     """
     aid = doi_to_anthology_id(doi)
     if aid is None:
@@ -217,10 +175,8 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             not_found_message=f"PDF not found on ACL Anthology for: {aid}",
         )
 
-    # ``extra_fields`` puts the ACL provenance on the cached hit and the fresh
-    # success alike. The two branches used to be hand-copied blocks that also
-    # called ``dest.stat()`` outside any try, so a concurrent unlink between
-    # the usability check and the stat raised OSError out of this function.
+    # ``extra_fields`` puts the ACL provenance on a cached hit and a fresh
+    # success alike, without this function restating either branch.
     return await _pdf_download.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
@@ -238,22 +194,17 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
 # Startup migration
 # ---------------------------------------------------------------------------
 
-# What a canonical-keyed PDF's filename starts with. Derived from the prefix
-# rather than spelled out, so it cannot drift from what ``pdf_path`` writes —
-# the same identity ``cache_search`` inverts a stored ACL stem with.
+# Derived, never spelled out, so it cannot drift from what ``pdf_path`` writes.
 _CANONICAL_STEM_PREFIX = _stems.safe_stem(ACL_DOI_PREFIX)
 
 
 def migrate_legacy_pdf_stems() -> int:
     """Re-file cached PDFs named after the Anthology ID, not the canonical key.
 
-    Only ``pdfs/`` moves: markdown and the section index have always keyed on
-    ``canonical_key``, which is why ``cache_search`` can invert an ACL stem at
-    all. Returns the number of files moved.
-
-    Run once at startup, idempotent and best-effort like
-    ``papers.migrate_legacy_stems`` — a file it can't rename is left for the
-    next run, and nothing here may raise out of the lifespan.
+    Only ``pdfs/`` moves; markdown and sections were always canonical-keyed.
+    Run at startup, so idempotent and best-effort like
+    ``papers.migrate_legacy_stems``: nothing here may raise out of the lifespan.
+    Returns the number of files moved.
     """
     moved = 0
     pdf_dir = cache.cache_dir(NAMESPACE, "pdfs")

@@ -3,7 +3,7 @@
 import asyncio
 import re
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import httpx
 
@@ -150,21 +150,6 @@ def canonical_author_id(author_id: str) -> str:
     return _normalize_author_id(author_id).lower()
 
 
-def _addresses_an_entity(url: str) -> bool:
-    """Whether ``url``'s path still names the record it was built for.
-
-    Neither failure is one ``quote`` can prevent: a ``.``/``..`` segment is
-    *removed* after encoding, and an identifier that normalized to nothing
-    stops at the collection. Both fetch a shorter, existing path instead.
-    """
-    path = urlsplit(url).path
-    if not path or path.endswith("/"):
-        return False
-    # On the *encoded* path: RFC 3986 removes a literal `.`/`..` segment before
-    # percent-decoding, so an escaped `%2E` is a normal segment and is fine.
-    return not any(segment in (".", "..") for segment in path.split("/"))
-
-
 async def _fetch_singleton(
     *,
     entity: str,
@@ -179,7 +164,7 @@ async def _fetch_singleton(
     transient failures cannot drift between them. The caller owns the URL and
     its ``quote`` policy, the canonical key, the wording and the ``sf_key``.
     """
-    if not _addresses_an_entity(url):
+    if not _http.addresses_a_record(url):
         # Definitively a bad identifier, and refused before it is spent
         # upstream — as ``acl._strip_acl_prefix`` refuses an empty suffix.
         return {"error": not_found_error, "not_found": True}

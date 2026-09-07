@@ -78,6 +78,23 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A DOI containing a `.` or `..` path segment no longer fetches — and caches —
+  a different record.** Both characters are unreserved, so percent-encoding
+  cannot escape them, and RFC 3986 removes the segment *after* encoding: a
+  reference lookup for `10.1038/a/..` asked OpenCitations about `10.1038` and
+  cached its (empty) answer as the requested DOI's references for the full
+  7-day TTL, and the same DOI shortened Crossref's path to the `/works`
+  collection, whose work-*list* passed every shape check and cached as that
+  DOI's work. The four reference/citation tools, and
+  `get_paper_metadata(..., fallback_crossref=True)`, now reject these locally,
+  without a request. OpenCitations additionally rejects an identifier
+  that normalizes to nothing, which the shared guard cannot see past the `doi:`
+  scheme prefix. `biorxiv` and `wikipedia` have a lower-severity form of the
+  same gap, not addressed here. ([#99])
+- **An OpenCitations ID token with no value is no longer reported as one.**
+  A `"doi:"` token became `{"doi": ""}`, and the blank string reached the agent
+  flattened onto a reference/citation record, where it reads as a real
+  identifier to chain the next tool call onto. ([#99])
 - **An OpenAlex response of the wrong shape no longer crashes the tool that
   reads it.** Three values arrive from untyped JSON and were consumed where
   nothing above catches an `AttributeError`/`TypeError`, so a malformed record
@@ -2362,3 +2379,4 @@ grouped by milestone rather than per commit.
 [#96]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/96
 [#97]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/97
 [#98]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/98
+[#99]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/99

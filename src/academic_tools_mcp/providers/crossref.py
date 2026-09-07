@@ -224,22 +224,29 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """
     canonical = canonical_doi(doi)
 
+    not_found_error = f"No work found on Crossref for DOI: {doi}"
+
     async def _fetch() -> dict[str, Any]:
         bare_doi = _normalize_doi(doi)
+        # Percent-encoded so a reserved character can't truncate the request
+        # to the wrong record; the DOI's own slash stays literal.
+        url = f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}"
+
+        if not _http.addresses_a_record(url):
+            # A `.`/`..` segment shortens the path to the /works *collection*,
+            # whose 200 carries a work-list under a dict `message` — it clears
+            # the shape ladder below and would cache as this DOI's work.
+            # Refused before the request is spent, so nothing is cached.
+            return {"error": not_found_error, "not_found": True}
 
         try:
             client = _get_client()
-            response = await _throttled_get(
-                client,
-                # Percent-encoded so a reserved character can't truncate the
-                # request to the wrong record; the DOI's own slash stays literal.
-                f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}",
-            )
+            response = await _throttled_get(client, url)
 
             if response.status_code == 404:
                 # Definitive, hence both the negative entry and the flag
                 # tools/graph.py forwards.
-                err = {"error": f"No work found on Crossref for DOI: {doi}", "not_found": True}
+                err = {"error": not_found_error, "not_found": True}
                 cache.put_negative(NAMESPACE, "works", canonical, err)
                 return err
 

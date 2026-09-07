@@ -16,7 +16,7 @@ import pytest
 
 import academic_tools_mcp
 from academic_tools_mcp import _http, oa_download
-from academic_tools_mcp.providers import crossref
+from academic_tools_mcp.providers import crossref, opencitations
 
 
 def _discover_clients():
@@ -340,6 +340,18 @@ class TestOaDownloadPacesPerPublisher:
         # download). Making it per-host would let a 20-publisher walk open 40
         # parallel streams, however polite that is to each publisher.
         assert oa_download._MAX_CONCURRENT <= 4
+
+    def test_opencitations_honours_its_documented_rate(self):
+        # OpenCitations documents 180 requests/minute = 3/sec. The gap is the
+        # only thing enforcing it, and the number in the module is a comment
+        # rather than a derivation, so a hand-edit that widens it is silent.
+        assert opencitations._MIN_REQUEST_GAP >= 60.0 / 180.0
+
+    def test_opencitations_can_fetch_both_directions_at_once(self):
+        # The concurrency cap exists so a graph traversal's references and
+        # citations fetches overlap rather than serialise; below 2 they can't,
+        # and above it we exceed what the comment claims to be conservative.
+        assert opencitations._MAX_CONCURRENT == 2
 
     @pytest.mark.parametrize(
         ("name", "module"),

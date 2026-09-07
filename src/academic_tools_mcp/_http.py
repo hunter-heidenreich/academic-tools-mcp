@@ -31,6 +31,7 @@ import math
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -85,6 +86,24 @@ _MAX_RETRY_AFTER_SECONDS = 600.0  # 10 minutes
 # `get_with_retry` read it. An allowlist, not a 5xx range: a 501 Not
 # Implemented will not fix itself on retry.
 _RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def addresses_a_record(url: str) -> bool:
+    """Whether ``url``'s path still names the single record it was built for.
+
+    The request-side guard ``quote`` cannot be. A ``.``/``..`` segment is
+    *removed* by RFC 3986 resolution after percent-encoding — both characters
+    are unreserved, so no encoder escapes them — and an identifier that
+    normalized to nothing leaves the path at the collection. Either way the
+    request lands on a shorter, existing endpoint whose answer then caches
+    under the key we asked for.
+    """
+    path = urlsplit(url).path
+    if not path or path.endswith("/"):
+        return False
+    # On the *encoded* path: RFC 3986 removes a literal `.`/`..` segment before
+    # percent-decoding, so an escaped `%2E` is a normal segment and is fine.
+    return not any(segment in (".", "..") for segment in path.split("/"))
 
 
 def parse_error_dict(provider: str, *, detail: str = "could not be parsed") -> dict[str, Any]:

@@ -72,6 +72,17 @@ def _source_error(result: dict[str, Any]) -> dict[str, Any]:
     return {k: result[k] for k in _FORWARDED_ERROR_KEYS if k in result}
 
 
+def _crossref_refs(work: dict[str, Any]) -> list[Any]:
+    """A Crossref work's reference list, or ``[]``.
+
+    Type-checked, not just ``or``-defaulted: ``message`` being a dict is as far
+    as ``crossref.get_work``'s shape ladder reaches, so a string here would
+    ``len()`` to a character count and then slice character-wise.
+    """
+    refs = work.get("reference")
+    return refs if isinstance(refs, list) else []
+
+
 def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
     """Extract lean fields from a raw Crossref reference object."""
     entry: dict[str, Any] = {}
@@ -125,7 +136,7 @@ async def get_paper_references_count(
     if "error" in cr_result:
         sources["crossref"] = _source_error(cr_result)
     else:
-        sources["crossref"] = {"count": len(cr_result.get("reference") or [])}
+        sources["crossref"] = {"count": len(_crossref_refs(cr_result))}
 
     if "error" in oc_result:
         sources["opencitations"] = _source_error(oc_result)
@@ -135,40 +146,64 @@ async def get_paper_references_count(
     return {"doi": doi, "sources": sources}
 
 
+def _page(
+    entries: list[Any], *, source: str, key: str, doi: str, page: int, page_size: int
+) -> dict[str, Any]:
+    """The paginated-list response shape every graph tool returns.
+
+    One home for the slice arithmetic and the key set, so the references and
+    citations tools cannot drift apart on ``has_more`` or on which fields a
+    page carries. ``total`` is derived from the sliced list rather than from a
+    provider's own count field, because it is what ``has_more`` and the offsets
+    have to agree with.
+    """
+    total = len(entries)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        "_source": source,
+        "doi": doi,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < total,
+        key: entries[start:end],
+    }
+
+
 def _crossref_refs_page(
     work: dict[str, Any], doi: str, page: int, page_size: int
 ) -> dict[str, Any]:
-    raw_refs = work.get("reference") or []
-    total = len(raw_refs)
-    start = (page - 1) * page_size
-    end = start + page_size
-    return {
-        "_source": "crossref",
-        "doi": doi,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "has_more": end < total,
-        "references": [_format_crossref_reference(r) for r in raw_refs[start:end]],
-    }
+    result = _page(
+        _crossref_refs(work),
+        source="crossref",
+        key="references",
+        doi=doi,
+        page=page,
+        page_size=page_size,
+    )
+    result["references"] = [_format_crossref_reference(r) for r in result["references"]]
+    return result
 
 
-def _opencitations_refs_page(
-    data: dict[str, Any], doi: str, page: int, page_size: int
+def _opencitations_page(
+    data: dict[str, Any], doi: str, page: int, page_size: int, *, kind: str
 ) -> dict[str, Any]:
-    refs = data.get("references", [])
-    total = len(refs)
-    start = (page - 1) * page_size
-    end = start + page_size
-    return {
-        "_source": "opencitations",
-        "doi": doi,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "has_more": end < total,
-        "references": refs[start:end],
-    }
+    """One page of an OpenCitations payload, in either direction.
+
+    ``kind`` is the provider's own ``references`` / ``citations`` key — the two
+    directions differ by nothing else on this side either, which is what
+    ``opencitations._fetch_direction`` already parameterises upstream.
+    """
+    entries = data.get(kind)
+    return _page(
+        entries if isinstance(entries, list) else [],
+        source="opencitations",
+        key=kind,
+        doi=doi,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @mcp.tool
@@ -235,7 +270,7 @@ async def get_paper_references(
         data = await opencitations.get_references(doi, force_refresh=force_refresh)
         if "error" in data:
             return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
-        return _opencitations_refs_page(data, doi, page, page_size)
+        return _opencitations_page(data, doi, page, page_size, kind="references")
 
     # source == "auto": resolve the source on page 1 only. Pages 2..N must
     # pin the source returned on page 1 — re-surveying here could pick a
@@ -260,7 +295,7 @@ async def get_paper_references(
 
     cr_ok = "error" not in cr_work
     oc_ok = "error" not in oc_data
-    cr_count = len(cr_work.get("reference") or []) if cr_ok else -1
+    cr_count = len(_crossref_refs(cr_work)) if cr_ok else -1
     oc_count = oc_data.get("count", 0) if oc_ok else -1
 
     if not cr_ok and not oc_ok:
@@ -285,7 +320,7 @@ async def get_paper_references(
     # more references. When one source errored its count is -1, so the
     # surviving source wins automatically.
     if oc_count > cr_count * _CROSSREF_HYSTERESIS:
-        page_result = _opencitations_refs_page(oc_data, doi, page, page_size)
+        page_result = _opencitations_page(oc_data, doi, page, page_size, kind="references")
     else:
         page_result = _crossref_refs_page(cr_work, doi, page, page_size)
 
@@ -362,18 +397,4 @@ async def get_paper_citations(
     if "error" in data:
         return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
 
-    cites = data.get("citations", [])
-    total = len(cites)
-
-    start = (page - 1) * page_size
-    end = start + page_size
-
-    return {
-        "_source": "opencitations",
-        "doi": doi,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "has_more": end < total,
-        "citations": cites[start:end],
-    }
+    return _opencitations_page(data, doi, page, page_size, kind="citations")
