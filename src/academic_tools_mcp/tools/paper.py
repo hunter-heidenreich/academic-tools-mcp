@@ -25,12 +25,7 @@ from ..providers import arxiv, biorxiv, crossref, openalex
 
 
 def _canonical_for_source(source: manual.MetadataSource | None, identifier: str) -> str | None:
-    """Return the provider's canonical form of ``identifier``.
-
-    Echoed back to agents as ``_canonical_id`` on every metadata
-    response so callers can reuse the normalized form across subsequent
-    tool calls instead of re-normalizing input each time.
-    """
+    """The provider's canonical form of ``identifier``, echoed as ``_canonical_id``."""
     if source == "arxiv":
         return arxiv.canonical_arxiv_id(identifier)
     if source == "biorxiv":
@@ -51,6 +46,20 @@ def _unknown_identifier_error(identifier: str) -> dict[str, Any]:
     }
 
 
+# Shape guards for OpenAlex's verbatim tree: it nulls keys rather than dropping
+# them, and only the top-level ``id`` is checked upstream.
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """``value`` when it is a dict, else ``{}``."""
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    """The dict elements of ``value``, or ``[]`` when it isn't a list."""
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
 def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
     """Extract the PDF link from an arXiv entry's links list."""
     for link in paper.get("links", []):
@@ -67,9 +76,8 @@ _OPENALEX_METADATA_HINT = (
     "Check the DOI format or use search_crossref_by_title to find the correct DOI."
 )
 
-# Total over ``MetadataSource``: ``_enrich_error`` indexes it with whatever
-# ``resolve_metadata_source`` returned, on the error path, where a KeyError
-# would be least likely to be caught in review.
+# Total over ``MetadataSource``: indexed on the error path, where a KeyError
+# would surface late.
 _METADATA_HINT_BY_SOURCE: dict[manual.MetadataSource, str] = {
     "arxiv": _ARXIV_METADATA_HINT,
     "biorxiv": _BIORXIV_METADATA_HINT,
@@ -82,16 +90,10 @@ async def _fetch_source(
 ) -> tuple[manual.MetadataSource | None, str | None, dict[str, Any]]:
     """Resolve an identifier and fetch its raw provider object.
 
-    Centralizes the dispatch ritual the unified paper tools share: resolve the
-    source, compute the canonical id, fetch the raw upstream object. Returns
-    ``(source, canonical_id, obj)`` where ``obj`` is the provider's raw object
-    on success or its raw (un-enriched) error dict on failure. When no provider
-    matches, ``source`` is ``None`` and ``obj`` is the unknown-identifier error.
-
-    The error is left un-enriched so a caller that must branch on a
-    provider-specific error flag before attaching a suggestion can do so —
-    get_paper_metadata inspects OpenAlex's ``not_found`` for the Crossref
-    fallback. Simple callers enrich via ``_METADATA_HINT_BY_SOURCE[source]``.
+    Returns ``(source, canonical_id, obj)``; ``source`` is ``None`` and ``obj``
+    the unknown-identifier error when no provider claims it. ``obj`` keeps the
+    provider's *un-enriched* error so a caller can branch on a provider flag
+    first — get_paper_metadata reads ``not_found`` for the Crossref fallback.
     """
     source = manual.resolve_metadata_source(identifier)
     canonical_id = _canonical_for_source(source, identifier)
@@ -143,17 +145,16 @@ def _format_biorxiv_metadata(
         "published_doi": paper.get("published_doi"),
         "pdf_url": paper.get("pdf_url"),
     }
-    # Only surfaced when a follow_published chain was actually attempted; left
-    # absent otherwise so the default response shape is unchanged.
+    # Absent unless a chain was attempted, so the default shape is unchanged.
     if followed_published is not None:
         result["followed_published"] = followed_published
     return result
 
 
 def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
-    primary_location = work.get("primary_location") or {}
-    source_obj = primary_location.get("source") or {}
-    oa = work.get("open_access") or {}
+    primary_location = _as_dict(work.get("primary_location"))
+    source_obj = _as_dict(primary_location.get("source"))
+    oa = _as_dict(work.get("open_access"))
     return {
         "_source": "openalex",
         "_canonical_id": canonical_id,
@@ -177,18 +178,15 @@ def _format_openalex_via_biorxiv(
     base = _format_openalex_metadata(work, journal_canonical)
     base["_source"] = "openalex_via_biorxiv"
     base["preprint_doi"] = preprint_doi
-    # The chain succeeded — symmetric with the fall-through case, which sets
-    # followed_published=False on the preprint record.
-    base["followed_published"] = True
+    base["followed_published"] = True  # symmetric with the False on fall-through
     return base
 
 
 def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
-    """Format a raw Crossref work object into the unified metadata shape.
+    """Crossref work → the unified metadata shape.
 
-    Mirrors ``_format_openalex_metadata`` so callers branching on
-    ``_source`` see a near-identical key set, but Crossref carries no
-    open-access information — the OA fields are always null here.
+    Mirrors ``_format_openalex_metadata``'s key set; Crossref carries no
+    open-access data, so those fields are always null.
     """
     year, date = _crossref_date(work)
     return {
@@ -211,12 +209,10 @@ def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) ->
 def _format_metadata_by_source(
     source: manual.MetadataSource, obj: dict[str, Any], canonical_id: str | None
 ) -> dict[str, Any]:
-    """Dispatch a raw provider object to its per-source metadata formatter.
+    """Dispatch a raw provider object to its per-source formatter.
 
-    The plain (non-special-case) success path for both get_paper_metadata and
-    the get_papers_metadata batch closures, so the field mapping lives in one
-    place. ``source`` must be one of the three known providers — callers gate on
-    a successful ``_fetch_source`` before calling.
+    ``source`` must be one of the three providers; callers gate on a successful
+    ``_fetch_source``.
     """
     if source == "arxiv":
         return _format_arxiv_metadata(obj, canonical_id)
@@ -234,84 +230,54 @@ async def get_paper_metadata(
 ) -> dict[str, Any]:
     """Get core metadata for a paper, dispatched by identifier shape.
 
-    Every successful response carries ``_canonical_id`` — the provider's
-    normalized form of the identifier (lowercased DOI, version-stripped
-    arXiv ID, etc.) — so subsequent tool calls can reuse it instead of
-    re-normalizing whatever the user typed.
+    Returns ``{_source, _canonical_id, ...source-native fields}``, where
+    ``_canonical_id`` is the provider's normalized identifier — reuse it on
+    later calls instead of re-normalizing whatever the user typed.
 
-    Returns ``{_source, _canonical_id, ...source-native fields}``:
       - arxiv: arxiv_id, title, published, updated, primary_category,
         categories, pdf_url, doi, journal_ref, comment.
       - biorxiv: doi, title, date, version, type, category, license, server,
-        published_doi (chain to OpenAlex for the journal version), pdf_url.
-        When ``follow_published=True`` was requested but the OpenAlex lookup
-        on the journal version didn't return it, also carries
-        ``followed_published=False`` (preprint-era metadata for a paper that
-        *is* published). If that lookup failed *transiently* (5xx/timeout,
-        not a definitive 404), the fallback additionally carries
-        ``published_lookup_retryable=True`` so the agent can retry the chain
-        rather than assume the journal version is unindexed. The
-        ``followed_published`` field is absent when no chain was attempted
-        (``follow_published=False`` or no ``published_doi``).
+        published_doi, pdf_url. With ``follow_published=True`` and an OpenAlex
+        lookup that didn't return the journal version, also
+        ``followed_published=False`` — preprint-era metadata for a paper that
+        *is* published — plus ``published_lookup_retryable=True`` if that
+        lookup failed transiently (5xx/429/timeout). Both absent when no chain
+        was attempted.
       - openalex: title, doi, publication_year, publication_date, type,
-        language, venue, is_oa, oa_status, oa_url.
-      - openalex_via_biorxiv: identical to openalex, plus preprint_doi and
-        ``followed_published=True``. Only produced when ``follow_published=True``
-        for a bioRxiv DOI whose journal version is in OpenAlex.
-      - crossref: title, doi, publication_year, publication_date, type,
-        language, venue, plus null OA fields. Only produced when
-        ``fallback_crossref=True`` and OpenAlex 404s the DOI. Crossref
-        often indexes new DOIs before OpenAlex but carries no open-access
-        info (and get_paper_abstract has no Crossref path).
+        language, venue, is_oa, oa_status, oa_url, pdf_url.
+      - openalex_via_biorxiv: openalex's fields plus preprint_doi and
+        ``followed_published=True``. Only with ``follow_published=True`` on a
+        bioRxiv DOI whose journal version is in OpenAlex.
+      - crossref: openalex's fields with null OA. Only with
+        ``fallback_crossref=True`` when OpenAlex 404s the DOI; Crossref often
+        indexes new DOIs first but has no OA data and no abstract path.
 
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
-    Sibling tools (get_paper_authors / get_paper_abstract / get_paper_bibtex)
-    share the same dispatch and cached upstream object.
-
-    For many identifiers at once, use get_papers_metadata — it batches
-    OpenAlex DOIs into one HTTP call and fans out arXiv / bioRxiv
-    fetches concurrently.
+    Siblings get_paper_authors / _abstract / _bibtex share this dispatch and the
+    cached object. For many identifiers at once, use get_papers_metadata.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
         return obj  # unknown-identifier error
 
-    # bioRxiv → journal chaining (special case on a successful preprint record).
+    # bioRxiv → journal chaining, on a successful preprint record.
     if source == "biorxiv" and "error" not in obj:
         published_doi = obj.get("published_doi")
         if follow_published and published_doi:
-            # Chain to OpenAlex for the journal version. If OpenAlex
-            # doesn't have it (paper too new to index, etc.) we fall
-            # back to the preprint metadata rather than erroring — the
-            # agent asked for "the best version", not "fail if no
-            # journal record".
             work = await openalex.get_work(published_doi, force_refresh=force_refresh)
             if "error" not in work:
                 return _format_openalex_via_biorxiv(
-                    work,
-                    obj.get("doi"),
-                    openalex.canonical_doi(published_doi),
+                    work, obj.get("doi"), openalex.canonical_doi(published_doi)
                 )
-            # OpenAlex didn't return the journal version — fall back to the
-            # preprint record but signal followed_published=False so the agent
-            # knows it's looking at preprint-era metadata for a paper that *is*
-            # published (vs. one that simply isn't published yet). A definitive
-            # 404 (not_found) means "not indexed yet"; a transient failure
-            # (5xx / timeout, no not_found) means a retry might surface the
-            # record, so tag it so the agent can distinguish the two rather
-            # than treating a flaky lookup as a permanent miss.
+            # Not indexed yet: fall back, since the agent asked for the best
+            # version, not "fail without a journal record".
             result = _format_biorxiv_metadata(obj, canonical_id, followed_published=False)
-            if not work.get("not_found"):
+            if work.get("retryable") is True:
                 result["published_lookup_retryable"] = True
             return result
 
-    # OpenAlex definitive 404 + opt-in Crossref fallback (Crossref often indexes
-    # new/niche DOIs ahead of OpenAlex). Inspect the raw, un-enriched error here
-    # — that's why _fetch_source doesn't attach the suggestion itself. Crossref
-    # force_refresh is threaded into the fallback too: this path exists for
-    # brand-new DOIs, which is exactly where a stale cached Crossref record is
-    # most likely and least useful. If Crossref also misses, fall through to
-    # the OpenAlex error below.
+    # Opt-in Crossref fallback on a definitive 404. force_refresh threads
+    # through: this path is for brand-new DOIs, where staleness is likeliest.
     if source == "openalex" and obj.get("not_found") and fallback_crossref:
         cr = await crossref.get_work(identifier, force_refresh=force_refresh)
         if "error" not in cr:
@@ -341,25 +307,17 @@ async def get_papers_metadata(
 ) -> dict[str, Any]:
     """Batch metadata fetch — same payload as get_paper_metadata, in bulk.
 
-    Optimised for reference-graph traversal where an agent has 30–200
-    DOIs from get_paper_references and wants metadata for all of them.
-    OpenAlex DOIs are fanned into one ``/works?filter=doi:...|...`` call
-    per 50 (vs. one HTTP call per DOI); arXiv and bioRxiv identifiers
-    are fetched concurrently up to each provider's concurrency cap.
-    Cached entries (positive or negative) are served without an HTTP
-    call. Each successfully-fetched paper warms the singleton cache so
-    a follow-up get_paper_metadata / get_paper_authors call is free.
+    For reference-graph traversal: OpenAlex DOIs fan into one
+    ``/works?filter=doi:...|...`` call per 50, arXiv and bioRxiv fetch
+    concurrently, cached entries cost no HTTP call, and every fetched paper
+    warms the singleton cache so a later get_paper_metadata / _authors is free.
 
-    Does NOT support follow_published — chain bioRxiv-to-journal
-    explicitly via per-paper get_paper_metadata calls.
+    Does NOT support follow_published — chain per-paper instead.
 
-    Returns ``{count, papers: [...]}`` where each entry is the same
-    shape ``get_paper_metadata`` would return for that identifier (with
-    an added ``_input`` field carrying the original input string so an
-    agent can correlate input → output without re-resolving). Order
-    matches the input list. Per-paper failures appear as
-    ``{_input, error, suggestion?}`` entries; one failure does not
-    affect the others.
+    Returns ``{count, papers}``. Each entry is what get_paper_metadata would
+    return for that identifier, plus ``_input`` carrying the original string so
+    an agent can correlate input to output. Order matches the input list;
+    failures appear as ``{_input, error, suggestion?}`` and don't affect others.
     """
     n = len(identifiers)
     results: list[dict[str, Any] | None] = [None] * n
@@ -368,14 +326,10 @@ async def get_papers_metadata(
     openalex_indices: list[tuple[int, str]] = []  # (slot, original input)
 
     async def _singleton_one(slot: int, ident: str) -> None:
-        # arXiv / bioRxiv fetch as concurrent singletons. The dispatch loop
-        # routes OpenAlex to the batch and unknown ids never reach here, so
-        # _fetch_source always resolves to a real provider.
         source, canonical, obj = await _fetch_source(ident, force_refresh=force_refresh)
         if source is None:
-            # Unreachable through the loop below; if it ever happens, obj is
-            # already the unknown-identifier error, so pass it straight out
-            # instead of indexing _METADATA_HINT_BY_SOURCE with None.
+            # Unreachable via the loop below, which routes only arXiv/bioRxiv
+            # here; guards the hint lookup against a None key regardless.
             results[slot] = {"_input": ident, **obj}
             return
         if "error" in obj:
@@ -406,6 +360,9 @@ async def get_papers_metadata(
         for slot, ident in openalex_indices:
             canonical = openalex.canonical_doi(ident)
             work = batch.get(canonical)
+            # get_works_batch is total, so `is None` only happens under a test
+            # stub. dict(): batch entries aren't deep-copied, and two spellings
+            # of one DOI share the one entry across two slots.
             if work is None or "error" in work:
                 err = work or {"error": f"No work found for DOI: {ident}"}
                 results[slot] = {
@@ -419,8 +376,7 @@ async def get_papers_metadata(
 
     await asyncio.gather(*singleton_tasks, _openalex_batch())
 
-    # Defensive: every slot should be filled. Anything still None is a
-    # bug — surface as an error rather than crashing the caller.
+    # Defensive: a slot still None is a bug — surface it, don't crash the caller.
     for i, r in enumerate(results):
         if r is None:
             results[i] = {
@@ -432,25 +388,20 @@ async def get_papers_metadata(
 
 
 def _format_openalex_authors(work: dict[str, Any], start: int, end: int) -> dict[str, Any]:
-    """Build the OpenAlex-specific author/institution slice for one page.
+    """One page of OpenAlex authors, plus the deduped roll-up for that page.
 
-    Returns ``{author_count, authors, page_institutions,
-    page_institution_count}``; the caller wraps it with the shared envelope
-    (_source, _canonical_id, page, page_size, has_more). ``page_institutions``
-    is the deduped roll-up across the current page only — agents needing a
-    global list dedupe across pages. Mirrors the ``_format_*_metadata``
-    factoring so the tool body stays thin and per-source shaping lives in one
-    place.
+    Returns the inner ``{author_count, authors, page_institutions,
+    page_institution_count}``; the caller adds the shared envelope.
     """
-    all_authorships = work.get("authorships", [])
+    all_authorships = _dict_list(work.get("authorships"))
     page_authors: list[dict[str, Any]] = []
     page_institutions: list[str] = []
     for a in all_authorships[start:end]:
-        author_info = a.get("author", {})
+        author_info = _as_dict(a.get("author"))
         inst_names = [
-            inst.get("display_name")
-            for inst in a.get("institutions", [])
-            if inst.get("display_name")
+            name
+            for inst in _dict_list(a.get("institutions"))
+            if isinstance(name := inst.get("display_name"), str) and name
         ]
         for name in inst_names:
             if name not in page_institutions:
@@ -481,12 +432,12 @@ async def get_paper_authors(
 ) -> dict[str, Any]:
     """Get a page of the author list, dispatched by identifier shape.
 
-    Default page_size 25 covers typical papers in one call; large-collaboration
-    papers can have thousands of authors — page through with page / page_size
-    (cap 25). Slicing is in-memory against the cached paper, no extra API hits.
+    Default page_size 25 covers a typical paper in one call; large
+    collaborations run to thousands of authors. Slicing is in-memory against
+    the cached paper, so paging costs no extra API hits.
 
-    Returns ``{_source, author_count, page, page_size, has_more, authors,
-    page_institutions, page_institution_count, ...}``:
+    Returns ``{_source, _canonical_id, author_count, page, page_size,
+    has_more, authors, page_institutions, page_institution_count, ...}``:
       - arxiv: authors = [{name, affiliations?}]. ``page_institutions``
         is always [] (arXiv has no per-author institution roll-up).
       - biorxiv: authors = [{name}] plus author_corresponding /
@@ -511,10 +462,8 @@ async def get_paper_authors(
     if source == "openalex":
         page_slice = _format_openalex_authors(obj, start, end)
     else:
-        # arXiv / bioRxiv carry a flat author list with no per-author
-        # institution roll-up — emit empty institution fields so the response
-        # shape stays symmetric with the OpenAlex branch and paginating agents
-        # don't have to feature-detect.
+        # arXiv / bioRxiv have no per-author institutions; emit the fields empty
+        # so the shape stays symmetric and agents never feature-detect.
         authors = obj.get("authors", [])
         page_slice = {
             "author_count": len(authors),
@@ -533,7 +482,6 @@ async def get_paper_authors(
         **page_slice,
     }
     if source == "biorxiv":
-        # bioRxiv additionally exposes the corresponding-author fields.
         result["author_corresponding"] = obj.get("author_corresponding")
         result["author_corresponding_institution"] = obj.get("author_corresponding_institution")
     return result
@@ -546,9 +494,9 @@ async def get_paper_abstract(
 ) -> dict[str, Any]:
     """Get a paper's abstract as plain text, dispatched by identifier shape.
 
-    Returns ``{_source, title, abstract}``. OpenAlex abstracts are
-    reconstructed from an inverted index — good enough for an LLM but not
-    byte-identical to the publisher's original.
+    Returns ``{_source, _canonical_id, title, abstract}``. OpenAlex abstracts
+    are reconstructed from an inverted index — good enough for an LLM, not
+    byte-identical to the publisher's.
 
     Errors: unknown identifier or paper not found returns ``{error, suggestion}``.
     """
@@ -580,7 +528,7 @@ async def get_paper_bibtex(
 ) -> dict[str, Any]:
     """Generate a BibTeX entry, dispatched by identifier shape.
 
-    Returns ``{_source, bibtex}``. Entry type per source:
+    Returns ``{_source, _canonical_id, bibtex}``. Entry type per source:
       - arxiv: @article if the paper has journal_ref, else @misc with
         eprint / archivePrefix / primaryClass.
       - biorxiv: @article when published_doi is present, else @misc with
@@ -617,17 +565,14 @@ async def get_author(
 ) -> dict[str, Any]:
     """Fetch an author's OpenAlex profile (chain from get_paper_authors).
 
-    Returns ``{name, openalex_id, orcid, works_count, cited_by_count,
-    h_index, i10_index, current_institutions, top_topics, affiliations}``.
-    ``top_topics`` is capped at 5; ``affiliations`` is the full history
-    (each entry: institution, country_code, sorted years).
-
-    ``force_refresh=True`` drops the cached profile and re-fetches — use it
-    when the drifting stats (h_index, cited_by_count, works_count) may be
-    stale, the same way the unified paper tools refresh works.
+    Returns ``{name, openalex_id, orcid, works_count, cited_by_count, h_index,
+    i10_index, current_institutions, top_topics, affiliations}``. ``top_topics``
+    is capped at 5; ``affiliations`` is the full history (institution,
+    country_code, sorted years). ``force_refresh=True`` re-fetches the drifting
+    stats (h_index, cited_by_count, works_count).
 
     Errors: not found / bad ID → ``{error, suggestion}`` pointing at
-    get_paper_authors (for OpenAlex IDs) or ORCID URLs.
+    get_paper_authors or ORCID URLs.
     """
     author = await openalex.get_author(author_id, force_refresh=force_refresh)
     if "error" in author:
@@ -635,24 +580,27 @@ async def get_author(
             author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL."
         )
 
-    stats = author.get("summary_stats") or {}
+    stats = _as_dict(author.get("summary_stats"))
     current_institutions = [
-        inst.get("display_name")
-        for inst in (author.get("last_known_institutions") or [])
-        if inst.get("display_name")
+        name
+        for inst in _dict_list(author.get("last_known_institutions"))
+        if isinstance(name := inst.get("display_name"), str) and name
     ]
     top_topics = [
         {"name": t.get("display_name"), "count": t.get("count")}
-        for t in (author.get("topics") or [])[:5]
+        for t in _dict_list(author.get("topics"))[:5]
     ]
     affiliations = []
-    for aff in author.get("affiliations") or []:
-        inst = aff.get("institution") or {}
+    for aff in _dict_list(author.get("affiliations")):
+        inst = _as_dict(aff.get("institution"))
+        raw_years = aff.get("years")
+        years = raw_years if isinstance(raw_years, list) else []
         affiliations.append(
             {
                 "institution": inst.get("display_name"),
                 "country_code": inst.get("country_code"),
-                "years": sorted(aff.get("years") or []),
+                # Ints or nothing, so a mixed list can't make ``sorted`` raise.
+                "years": sorted(y for y in years if isinstance(y, int)),
             }
         )
 
