@@ -3,8 +3,8 @@
 Covers:
   - The download_pdf → markdown/sections cascade in
     ``server._download_pdf_by_provider`` (item 3 of the audit).
-  - ``openalex.get_works_batch`` and the ``get_papers_metadata`` MCP
-    tool (item 4).
+  - The ``get_papers_metadata`` MCP tool (item 4). The
+    ``openalex.get_works_batch`` half lives in ``test_openalex.py``.
   - ``papers.find_in_markdown`` and the ``find_in_paper`` MCP tool
     (item 5).
 
@@ -15,7 +15,6 @@ modules (``test_concurrency.py`` and ``test_pdf_download.py``).
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -156,167 +155,6 @@ class TestDownloadPdfCascade:
             assert md_path.exists()
         finally:
             md_path.unlink(missing_ok=True)
-
-
-# ---------------------------------------------------------------------------
-# openalex.get_works_batch
-# ---------------------------------------------------------------------------
-
-
-class TestGetWorksBatch:
-    @pytest.mark.asyncio
-    async def test_serves_cached_without_http(self, monkeypatch):
-        """If every input DOI is already cached, no HTTP call is made."""
-        canonicals = ["10.1/x", "10.2/y"]
-        for c in canonicals:
-            cache.put("openalex", "works", c, {"id": c, "title": f"work {c}"})
-
-        called = []
-
-        async def trap(*args, **kwargs):
-            called.append((args, kwargs))
-            raise AssertionError("Should not have hit the network")
-
-        monkeypatch.setattr(openalex, "_throttled_get", trap)
-
-        try:
-            out = await openalex.get_works_batch(canonicals)
-            assert set(out.keys()) == set(canonicals)
-            assert out["10.1/x"]["title"] == "work 10.1/x"
-            assert called == []
-        finally:
-            for c in canonicals:
-                cache.invalidate("openalex", "works", c)
-
-    @pytest.mark.asyncio
-    async def test_fetches_misses_in_batch(self, monkeypatch):
-        """Cache misses go out as one /works?filter=doi:...|... call."""
-
-        # Pretend response: two works keyed by their DOIs
-        async def fake_throttled(url, **kwargs):
-            params = kwargs["params"]
-            assert "filter" in params
-            assert params["filter"].startswith("doi:")
-            assert "10.1/a" in params["filter"]
-            assert "10.2/b" in params["filter"]
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.raise_for_status = MagicMock()
-            resp.json = MagicMock(
-                return_value={
-                    "results": [
-                        {"id": "W1", "doi": "https://doi.org/10.1/a", "title": "A"},
-                        {"id": "W2", "doi": "https://doi.org/10.2/b", "title": "B"},
-                    ]
-                }
-            )
-            return resp
-
-        monkeypatch.setattr(openalex, "_throttled_get", fake_throttled)
-
-        for c in ("10.1/a", "10.2/b"):
-            cache.invalidate("openalex", "works", c)
-
-        try:
-            out = await openalex.get_works_batch(["10.1/a", "10.2/b"])
-            assert out["10.1/a"]["title"] == "A"
-            assert out["10.2/b"]["title"] == "B"
-            # Each result is also written to the singleton cache
-            assert cache.get("openalex", "works", "10.1/a")["title"] == "A"
-            assert cache.get("openalex", "works", "10.2/b")["title"] == "B"
-        finally:
-            for c in ("10.1/a", "10.2/b"):
-                cache.invalidate("openalex", "works", c)
-
-    @pytest.mark.asyncio
-    async def test_unmatched_dois_become_negative_cache(self, monkeypatch):
-        """A DOI requested in the batch but absent from the response is
-        cached negatively, same as a singleton 404."""
-
-        async def fake_throttled(url, **kwargs):
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.raise_for_status = MagicMock()
-            # Only return the first DOI
-            resp.json = MagicMock(
-                return_value={
-                    "results": [
-                        {"id": "W1", "doi": "https://doi.org/10.1/found", "title": "F"},
-                    ]
-                }
-            )
-            return resp
-
-        monkeypatch.setattr(openalex, "_throttled_get", fake_throttled)
-
-        for c in ("10.1/found", "10.1/missing"):
-            cache.invalidate("openalex", "works", c)
-
-        try:
-            out = await openalex.get_works_batch(["10.1/found", "10.1/missing"])
-            assert out["10.1/found"]["title"] == "F"
-            assert "error" in out["10.1/missing"]
-            # Negative cache populated for the missing one
-            neg = cache.get_negative("openalex", "works", "10.1/missing")
-            assert neg is not None
-            assert "error" in neg
-        finally:
-            for c in ("10.1/found", "10.1/missing"):
-                cache.invalidate("openalex", "works", c)
-
-    @pytest.mark.asyncio
-    async def test_force_refresh_drops_cached_first(self, monkeypatch):
-        cache.put("openalex", "works", "10.1/x", {"id": "old", "doi": "https://doi.org/10.1/x"})
-
-        async def fake_throttled(url, **kwargs):
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.raise_for_status = MagicMock()
-            resp.json = MagicMock(
-                return_value={
-                    "results": [
-                        {"id": "new", "doi": "https://doi.org/10.1/x", "title": "Fresh"},
-                    ]
-                }
-            )
-            return resp
-
-        monkeypatch.setattr(openalex, "_throttled_get", fake_throttled)
-        try:
-            out = await openalex.get_works_batch(["10.1/x"], force_refresh=True)
-            assert out["10.1/x"]["id"] == "new"
-        finally:
-            cache.invalidate("openalex", "works", "10.1/x")
-
-    @pytest.mark.asyncio
-    async def test_dedupes_input(self, monkeypatch):
-        """Repeated DOIs in the input collapse to one fetch."""
-        urls_called = []
-
-        async def fake_throttled(url, **kwargs):
-            urls_called.append(kwargs["params"]["filter"])
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.raise_for_status = MagicMock()
-            resp.json = MagicMock(
-                return_value={
-                    "results": [
-                        {"id": "W", "doi": "https://doi.org/10.1/x", "title": "X"},
-                    ]
-                }
-            )
-            return resp
-
-        monkeypatch.setattr(openalex, "_throttled_get", fake_throttled)
-        cache.invalidate("openalex", "works", "10.1/x")
-        try:
-            out = await openalex.get_works_batch(["10.1/x", "10.1/x", "10.1/X"])
-            assert out["10.1/x"]["title"] == "X"
-            # All three inputs canonicalise to one DOI; only one fetch
-            assert len(urls_called) == 1
-            assert urls_called[0].count("|") == 0  # one DOI in the filter
-        finally:
-            cache.invalidate("openalex", "works", "10.1/x")
 
 
 # ---------------------------------------------------------------------------

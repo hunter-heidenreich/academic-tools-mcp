@@ -89,6 +89,30 @@ class TestBestPdfUrl:
         }
         assert openalex.best_pdf_url(work) is None
 
+    @pytest.mark.parametrize("wrong", ["a string", ["a", "list"], 42, True])
+    def test_a_wrong_shaped_subobject_is_skipped_not_a_crash(self, wrong):
+        """These arrive from untyped JSON. A non-dict reaches ``.get`` as an
+        ``AttributeError``, and nothing between here and the MCP tool catches
+        one — ``_pdf_download.cached_download`` does not wrap its ``fetch``."""
+        work = {
+            "best_oa_location": wrong,
+            "primary_location": wrong,
+            "open_access": {"oa_url": "http://x/landing"},
+        }
+        assert openalex.best_pdf_url(work) == "http://x/landing"
+        assert openalex.best_pdf_url({"best_oa_location": wrong}) is None
+
+    @pytest.mark.parametrize("wrong", [42, ["http://x/a.pdf"], {"href": "http://x/a.pdf"}, ""])
+    def test_a_non_string_url_is_never_returned(self, wrong):
+        """Whatever this returns is fetched, so a non-string would reach httpx
+        unvalidated — the trust boundary is a URL *string* or nothing."""
+        work = {
+            "best_oa_location": {"pdf_url": wrong},
+            "primary_location": {"pdf_url": wrong},
+            "open_access": {"oa_url": wrong},
+        }
+        assert openalex.best_pdf_url(work) is None
+
 
 # --- metadata surfaces pdf_url ---------------------------------------------
 

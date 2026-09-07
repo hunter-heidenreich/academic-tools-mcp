@@ -78,6 +78,45 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **An OpenAlex response of the wrong shape no longer crashes the tool that
+  reads it.** Three values arrive from untyped JSON and were consumed where
+  nothing above catches an `AttributeError`/`TypeError`, so a malformed record
+  escaped as a traceback rather than the uniform `{error}` contract:
+  `get_paper_abstract` on a malformed `abstract_inverted_index`, `download_pdf`
+  on a work whose `best_oa_location` / `primary_location` / `open_access` is
+  not an object, and `get_papers_metadata` on any batch response carrying one
+  record with a non-string `doi` — that one took down the whole batch of up to
+  50. `best_pdf_url` now also returns a non-empty string or nothing, so a
+  non-string can't reach the downloader. ([#98])
+- **A batch no longer files a live DOI as "not found" on the strength of a
+  record it could not read.** `get_works_batch` blocked negative caching when
+  OpenAlex answered with a DOI string other than the one asked for, but not
+  when it returned a record that was unreadable or carried no DOI at all —
+  the same situation. Such a chunk's misses now come back `retryable` and
+  uncached instead of being negative-cached as definitively absent for 24h.
+  ([#98])
+- **`get_author` percent-encodes the identifier it puts in the request path.**
+  A `#` or `?` in an author ID truncated the request and fetched a different
+  record, the hazard `get_work` has always encoded against. ORCID URLs are
+  unaffected — they were already the passthrough spelling and stay
+  byte-identical. ([#98])
+- **An identifier that would shorten the request path is refused instead of
+  fetching a different record.** A `.` or `..` path segment is removed by URL
+  resolution *after* percent-encoding — both characters are unreserved, so no
+  encoder escapes them — so `get_author("..")` requested the API root and
+  `get_paper_metadata("10.1000/a/..")` requested `/works/doi:10.1000`, then
+  cached whatever came back under the DOI that was asked for. Both now return
+  the ordinary "not found" without spending a request. ([#98])
+- **`get_author` accepts the `openalex.org` URL family, not one spelling of
+  it.** `http://`, a `www.`/`api.` host label, an `/authors/` path segment, a
+  trailing slash, uppercase and surrounding whitespace now all collapse to the
+  bare ID, matching the latitude the DOI and arXiv normalizers already carry;
+  previously each was passed to the API verbatim and cached under its own key.
+  ([#98])
+- **`get_works_batch` returns its results in the order they were asked for.**
+  Previously cache hits came first, then singleton fallbacks, then batched
+  chunks. ([#98])
+
 - **`search_crossref_by_title` no longer crashes on a malformed Crossref
   response, or reports one as "no results".** A search body whose `items` was
   not a list of objects raised out of the provider and reached you as a
@@ -2322,3 +2361,4 @@ grouped by milestone rather than per commit.
 [#95]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/95
 [#96]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/96
 [#97]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/97
+[#98]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/98
