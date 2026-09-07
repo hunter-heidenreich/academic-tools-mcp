@@ -14,13 +14,13 @@ Every per-provider client uses the same pattern. The two cross-cutting pieces �
 - Module-level `_single_flight` instance, passed to `cache.cached_lookup`.
 - Each getter is `canonical = canonical_*(id)` → an async `_fetch()` closure holding the HTTP + parse + caching decisions → `return await cache.cached_lookup(...)`. Accept `force_refresh: bool = False` and thread it in; don't hand-roll any of the rest (`.claude/rules/cache.md` for what the protocol owns). Only `wikipedia.get_summary` builds its canonical inline, having no DOI-like id to normalize.
 - Pass a tuple `sf_key` when one canonical id has multiple sub-fetches (openalex `("work"|"author", canonical)`, opencitations `("references"|"citations", canonical)`, and arxiv/biorxiv `download_pdf`'s `("pdf", canonical)`, whose `fetch` awaits their own `get_paper` on the same `SingleFlight`); omit it to key on `canonical`, as `acl.download_pdf` does — PDF-only, so nothing can collide.
-- Inside `_fetch`: on definitive 404, write the error dict to negative cache before returning; on a transient parse failure return `_parse_error_dict()` and cache nothing.
+- Inside `_fetch`: on definitive 404, write the error dict to negative cache before returning; on a transient parse failure return `_parse_error_dict()` and cache nothing. **Every negative-cached error carries `not_found: True`** — that is what `tools/graph.py`'s `_FORWARDED_ERROR_KEYS` and `tools/paper.py`'s `fallback_crossref` gate branch on, and it is the only thing distinguishing "the provider does not have this" from "the provider was briefly unreachable".
 - **The PDF-downloading providers route `download_pdf` through `_pdf_download.cached_download`** the way getters route through `cache.cached_lookup` — see `.claude/rules/pdf-download.md`. Definitive download failures are negative-cached under entity `downloads` in the provider's own namespace; `_NEG_TTL_SECONDS` is the per-provider policy. arxiv and biorxiv reuse their short metadata negative TTL (arXiv renders PDFs lazily, so a just-announced paper's PDF can 404 for minutes; bioRxiv is the same "live in an hour" case), acl declares a long one (static camera-ready CDN — a 404 means a wrong ID or a paper not yet posted).
 
 **Parsing and encoding hardening — the shared contract.** Every client that parses a body holds these; `acl` is PDF-only and has none.
 
 - **A malformed or truncated 200 body is transient, not definitive.** The `json.JSONDecodeError` (or `ET.ParseError`) is caught via the module's `_PARSE_ERRORS` and returned as `_parse_error_dict()` — `{error, retryable: True}`, a fresh dict each call — and is **not** negative-cached, so a retry re-fetches.
-- **An anomalous 200 of the wrong shape is treated identically**, rather than crashing the parse. Each provider knows what "wrong shape" means for its endpoint (non-dict, missing the entity `id`, not a list of records), and none of them is ever positive-cached for the TTL.
+- **An anomalous 200 of the wrong shape is treated identically**, rather than crashing the parse. Each provider knows what "wrong shape" means for its endpoint (non-dict, missing the entity `id`, not a list of records), and none of them is ever positive-cached for the TTL. **The guard goes all the way down to the elements, and to the fields a key is built from**: a list-shaped payload is checked for being a list, its entries for being dicts, and any field handed to `_doi.normalize` / `.split()` for being a `str` — each raises `AttributeError`, in neither `_PARSE_ERRORS` nor `HTTPX_ERRORS`, on the wrong type. An annotation is not a guard here: these values come from untyped JSON, so `raw: str | None` buys nothing at runtime. A wrong shape is an error, never an empty result set: reported as "no matches", it ends the agent's search instead of prompting a retry.
 - **Identifiers reaching a request path are percent-encoded** via `quote(...)`, so reserved characters (`#`, `?`, a stray `/`) can't split the path or truncate the request to the wrong record. `safe=` differs per provider — see below. **One request path still interpolates an identifier with no `quote` — quote it if you touch it**: `openalex.get_author`'s `/authors/{api_id}`. (`acl.pdf_url` uses `safe=""`: an Anthology ID has no path structure, so a stray `/` is an escape.)
 
 ## openalex.py
@@ -76,7 +76,9 @@ bioRxiv/medRxiv API (`api.biorxiv.org`). Nothing in the shared `10.1101/` prefix
 
 Crossref REST API (`api.crossref.org/works/{doi}`). Full work object cached; the tool layer slices out the reference list with pagination.
 
-**Search opportunistically warms the works cache** — each `search_works` hit with a DOI goes through `cache.warm` (`.claude/rules/cache.md`), which owns the TTL-aware probe. A subsequent `get_work(doi)` is a free cache hit.
+**Search opportunistically warms the works cache** — each `search_works` hit with a DOI goes through `cache.warm` (`.claude/rules/cache.md`), which owns the TTL-aware probe. A subsequent `get_work(doi)` is a free cache hit. Wrong shape here is a four-rung ladder, not one check: non-dict body, missing `message`, non-dict `message`, non-list `items` all return `_parse_error_dict()`, and non-dict entries *inside* a valid `items` list are dropped before anything reads `item["DOI"]`. `rows` is clamped to the exported `MAX_SEARCH_ROWS`, as arxiv's is to `MAX_SEARCH_RESULTS`.
+
+**The year filter is deliberately year-only** (`from-pub-date:{year},until-pub-date:{year}`). Crossref does not document how it pads a partial date, and CrossRef/rest-api-doc#7 reports the fully-specified form dropping works whose deposited date is itself year-only — so spelling out `-01-01` / `-12-31` is a regression, not a hardening.
 
 **The tier is chosen from config, not assumed.** `_resolve_policy()` picks the rate constants at import from `in_polite_pool()`, so `_MAX_CONCURRENT` / `_MIN_REQUEST_GAP` / `_SEARCH_REQUEST_GAP` are its output rather than literals — don't read any one of them as a fixed number. Limits per Crossref's REST API docs; this table is the one `providers/crossref.py` and `tests/test_politeness.py` point at:
 
@@ -91,13 +93,15 @@ If you touch these, keep the two halves in lockstep: **the rate we take must fol
 
 Search is paced separately (`_throttled_search_get`) because Crossref limits it far more tightly than singleton lookups — sharing the singles throttle leaves the search limit unenforced in either tier. The search gate rides *on top of* the shared `Throttle` rather than owning a second one: Crossref's concurrency budget covers all requests, so a separate semaphore would let searches and singles together exceed it. Search uses `query.bibliographic` on `/works`.
 
+The gate stamps `_last_search_time` *before* handing off to the singles slot, so under mixed load a queued search can start later than its stamp and two searches land closer together than the gap. Known and accepted: reserving the instant the way `Throttle.slot` does needs a second `Throttle`, whose `pending` `_stats.throttles()` would then sum into this namespace's `in_flight` row.
+
 ## opencitations.py
 
 OpenCitations Index API v2. Outgoing references (`/references/doi:...`) and incoming citations (`/citations/doi:...`).
 
 **Encoding and shape.** The bare DOI is encoded into `.../doi:{doi}` with `quote(..., safe="/")` — the `doi:` scheme prefix and the DOI's own slash stay literal. Wrong shape here means anything that isn't a list of records (dict / null / string), which would otherwise crash the `_format_record` comprehension; non-dict items inside a valid list are skipped.
 
-`get_references` / `get_citations` are one-line wrappers over a shared `_fetch_direction(doi, *, kind, id_field, force_refresh)`; the two directions differ only by `kind` (API path segment, cache entity, result key) and `id_field` (`"cited"` / `"citing"`).
+`get_references` / `get_citations` are one-line wrappers over a shared `_fetch_direction(doi, *, kind, id_field, force_refresh)`; the two directions differ only by `kind` (API path segment, cache entity, result key) and `id_field` (`"cited"` / `"citing"`). The 404 negative-caches per direction, so one DOI can be a definitive miss for references and a hit for citations.
 
 ## wikipedia.py
 

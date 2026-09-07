@@ -134,7 +134,10 @@ class TestCrossrefPoolSelection:
 
     def test_search_is_paced_separately_from_singles(self):
         # Search used to share the singles throttle entirely, so its tighter
-        # limit was never enforced in either tier.
+        # limit was never enforced in either tier. This pins the *policy* — that
+        # the two gaps are ordered. That `search_works` actually goes through
+        # the search gate, and that the gate sleeps, is behaviour, and lives
+        # with the rest of the module's behaviour in test_crossref.py.
         assert crossref._SEARCH_REQUEST_GAP > crossref._MIN_REQUEST_GAP
 
 

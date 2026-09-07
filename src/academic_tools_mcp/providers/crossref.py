@@ -13,39 +13,16 @@ from .._throttle import Throttle
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
 
-# The Crossref REST API returns JSON; a malformed/truncated 200 body raises
-# ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
-# errors so the tool always returns the uniform ``{error}`` contract rather
-# than crashing on a garbled response.
 _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
-    """Fresh structured error for an unparseable Crossref response.
-
-    Delegates to ``_http.parse_error_dict``, the single home for the shape.
-    """
+    """Fresh structured error for an unparseable Crossref response."""
     return _http.parse_error_dict("Crossref")
 
 
-# Crossref runs two service tiers, and which one we get depends on whether we
-# identify ourselves.
-#
-# **The rate we take must follow the identity we send.** Never hardcode these
-# constants: the polite figures against an anonymous User-Agent means the
-# documented default (an empty .env; README: "Nothing is required to get
-# started") requests at 2x the public-pool rate, 3x its concurrency and 3x
-# its search rate, without identifying itself.
-#
-# Limits per Crossref's REST API docs, mirrored in .claude/rules/providers.md:
-#
-#            singles      search       concurrent
-#   polite   10 req/sec   3 req/sec    3
-#   public    5 req/sec   1 req/sec    1
-#
-# Search is rate-limited far more tightly than singleton lookups, so it is
-# paced separately (`_throttled_search_get`). Sharing the singles throttle
-# leaves the search limit unenforced in both tiers.
+# The rate we take must follow the identity we send: hardcoding the polite
+# figures would request at that rate anonymously. Tiers in providers.md.
 _POLITE_MAX_CONCURRENT = 3
 _POLITE_REQUEST_GAP = 0.1  # 100ms -> 10 req/sec
 _POLITE_SEARCH_GAP = 0.334  # ~3 req/sec
@@ -55,6 +32,9 @@ _PUBLIC_REQUEST_GAP = 0.2  # 200ms -> 5 req/sec
 _PUBLIC_SEARCH_GAP = 1.0  # 1 req/sec
 
 _MAX_PENDING = 5
+
+# Our own ceiling on a triage list, not Crossref's (it allows 1000).
+MAX_SEARCH_ROWS = 20
 
 
 def in_polite_pool() -> bool:
@@ -71,24 +51,17 @@ def _resolve_policy() -> tuple[int, float, float]:
 
 _MAX_CONCURRENT, _MIN_REQUEST_GAP, _SEARCH_REQUEST_GAP = _resolve_policy()
 
-# Coalesces concurrent calls for the same canonical DOI so the unified
-# paper tools called in parallel don't all hit Crossref independently.
 _single_flight = _singleflight.SingleFlight()
 
-# Positive cache TTL. Crossref's reference list grows as publishers
-# re-deposit metadata; 30 days is the same span used for OpenAlex works
-# and gives reference-graph coverage time to improve without forcing a
-# fetch on every reread.
+# Same span as OpenAlex works: a reference list grows as publishers re-deposit.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
 def _build_headers() -> dict[str, str]:
-    """Build request headers, carrying the polite-pool mailto when configured.
+    """Request headers; the User-Agent is unconditional, the mailto is not.
 
-    The descriptive User-Agent is sent **unconditionally**; the mailto is what
-    is conditional. Gating the whole header on ``CROSSREF_MAILTO`` would leave
-    the default configuration identifying as ``python-httpx/x.y``. See
-    ``_resolve_policy`` — the rate we take must follow the identity we send.
+    Gating the whole header on ``CROSSREF_MAILTO`` would leave the default
+    configuration identifying as ``python-httpx/x.y``.
     """
     return _useragent.headers(config.get("CROSSREF_MAILTO"))
 
@@ -97,8 +70,7 @@ def _get_client() -> httpx.AsyncClient:
     """Return the pooled AsyncClient for Crossref calls.
 
     Configured here only: ``_clients.get_client`` ignores kwargs on every later
-    call for this namespace, so ``_build_headers`` (which carries the
-    ``CROSSREF_MAILTO`` polite-pool opt-in) runs here or nowhere.
+    call for this namespace.
     """
     return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
@@ -117,11 +89,8 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
     return await _throttle.get(client, url, **kwargs)
 
 
-# Search pacing rides *on top of* the shared throttle rather than using a
-# second Throttle: Crossref's concurrency budget covers all requests, so a
-# separate semaphore would let searches and singles together exceed it. The
-# lock serialises searches (they are rarely issued in parallel anyway) and
-# enforces the tighter search gap before handing off to the normal slot.
+# A lock, not a second Throttle: its semaphore would let searches and singles
+# together exceed Crossref's one concurrency budget.
 _search_lock = asyncio.Lock()
 _last_search_time = 0.0
 
@@ -129,9 +98,8 @@ _last_search_time = 0.0
 def reset_search_pacing() -> None:
     """Rebuild the search lock and clear its timestamp (test seam).
 
-    ``asyncio.Lock`` binds to the running event loop on first await, so a lock
-    left over from a previous loop raises "bound to a different event loop".
-    Mirrors ``Throttle.reset``.
+    Mirrors ``Throttle.reset``: a lock left over from a previous event loop
+    raises "bound to a different event loop".
     """
     global _search_lock, _last_search_time  # noqa: PLW0603 — process-wide search throttle
     _search_lock = asyncio.Lock()
@@ -141,7 +109,11 @@ def reset_search_pacing() -> None:
 async def _throttled_search_get(
     client: httpx.AsyncClient, url: str, **kwargs: Any
 ) -> httpx.Response:
-    """Execute a search GET, honouring Crossref's tighter search rate limit."""
+    """Execute a search GET, honouring Crossref's tighter search rate limit.
+
+    Stamped before the singles hand-off, so a queued search can start after its
+    stamp — a known drift, argued in providers.md.
+    """
     global _last_search_time  # noqa: PLW0603 — process-wide search throttle
     async with _search_lock:
         elapsed = time.monotonic() - _last_search_time
@@ -159,9 +131,8 @@ async def _throttled_search_get(
 def _normalize_doi(doi: str) -> str:
     """Normalize a DOI to bare form (e.g., 10.1234/example).
 
-    Thin wrapper over :mod:`_doi`, the single home for this logic. Never add a
-    local copy: divergent normalization lands one paper under several cache
-    keys, chosen by whichever tool the agent happened to call first.
+    Thin wrapper over :mod:`_doi`, the single home for this logic — a local
+    copy lands one paper under several cache keys.
     """
     return _doi.normalize(doi)
 
@@ -183,14 +154,18 @@ async def search_works(
 ) -> dict[str, Any]:
     """Search Crossref works by bibliographic query (title, author, etc.).
 
-    Returns ``{"items": [...]}`` on success or ``{"error": ...}`` on
-    transport / HTTP failure. Results are not cached (ad-hoc queries).
+    Returns ``{"items": [...], "total_results": N}`` on success — ``items``
+    holds only dict-shaped hits — or ``{"error": ...}`` on transport / HTTP
+    failure or a wrong-shape body. The result list is not cached (ad-hoc
+    queries), but each hit with a DOI warms the works cache.
     """
     params: dict[str, str] = {
         "query.bibliographic": bibliographic,
-        "rows": str(min(max(rows, 1), 20)),
+        "rows": str(min(max(rows, 1), MAX_SEARCH_ROWS)),
     }
     if year is not None:
+        # Year-only on purpose; a fully-specified date drops works whose own
+        # deposited date is year-only (CrossRef/rest-api-doc#7).
         params["filter"] = f"from-pub-date:{year},until-pub-date:{year}"
 
     try:
@@ -208,30 +183,33 @@ async def search_works(
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("Crossref", e)
 
-    # `"x" in data` raises TypeError on a JSON `null`/scalar body, and
-    # TypeError is in neither _PARSE_ERRORS nor HTTPX_ERRORS — it escaped the
-    # provider entirely. Guard the type before indexing, as openalex,
-    # opencitations and wikipedia already do.
+    # Every rung is a shape that raises out of the provider unguarded, and none
+    # is an empty result set: "no papers match" ends the agent's search.
     if not isinstance(data, dict) or "message" not in data:
         return _parse_error_dict()
 
     message = data["message"]
-    items = message.get("items", []) if isinstance(message, dict) else []
+    if not isinstance(message, dict):
+        return _parse_error_dict()
 
-    # Opportunistically warm the works cache. Each search hit is the
-    # same shape as a /works/{doi} response, so a follow-up get_work
-    # call (the inevitable "now fetch the full record for this hit"
-    # pattern) becomes a free cache hit. Mirrors arxiv.search_papers.
+    items = message.get("items") or []
+    if not isinstance(items, list):
+        return _parse_error_dict()
+    items = [item for item in items if isinstance(item, dict)]
+
+    # A hit has the same shape as /works/{doi}, so the inevitable follow-up
+    # get_work is a free cache hit. Mirrors arxiv.search_papers.
     for item in items:
         doi = item.get("DOI")
-        if not doi:
+        # isinstance, not truthiness: a non-string DOI reaches _doi.normalize
+        # and raises AttributeError, which no except clause here catches.
+        if not isinstance(doi, str) or not doi:
             continue
         cache.warm(
             NAMESPACE, "works", canonical_doi(doi), item, max_age_seconds=_POSITIVE_TTL_SECONDS
         )
 
-    total = message.get("total-results") if isinstance(message, dict) else None
-    return {"items": items, "total_results": total}
+    return {"items": items, "total_results": message.get("total-results")}
 
 
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -253,36 +231,28 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             client = _get_client()
             response = await _throttled_get(
                 client,
-                # Percent-encode the DOI so reserved characters (#, ?, …)
-                # aren't misread as a URL fragment/query and silently
-                # truncate the request to the wrong record. The
-                # prefix/suffix slash stays literal (safe="/") — Crossref's
-                # proven-working form.
+                # Percent-encoded so a reserved character can't truncate the
+                # request to the wrong record; the DOI's own slash stays literal.
                 f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}",
             )
 
             if response.status_code == 404:
-                err = {"error": f"No work found on Crossref for DOI: {doi}"}
+                # Definitive, hence both the negative entry and the flag
+                # tools/graph.py forwards.
+                err = {"error": f"No work found on Crossref for DOI: {doi}", "not_found": True}
                 cache.put_negative(NAMESPACE, "works", canonical, err)
                 return err
 
             response.raise_for_status()
             data = response.json()
         except _PARSE_ERRORS:
-            # A 200 body we couldn't parse — truncated/garbled. Transient,
-            # not "not found": surface a retryable error and do NOT
-            # negative-cache it so a retry re-fetches rather than serving a
-            # poisoned entry.
+            # Transient, not "not found" — uncached, so a retry re-fetches.
             return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
             return _http.error_dict("Crossref", e)
 
+        # Wrong shape, not an empty work: never positive-cached for the TTL.
         if not isinstance(data, dict) or "message" not in data:
-            # Anomalous 200 with no work payload — treat like a parse
-            # failure rather than positive-caching an empty {} for the TTL.
-            # The isinstance guard matters as much as the key check: a JSON
-            # `null` body made `"message" not in data` raise TypeError, which
-            # is caught by neither _PARSE_ERRORS nor HTTPX_ERRORS.
             return _parse_error_dict()
 
         work = data["message"]
