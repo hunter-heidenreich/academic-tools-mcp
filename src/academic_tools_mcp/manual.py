@@ -14,7 +14,7 @@ from typing import Any, Literal, NamedTuple, TypedDict
 from urllib.parse import unquote
 
 from . import _doi, _pdf_download, _stats, _stems, atomic, cache, papers
-from .providers import acl_anthology, arxiv, biorxiv
+from .providers import acl, arxiv, biorxiv
 
 NAMESPACE = "manual"
 
@@ -48,10 +48,10 @@ class _Route(NamedTuple):
 _ROUTES = (
     _Route(arxiv.is_arxiv_id, arxiv.NAMESPACE, arxiv.canonical_arxiv_id, arxiv.pdf_path),
     _Route(
-        acl_anthology.is_acl_doi,
-        acl_anthology.NAMESPACE,
-        acl_anthology.canonical_key,
-        acl_anthology.pdf_path,
+        acl.is_acl_doi,
+        acl.NAMESPACE,
+        acl.canonical_key,
+        acl.pdf_path,
     ),
     _Route(biorxiv.is_biorxiv_doi, biorxiv.NAMESPACE, biorxiv.canonical_key, biorxiv.pdf_path),
 )
@@ -85,7 +85,7 @@ def resolve_target(identifier: str) -> Target:
 _METADATA_SOURCE_BY_NAMESPACE: dict[str, MetadataSource] = {
     arxiv.NAMESPACE: "arxiv",
     biorxiv.NAMESPACE: "biorxiv",
-    acl_anthology.NAMESPACE: "openalex",
+    acl.NAMESPACE: "openalex",
 }
 
 
@@ -120,12 +120,9 @@ def migrate_misrouted_arxiv() -> int:
     """
     moved = 0
     for entity in ("pdfs", "markdown"):
-        source_dir = cache.cache_dir(NAMESPACE, entity)
-        if not source_dir.is_dir():
-            continue
         target_dir = cache.cache_dir(arxiv.NAMESPACE, entity)
-        # Materialised: the loop renames files out of the directory it walks.
-        for path in sorted(source_dir.iterdir()):
+        # Shared listing: materialised, and never raises out of the lifespan.
+        for path in _stems.list_dir(cache.cache_dir(NAMESPACE, entity)):
             if not _refile_misrouted_arxiv(path, target_dir):
                 continue
             moved += 1

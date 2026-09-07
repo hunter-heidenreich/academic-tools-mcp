@@ -24,7 +24,7 @@ from academic_tools_mcp import (
     oa_download,
     server,
 )
-from academic_tools_mcp.providers import acl_anthology, arxiv, biorxiv, openalex
+from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 
 from ._download_fakes import TIMEOUT as _TIMEOUT
 from ._download_fakes import install_stream as _install_stream
@@ -783,7 +783,7 @@ class TestServerDispatch:
         async def fake_native(_id, *, force_refresh=False):
             return {"path": "/x.pdf", "size_bytes": 10, "cached": True}
 
-        for mod in (arxiv, biorxiv, acl_anthology):
+        for mod in (arxiv, biorxiv, acl):
             monkeypatch.setattr(mod, "download_pdf", fake_native)
 
         result = await server._download_pdf_by_provider(identifier, allow_oa_url=True)

@@ -99,6 +99,44 @@ class TestDownloadPdfCascade:
             md_path.unlink(missing_ok=True)
 
     @pytest.mark.asyncio
+    async def test_acl_doi_routes_to_the_anthology_and_cascades(self, monkeypatch):
+        """The ACL branch of the provider dispatch, end to end.
+
+        The cascade drops artifacts keyed on ``target["canonical"]``, so this
+        also pins that the ACL PDF the agent just replaced is filed under that
+        same key rather than under its Anthology ID.
+        """
+        from academic_tools_mcp.providers import acl
+
+        seen = {}
+
+        async def fake_download(doi, *, force_refresh=False):
+            seen["doi"] = doi
+            seen["force_refresh"] = force_refresh
+            return {"path": "/tmp/dummy.pdf", "size_bytes": 1234, "cached": False}
+
+        monkeypatch.setattr(acl, "download_pdf", fake_download)
+
+        doi = "10.18653/v1/P16-1160"
+        canonical = acl.canonical_key(doi)
+        md_path = papers.markdown_path(acl.NAMESPACE, canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# Stale\n")
+        cache.put(
+            acl.NAMESPACE,
+            "sections",
+            papers.sections_key(canonical),
+            {"sections": [], "markdown_checksum": "x"},
+        )
+
+        result = await server._download_pdf_by_provider(doi, force_refresh=True)
+
+        assert seen == {"doi": doi, "force_refresh": True}
+        assert result.get("cascaded_invalidated") == ["markdown", "sections"]
+        assert not md_path.exists()
+        assert cache.get(acl.NAMESPACE, "sections", papers.sections_key(canonical)) is None
+
+    @pytest.mark.asyncio
     async def test_no_cascade_when_force_refresh_false(self, monkeypatch):
         """Without force_refresh, cascade never fires even on cache miss."""
 

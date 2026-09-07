@@ -24,6 +24,20 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **`providers/acl_anthology.py` is now `providers/acl.py`.** Import it as
+  `from .providers import acl`. Its `NAMESPACE` is unchanged — the cache still
+  lives in `.cache/acl_anthology/`, and `search_cached_papers(namespace=...)`
+  still takes `"acl_anthology"`. ([#94])
+
+- **ACL Anthology PDFs are now cached under the canonical DOI, not the Anthology
+  ID.** `.cache/acl_anthology/pdfs/P16-1160.pdf` becomes
+  `10.18653_v1_p16-1160.pdf`, so the PDF, the converted markdown and the section
+  index finally share one filename stem — as they already did in every other
+  namespace. Existing files are renamed automatically by a startup sweep beside
+  the two that already run; it is idempotent and leaves anything it cannot move
+  for the next run. The Anthology ID still names the CDN URL and is still
+  reported as `anthology_id` on every `download_pdf` response. ([#94])
+
 - **Every `convert_paper` error now carries `conversion_mode` and `retryable`,
   plus `pdf_size_mb` where the PDF was sized.** Fast-mode failures already named
   their mode; full-mode ones, the `busy` response and the "PDF not found" guard
@@ -48,6 +62,19 @@ grouped by milestone rather than per commit.
   `_SECTION_LEVELS`. ([#93])
 
 ### Fixed
+
+- **A bare `10.18653/v1/` was treated as an ACL Anthology paper.** It names no
+  paper, and the empty Anthology ID it produced mapped to an empty filename
+  stem — so every such identifier cached as the same `.pdf` and `download_pdf`
+  requested `https://aclanthology.org/.pdf`. It now falls through to the
+  generic-DOI route like any other identifier no provider claims. ([#94])
+
+- **`acl.pdf_url` interpolated the Anthology ID without
+  percent-encoding it.** A DOI keeps a literal `?` or `#` in its suffix by
+  design, so a malformed ACL DOI produced a URL that fetched a *different*
+  resource than the `pdf_url` reported alongside the downloaded bytes. Real
+  Anthology IDs are unaffected — every character in them is already unreserved.
+  ([#94])
 
 - **`get_paper_sections(force_refresh=True)` erased the paper's
   `conversion_mode`.** The refresh dropped the cached entry before reading it,
@@ -2203,3 +2230,4 @@ grouped by milestone rather than per commit.
 [#91]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/91
 [#92]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/92
 [#93]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/93
+[#94]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/94

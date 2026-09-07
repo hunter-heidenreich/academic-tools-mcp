@@ -40,8 +40,10 @@ def _parse_error_dict() -> dict[str, Any]:
     return _http.parse_error_dict("bioRxiv")
 
 
-# All bioRxiv/medRxiv DOIs use this prefix
-_DOI_PREFIX = "10.1101/"
+# All bioRxiv/medRxiv DOIs use this prefix. Exported for the reason ``_doi``
+# exports ``REGISTRANT_PATTERN``: ``cache_search`` inverts a stored filename
+# stem and needs the prefix rather than the function.
+DOI_PREFIX = "10.1101/"
 
 # Rate limiting: no documented limit, but be polite (~2 req/sec).
 # Concurrency cap of 2 allows a metadata + PDF-URL chase to run in
@@ -143,7 +145,7 @@ def canonical_key(doi: str) -> str:
 
 def is_biorxiv_doi(doi: str) -> bool:
     """Check if a DOI belongs to bioRxiv or medRxiv."""
-    return _normalize_doi(doi).startswith(_DOI_PREFIX)
+    return _normalize_doi(doi).startswith(DOI_PREFIX)
 
 
 # ---------------------------------------------------------------------------

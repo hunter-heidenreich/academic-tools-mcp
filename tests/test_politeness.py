@@ -50,7 +50,7 @@ def test_every_client_module_was_discovered():
 
 
 class TestEveryProviderIdentifiesItself:
-    """biorxiv, opencitations, acl_anthology and the open-access download path
+    """biorxiv, opencitations, acl and the open-access download path
     passed no headers at all, so they went out as ``python-httpx/x.y`` — the
     generic agent several upstreams throttle hardest.
     """

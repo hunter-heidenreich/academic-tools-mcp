@@ -205,7 +205,7 @@ def is_arxiv_id(identifier: str) -> bool:
     """Whether *identifier* is an arXiv ID in any of its spellings.
 
     The shape test ``manual``'s two dispatchers route on, beside
-    ``biorxiv.is_biorxiv_doi`` and ``acl_anthology.is_acl_doi``. Tests the
+    ``biorxiv.is_biorxiv_doi`` and ``acl.is_acl_doi``. Tests the
     canonical form, so the ``arXiv:`` prefix, an abs/pdf URL and upstream's
     varying case are all handled before the shape is looked at. An id this
     rejects still keys exactly as arXiv would, so it lands in ``manual`` and

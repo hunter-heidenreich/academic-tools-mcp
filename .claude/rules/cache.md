@@ -33,7 +33,7 @@ Generic file-based JSON cache under `.cache/<namespace>/<entity>/`, keyed by SHA
 
 ### `cached_lookup` — the shared cached-getter protocol
 
-The one home for the force_refresh → check → single-flight → in-slot re-check → `fetch` ordering. Every metadata getter routes through it: `arxiv.get_paper`, `openalex.get_work` / `get_author`, `crossref.get_work`, `biorxiv.get_paper`, `opencitations._fetch_direction`, `wikipedia.get_summary`. (`acl_anthology` has no metadata getter — it is PDF-only.)
+The one home for the force_refresh → check → single-flight → in-slot re-check → `fetch` ordering. Every metadata getter routes through it: `arxiv.get_paper`, `openalex.get_work` / `get_author`, `crossref.get_work`, `biorxiv.get_paper`, `opencitations._fetch_direction`, `wikipedia.get_summary`. (`acl` has no metadata getter — it is PDF-only.)
 
 **Two paths deliberately re-implement this ordering; a change here must be mirrored in both.** `openalex.get_works_batch` open-codes the outer invalidate / positive / negative check per DOI and coalesces a whole chunk through `_fetch_chunk`, and `_pdf_download.cached_download` is the file-on-disk sibling (`.claude/rules/pdf-download.md`). Anything else that wants this ordering calls `cached_lookup`.
 

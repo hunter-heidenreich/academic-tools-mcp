@@ -290,7 +290,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
   │
   ├── providers/     seven API clients, all the same shape
   │                    openalex.py  arxiv.py     biorxiv.py   crossref.py
-  │                    opencitations.py  wikipedia.py  acl_anthology.py
+  │                    opencitations.py  wikipedia.py  acl.py
   │
   ├── PDF + content  manual.py         local-file import + identifier dispatch
   │                  papers/           sections.py  markdown structure + search
