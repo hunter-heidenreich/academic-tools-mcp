@@ -49,6 +49,13 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`get_paper_sections(force_refresh=True)` erased the paper's
+  `conversion_mode`.** The refresh dropped the cached entry before reading it,
+  so the re-parse had no recorded provenance left to preserve and wrote `null`.
+  The markdown is untouched by a refresh, so what converted it is unchanged —
+  and `null` is published to agents as "converted before the field existed", a
+  claim a refresh must not be able to manufacture. ([#93])
+
 - **Reading a paper's section index inflated the cache-hit counter.** The
   sections cache is checksum-validated, not age-validated, and a read of it
   goes to no provider — but it booked a `cache_hits` anyway, including on

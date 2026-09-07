@@ -348,3 +348,50 @@ class TestReparseGates:
 
         assert calls == 1, f"the sections lock did not serialise cold readers ({calls} parses)"
         assert all(r["sections"] == results[0]["sections"] for r in results)
+
+
+class TestForceRefreshPreservesProvenance:
+    @pytest.mark.asyncio
+    async def test_refreshing_the_index_does_not_erase_conversion_mode(self, tmp_path, monkeypatch):
+        """``force_refresh`` drops the index, not the record of what converted
+        the file. The markdown is untouched, so the provenance still holds — and
+        ``null`` is published to agents as "converted before the field existed",
+        a claim a refresh must not be able to manufacture.
+        """
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "prov")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        papers.store_markdown_and_index("test", "prov", md_path, "## A\n\nbody\n", "full")
+
+        refreshed = await papers.get_or_parse_sections("test", "prov", force_refresh=True)
+
+        assert refreshed["conversion_mode"] == "full"
+        entry = cache.get("test", "sections", papers.sections_key("prov"))
+        assert entry["conversion_mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_still_reparses(self, tmp_path, monkeypatch):
+        """Preserving the mode must not turn the refresh into a cache hit."""
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "prov2")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        papers.store_markdown_and_index("test", "prov2", md_path, "## Stale\n\nbody\n", "fast")
+        # Replace the markdown behind a matching-checksum entry's back is not
+        # needed: the entry matches disk, so only the drop can force a re-parse.
+        md_path.write_text("## Real\n\nbody\n", encoding="utf-8")
+        cache.put(
+            "test",
+            "sections",
+            papers.sections_key("prov2"),
+            {
+                "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
+                "sections_detected": True,
+                "markdown_checksum": papers.checksum_text("## Real\n\nbody\n"),
+                "conversion_mode": "fast",
+            },
+        )
+
+        refreshed = await papers.get_or_parse_sections("test", "prov2", force_refresh=True)
+
+        assert [s["title"] for s in refreshed["sections"]] == ["Real"]
+        assert refreshed["conversion_mode"] == "fast"

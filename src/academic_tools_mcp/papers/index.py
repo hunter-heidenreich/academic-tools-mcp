@@ -42,8 +42,7 @@ def drop_derived(namespace: str, canonical: str) -> None:
 
 
 # Per-paper locks, LRU-capped so a long session touching thousands of papers
-# doesn't grow this map without bound. A currently-held lock is never evicted:
-# dropping it would let a racing caller skip the serialisation it depends on.
+# doesn't grow this map without bound.
 _SECTION_LOCKS_MAX: int = 1024
 _section_locks: "OrderedDict[tuple[str, str], asyncio.Lock]" = OrderedDict()
 
@@ -67,12 +66,9 @@ def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         existing = _section_locks.setdefault(key, lock)
         if existing is lock:
-            # We inserted, so we enforce the cap: evict oldest-first, skipping
-            # held locks and the key we just added. ``held_skips`` counts
-            # consecutive un-evictable locks rotated to the back; reaching the
-            # map size means nothing is evictable, so bail rather than spin.
-            # Going slightly over cap is fine, hanging is not — and bounding
-            # the probe this way keeps a full pass O(N).
+            # Evict oldest-first, rotating held locks and the just-added key to
+            # the back. Bail once everything has been skipped once: going
+            # slightly over cap is fine, spinning forever is not.
             held_skips = 0
             while len(_section_locks) > _SECTION_LOCKS_MAX:
                 if held_skips >= len(_section_locks):
@@ -112,21 +108,20 @@ async def _reparse_sections_locked(
 ) -> dict[str, Any] | None:
     """Return the sections payload for a converted paper, re-parsing if stale.
 
-    **The caller MUST already hold the per-paper ``sections_lock``** (this is
-    the shared core behind ``get_or_parse_sections`` and ``convert_pdf``'s
-    cached-markdown branch, which both hold the lock for the surrounding work).
+    **The caller MUST already hold the per-paper ``sections_lock``.**
 
-    Returns ``{sections, sections_detected, markdown_checksum, conversion_mode}``
-    or ``None`` when the markdown is missing — covering both "never converted" and the race where
-    a concurrent ``force_refresh`` cascade unlinks the file after an ``exists()``
-    check (every unlinker holds this same lock, so a successful read means the
-    file is stable for the rest of this call).
+    Returns ``{sections, sections_detected, markdown_checksum, conversion_mode}``,
+    or ``None`` when the markdown is missing — both "never converted" and the
+    race where a cascade unlinks it under a caller that saw it a moment ago.
 
-    The read and the re-parse each run off the event loop, and the read is
-    explicit UTF-8 so a non-UTF-8 host locale can't mis-decode. The checksum
-    comes from the text that was read, not a second pass over the file, so it
-    and the parsed sections always describe the same bytes.
+    ``force_refresh`` drops the index so the next read re-parses. It does not
+    touch ``conversion_mode``: the markdown is unchanged, so what converted it
+    is unchanged, and the recorded value is read before the entry goes.
     """
+    # Read before any invalidate, so force_refresh can still recover the
+    # recorded conversion_mode below. count=False: a sections read went to no
+    # provider, so it is not a cache hit in the sense the counter means.
+    cached = cache.get(namespace, "sections", sections_key(canonical), count=False)
     if force_refresh:
         cache.invalidate(namespace, "sections", sections_key(canonical))
 
@@ -135,11 +130,7 @@ async def _reparse_sections_locked(
         return None
     current_checksum = checksum_text(text)
 
-    # count=False: cache_hits means "a lookup was served instead of going
-    # upstream". A sections read went to no provider, and a stale entry here is
-    # re-parsed anyway — booking it would be a hit that did the work regardless.
-    cached = cache.get(namespace, "sections", sections_key(canonical), count=False)
-    if cached is not None:
+    if cached is not None and not force_refresh:
         stored_checksum = cached.get("markdown_checksum")
         if (
             stored_checksum is not None
@@ -154,9 +145,8 @@ async def _reparse_sections_locked(
         ):
             return cached
 
-    # No/stale sections cache (or a legacy entry missing the parsed sections) —
-    # re-parse and refresh, preserving any recorded conversion_mode: a re-parse
-    # produces no new evidence about what converted the file.
+    # Re-parse, preserving any recorded conversion_mode: a re-parse produces no
+    # new evidence about what converted the file.
     recorded_mode = cached.get("conversion_mode") if cached is not None else None
 
     sections, detected = await asyncio.to_thread(parse_sections_and_detect, text)
