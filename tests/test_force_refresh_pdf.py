@@ -54,8 +54,7 @@ def _arxiv_dest() -> Path:
 
 
 def _biorxiv_dest() -> Path:
-    canonical = biorxiv.canonical_key(_BIORXIV_DOI)
-    return _stems.pdf_path(biorxiv.NAMESPACE, canonical)
+    return biorxiv.pdf_path(_BIORXIV_DOI)
 
 
 def _acl_dest() -> Path:

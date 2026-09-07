@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from academic_tools_mcp import _clients, _stems
+from academic_tools_mcp import _clients
 from academic_tools_mcp.providers import arxiv, biorxiv
 
 from ._download_fakes import passthrough_slot as _passthrough_slot
@@ -34,10 +34,9 @@ _BIORXIV_DOI = "10.1101/2020.01.01.000001"
 
 
 def _dest(mod, identifier: str) -> Path:
-    canonical = (
-        arxiv.canonical_arxiv_id(identifier) if mod is arxiv else biorxiv.canonical_key(identifier)
-    )
-    return _stems.pdf_path(mod.NAMESPACE, canonical)
+    # The provider's own `pdf_path`, not a second spelling of it: re-deriving
+    # the stem here would let these tests pass over a broken one.
+    return mod.pdf_path(identifier)
 
 
 def _setup(mod, identifier: str, monkeypatch) -> None:
