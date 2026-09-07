@@ -1,11 +1,8 @@
+import httpx
 import pytest
 
+from academic_tools_mcp import _clients
 from academic_tools_mcp.providers import opencitations
-
-# ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
 
 # ---------------------------------------------------------------------------
 # ID parsing
@@ -37,9 +34,6 @@ class TestParseIds:
 
 # ---------------------------------------------------------------------------
 # Rate limiter
-# ---------------------------------------------------------------------------
-
-
 # ---------------------------------------------------------------------------
 # Malformed-body / parse-error handling, DOI path encoding, force_refresh
 # ---------------------------------------------------------------------------
@@ -285,3 +279,96 @@ class TestGetCitationsForceRefresh:
 
         await opencitations.get_citations("10.1234/x", force_refresh=True)
         assert recorder.count == 2
+
+
+# ---------------------------------------------------------------------------
+# 404: the definitive miss and its negative-cache entry
+# ---------------------------------------------------------------------------
+
+
+class TestNotFound:
+    """A 404 is the one branch that writes a *durable* negative entry.
+
+    It carries ``not_found: True`` as every sibling provider's 404 does.
+    ``tools/graph.py`` lists the key in ``_FORWARDED_ERROR_KEYS`` so an agent
+    can tell "OpenCitations has no edges for this DOI" from "OpenCitations was
+    briefly unreachable"; without the flag on either graph provider, that
+    documented signal could never appear on a response.
+    """
+
+    @pytest.mark.parametrize(
+        ("fetch", "entity"),
+        [
+            (opencitations.get_references, "references"),
+            (opencitations.get_citations, "citations"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_404_is_a_definitive_not_found(self, tmp_path, monkeypatch, fetch, entity):
+        _reset_opencitations(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, [], status_code=404)
+
+        result = await fetch("10.1234/missing")
+
+        assert entity in result["error"]
+        assert result["not_found"] is True
+        # Definitive, so explicitly NOT retryable-flagged.
+        assert "retryable" not in result
+
+    @pytest.mark.parametrize("fetch", [opencitations.get_references, opencitations.get_citations])
+    @pytest.mark.asyncio
+    async def test_404_is_negative_cached(self, tmp_path, monkeypatch, fetch):
+        _reset_opencitations(monkeypatch, tmp_path)
+        recorder = _stub_json_responses(monkeypatch, [], status_code=404)
+
+        first = await fetch("10.1234/missing")
+        second = await fetch("10.1234/missing")
+
+        assert first == second
+        assert second["not_found"] is True
+        assert recorder.count == 1  # served from the negative cache
+
+    @pytest.mark.asyncio
+    async def test_the_two_directions_cache_separately(self, tmp_path, monkeypatch):
+        """The negative entry is keyed by direction, not by DOI alone."""
+        _reset_opencitations(monkeypatch, tmp_path)
+        recorder = _stub_json_responses(monkeypatch, [], status_code=404)
+
+        await opencitations.get_references("10.1234/missing")
+        await opencitations.get_citations("10.1234/missing")
+
+        assert recorder.count == 2
+
+
+# ---------------------------------------------------------------------------
+# Transport failures
+# ---------------------------------------------------------------------------
+
+
+class TestTransportErrors:
+    """A network failure is transient and says nothing about the DOI.
+
+    It reaches the agent through the same ``{error, retryable}`` contract as an
+    unparseable body, and is never negative-cached — a timeout that filed a live
+    DOI as absent would hide its citation graph for the full negative TTL.
+    """
+
+    @pytest.mark.parametrize("fetch", [opencitations.get_references, opencitations.get_citations])
+    @pytest.mark.asyncio
+    async def test_surfaces_a_retryable_error(self, tmp_path, monkeypatch, fetch):
+        _reset_opencitations(monkeypatch, tmp_path)
+        # retry_attempts down to 1: otherwise the test pays get_with_retry's
+        # one-second backoff floor for a failure it is asserting on.
+        monkeypatch.setattr(opencitations._throttle, "retry_attempts", 1)
+
+        class StubClient:
+            async def get(self, url, **kwargs):
+                raise httpx.ConnectError("no route")
+
+        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+
+        result = await fetch("10.1234/x")
+
+        assert "error" in result
+        assert result["retryable"] is True
+        assert "not_found" not in result

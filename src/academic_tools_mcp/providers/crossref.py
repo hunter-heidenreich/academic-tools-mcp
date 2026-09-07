@@ -28,24 +28,10 @@ def _parse_error_dict() -> dict[str, Any]:
     return _http.parse_error_dict("Crossref")
 
 
-# Crossref runs two service tiers, and which one we get depends on whether we
-# identify ourselves.
-#
-# **The rate we take must follow the identity we send.** Never hardcode these
-# constants: the polite figures against an anonymous User-Agent means the
-# documented default (an empty .env; README: "Nothing is required to get
-# started") requests at 2x the public-pool rate, 3x its concurrency and 3x
-# its search rate, without identifying itself.
-#
-# Limits per Crossref's REST API docs, mirrored in .claude/rules/providers.md:
-#
-#            singles      search       concurrent
-#   polite   10 req/sec   3 req/sec    3
-#   public    5 req/sec   1 req/sec    1
-#
-# Search is rate-limited far more tightly than singleton lookups, so it is
-# paced separately (`_throttled_search_get`). Sharing the singles throttle
-# leaves the search limit unenforced in both tiers.
+# Crossref runs two service tiers. **The rate we take must follow the identity
+# we send** — hardcoding the polite figures makes the documented default (an
+# empty .env) request at the polite rate anonymously. Both tiers' limits, and
+# why search is paced apart from singles, are in .claude/rules/providers.md.
 _POLITE_MAX_CONCURRENT = 3
 _POLITE_REQUEST_GAP = 0.1  # 100ms -> 10 req/sec
 _POLITE_SEARCH_GAP = 0.334  # ~3 req/sec
@@ -55,6 +41,11 @@ _PUBLIC_REQUEST_GAP = 0.2  # 200ms -> 5 req/sec
 _PUBLIC_SEARCH_GAP = 1.0  # 1 req/sec
 
 _MAX_PENDING = 5
+
+# Crossref accepts up to 1000 rows; 20 is our own ceiling on a triage list an
+# LLM agent has to read. Exported as the single name for the bound, the way
+# ``arxiv.MAX_SEARCH_RESULTS`` is.
+MAX_SEARCH_ROWS = 20
 
 
 def in_polite_pool() -> bool:
@@ -141,7 +132,14 @@ def reset_search_pacing() -> None:
 async def _throttled_search_get(
     client: httpx.AsyncClient, url: str, **kwargs: Any
 ) -> httpx.Response:
-    """Execute a search GET, honouring Crossref's tighter search rate limit."""
+    """Execute a search GET, honouring Crossref's tighter search rate limit.
+
+    The stamp is taken before handing off to the singles slot, so under mixed
+    load a queued search can start later than its stamp and two searches land
+    closer together than the gap. Accepted: reserving the instant needs a second
+    ``Throttle``, whose ``pending`` would then be summed into this namespace's
+    ``in_flight`` row.
+    """
     global _last_search_time  # noqa: PLW0603 — process-wide search throttle
     async with _search_lock:
         elapsed = time.monotonic() - _last_search_time
@@ -183,14 +181,19 @@ async def search_works(
 ) -> dict[str, Any]:
     """Search Crossref works by bibliographic query (title, author, etc.).
 
-    Returns ``{"items": [...]}`` on success or ``{"error": ...}`` on
-    transport / HTTP failure. Results are not cached (ad-hoc queries).
+    Returns ``{"items": [...], "total_results": N}`` on success — ``items``
+    holds only dict-shaped hits — or ``{"error": ...}`` on transport / HTTP
+    failure or a wrong-shape body. The result list is not cached (ad-hoc
+    queries), but each hit with a DOI warms the works cache.
     """
     params: dict[str, str] = {
         "query.bibliographic": bibliographic,
-        "rows": str(min(max(rows, 1), 20)),
+        "rows": str(min(max(rows, 1), MAX_SEARCH_ROWS)),
     }
     if year is not None:
+        # Year-only on purpose. Crossref's partial-date semantics are
+        # undocumented and CrossRef/rest-api-doc#7 reports the fully-specified
+        # form dropping works whose deposited date is itself year-only.
         params["filter"] = f"from-pub-date:{year},until-pub-date:{year}"
 
     try:
@@ -208,15 +211,23 @@ async def search_works(
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("Crossref", e)
 
-    # `"x" in data` raises TypeError on a JSON `null`/scalar body, and
-    # TypeError is in neither _PARSE_ERRORS nor HTTPX_ERRORS — it escaped the
-    # provider entirely. Guard the type before indexing, as openalex,
-    # opencitations and wikipedia already do.
+    # Every rung is a shape that would otherwise raise out of the provider —
+    # `"x" in data` raises TypeError on a JSON null/scalar, and `item.get` an
+    # AttributeError on a non-dict hit. Neither is in _PARSE_ERRORS nor
+    # HTTPX_ERRORS, so it escaped to the agent as a traceback. A wrong shape is
+    # an error, never an empty result set: reported as "no papers match", it
+    # ends the agent's search. Same ladder as openalex's batch parse.
     if not isinstance(data, dict) or "message" not in data:
         return _parse_error_dict()
 
     message = data["message"]
-    items = message.get("items", []) if isinstance(message, dict) else []
+    if not isinstance(message, dict):
+        return _parse_error_dict()
+
+    items = message.get("items") or []
+    if not isinstance(items, list):
+        return _parse_error_dict()
+    items = [item for item in items if isinstance(item, dict)]
 
     # Opportunistically warm the works cache. Each search hit is the
     # same shape as a /works/{doi} response, so a follow-up get_work
@@ -230,8 +241,7 @@ async def search_works(
             NAMESPACE, "works", canonical_doi(doi), item, max_age_seconds=_POSITIVE_TTL_SECONDS
         )
 
-    total = message.get("total-results") if isinstance(message, dict) else None
-    return {"items": items, "total_results": total}
+    return {"items": items, "total_results": message.get("total-results")}
 
 
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -262,7 +272,10 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             )
 
             if response.status_code == 404:
-                err = {"error": f"No work found on Crossref for DOI: {doi}"}
+                # ``not_found: True`` as every sibling's 404 carries: the entry
+                # is negative-cached, so it is definitive, and tools/graph.py
+                # forwards the flag to tell absent from transiently unavailable.
+                err = {"error": f"No work found on Crossref for DOI: {doi}", "not_found": True}
                 cache.put_negative(NAMESPACE, "works", canonical, err)
                 return err
 

@@ -78,6 +78,21 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`search_crossref_by_title` no longer crashes on a malformed Crossref
+  response, or reports one as "no results".** A search body whose `items` was
+  not a list of objects raised out of the provider and reached you as a
+  traceback instead of the usual `{error}`; a non-object `message` was reported
+  as an empty—but successful—result set, indistinguishable from a query that
+  genuinely matched nothing. Both are now the uniform retryable error, and
+  individual non-object hits inside an otherwise valid list are skipped rather
+  than fatal. ([#97])
+- **Crossref and OpenCitations "not found" errors now carry `not_found: true`.**
+  Every other provider already did. `get_paper_references_count`,
+  `get_paper_references` and `get_paper_citations` forward the flag, so a source
+  reporting nothing can finally be told apart from a source that was briefly
+  unreachable — previously the two were indistinguishable for exactly the two
+  providers the reference-graph tools use. ([#97])
+
 - **bioRxiv/medRxiv identifiers are now recognised in every rendering of a
   preprint, so one paper no longer caches several times.** A version suffix
   (`10.1101/2024.01.01.573838v1`) and a content URL carrying an uppercase host,
@@ -2304,3 +2319,4 @@ grouped by milestone rather than per commit.
 [#94]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/94
 [#95]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/95
 [#96]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/96
+[#97]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/97

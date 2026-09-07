@@ -161,7 +161,13 @@ async def _fetch_direction(
             )
 
             if response.status_code == 404:
-                err = {"error": f"No {kind} found on OpenCitations for DOI: {doi}"}
+                # ``not_found: True`` as every sibling's 404 carries: the entry
+                # is negative-cached, so it is definitive, and tools/graph.py
+                # forwards the flag to tell absent from transiently unavailable.
+                err = {
+                    "error": f"No {kind} found on OpenCitations for DOI: {doi}",
+                    "not_found": True,
+                }
                 cache.put_negative(NAMESPACE, kind, canonical, err)
                 return err
 
