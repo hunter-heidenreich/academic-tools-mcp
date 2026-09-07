@@ -28,8 +28,10 @@ The identifier strategies are shared with the corpus-search properties, which
 build them from the same routing.
 """
 
+import asyncio
 import os
 import string
+from unittest import mock
 
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
@@ -269,3 +271,45 @@ def test_truncated_means_a_further_match_exists(markdown: str, query: str, cap: 
     assert len(hits) <= cap
     all_hits, _ = papers.find_in_markdown(markdown, query, max_results=10_000)
     assert truncated == (len(all_hits) > len(hits))
+
+
+# ---------------------------------------------------------------------------
+# P7 — the sections-cache entry round-trips, for any document a converter emits
+# ---------------------------------------------------------------------------
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=40)
+@given(markdown_documents)
+def test_a_written_entry_is_read_back_without_reparsing(tmp_path_factory, markdown: str) -> None:
+    """``store_markdown_and_index`` writes what ``get_or_parse_sections`` accepts.
+
+    The two assemble the entry independently — the writer from the string it was
+    handed, the reader by checksumming the file it finds. If they ever disagree
+    every read re-parses forever and nothing fails visibly. Four keys and one
+    checksum is a contract examples can only sample; the documents that break it
+    are the degenerate ones a generator finds and a fixture does not.
+    """
+    root = tmp_path_factory.mktemp("cache")
+    with mock.patch.object(cache, "CACHE_ROOT", root):
+        md_path = papers.markdown_path("test", "roundtrip")
+        written = papers.store_markdown_and_index("test", "roundtrip", md_path, markdown, "full")
+
+        entry = cache.get("test", "sections", papers.sections_key("roundtrip"))
+        assert set(entry) == {
+            "sections",
+            "sections_detected",
+            "markdown_checksum",
+            "conversion_mode",
+        }
+        assert entry["markdown_checksum"] == papers.checksum_text(markdown)
+
+        # The reader must serve that entry as-is: a re-parse here would mean the
+        # writer's checksum never matches the file it just wrote.
+        with mock.patch.object(
+            papers.index, "parse_sections_and_detect", side_effect=AssertionError("re-parsed")
+        ):
+            served = asyncio.run(papers.get_or_parse_sections("test", "roundtrip"))
+
+    assert served["sections"] == written["sections"]
+    assert served["sections_detected"] == written["sections_detected"]
+    assert served["conversion_mode"] == "full"

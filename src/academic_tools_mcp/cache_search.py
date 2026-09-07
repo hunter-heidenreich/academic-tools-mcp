@@ -69,8 +69,12 @@ def _extract_title(markdown: str) -> str | None:
     """Return the first H1 or H2 in the document, or ``None``.
 
     Delegated, never a local scan: which levels count as title-level is
-    ``papers``' policy, and a copy here drifts the moment that changes — a hit
-    would report a heading the reader's own section index does not open on.
+    ``papers``' policy, and a copy here drifts the moment that changes.
+
+    This is the paper's *title*, not a section the index opens on — a title-page
+    H1 with no body under it is dropped from the section index but is still the
+    right thing to name the hit. ``section_at_offset`` is what resolves the
+    section, and the two answer different questions.
     """
     return papers.first_section_heading(markdown)
 

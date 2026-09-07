@@ -215,3 +215,183 @@ class TestGetOrParseSectionsForceRefresh:
 
         refreshed = await papers.get_or_parse_sections("test", "forced", force_refresh=True)
         assert [s["title"] for s in refreshed["sections"]] == ["Real"]
+
+
+class TestDropDerived:
+    """The force_refresh cascade. Best-effort by contract: the index goes even
+    when the markdown won't.
+    """
+
+    @pytest.fixture
+    def converted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "dropme")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("## A\n\nbody\n", encoding="utf-8")
+        cache.put(
+            "test",
+            "sections",
+            papers.sections_key("dropme"),
+            {
+                "sections": [{"index": 0, "title": "A", "h3s": [], "approx_tokens": 1}],
+                "sections_detected": True,
+                "markdown_checksum": papers.checksum_text("## A\n\nbody\n"),
+                "conversion_mode": "full",
+            },
+        )
+        return md_path
+
+    def test_drops_both_halves(self, converted):
+        papers.drop_derived("test", "dropme")
+        assert not converted.exists()
+        assert cache.get("test", "sections", papers.sections_key("dropme")) is None
+
+    def test_a_missing_markdown_is_not_an_error(self, converted):
+        converted.unlink()
+        papers.drop_derived("test", "dropme")
+        assert cache.get("test", "sections", papers.sections_key("dropme")) is None
+
+    def test_an_unlinkable_markdown_still_loses_its_index(self, converted, monkeypatch):
+        """The index must be dropped even when the file survives.
+
+        Leaving the entry behind would let a reader match its checksum against
+        bytes it no longer describes — and the entry is the half that decides
+        whether the markdown is re-parsed.
+        """
+        real_unlink = type(converted).unlink
+
+        def _denied(self, *args, **kwargs):
+            if self == converted:
+                raise PermissionError(self)
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(converted), "unlink", _denied)
+
+        papers.drop_derived("test", "dropme")
+
+        assert converted.exists(), "the fixture's premise: the file could not be removed"
+        assert cache.get("test", "sections", papers.sections_key("dropme")) is None
+
+
+class TestReparseGates:
+    """Each clause of the cache-hit gate, failed on its own."""
+
+    def _converted(self, tmp_path, monkeypatch, body="## A\n\nbody\n"):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "gate")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(body, encoding="utf-8")
+        return md_path, papers.checksum_text(body)
+
+    @pytest.mark.asyncio
+    async def test_an_entry_without_sections_is_reparsed(self, tmp_path, monkeypatch):
+        """A matching checksum is not enough: an entry can carry the checksum
+        and no parsed sections, and returning it hands the agent nothing.
+        """
+        _, checksum = self._converted(tmp_path, monkeypatch)
+        cache.put(
+            "test",
+            "sections",
+            papers.sections_key("gate"),
+            {
+                "sections": None,
+                "sections_detected": True,
+                "markdown_checksum": checksum,
+                "conversion_mode": "full",
+            },
+        )
+
+        payload = await papers.get_or_parse_sections("test", "gate")
+
+        assert [s["title"] for s in payload["sections"]] == ["A"]
+        assert cache.get("test", "sections", papers.sections_key("gate"))["sections"]
+
+    @pytest.mark.asyncio
+    async def test_a_first_parse_records_no_conversion_mode(self, tmp_path, monkeypatch):
+        """With no prior entry there is no evidence of what converted the file,
+        so the mode must be null — never a guessed "fast", which would brand a
+        paper degraded on nothing.
+        """
+        self._converted(tmp_path, monkeypatch)
+
+        payload = await papers.get_or_parse_sections("test", "gate")
+
+        assert payload["conversion_mode"] is None
+        assert cache.get("test", "sections", papers.sections_key("gate"))["conversion_mode"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_unconverted_paper_is_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        assert await papers.get_or_parse_sections("test", "never-converted") is None
+
+    @pytest.mark.asyncio
+    async def test_concurrent_readers_parse_once(self, tmp_path, monkeypatch):
+        """The per-paper lock is the only thing between three cold readers and
+        three parses of the same document.
+        """
+        self._converted(tmp_path, monkeypatch)
+        monkeypatch.setattr(papers.index, "_section_locks", OrderedDict())
+
+        calls = 0
+        real = papers.index.parse_sections_and_detect
+
+        def _counting(markdown):
+            nonlocal calls
+            calls += 1
+            return real(markdown)
+
+        monkeypatch.setattr(papers.index, "parse_sections_and_detect", _counting)
+
+        results = await asyncio.gather(
+            *(papers.get_or_parse_sections("test", "gate") for _ in range(3))
+        )
+
+        assert calls == 1, f"the sections lock did not serialise cold readers ({calls} parses)"
+        assert all(r["sections"] == results[0]["sections"] for r in results)
+
+
+class TestForceRefreshPreservesProvenance:
+    @pytest.mark.asyncio
+    async def test_refreshing_the_index_does_not_erase_conversion_mode(self, tmp_path, monkeypatch):
+        """``force_refresh`` drops the index, not the record of what converted
+        the file. The markdown is untouched, so the provenance still holds — and
+        ``null`` is published to agents as "converted before the field existed",
+        a claim a refresh must not be able to manufacture.
+        """
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "prov")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        papers.store_markdown_and_index("test", "prov", md_path, "## A\n\nbody\n", "full")
+
+        refreshed = await papers.get_or_parse_sections("test", "prov", force_refresh=True)
+
+        assert refreshed["conversion_mode"] == "full"
+        entry = cache.get("test", "sections", papers.sections_key("prov"))
+        assert entry["conversion_mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_still_reparses(self, tmp_path, monkeypatch):
+        """Preserving the mode must not turn the refresh into a cache hit."""
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = papers.markdown_path("test", "prov2")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        papers.store_markdown_and_index("test", "prov2", md_path, "## Stale\n\nbody\n", "fast")
+        # Replace the markdown behind a matching-checksum entry's back is not
+        # needed: the entry matches disk, so only the drop can force a re-parse.
+        md_path.write_text("## Real\n\nbody\n", encoding="utf-8")
+        cache.put(
+            "test",
+            "sections",
+            papers.sections_key("prov2"),
+            {
+                "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
+                "sections_detected": True,
+                "markdown_checksum": papers.checksum_text("## Real\n\nbody\n"),
+                "conversion_mode": "fast",
+            },
+        )
+
+        refreshed = await papers.get_or_parse_sections("test", "prov2", force_refresh=True)
+
+        assert [s["title"] for s in refreshed["sections"]] == ["Real"]
+        assert refreshed["conversion_mode"] == "fast"

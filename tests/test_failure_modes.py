@@ -212,6 +212,23 @@ class TestConverterSubprocessPlumbing:
         assert first_line == "# Top", f"picked {first_line!r} under a hostile glob order"
 
     @pytest.mark.asyncio
+    async def test_the_mineru_layout_picks_auto_over_ocr(self, pdf, monkeypatch):
+        # MinerU emits <output_dir>/<stem>/{auto,ocr,txt}/<stem>.md. All are at
+        # equal depth, so the name tie-break decides — and it must decide the
+        # same way every run.
+        monkeypatch.setenv(
+            "PDF_CONVERTER",
+            "mkdir -p {output_dir}/paper/auto {output_dir}/paper/ocr && "
+            "printf '# Auto\\n\\nauto body\\n' > {output_dir}/paper/auto/paper.md && "
+            "printf '# Ocr\\n\\nocr body\\n' > {output_dir}/paper/ocr/paper.md",
+        )
+
+        result = await papers.convert_pdf(pdf, "manual", "paper")
+
+        assert "error" not in result, result
+        assert Path(result["markdown_path"]).read_text(encoding="utf-8").startswith("# Auto")
+
+    @pytest.mark.asyncio
     async def test_exact_stem_match_is_preferred(self, pdf, monkeypatch):
         monkeypatch.setenv(
             "PDF_CONVERTER",

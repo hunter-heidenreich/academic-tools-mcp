@@ -586,3 +586,49 @@ class TestFindInPaperTool:
             assert folded["results"][0]["match"] == "Gutiérrez"
         finally:
             md_path.unlink(missing_ok=True)
+
+
+class TestFindInMarkdownSnippets:
+    """The snippet is agent-facing output and was asserted nowhere: every test
+    checked only that the key existed, so an empty or newline-riddled snippet
+    shipped green.
+    """
+
+    def test_a_snippet_contains_the_match_and_its_context(self):
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "multi-head")
+        snippet = hits[0]["snippet"]
+        assert "multi-head" in snippet
+        assert "The transformer has" in snippet, "the left window was not included"
+
+    def test_a_snippet_is_one_line(self):
+        # The section body is multi-line; a raw slice would render as several.
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "Architecture")
+        assert hits, "expected a match spanning the heading/body boundary"
+        assert all("\n" not in h["snippet"] for h in hits)
+
+    def test_a_match_at_the_start_clamps_the_left_window(self):
+        # ws = max(0, pos - window): without the clamp this slices from a
+        # negative index and silently wraps to the end of the section.
+        hits, _ = papers.find_in_markdown("## S\n\nalpha beta gamma\n", "alpha")
+        assert hits[0]["char_offset"] == 0
+        assert hits[0]["snippet"].startswith("alpha")
+
+    def test_a_match_at_the_end_clamps_the_right_window(self):
+        hits, _ = papers.find_in_markdown("## S\n\nalpha beta omega\n", "omega")
+        assert hits[0]["snippet"].endswith("omega")
+
+    def test_case_sensitive_still_finds_a_correctly_cased_match(self):
+        # The negative case was pinned; an implementation that always returned
+        # [] under this flag passed the suite.
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "transformer", case_sensitive=True)
+        assert len(hits) == 4
+
+    def test_every_hit_names_its_own_section(self):
+        # Only hits[0] was checked, so an off-by-one in enumerate(spans) past
+        # the first hit went unnoticed.
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "transformer")
+        assert [h["section"] for h in hits] == ["Introduction", "Methods", "Methods", "Results"]
+        assert [h["section_index"] for h in hits] == [0, 1, 1, 2]
+
+    def test_a_document_with_no_sections_finds_nothing(self):
+        assert papers.find_in_markdown("", "anything") == ([], False)

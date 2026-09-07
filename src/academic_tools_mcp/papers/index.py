@@ -28,13 +28,9 @@ from .sections import parse_sections_and_detect
 def drop_derived(namespace: str, canonical: str) -> None:
     """Drop a paper's converted markdown and its section index.
 
-    The single home for the force_refresh cascade: whenever the PDF underneath
-    is replaced, both halves are stale, and dropping only one leaves a reader
-    matching a checksum against bytes that no longer exist.
-
-    Caller must hold :func:`sections_lock` for the same paper — every unlinker
-    of the markdown takes it. Best-effort: a file that can't be unlinked leaves
-    the sections entry dropped anyway, so the next read re-parses.
+    Both halves, always: dropping one leaves a reader matching a checksum
+    against bytes that no longer exist. Best-effort, so a file that survives
+    still loses its index. Caller must hold :func:`sections_lock`.
     """
     with contextlib.suppress(OSError):
         markdown_path(namespace, canonical).unlink()
@@ -42,8 +38,7 @@ def drop_derived(namespace: str, canonical: str) -> None:
 
 
 # Per-paper locks, LRU-capped so a long session touching thousands of papers
-# doesn't grow this map without bound. A currently-held lock is never evicted:
-# dropping it would let a racing caller skip the serialisation it depends on.
+# doesn't grow this map without bound.
 _SECTION_LOCKS_MAX: int = 1024
 _section_locks: "OrderedDict[tuple[str, str], asyncio.Lock]" = OrderedDict()
 
@@ -51,15 +46,11 @@ _section_locks: "OrderedDict[tuple[str, str], asyncio.Lock]" = OrderedDict()
 def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
     """Return the async lock guarding the sections cache for one paper.
 
-    Adding/looking up under the GIL is atomic, so racing constructors are safe:
-    only one Lock wins, the other is discarded uncontended.
-
-    **Invariant: this map is the only owner of a lock across an await.** Every
-    caller writes ``async with sections_lock(...)`` as one expression, and
-    ``Lock.acquire`` on an uncontended lock returns without yielding — which is
-    the whole reason eviction cannot race a caller. Hold the returned lock in a
-    variable and await something before entering it and that argument is gone:
-    the key can be evicted and recreated, handing two callers two Locks.
+    **Invariant: this map is the only owner of a lock across an await.** Write
+    ``async with sections_lock(...)`` as one expression — acquiring an
+    uncontended lock never yields, which is what stops eviction racing a
+    caller. Bind it, await, then enter, and the key can be evicted and
+    recreated, handing two callers two different Locks.
     """
     key = (namespace, canonical)
     lock = _section_locks.get(key)
@@ -67,12 +58,9 @@ def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         existing = _section_locks.setdefault(key, lock)
         if existing is lock:
-            # We inserted, so we enforce the cap: evict oldest-first, skipping
-            # held locks and the key we just added. ``held_skips`` counts
-            # consecutive un-evictable locks rotated to the back; reaching the
-            # map size means nothing is evictable, so bail rather than spin.
-            # Going slightly over cap is fine, hanging is not — and bounding
-            # the probe this way keeps a full pass O(N).
+            # Evict oldest-first, rotating held locks and the just-added key to
+            # the back. Bail once everything has been skipped once: going
+            # slightly over cap is fine, spinning forever is not.
             held_skips = 0
             while len(_section_locks) > _SECTION_LOCKS_MAX:
                 if held_skips >= len(_section_locks):
@@ -93,9 +81,8 @@ def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
 def _read_markdown(md_path: Path) -> str | None:
     """Read cached markdown as UTF-8, or ``None`` if it isn't there.
 
-    One read, no ``exists()`` ahead of it: the check-then-read has a window a
-    concurrent ``drop_derived`` fits through, and the answer is the same either
-    way.
+    No ``exists()`` ahead of it: a concurrent ``drop_derived`` fits through the
+    gap, and the answer is the same either way.
     """
     try:
         return md_path.read_text(encoding="utf-8")
@@ -110,23 +97,15 @@ async def _reparse_sections_locked(
     *,
     force_refresh: bool = False,
 ) -> dict[str, Any] | None:
-    """Return the sections payload for a converted paper, re-parsing if stale.
+    """The entry for a converted paper, re-parsed if stale, or None if gone.
 
-    **The caller MUST already hold the per-paper ``sections_lock``** (this is
-    the shared core behind ``get_or_parse_sections`` and ``convert_pdf``'s
-    cached-markdown branch, which both hold the lock for the surrounding work).
-
-    Returns ``{sections, markdown_checksum, conversion_mode}`` or ``None`` when
-    the markdown is missing — covering both "never converted" and the race where
-    a concurrent ``force_refresh`` cascade unlinks the file after an ``exists()``
-    check (every unlinker holds this same lock, so a successful read means the
-    file is stable for the rest of this call).
-
-    The read and the re-parse each run off the event loop, and the read is
-    explicit UTF-8 so a non-UTF-8 host locale can't mis-decode. The checksum
-    comes from the text that was read, not a second pass over the file, so it
-    and the parsed sections always describe the same bytes.
+    **The caller MUST already hold the per-paper ``sections_lock``.**
+    ``force_refresh`` drops the index but keeps ``conversion_mode``: the
+    markdown is unchanged, so what converted it is too.
     """
+    # Read before the invalidate, or force_refresh has no mode left to keep.
+    # count=False: this served no upstream lookup (.claude/rules/cache.md).
+    cached = cache.get(namespace, "sections", sections_key(canonical), count=False)
     if force_refresh:
         cache.invalidate(namespace, "sections", sections_key(canonical))
 
@@ -135,25 +114,19 @@ async def _reparse_sections_locked(
         return None
     current_checksum = checksum_text(text)
 
-    cached = cache.get(namespace, "sections", sections_key(canonical))
-    if cached is not None:
+    if cached is not None and not force_refresh:
         stored_checksum = cached.get("markdown_checksum")
         if (
             stored_checksum is not None
             and stored_checksum == current_checksum
             and cached.get("sections") is not None
-            # An entry predating ``sections_detected`` is re-parsed rather than
-            # read with a guessed default. Re-parsing is a regex pass over text
-            # already in hand — no subprocess, no network — so computing the
-            # true answer is cheaper than the cost of reporting a wrong one,
-            # which is an agent told a heading-free thesis "has one section".
+            # Re-parse rather than default a legacy entry: a wrong
+            # sections_detected reaches the agent as truth.
             and cached.get("sections_detected") is not None
         ):
             return cached
 
-    # No/stale sections cache (or a legacy entry missing the parsed sections) —
-    # re-parse and refresh, preserving any recorded conversion_mode: a re-parse
-    # produces no new evidence about what converted the file.
+    # A re-parse is no new evidence about what converted the file.
     recorded_mode = cached.get("conversion_mode") if cached is not None else None
 
     sections, detected = await asyncio.to_thread(parse_sections_and_detect, text)
@@ -170,14 +143,9 @@ async def _reparse_sections_locked(
 async def get_or_parse_sections(
     namespace: str, canonical: str, *, force_refresh: bool = False
 ) -> dict[str, Any] | None:
-    """Public sections accessor: read the cache, re-parsing when it drifted.
+    """Public sections accessor: :func:`_reparse_sections_locked` under the lock.
 
-    Re-parses the markdown if the section index is missing or its checksum
-    no longer matches. Acquires the per-paper ``sections_lock`` and delegates to
-    ``_reparse_sections_locked``. Returns the sections payload
-    (``{sections, markdown_checksum, conversion_mode}``) or ``None`` when the
-    paper isn't converted (no markdown on disk). ``force_refresh=True`` drops
-    the cached section index first so the next read re-parses.
+    ``None`` when the paper isn't converted.
     """
     md_path = markdown_path(namespace, canonical)
     async with sections_lock(namespace, canonical):
@@ -195,28 +163,13 @@ def store_markdown_and_index(
 ) -> dict[str, Any]:
     """Write markdown to the cache and store its section index.
 
-    The single home for assembling a sections-cache entry. Every writer routes
-    through here — the two conversion modes via :func:`_finalize_markdown`, and
-    ``manual.import_markdown`` directly — so the payload can never be assembled
-    with a key missing.
+    The single home for assembling an entry, so it can never be built with a
+    key missing. ``mode`` is provenance: ``"full"`` / ``"fast"`` for converter
+    output, ``"imported"`` for a file that never ran through one.
 
-    Invariant: an entry always carries all four of ``sections``,
-    ``sections_detected``, ``markdown_checksum`` and ``conversion_mode``. A
-    missing ``sections_detected`` costs a re-parse; a wrong one reaches the
-    agent as truth — a heading-free paper reported as having one real section,
-    the exact reading ``sections_note`` exists to prevent. (Guarded by
-    tests/test_manual.py::TestImportMarkdown::
-    test_cached_sections_carry_every_key_a_conversion_writes.)
-
-    ``mode`` is the provenance tag: ``"full"`` / ``"fast"`` for converter
-    output, ``"imported"`` for a pre-converted file that never ran through one.
-
-    Takes the markdown verbatim — post-processing belongs to the caller, since
-    what is right for converter output (see :func:`_finalize_markdown`) is
-    wrong for a file the operator wrote by hand.
+    Takes the markdown verbatim — post-processing is the caller's, since what
+    is right for converter output is wrong for a file an operator wrote.
     """
-    # Atomic UTF-8 write: a crash mid-write can't leave a torn markdown file,
-    # and non-ASCII content survives a non-UTF-8 host locale.
     atomic.write_text(md_path, markdown)
 
     sections, detected = parse_sections_and_detect(markdown)

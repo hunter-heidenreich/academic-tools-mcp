@@ -58,12 +58,14 @@ Streaming, the size cap, and the download protocol belong to `_pdf_download` —
 
 `CONVERT_MODE` stays `Literal["full", "fast"]`: `"imported"` is provenance you can *receive* (a pre-converted file handed to `import_paper`), not a backend you can request. `null` appears only for papers converted before the field existed. Both modes write the same cache slot, so a later `mode="full"` + `force_refresh` upgrades a fast conversion.
 
-Error shapes, distinguished by what the suggestion should tell the agent to do next:
+**Invariant: every `convert_pdf` error carries `retryable` and `conversion_mode`, plus `pdf_size_mb` once the PDF has been sized** — the same "an agent never feature-detects" rule the success shape holds. On an error `conversion_mode` names *the mode that failed*, not the provenance of any markdown (nothing was produced): `{timed_out: True, conversion_mode: "fast"}` tells an agent a fast retry is pointless. Two deliberate exceptions, both because the key would be a lie: `_app.pdf_not_cached_error` has no `retryable`, and an unknown `mode` is rejected with no `conversion_mode`, since the requested value is not in the published vocabulary.
 
-- A missing or unusable PDF short-circuits before `papers.convert_pdf` into `_app.pdf_not_cached_error` — `{error, suggestion}` with **no `retryable` key**.
-- Converter crash / empty output → `{error, retryable: False, pdf_size_mb}`. In fast mode the spawn-failure suggestion points at poppler-utils or the `[fast]` extra.
-- Timeout → adds `timed_out: True, timeout_seconds, pdf_size_mb`. On a **full-mode** timeout the suggestion points at retrying with `mode="fast"`.
-- Another conversion in flight → `{error, retryable: True, busy: True, in_progress: {...}, pdf_size_mb}`, **full mode only** — fast mode runs outside the global lock and can never produce it. The busy suggestion also offers `mode="fast"`.
+Beyond that shape, the branches are distinguished by what the suggestion should tell the agent to do next:
+
+- A missing or unusable PDF short-circuits before `papers.convert_pdf` into `_app.pdf_not_cached_error` — `{error, suggestion}` with **no `retryable` key**. `convert_pdf`'s own guard, for direct library callers, names no cache path: `_strip_internal_paths` drops path-valued *keys*, not a path inside an `error` string.
+- Converter crash / empty output → `{error, retryable: False, conversion_mode, pdf_size_mb}`. In fast mode the spawn-failure suggestion points at poppler-utils or the `[fast]` extra.
+- Timeout → adds `timed_out: True, timeout_seconds`. On a **full-mode** timeout the suggestion points at retrying with `mode="fast"`.
+- Another conversion in flight → `{error, retryable: True, busy: True, in_progress: {...}, conversion_mode: "full", pdf_size_mb}`, **full mode only** — fast mode runs outside the global lock and can never produce it. The busy suggestion also offers `mode="fast"`.
 
 ## Reference / citation graph tools
 
