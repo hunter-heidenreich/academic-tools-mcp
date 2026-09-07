@@ -55,12 +55,13 @@ class Section:
         return "\n".join(lines[self.start : self.end]).strip()
 
 
-def _scan(markdown: str) -> tuple[list[Section], bool]:
-    """The one heading scan: ``(spans, any_real_section_heading)``.
+def _scan(markdown: str) -> tuple[list[str], list[Section], bool]:
+    """The one heading scan: ``(lines, spans, any_real_section_heading)``.
 
     Sections whose body is blank are dropped, so the indices returned here are
-    the indices ``get_section_content`` accepts. Detection rides along rather
-    than being recomputed, so a caller needing both makes one pass.
+    the indices ``get_section_content`` accepts. The lines and the detection
+    flag ride along rather than being recomputed: every caller needs the lines
+    to slice a body, and re-splitting is a second pass over the document.
     """
     lines = markdown.split("\n")
     spans: list[Section] = []
@@ -84,12 +85,15 @@ def _scan(markdown: str) -> tuple[list[Section], bool]:
             h3s.append(m.group(2).strip())
 
     spans.append(Section(title, start, len(lines), h3s))
-    return [sp for sp in spans if sp.body(lines)], detected
+    # A blank body is exactly a span with no non-whitespace line, so test that
+    # rather than building every body just to throw it away.
+    non_empty = [sp for sp in spans if any(ln.strip() for ln in lines[sp.start : sp.end])]
+    return lines, non_empty, detected
 
 
 def section_boundaries(markdown: str) -> list[Section]:
     """Split ``markdown`` into sections at H1/H2 headings. See :func:`_scan`."""
-    return _scan(markdown)[0]
+    return _scan(markdown)[1]
 
 
 def has_detected_sections(markdown: str) -> bool:
@@ -98,7 +102,7 @@ def has_detected_sections(markdown: str) -> bool:
     A document with none collapses to one synthetic "Preamble", indistinguishable
     from a paper that genuinely has one section unless the caller is told.
     """
-    return _scan(markdown)[1]
+    return _scan(markdown)[2]
 
 
 def first_section_heading(markdown: str) -> str | None:
@@ -142,11 +146,14 @@ def section_at_offset(markdown: str, offset: int) -> tuple[int, str] | None:
 def parse_sections(markdown: str) -> list[dict[str, Any]]:
     """Parse markdown into sections with sub-heading previews.
 
+    Returns one dict per section::
+
       {"index": 0, "title": "Introduction", "h3s": ["Background"], "approx_tokens": 800}
 
     Content before the first heading is captured as a "Preamble" section.
     """
-    return _section_dicts(markdown.split("\n"), section_boundaries(markdown))
+    lines, spans, _ = _scan(markdown)
+    return _section_dicts(lines, spans)
 
 
 def parse_sections_and_detect(markdown: str) -> tuple[list[dict[str, Any]], bool]:
@@ -154,8 +161,8 @@ def parse_sections_and_detect(markdown: str) -> tuple[list[dict[str, Any]], bool
 
     What every writer of a sections-cache entry wants; the entry carries both.
     """
-    spans, detected = _scan(markdown)
-    return _section_dicts(markdown.split("\n"), spans), detected
+    lines, spans, detected = _scan(markdown)
+    return _section_dicts(lines, spans), detected
 
 
 def _section_dicts(lines: list[str], spans: list[Section]) -> list[dict[str, Any]]:
@@ -186,13 +193,12 @@ def find_in_markdown(
     whole_words: bool = False,
     normalize: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
-    r"""Scan markdown for ``query``: ``(hits, truncated)``.
+    """Scan markdown for ``query``: ``(hits, truncated)``.
 
-    Each hit is ``{section_index, section, char_offset, match, snippet}``. The
-    agent-facing description of the flags is ``find_in_paper``'s docstring; what
-    belongs here is why the offsets chain — this and ``get_section_content``
-    both slice through :meth:`Section.body`, so a ``char_offset`` indexes the
-    text the reader returns.
+    Each hit is ``{section_index, section, char_offset, match, snippet}``.
+    ``char_offset`` indexes the text ``get_section_content`` returns for the
+    same section — both slice through :meth:`Section.body` — so a hit chains
+    straight into ``get_paper_section``.
 
     Under ``normalize`` the match runs on folded text but every reported value
     is sliced from the original, via ``_textnorm``'s position map. A query
@@ -205,8 +211,7 @@ def find_in_markdown(
     if not query:
         return [], False
 
-    lines = markdown.split("\n")
-    spans = section_boundaries(markdown)
+    lines, spans, _ = _scan(markdown)
 
     if normalize:
         folded_query = _textnorm.fold(query)
@@ -300,9 +305,7 @@ def get_section_content(
     if offset < 0:
         return {"error": f"offset must be non-negative, got {offset}"}
 
-    lines = markdown.split("\n")
-
-    spans = section_boundaries(markdown)
+    lines, spans, _ = _scan(markdown)
 
     if not spans:
         # A converter can exit 0 on a 0-page or image-only PDF. Say so, rather
