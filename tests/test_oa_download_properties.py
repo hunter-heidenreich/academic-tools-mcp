@@ -28,6 +28,16 @@ _SPELLINGS = ("{doi}", "  {doi}  ", "doi:{doi}", "DOI:{doi}", "https://doi.org/{
 # shape), or a URL. All three occur in real payloads.
 _url_slots = st.one_of(st.none(), st.sampled_from(["https://a.example/1.pdf", "https://b/2.pdf"]))
 
+# The shapes an untyped-JSON slot can hold beyond those: a sub-object that is
+# not a dict, and a `pdf_url` that is not a string. Neither may reach `.get` or
+# `httpx`, so both must read as "no URL here".
+_junk = st.sampled_from(["", 42, True, ["u"], {"href": "u"}])
+_wrong_shaped_locations = st.one_of(
+    _junk,
+    st.builds(lambda v: {"pdf_url": v}, _junk),
+    st.builds(lambda v: {"oa_url": v}, _junk),
+)
+
 
 @given(generic_dois)
 def test_every_spelling_shares_one_artifact_and_one_verdict(doi: str) -> None:
@@ -57,6 +67,17 @@ def test_best_pdf_url_never_invents_a_url(best: str | None, primary: str | None,
     expected = best or primary or oa or None
     assert result == expected
     assert result is None or result in {best, primary, oa}
+
+
+@given(_wrong_shaped_locations, _wrong_shaped_locations, _wrong_shaped_locations)
+def test_a_wrong_shaped_work_yields_no_url_and_never_raises(best, primary, oa):
+    """The same boundary against untyped JSON rather than against a closed-access
+    work: every one of these reaches `.get` or `httpx` as an unhandled error,
+    and nothing between `best_pdf_url` and the MCP tool catches one.
+    """
+    work = {"best_oa_location": best, "primary_location": primary, "open_access": oa}
+
+    assert openalex.best_pdf_url(work) is None
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=25)
