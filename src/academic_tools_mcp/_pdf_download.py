@@ -1,6 +1,6 @@
 """Shared streaming PDF download helper.
 
-Backs all four ``download_pdf`` paths (arxiv, biorxiv, acl_anthology,
+Backs all four ``download_pdf`` paths (arxiv, biorxiv, acl,
 oa_download). Slot acquisition stays per-provider — each has its own gap and
 concurrency caps — while streaming, size-capping, PDF sniffing and atomic
 rename are identical, so they live here.

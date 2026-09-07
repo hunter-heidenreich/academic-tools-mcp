@@ -1,6 +1,6 @@
 """Open-access PDF download path for generic publisher DOIs.
 
-arxiv/biorxiv/acl_anthology build a PDF URL from the identifier; a generic
+arxiv/biorxiv/acl build a PDF URL from the identifier; a generic
 publisher DOI has none, but OpenAlex often surfaces one. This module fetches
 *only* that OpenAlex-surfaced URL, never a caller-supplied one, so the server
 stays a metadata-gated fetcher rather than a general scraper.

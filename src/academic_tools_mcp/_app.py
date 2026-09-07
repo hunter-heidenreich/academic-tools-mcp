@@ -14,6 +14,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from . import _clients, cache, cache_search, manual, papers
+from .providers import acl
 
 
 @asynccontextmanager
@@ -25,7 +26,8 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[None]:
     markdown still using a pre-``safe_stem`` filename so it isn't silently
     orphaned, then move any cached file whose identifier now routes to the
     arXiv namespace out of ``manual``, renaming it to the stem that namespace
-    reads. All three are cheap and idempotent.
+    reads, then re-file any ACL PDF still named after its Anthology ID rather
+    than its canonical key. All four are cheap and idempotent.
     New clients are pooled lazily on first use, so we don't pre-build them
     here.
 
@@ -35,6 +37,7 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[None]:
     cache.gc_orphan_tmp_files()
     papers.migrate_legacy_stems()
     manual.migrate_misrouted_arxiv()
+    acl.migrate_legacy_pdf_stems()
     try:
         yield
     finally:

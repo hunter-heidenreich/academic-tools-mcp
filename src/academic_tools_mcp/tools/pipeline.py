@@ -23,7 +23,7 @@ from .._app import (
     not_converted_error,
     pdf_not_cached_error,
 )
-from ..providers import acl_anthology, arxiv, biorxiv
+from ..providers import acl, arxiv, biorxiv
 
 _INTERNAL_PATH_KEYS = ("path", "markdown_path")
 
@@ -55,11 +55,11 @@ async def _download_pdf_by_provider(
     target = manual.resolve_target(identifier)
     ns = target["namespace"]
 
-    if ns == "arxiv":
+    if ns == arxiv.NAMESPACE:
         result = await arxiv.download_pdf(identifier, force_refresh=force_refresh)
-    elif ns == "acl_anthology":
-        result = await acl_anthology.download_pdf(identifier, force_refresh=force_refresh)
-    elif ns == "biorxiv":
+    elif ns == acl.NAMESPACE:
+        result = await acl.download_pdf(identifier, force_refresh=force_refresh)
+    elif ns == biorxiv.NAMESPACE:
         result = await biorxiv.download_pdf(identifier, force_refresh=force_refresh)
     elif allow_oa_url:
         # Generic publisher DOI + opt-in: fetch the open-access PDF URL

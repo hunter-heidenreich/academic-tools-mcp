@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from academic_tools_mcp import _stems
-from academic_tools_mcp.providers import acl_anthology, arxiv, biorxiv
+from academic_tools_mcp.providers import acl, arxiv, biorxiv
 
 from ._download_fakes import install_stream as _install_stream
 from ._download_fakes import mock_stream_response as _mock_stream_response
@@ -59,8 +59,8 @@ def _biorxiv_dest() -> Path:
 
 
 def _acl_dest() -> Path:
-    aid = acl_anthology.doi_to_anthology_id(_ACL_DOI)
-    return _stems.pdf_path(acl_anthology.NAMESPACE, aid)
+    canonical = acl.canonical_key(_ACL_DOI)
+    return _stems.pdf_path(acl.NAMESPACE, canonical)
 
 
 def _setup_provider(name: str, monkeypatch) -> tuple[Path, callable]:
@@ -84,7 +84,7 @@ def _setup_provider(name: str, monkeypatch) -> tuple[Path, callable]:
 
         monkeypatch.setattr(biorxiv, "get_paper", fake_get_paper)
     elif name == "acl":
-        mod, identifier, dest = acl_anthology, _ACL_DOI, _acl_dest()
+        mod, identifier, dest = acl, _ACL_DOI, _acl_dest()
         # ACL builds the URL deterministically — no metadata lookup.
     else:  # pragma: no cover - guard
         raise ValueError(name)

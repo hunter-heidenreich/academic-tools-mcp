@@ -184,10 +184,20 @@ class TestIdempotence:
 # that they *delegate*; re-deriving `_doi`'s behaviour once per provider says
 # nothing extra and rots into three copies of the same expectations.
 #
-# `biorxiv` and `acl_anthology` are deliberately absent: they layer real policy
-# on top of `_doi.normalize` (a content-URL form, an Anthology prefix), so
-# equality with `_doi` is not their contract. Their own tests cover them.
-_DELEGATING_PROVIDERS = ["openalex", "crossref", "opencitations"]
+# `acl` belongs here too: its Anthology-prefix policy lives in
+# `_strip_acl_prefix`, so its `_normalize_doi` is the same pure delegation.
+# `biorxiv` is the one deliberate absence — `_normalize_doi` layers
+# `_BIORXIV_URL_RE` on top of `_doi.normalize`, so equality is not its
+# contract and its own tests cover it.
+# (module, the name that provider gives its cache-key wrapper). The two
+# spellings are the router's: `manual._ROUTES` passes `canonical_key` for the
+# DOI-prefix providers.
+_DELEGATING_PROVIDERS = [
+    ("openalex", "canonical_doi"),
+    ("crossref", "canonical_doi"),
+    ("opencitations", "canonical_doi"),
+    ("acl", "canonical_key"),
+]
 
 _SPELLINGS = [
     "10.1038/Nature12373",
@@ -201,23 +211,28 @@ _SPELLINGS = [
 ]
 
 
-@pytest.fixture(params=_DELEGATING_PROVIDERS)
+@pytest.fixture(params=_DELEGATING_PROVIDERS, ids=lambda p: p[0])
 def provider(request):
     from importlib import import_module
 
-    return import_module(f"academic_tools_mcp.providers.{request.param}")
+    name, canonical_attr = request.param
+    module = import_module(f"academic_tools_mcp.providers.{name}")
+    return module, getattr(module, canonical_attr)
 
 
 @pytest.mark.parametrize("raw", _SPELLINGS)
 def test_provider_normalize_delegates_to_doi(provider, raw):
-    assert provider._normalize_doi(raw) == _doi.normalize(raw)
+    module, _canonical = provider
+    assert module._normalize_doi(raw) == _doi.normalize(raw)
 
 
 @pytest.mark.parametrize("raw", _SPELLINGS)
 def test_provider_canonical_delegates_to_doi(provider, raw):
-    assert provider.canonical_doi(raw) == _doi.canonical(raw)
+    _module, canonical = provider
+    assert canonical(raw) == _doi.canonical(raw)
 
 
 def test_delegation_anchors_on_a_real_value(provider):
     """One concrete expectation, so the delegation tests can't all pass vacuously."""
-    assert provider.canonical_doi("https://doi.org/10.1038/Nature12373") == "10.1038/nature12373"
+    _module, canonical = provider
+    assert canonical("https://doi.org/10.1038/Nature12373") == "10.1038/nature12373"

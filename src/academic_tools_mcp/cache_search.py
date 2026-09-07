@@ -21,8 +21,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import unquote
 
-from . import _doi, _textnorm, cache, papers
-from .providers import arxiv
+from . import _doi, _textnorm, cache, manual, papers
+from .providers import acl, arxiv, biorxiv
 
 # Enough to tell "variational dropout" from "dropout regularisation"; more is bloat.
 _SNIPPET_CHARS = 200
@@ -140,8 +140,13 @@ def _extract_snippet(
 # ---------------------------------------------------------------------------
 
 # A DOI suffix may legitimately contain "_", so only a slash a known prefix
-# introduced is decidable. These namespaces have exactly one such prefix.
-_NAMESPACE_DOI_PREFIXES = {"biorxiv": "10.1101/", "acl_anthology": "10.18653/v1/"}
+# introduced is decidable. These namespaces have exactly one such prefix, and
+# each provider is the one that spells it — same reason the arXiv grammar below
+# comes from `arxiv` rather than being respelled here.
+_NAMESPACE_DOI_PREFIXES = {
+    biorxiv.NAMESPACE: biorxiv.DOI_PREFIX,
+    acl.NAMESPACE: acl.ACL_DOI_PREFIX,
+}
 
 # manual holds publisher DOIs, not the freeform labels its name suggests.
 _MANUAL_DOI_STEM_RE = re.compile(rf"^({_doi.REGISTRANT_PATTERN})_")
@@ -166,9 +171,9 @@ def _filename_to_canonical(namespace: str, stem: str) -> str:
 
 def _restore_slashes(namespace: str, stem: str) -> str:
     """Undo ``safe_stem``'s ``"/" -> "_"`` mapping, as far as it is decidable."""
-    if namespace == "arxiv":
+    if namespace == arxiv.NAMESPACE:
         return _ARXIV_OLDSTYLE_STEM_RE.sub(r"\1/\2", stem, count=1)
-    if namespace == "manual":
+    if namespace == manual.NAMESPACE:
         return _MANUAL_DOI_STEM_RE.sub(r"\1/", stem, count=1)
     prefix = _NAMESPACE_DOI_PREFIXES.get(namespace, "")
     stemmed = prefix.replace("/", "_")

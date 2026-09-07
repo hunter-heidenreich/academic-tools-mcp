@@ -40,12 +40,13 @@ def _needs_stem_migration(stem: str) -> bool:
 _MIGRATABLE_SUFFIXES = frozenset({".pdf", ".md"})
 
 
-def _list_dir(path: Path) -> list[Path]:
+def list_dir(path: Path) -> list[Path]:
     """Directory entries, materialised; ``[]`` for anything unwalkable.
 
-    Materialised because the sweep renames files into the directory it walks.
-    Never raises: it runs inside the startup lifespan, where an unreadable cache
-    directory would otherwise stop the server.
+    The listing every startup sweep walks. Materialised because a sweep renames
+    files into the directory it is walking. Never raises: they all run inside
+    the startup lifespan, where an unreadable cache directory would otherwise
+    stop the server.
     """
     try:
         return sorted(path.iterdir())
@@ -66,9 +67,9 @@ def migrate_legacy_stems() -> int:
     markdown on the next read.
     """
     moved = 0
-    for namespace_dir in _list_dir(cache.CACHE_ROOT):
+    for namespace_dir in list_dir(cache.CACHE_ROOT):
         for entity in ("pdfs", "markdown"):
-            for path in _list_dir(namespace_dir / entity):
+            for path in list_dir(namespace_dir / entity):
                 # An in-flight ``.tmp`` still carries the destination's legacy
                 # stem; renaming it breaks the writer's ``os.replace``.
                 if path.suffix not in _MIGRATABLE_SUFFIXES:
