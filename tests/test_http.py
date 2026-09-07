@@ -3,6 +3,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -249,6 +250,48 @@ class TestJsonParseErrors:
     def test_includes_json_decode_error(self):
         # Single-homed so a new JSON provider can't forget one of the types.
         assert json.JSONDecodeError in _http.JSON_PARSE_ERRORS
+
+
+class TestAddressesARecord:
+    """The request-side guard `quote` cannot be: `.` and `..` are unreserved,
+    so no encoder escapes them, and RFC 3986 removes the segment *after*
+    encoding — the request then lands on a shorter, existing endpoint whose
+    answer caches under the key we asked for."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/works/doi:10.1234/x",
+            "/index/v2/references/doi:10.1038/nature12373",
+            "/works/doi:10.1234/a.b",  # a dot inside a segment is fine
+            "/works/doi:10.1234/%2E%2E",  # escaped: a normal segment
+            "/works/doi:10.1234/...",
+        ],
+    )
+    def test_a_path_naming_a_record_passes(self, path):
+        assert _http.addresses_a_record(f"https://example.org{path}") is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/works/doi:10.1234/..",
+            "/works/doi:10.1234/.",
+            "/works/doi:10.1234/a/../b",
+            "/index/v2/references/doi:10.1000/a/../../..",
+            "/works/doi:10.1234/a/",  # trailing slash: stops at a collection
+            "/works/",
+            "",
+        ],
+    )
+    def test_a_path_that_no_longer_names_one_is_refused(self, path):
+        assert _http.addresses_a_record(f"https://example.org{path}") is False
+
+    @pytest.mark.parametrize("path", ["/works/doi:10.1234/..", "/works/doi:10.1234/a/../b"])
+    def test_httpx_really_does_shorten_the_paths_it_refuses(self, path):
+        # The guard is only worth having if the resolution it anticipates is
+        # real; this is the half a hand-written expectation cannot assert.
+        url = f"https://example.org{path}"
+        assert urlsplit(str(httpx.URL(url))).path != urlsplit(url).path
 
 
 class TestExceptionTuple:

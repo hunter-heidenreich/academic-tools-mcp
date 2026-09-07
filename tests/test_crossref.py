@@ -447,6 +447,49 @@ class TestGetWorkForceRefresh:
 # ---------------------------------------------------------------------------
 
 
+class TestPathShorteningIsRefused:
+    """A `.`/`..` segment is *removed* by RFC 3986 resolution after encoding —
+    both characters are unreserved, so no `quote` escapes them. The shortened
+    path is the /works *collection*, whose 200 carries a work-list under a dict
+    `message`: it clears the shape ladder and caches as this DOI's work."""
+
+    @pytest.mark.parametrize("doi", ["10.1234/..", "10.1038/a/..", "10.1234/.", "10.1234/a/../b"])
+    @pytest.mark.asyncio
+    async def test_it_is_a_definitive_miss_costing_no_request(self, tmp_path, monkeypatch, doi):
+        _reset_crossref(monkeypatch, tmp_path)
+        recorder = _stub_json_responses(monkeypatch, _work_response())
+
+        result = await crossref.get_work(doi)
+
+        assert recorder.count == 0
+        assert result["not_found"] is True
+        assert "retryable" not in result
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_cached_for_it(self, tmp_path, monkeypatch):
+        # Uncached on purpose: no request was spent, so nothing was learned
+        # about the identifier worth holding for the negative TTL.
+        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, _work_response())
+
+        await crossref.get_work("10.1234/..")
+
+        assert cache.get(crossref.NAMESPACE, "works", "10.1234/..") is None
+        assert cache.get_negative(crossref.NAMESPACE, "works", "10.1234/..") is None
+
+    @pytest.mark.asyncio
+    async def test_an_escaped_dot_segment_is_a_normal_identifier(self, tmp_path, monkeypatch):
+        # The guard reads the *encoded* path, so a DOI whose suffix is a
+        # literal '%2E%2E' addresses a real record and must not be refused.
+        _reset_crossref(monkeypatch, tmp_path)
+        recorder = _stub_json_responses(monkeypatch, _work_response())
+
+        result = await crossref.get_work("10.1234/%2E%2E")
+
+        assert "error" not in result
+        assert recorder.count == 1
+
+
 class TestGetWorkNotFound:
     """The one branch writing a durable negative entry, and the only one that
     can carry `not_found` — the flag tools/graph.py forwards so an agent can

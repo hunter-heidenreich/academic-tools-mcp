@@ -110,15 +110,13 @@ def _parse_ids(raw: Any) -> dict[str, str]:
         return {}
     ids: dict[str, str] = {}
     for token in raw.split():
-        if ":" in token:
-            prefix, _, value = token.partition(":")
+        prefix, sep, value = token.partition(":")
+        # An empty value is dropped, not stored: `_format_record` flattens
+        # these to the record's top level and tools/graph.py forwards them
+        # verbatim, so a blank `doi` reads to an agent as a real identifier.
+        if sep and prefix and value:
             ids[prefix] = value
     return ids
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def _format_record(raw: dict[str, Any], id_field: str) -> dict[str, Any]:
@@ -149,28 +147,40 @@ async def _fetch_direction(
     """
     canonical = canonical_doi(doi)
 
+    not_found_error = f"No {kind} found on OpenCitations for DOI: {doi}"
+
     async def _fetch() -> dict[str, Any]:
         bare_doi = _normalize_doi(doi)
+        # Percent-encode the DOI so reserved characters (#, ?, …) aren't
+        # misread as a URL fragment/query and silently fetch the wrong
+        # record. The "doi:" scheme prefix and the DOI's own slash stay
+        # literal (safe="/").
+        url = f"{OPENCITATIONS_BASE_URL}/{kind}/doi:{quote(bare_doi, safe='/')}"
+
+        # Two ways the path stops naming this DOI's edges, neither of them
+        # something `quote` can prevent. A `.`/`..` segment is *removed* by
+        # RFC 3986 resolution, shortening the path to another endpoint that
+        # answers 200 with a *valid* empty list — which would then cache as
+        # this DOI's edges for the full positive TTL. And the `doi:` prefix
+        # keeps the last segment non-empty, so an identifier that normalized
+        # to nothing gets past `addresses_a_record` and asks upstream about
+        # `doi:`. Both are refused before the request is spent, so there is
+        # nothing to cache.
+        if not bare_doi or not _http.addresses_a_record(url):
+            return {"error": not_found_error, "not_found": True}
 
         try:
             client = _get_client()
-            response = await _throttled_get(
-                client,
-                # Percent-encode the DOI so reserved characters (#, ?, …)
-                # aren't misread as a URL fragment/query and silently fetch
-                # the wrong record. The "doi:" scheme prefix and the DOI's
-                # own slash stay literal (safe="/").
-                f"{OPENCITATIONS_BASE_URL}/{kind}/doi:{quote(bare_doi, safe='/')}",
-            )
+            response = await _throttled_get(client, url)
 
             if response.status_code == 404:
-                # ``not_found: True`` as every sibling's 404 carries: the entry
-                # is negative-cached, so it is definitive, and tools/graph.py
-                # forwards the flag to tell absent from transiently unavailable.
-                err = {
-                    "error": f"No {kind} found on OpenCitations for DOI: {doi}",
-                    "not_found": True,
-                }
+                # Rare: an unknown-but-well-formed DOI answers 200 with an
+                # empty list (see below), so this covers a malformed path or
+                # a route change. ``not_found: True`` as every sibling's 404
+                # carries — the entry is negative-cached, so it is
+                # definitive, and tools/graph.py forwards the flag to tell
+                # absent from transiently unavailable.
+                err = {"error": not_found_error, "not_found": True}
                 cache.put_negative(NAMESPACE, kind, canonical, err)
                 return err
 
@@ -190,6 +200,10 @@ async def _fetch_direction(
             # an empty result for the TTL).
             return _parse_error_dict()
 
+        # An empty list is a real answer, not a miss: OpenCitations answers a
+        # DOI it has never indexed and a DOI it indexed with zero edges
+        # identically, so it cannot tell the two apart and neither can we.
+        # Positive-cached like any other result — never negative-cached.
         formatted = [_format_record(r, id_field) for r in records if isinstance(r, dict)]
         data: dict[str, Any] = {kind: formatted, "count": len(formatted)}
 
@@ -206,6 +220,11 @@ async def _fetch_direction(
         force_refresh=force_refresh,
         sf_key=(kind, canonical),
     )
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 
 async def get_references(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:

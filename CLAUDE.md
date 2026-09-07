@@ -44,6 +44,7 @@ Properties of the upstream providers, not defects in this tool — don't "fix" t
 
 - **Author diacritics dropped or mangled** by OpenAlex (`Alan Aspuru-Guzik` for `Alán Aspuru-Guzik`).
 - **Current vs. paper-time institution.** OpenAlex reports an author's *present* affiliation, not their affiliation at publication time.
+- **An empty OpenCitations result is not a claim of absence.** It answers an unindexed DOI and a DOI with zero edges identically — 200 with `[]`, never a 404 — so the graph tools' `total: 0` means "no edges in this index". Not something to "fix" into a definitive miss.
 - **Preprint vs. published author sets diverge.** arXiv and the published DOI can list different authors for the same work. `follow_published=True` chains preprint → journal, but only once OpenAlex has indexed the journal version; otherwise the response carries `followed_published: false`. Batch `get_papers_metadata` doesn't support it — chain per-paper.
 
 ## APIs NOT to Use

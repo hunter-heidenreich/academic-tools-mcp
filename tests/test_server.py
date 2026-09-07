@@ -303,6 +303,22 @@ class TestReferencesAutoSource:
         assert cr_called is False, "explicit source must not trigger the survey of the other source"
 
     @pytest.mark.asyncio
+    async def test_an_explicit_source_surfaces_its_error_with_a_suggestion(self, monkeypatch):
+        # No survivor to fall back on when the agent pinned the source, so the
+        # provider's structured error has to reach the agent intact — and
+        # `not_found` must survive, since that is what says "stop retrying".
+        async def fake_oc(doi, **kwargs):
+            return {"error": "No references found on OpenCitations", "not_found": True}
+
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.1234/x", source="opencitations")
+
+        assert result["not_found"] is True
+        assert "suggestion" in result
+        assert "references" not in result
+
+    @pytest.mark.asyncio
     async def test_auto_prefers_crossref_on_near_tie(self, monkeypatch):
         # OpenCitations has one more entry, but Crossref's richer per-row
         # metadata should win the near-tie — OpenCitations only takes over
@@ -1110,6 +1126,22 @@ class TestCitationsSourceParam:
         import inspect
 
         assert "source" not in inspect.signature(server.get_paper_citations).parameters
+
+    @pytest.mark.asyncio
+    async def test_a_provider_error_reaches_the_agent_with_a_suggestion(self, monkeypatch):
+        # OpenCitations is the only source of incoming citations, so there is
+        # no survivor: its error is the whole response, and a retryable one
+        # must stay flagged as such rather than reading as an empty page.
+        async def fake_oc(doi, **kwargs):
+            return {"error": "OpenCitations is unreachable", "retryable": True}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations("10.1234/x")
+
+        assert result["retryable"] is True
+        assert "suggestion" in result
+        assert "citations" not in result
 
     @pytest.mark.asyncio
     async def test_count_missing_count_key_is_zero(self, monkeypatch):
