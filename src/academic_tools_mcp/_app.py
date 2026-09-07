@@ -354,7 +354,8 @@ CONVERT_MODE = Annotated[
         description=(
             "Conversion backend. 'full' (default) runs the heavy converter "
             "(MinerU/Marker) for high-quality markdown with tables/equations, "
-            "but is slow (minutes) and serialised server-wide — only one runs "
+            "but is slow (minutes to tens of minutes, capped by "
+            "PDF_CONVERT_TIMEOUT) and serialised server-wide — only one runs "
             "at a time, others get a retryable 'busy' error. 'fast' runs a "
             "lightweight text extractor (pdftotext/pymupdf) outside that lock: "
             "seconds, never 'busy', but DEGRADED — plain text only, no tables, "
