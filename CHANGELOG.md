@@ -41,6 +41,13 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Reading a paper's section index inflated the cache-hit counter.** The
+  sections cache is checksum-validated, not age-validated, and a read of it
+  goes to no provider — but it booked a `cache_hits` anyway, including on
+  entries it then rejected as stale and re-parsed. That blended "avoided an
+  HTTP call" with "avoided a re-parse" in one per-namespace counter. Operator
+  -visible only, through `get_server_stats`. ([#93])
+
 - **A malformed `PDF_CONVERTER` could still crash `convert_paper`.** The
   translation to a `{error, retryable: False}` response caught `KeyError`,
   `IndexError` and `ValueError`, but `str.format`'s failure set is open — an

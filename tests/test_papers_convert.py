@@ -51,7 +51,7 @@ class TestConvertPdfCachePaths:
         return md_path
 
     @pytest.mark.asyncio
-    async def test_uses_cached_sections_when_checksum_matches(
+    async def test_serves_cached_markdown_without_the_subprocess(
         self, isolated_cache, fail_if_subprocess
     ):
         ns, canonical = "test", "doc-1"

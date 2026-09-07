@@ -51,8 +51,8 @@ _section_locks: "OrderedDict[tuple[str, str], asyncio.Lock]" = OrderedDict()
 def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
     """Return the async lock guarding the sections cache for one paper.
 
-    Adding/looking up under the GIL is atomic, so racing constructors are safe:
-    only one Lock wins, the other is discarded uncontended.
+    Nothing here awaits, so a caller cannot be interleaved mid-insert; the
+    ``setdefault`` keeps that true for free if one ever could be.
 
     **Invariant: this map is the only owner of a lock across an await.** Every
     caller writes ``async with sections_lock(...)`` as one expression, and
@@ -116,8 +116,8 @@ async def _reparse_sections_locked(
     the shared core behind ``get_or_parse_sections`` and ``convert_pdf``'s
     cached-markdown branch, which both hold the lock for the surrounding work).
 
-    Returns ``{sections, markdown_checksum, conversion_mode}`` or ``None`` when
-    the markdown is missing — covering both "never converted" and the race where
+    Returns ``{sections, sections_detected, markdown_checksum, conversion_mode}``
+    or ``None`` when the markdown is missing — covering both "never converted" and the race where
     a concurrent ``force_refresh`` cascade unlinks the file after an ``exists()``
     check (every unlinker holds this same lock, so a successful read means the
     file is stable for the rest of this call).
@@ -135,7 +135,10 @@ async def _reparse_sections_locked(
         return None
     current_checksum = checksum_text(text)
 
-    cached = cache.get(namespace, "sections", sections_key(canonical))
+    # count=False: cache_hits means "a lookup was served instead of going
+    # upstream". A sections read went to no provider, and a stale entry here is
+    # re-parsed anyway — booking it would be a hit that did the work regardless.
+    cached = cache.get(namespace, "sections", sections_key(canonical), count=False)
     if cached is not None:
         stored_checksum = cached.get("markdown_checksum")
         if (
@@ -175,8 +178,8 @@ async def get_or_parse_sections(
     Re-parses the markdown if the section index is missing or its checksum
     no longer matches. Acquires the per-paper ``sections_lock`` and delegates to
     ``_reparse_sections_locked``. Returns the sections payload
-    (``{sections, markdown_checksum, conversion_mode}``) or ``None`` when the
-    paper isn't converted (no markdown on disk). ``force_refresh=True`` drops
+    (``{sections, sections_detected, markdown_checksum, conversion_mode}``) or
+    ``None`` when the paper isn't converted (no markdown on disk). ``force_refresh=True`` drops
     the cached section index first so the next read re-parses.
     """
     md_path = markdown_path(namespace, canonical)
@@ -204,9 +207,7 @@ def store_markdown_and_index(
     ``sections_detected``, ``markdown_checksum`` and ``conversion_mode``. A
     missing ``sections_detected`` costs a re-parse; a wrong one reaches the
     agent as truth — a heading-free paper reported as having one real section,
-    the exact reading ``sections_note`` exists to prevent. (Guarded by
-    tests/test_manual.py::TestImportMarkdown::
-    test_cached_sections_carry_every_key_a_conversion_writes.)
+    the exact reading ``sections_note`` exists to prevent.
 
     ``mode`` is the provenance tag: ``"full"`` / ``"fast"`` for converter
     output, ``"imported"`` for a pre-converted file that never ran through one.
