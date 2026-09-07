@@ -1350,8 +1350,8 @@ class TestEveryErrorNamesItsMode:
         [
             ("mytool {nope}", None, False),  # malformed template
             ("mytool {input}", None, True),  # spawn failure
-            ("mytool {input}", dict(returncode=3, stderr=b"boom"), False),  # non-zero exit
-            ("mytool {input}", dict(returncode=0, stdout=b"   "), False),  # no text
+            ("mytool {input}", {"returncode": 3, "stderr": b"boom"}, False),  # non-zero exit
+            ("mytool {input}", {"returncode": 0, "stdout": b"   "}, False),  # no text
         ],
     )
     @pytest.mark.asyncio
@@ -1375,8 +1375,8 @@ class TestEveryErrorNamesItsMode:
         [
             ("mytool {nope}", None, False),
             ("mytool {input}", None, True),
-            ("mytool {input} {output_dir}", dict(returncode=3, stderr=b"boom"), False),
-            ("mytool {input} {output_dir}", dict(returncode=0), False),  # no markdown
+            ("mytool {input} {output_dir}", {"returncode": 3, "stderr": b"boom"}, False),
+            ("mytool {input} {output_dir}", {"returncode": 0}, False),  # no markdown
         ],
     )
     @pytest.mark.asyncio
