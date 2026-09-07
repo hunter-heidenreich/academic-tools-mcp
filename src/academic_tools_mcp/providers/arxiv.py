@@ -23,19 +23,12 @@ from .. import (
 )
 from .._throttle import Throttle
 
-# Parsing the arXiv Atom feed can fail two ways: a malformed/truncated body
-# (``ET.ParseError``) or a hostile entity-expansion payload that defusedxml
-# refuses to expand (``DefusedXmlException``). Both are handled alongside the
-# HTTP errors so the tool always returns the uniform ``{error}`` contract.
+# Both are transient, not "not found" — .claude/rules/providers.md § arxiv.py.
 _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
 
 
 def _parse_error_dict() -> dict[str, Any]:
-    """Fresh structured error for an unparseable arXiv response.
-
-    Delegates to ``_http.parse_error_dict``, the single home for the shape;
-    ``detail`` carries the one arXiv-specific part — it speaks XML, not JSON.
-    """
+    """Fresh structured error for an unparseable arXiv response — it speaks XML, not JSON."""
     return _http.parse_error_dict("arXiv", detail="could not be parsed as XML")
 
 
@@ -47,41 +40,28 @@ _ATOM_NS = "http://www.w3.org/2005/Atom"
 _ARXIV_NS = "http://arxiv.org/schemas/atom"
 _OPENSEARCH_NS = "http://a9.com/-/spec/opensearch/1.1/"
 
-# Rate limiting: max 1 request per 3 seconds, single connection. arXiv's
-# documented "single connection" rule means concurrency=1. Burst cap of 5:
-# with a 3s gap, 5 pending = 15s of agent-blocking — past that we back off
-# rather than queue forever (the 6th caller gets a structured backpressure
-# error). The gating mechanism itself lives in ``_throttle.Throttle``.
+# concurrency=1 is arXiv's documented "single connection" rule; 5 pending at a
+# 3s gap is 15s of agent-blocking, past which callers get backpressure.
 _MAX_CONCURRENT = 1
 _MIN_REQUEST_GAP = 3.0
 _MAX_PENDING = 5
 
-# Coalesces concurrent calls for the same canonical paper ID into one
-# fetch. Without this, 4 parallel unified-paper tools (metadata, authors,
-# abstract, bibtex) for one arXiv ID would each hit the network.
 _single_flight = _singleflight.SingleFlight()
 
-# Shorter than the cache.py default 24h. arXiv IDs go live mid-session
-# (a paper just announced an hour ago) and an agent that 404'd at 9am
-# should surface the new entry by 10am, not tomorrow at 9am.
+# Short: an arXiv id goes live mid-session, so a 404 at 9am should clear by 10am.
 _NEG_TTL_SECONDS = 3600.0
 
-# Definitive PDF-download failures share that 1h TTL, for the same reason plus
-# one of its own: arXiv renders PDFs lazily, so a freshly-announced paper's PDF
-# can 404 for minutes after its metadata is live.
+# Cache entity for definitive PDF-download failures, on that same short TTL.
 _NEG_ENTITY = "downloads"
 
 # PDF downloads are larger than a metadata call; use a generous timeout.
 _PDF_TIMEOUT_SECONDS = 60.0
 
-# Upper bound on a single search page. Exported so the ``search_arxiv`` tool's
-# validation bound is this number rather than a second spelling of it.
+# Exported so ``search_arxiv``'s validation bound isn't a second spelling of it.
 MAX_SEARCH_RESULTS = 50
 
-# Positive cache TTL. arXiv records are stable per-version, but a bare id
-# keys on "whatever is current", so an entry cached today wouldn't reflect a
-# revision uploaded next week. 14 days is long enough that an active session
-# keeps hitting cache and short enough that revisions surface.
+# Long: a record is stable per version. Short enough that a revision still
+# surfaces under a bare ("whatever is current") key.
 _POSITIVE_TTL_SECONDS = 14 * 86400.0
 
 

@@ -56,6 +56,8 @@ The *shape* is `is_arxiv_id`, public beside it: `manual`'s two dispatchers route
 
 **arXiv answers with HTTP 200 and a synthetic `api/errors` entry for both an invalid id *and* a malformed `search_query`.** `_is_error_entry` is shared so `get_paper` and `search_papers` classify it identically — as not-found and as a non-retryable query rejection respectively. Parsed as a normal entry it becomes a "hit" whose id is an errors URL, which the agent then chains the next tool call onto.
 
+**The positive TTL is long (14 days) because an arXiv record is stable per version** — but a bare id keys on *whatever is current*, so it is not unbounded: a revision uploaded next week has to surface without a `force_refresh`.
+
 **arXiv raises `retry_attempts` above the shared default.** arXiv's Fastly edge returns 429/503 with no `Retry-After` when an IP is briefly penalty-boxed, and one retry tends to land in the same cooldown; two ride `get_with_retry`'s backoff out of it.
 
 **XML is parsed with `defusedxml`**, so an entity-expansion payload is refused rather than expanded; the refusal joins `ET.ParseError` in `_PARSE_ERRORS` and is transient, not not-found. `get_paper` and `search_papers` share it.
