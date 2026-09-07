@@ -11,6 +11,9 @@ from .._throttle import Throttle
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
 
+# Agent-facing provider name; every site that names us reads it (providers.md).
+LABEL = "OpenCitations"
+
 _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
@@ -21,7 +24,7 @@ def _get_client() -> httpx.AsyncClient:
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable OpenCitations response."""
-    return _http.parse_error_dict("OpenCitations")
+    return _http.parse_error_dict(LABEL)
 
 
 # 180 req/min documented. Concurrency of 2 so a graph traversal's references
@@ -38,25 +41,16 @@ _POSITIVE_TTL_SECONDS = 7 * 86400.0
 
 _throttle = Throttle(
     namespace=NAMESPACE,
-    label="OpenCitations",
+    label=LABEL,
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
 )
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET respecting OpenCitations' rate limit (see ``Throttle.get``)."""
-    return await _throttle.get(client, url, **kwargs)
-
-
-def _normalize_doi(doi: str) -> str:
-    """Normalize a DOI to bare form (e.g., 10.1234/example).
-
-    Thin wrapper over :mod:`_doi`, the single home for this logic — a local
-    copy lands one paper under several cache keys.
-    """
-    return _doi.normalize(doi)
+async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
+    """GET at OpenCitations' rate. Url-only: ``_get_client`` is the only place to configure it."""
+    return await _throttle.get(_get_client(), url, **kwargs)
 
 
 def canonical_doi(doi: str) -> str:
@@ -94,6 +88,19 @@ def _format_record(raw: dict[str, Any], id_field: str) -> dict[str, Any]:
     return record
 
 
+def _edges_of(records: Any, *, kind: str, id_field: str) -> dict[str, Any] | None:
+    """``{kind: [...], count: N}`` from a raw index response, or ``None``.
+
+    ``None`` is a wrong *shape* — anything not a list. Non-dict items are
+    skipped and ``count`` follows the survivors. An empty list is a real
+    answer, not a miss (providers.md) — don't turn it into one.
+    """
+    if not isinstance(records, list):
+        return None
+    formatted = [_format_record(r, id_field) for r in records if isinstance(r, dict)]
+    return {kind: formatted, "count": len(formatted)}
+
+
 async def _fetch_direction(
     doi: str, *, kind: str, id_field: str, force_refresh: bool
 ) -> dict[str, Any]:
@@ -107,7 +114,7 @@ async def _fetch_direction(
     not_found_error = f"No {kind} found on OpenCitations for DOI: {doi}"
 
     async def _fetch() -> dict[str, Any]:
-        bare_doi = _normalize_doi(doi)
+        bare_doi = _doi.normalize(doi)
         # safe="/" keeps the "doi:" prefix and the DOI's own slash literal.
         url = f"{OPENCITATIONS_BASE_URL}/{kind}/doi:{quote(bare_doi, safe='/')}"
 
@@ -116,16 +123,15 @@ async def _fetch_direction(
         # `addresses_a_record`. Both shorten the path to a live endpoint whose
         # answer would cache under this DOI's key.
         if not bare_doi or not _http.addresses_a_record(url):
-            return {"error": not_found_error, "not_found": True}
+            return _http.not_found(not_found_error)
 
         try:
-            client = _get_client()
-            response = await _throttled_get(client, url)
+            response = await _throttled_get(url)
 
             if response.status_code == 404:
                 # Rare — an unknown DOI answers 200 with [] (see below) — but
                 # the only branch here that can carry `not_found: True`.
-                err = {"error": not_found_error, "not_found": True}
+                err = _http.not_found(not_found_error)
                 cache.put_negative(NAMESPACE, kind, canonical, err)
                 return err
 
@@ -135,17 +141,11 @@ async def _fetch_direction(
             # Transient, so uncached: a retry re-fetches.
             return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
-            return _http.error_dict("OpenCitations", e)
+            return _http.error_dict(LABEL, e)
 
-        if not isinstance(records, list):
-            # Wrong shape, not an empty result — never cached for the TTL.
+        data = _edges_of(records, kind=kind, id_field=id_field)
+        if data is None:
             return _parse_error_dict()
-
-        # An empty list is a real answer: OpenCitations answers "never indexed"
-        # and "indexed with zero edges" identically, so it is cached like any
-        # other result rather than treated as a miss.
-        formatted = [_format_record(r, id_field) for r in records if isinstance(r, dict)]
-        data: dict[str, Any] = {kind: formatted, "count": len(formatted)}
 
         cache.put(NAMESPACE, kind, canonical, data)
         return data

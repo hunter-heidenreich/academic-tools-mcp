@@ -444,7 +444,9 @@ class TestGetWorkDoiEncoding:
         assert "%23" in path
         assert "#" not in path
 
-    @pytest.mark.parametrize("dotted", ["10.1000/.", "10.1000/a/..", "10.1000/../b"])
+    @pytest.mark.parametrize(
+        "dotted", ["10.1000/.", "10.1000/a/..", "10.1000/../b", "", "   ", "doi:", "DOI: "]
+    )
     @pytest.mark.asyncio
     async def test_a_dot_segment_suffix_is_rejected_before_any_request(self, monkeypatch, dotted):
         """The `doi:` prefix protects the first segment only — a `.`/`..` in the
@@ -456,6 +458,19 @@ class TestGetWorkDoiEncoding:
 
         assert result["not_found"] is True
         assert requests == []
+
+    @pytest.mark.asyncio
+    async def test_an_empty_doi_is_not_negative_cached_under_the_empty_key(self, monkeypatch):
+        """The `doi:` prefix keeps the last path segment non-empty, so
+        `addresses_a_record` alone passes `/works/doi:` — a spent request whose
+        404 would then negative-cache every blank identifier as one entry."""
+        requests = _stub_json_responses(monkeypatch, _work_response())
+
+        result = await openalex.get_work("doi: ")
+
+        assert result["not_found"] is True
+        assert requests == []
+        assert cache.get_negative(openalex.NAMESPACE, "works", "") is None
 
     @pytest.mark.asyncio
     async def test_preserves_slash_in_doi(self, monkeypatch):

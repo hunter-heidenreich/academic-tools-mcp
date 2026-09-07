@@ -6,7 +6,10 @@ and that an explicit server-side back-off instruction is obeyed in either
 form RFC 9110 permits.
 """
 
+import ast
 import importlib
+import inspect
+import pathlib
 import pkgutil
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -74,6 +77,50 @@ class TestEveryProviderIdentifiesItself:
         # which does not exist — defeating the purpose of a contact URL.
         ua = module._get_client().headers.get("user-agent", "")
         assert "github.com/hunter-heidenreich/academic-tools-mcp" in ua
+
+
+# Where a provider's own name is passed. A literal at any of these is a
+# second spelling of LABEL.
+_NAME_POSITIONAL = {"error_dict": 0, "parse_error_dict": 0}
+_NAME_KEYWORDS = ("provider_label", "label")
+
+
+def _hardcoded_name_sites(module):
+    """Every site in *module* passing a string literal where ``LABEL`` belongs."""
+    tree = ast.parse(pathlib.Path(inspect.getfile(module)).read_text(encoding="utf-8"))
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        attr = node.func.attr if isinstance(node.func, ast.Attribute) else None
+        index = _NAME_POSITIONAL.get(attr)
+        if (
+            index is not None
+            and len(node.args) > index
+            and isinstance(node.args[index], ast.Constant)
+        ):
+            bad.append(f"{attr}(...) line {node.lineno}")
+        for kw in node.keywords:
+            if kw.arg in _NAME_KEYWORDS and isinstance(kw.value, ast.Constant):
+                bad.append(f"{kw.arg}= line {kw.value.lineno}")
+    return bad
+
+
+class TestTheProviderNameHasOneHome:
+    """Four sites name the provider and must agree. Three take the name as a
+    plain argument, so only a source scan can compare them; ``test_stats.py``
+    pins the fourth (``Throttle(label=)``) at runtime."""
+
+    @pytest.mark.parametrize(("name", "module"), _ALL_CLIENTS)
+    def test_module_defines_a_label(self, name, module):
+        assert isinstance(getattr(module, "LABEL", None), str) and module.LABEL, (
+            f"{name} holds a client but no LABEL"
+        )
+
+    @pytest.mark.parametrize(("name", "module"), _ALL_CLIENTS)
+    def test_no_site_hardcodes_the_provider_name(self, name, module):
+        sites = _hardcoded_name_sites(module)
+        assert not sites, f"{name} spells its own name instead of LABEL at: {sites}"
 
 
 class TestCrossrefPoolSelection:

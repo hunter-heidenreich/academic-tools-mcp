@@ -18,6 +18,9 @@ from .providers import openalex
 
 NAMESPACE = "oa_download"
 
+# Agent-facing provider name; every site that names us reads it (providers.md).
+LABEL = "OA download"
+
 
 def _get_client() -> httpx.AsyncClient:
     """Return the pooled AsyncClient for open-access download calls.
@@ -57,7 +60,7 @@ _IMPORT_SUGGESTION = (
 
 _throttle = Throttle(
     namespace=NAMESPACE,
-    label="OA download",
+    label=LABEL,
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
@@ -105,7 +108,7 @@ async def _resolve_and_download(
         dest,
         slot_factory=lambda: _request_slot(url),
         namespace=NAMESPACE,
-        provider_label="OA download",
+        provider_label=LABEL,
         timeout=_PDF_TIMEOUT_SECONDS,
         require_pdf=True,
         not_found_message=(f"Open-access PDF not found at {url} for {identifier}"),

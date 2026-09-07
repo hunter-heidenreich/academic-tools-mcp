@@ -84,6 +84,33 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A bioRxiv/medRxiv DOI containing a `.` or `..` segment no longer caches an
+  unrelated preprint as that paper.** The DOI is interpolated *mid-path* into
+  `/details/{server}/{doi}/na/json`, and both characters are unreserved, so
+  percent-encoding leaves them and RFC 3986 then removes the segment —
+  `get_paper_metadata("10.1101/x/..")` requested `/details/biorxiv/na/json`,
+  the interval/cursor form of the same endpoint, whose 200 carries a
+  well-formed collection. The newest entry in it was parsed and cached as the
+  requested DOI's paper for the full 7-day TTL. A DOI that normalizes to a
+  bare `10.1101/` left an empty segment for a related effect. Both are now
+  refused before the request is spent, returning the same `not_found` a
+  genuine miss does and caching nothing. ([#101])
+
+- **An OpenAlex lookup for a DOI that normalizes to nothing no longer spends a
+  request or poisons the empty cache key.** `get_work` builds
+  `/works/doi:{doi}`, and the `doi:` prefix keeps the last path segment
+  non-empty — so the existing guard passed, the request went out, and the 404
+  was negative-cached under the empty string, where every later blank
+  identifier found it. Reachable without a malformed tool call: a bioRxiv
+  record whose upstream `published` field is a bare `doi:` is chained straight
+  into `get_work` by `follow_published`. ([#101])
+
+- **`download_pdf` on a non-ACL DOI now says the identifier is definitively
+  wrong, not merely unknown.** The rejection carried neither `not_found` nor
+  `retryable`, and every consumer that classifies an error — the graph tools'
+  `partial_failure`, the open-access path's "import it yourself" suggestion —
+  reads an unflagged error as transient. ([#101])
+
 - **A Wikipedia title of `.` or `..` no longer caches the REST API's endpoint
   listing as that article's summary.** Both characters are unreserved, so
   percent-encoding leaves them and RFC 3986 then *removes* the path segment:
@@ -2417,3 +2444,4 @@ grouped by milestone rather than per commit.
 [#98]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/98
 [#99]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/99
 [#100]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/100
+[#101]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/101

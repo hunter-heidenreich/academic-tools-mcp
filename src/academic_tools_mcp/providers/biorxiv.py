@@ -12,6 +12,9 @@ from .. import _clients, _doi, _http, _pdf_download, _singleflight, _stems, _use
 from .._throttle import Throttle
 
 NAMESPACE = "biorxiv"
+
+# Agent-facing provider name; every site that names us reads it (providers.md).
+LABEL = "bioRxiv"
 _BASE_URL = "https://api.biorxiv.org"
 
 _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
@@ -19,7 +22,7 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable bioRxiv response."""
-    return _http.parse_error_dict("bioRxiv")
+    return _http.parse_error_dict(LABEL)
 
 
 def _get_client() -> httpx.AsyncClient:
@@ -57,7 +60,7 @@ _POSITIVE_TTL_SECONDS = 7 * 86400.0
 
 _throttle = Throttle(
     namespace=NAMESPACE,
-    label="bioRxiv",
+    label=LABEL,
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
@@ -69,9 +72,9 @@ def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
     return _throttle.slot(url)
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET respecting bioRxiv's polite rate limit (see ``Throttle.get``)."""
-    return await _throttle.get(client, url, **kwargs)
+async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
+    """GET at bioRxiv's rate. Url-only: ``_get_client`` is the only place to configure it."""
+    return await _throttle.get(_get_client(), url, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -258,16 +261,20 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """
     bare = _normalize_doi(doi)
     canonical = bare.lower()
+    not_found_error = f"No paper found for DOI: {doi}"
 
     async def _fetch() -> dict[str, Any]:
-        try:
-            client = _get_client()
-            # Quoted so a reserved character in the DOI can't split the path.
-            path_doi = quote(bare, safe="/")
+        # Quoted so a reserved character in the DOI can't split the path.
+        path_doi = quote(bare, safe="/")
+        biorxiv_url = f"{_BASE_URL}/details/biorxiv/{path_doi}/na/json"
 
-            response = await _throttled_get(
-                client, f"{_BASE_URL}/details/biorxiv/{path_doi}/na/json"
-            )
+        # The DOI is a middle segment, so an empty one needs catching too;
+        # both shorten the path to a live route (providers.md). Uncached.
+        if "" in bare.split("/") or not _http.addresses_a_record(biorxiv_url):
+            return _http.not_found(not_found_error)
+
+        try:
+            response = await _throttled_get(biorxiv_url)
             response.raise_for_status()
             collection = _collection_of(response.json())
 
@@ -279,9 +286,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
                 # through here too: medRxiv may still answer cleanly. (A body
                 # that doesn't parse at all never reaches this branch — it
                 # raises out to `_PARSE_ERRORS` at `.json()`.)
-                response = await _throttled_get(
-                    client, f"{_BASE_URL}/details/medrxiv/{path_doi}/na/json"
-                )
+                response = await _throttled_get(f"{_BASE_URL}/details/medrxiv/{path_doi}/na/json")
                 response.raise_for_status()
                 fallback = _collection_of(response.json())
 
@@ -291,7 +296,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
                     # established, so stay retryable and cache nothing.
                     if collection is None or fallback is None:
                         return _parse_error_dict()
-                    err = {"error": f"No paper found for DOI: {doi}", "not_found": True}
+                    err = _http.not_found(not_found_error)
                     cache.put_negative(
                         NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS
                     )
@@ -305,7 +310,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             # surface a retryable error and do NOT negative-cache it.
             return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
-            return _http.error_dict("bioRxiv", e)
+            return _http.error_dict(LABEL, e)
 
         cache.put(NAMESPACE, "papers", canonical, paper)
         return paper
@@ -357,7 +362,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             dest,
             slot_factory=lambda: _request_slot(pdf_url),
             namespace=NAMESPACE,
-            provider_label="bioRxiv",
+            provider_label=LABEL,
             timeout=_PDF_TIMEOUT_SECONDS,
             not_found_message=f"PDF not found for DOI: {doi}",
         )

@@ -178,17 +178,21 @@ class TestIdempotence:
 # Provider wrapper delegation
 # ---------------------------------------------------------------------------
 
-# `openalex`, `crossref` and `opencitations` each expose a `_normalize_doi` /
-# `canonical_doi` pair that is pure delegation — the indirection exists so the
-# tool layer imports a provider symbol, not `_doi` directly. What matters is
-# that they *delegate*; re-deriving `_doi`'s behaviour once per provider says
-# nothing extra and rots into three copies of the same expectations.
+# `openalex`, `crossref`, `opencitations` and `acl` each expose a *public*
+# canonicalizer that is pure delegation to `_doi.canonical` — the indirection
+# exists so the tool layer imports a provider symbol, not `_doi` directly
+# (`tools/paper.py` and `manual._ROUTES` both do). What matters is that they
+# *delegate*; re-deriving `_doi`'s behaviour once per provider says nothing
+# extra and rots into four copies of the same expectations.
 #
-# `acl` belongs here too: its Anthology-prefix policy lives in
-# `_strip_acl_prefix`, so its `_normalize_doi` is the same pure delegation.
-# `biorxiv` is the one deliberate absence — `_normalize_doi` layers a content
-# URL and a version-stripping rule on top of `_doi.normalize`, so equality is
-# not its contract. `test_biorxiv_properties.py` states what is.
+# There is deliberately no `_normalize_doi` half to this: the private wrappers
+# were pure aliases with one caller each, and the rationale above never applied
+# to them. `acl`'s Anthology-prefix policy lives in `_strip_acl_prefix`, not in
+# a normalizer. `biorxiv` is the one provider that keeps a `_normalize_doi`,
+# because it layers a content URL and a version-stripping rule on top of
+# `_doi.normalize` — equality is not its contract, and
+# `test_biorxiv_properties.py` states what is.
+#
 # (module, the name that provider gives its cache-key wrapper). The two
 # spellings are the router's: `manual._ROUTES` passes `canonical_key` for the
 # DOI-prefix providers.
@@ -218,12 +222,6 @@ def provider(request):
     name, canonical_attr = request.param
     module = import_module(f"academic_tools_mcp.providers.{name}")
     return module, getattr(module, canonical_attr)
-
-
-@pytest.mark.parametrize("raw", _SPELLINGS)
-def test_provider_normalize_delegates_to_doi(provider, raw):
-    module, _canonical = provider
-    assert module._normalize_doi(raw) == _doi.normalize(raw)
 
 
 @pytest.mark.parametrize("raw", _SPELLINGS)

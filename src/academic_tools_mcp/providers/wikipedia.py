@@ -14,6 +14,9 @@ from .._throttle import Throttle
 
 NAMESPACE = "wikipedia"
 
+# Agent-facing provider name; every site that names us reads it (providers.md).
+LABEL = "Wikipedia"
+
 _OPENSEARCH_URL = "https://en.wikipedia.org/w/api.php"
 _SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary"
 
@@ -25,7 +28,7 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable Wikipedia response."""
-    return _http.parse_error_dict("Wikipedia")
+    return _http.parse_error_dict(LABEL)
 
 
 # ~1 req/sec keeps the sustained rate well inside the 1,000/hour reader tier;
@@ -56,16 +59,16 @@ def _get_client() -> httpx.AsyncClient:
 
 _throttle = Throttle(
     namespace=NAMESPACE,
-    label="Wikipedia",
+    label=LABEL,
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
 )
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET respecting Wikipedia's polite rate limit (see ``Throttle.get``)."""
-    return await _throttle.get(client, url, **kwargs)
+async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
+    """GET at Wikipedia's rate. Url-only: ``_get_client`` is the only place to configure it."""
+    return await _throttle.get(_get_client(), url, **kwargs)
 
 
 def canonical_title(title: str) -> str:
@@ -96,9 +99,7 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
     capped = min(max(limit, 1), MAX_SEARCH_LIMIT)
 
     try:
-        client = _get_client()
         response = await _throttled_get(
-            client,
             _OPENSEARCH_URL,
             params={
                 "action": "opensearch",
@@ -113,7 +114,7 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
     except _PARSE_ERRORS:
         return _parse_error_dict()
     except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("Wikipedia", e)
+        return _http.error_dict(LABEL, e)
 
     # OpenSearch returns [query, [titles], [descriptions], [urls]].
     if not isinstance(data, list) or len(data) < 4:
@@ -154,6 +155,24 @@ def _desktop_page_url(content_urls: Any) -> str:
     return page if isinstance(page, str) else ""
 
 
+def _summary_of(data: Any) -> dict[str, Any] | None:
+    """The slice of a REST summary this tool returns, or ``None`` for a wrong shape.
+
+    ``Any``: the ``get`` calls raise ``AttributeError`` on a scalar body, which
+    no ``except`` here catches. A wrong shape is never an empty page.
+    """
+    if not isinstance(data, dict):
+        return None
+    return {
+        "title": data.get("title", ""),
+        "description": data.get("description"),
+        "extract": data.get("extract", ""),
+        "url": _desktop_page_url(data.get("content_urls")),
+        "type": data.get("type", ""),
+        "pageid": data.get("pageid"),
+    }
+
+
 async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a page summary from the Wikipedia REST API.
 
@@ -172,14 +191,13 @@ async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, A
         # removes the segment and /page answers 200 with a dict, which would
         # cache as this title. Uncached — no request was spent.
         if not _http.addresses_a_record(url):
-            return {"error": not_found_error, "not_found": True}
+            return _http.not_found(not_found_error)
 
         try:
-            client = _get_client()
-            response = await _throttled_get(client, url)
+            response = await _throttled_get(url)
 
             if response.status_code == 404:
-                err = {"error": not_found_error, "not_found": True}
+                err = _http.not_found(not_found_error)
                 cache.put_negative(NAMESPACE, "summaries", canonical, err)
                 return err
 
@@ -188,21 +206,11 @@ async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, A
         except _PARSE_ERRORS:
             return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
-            return _http.error_dict("Wikipedia", e)
+            return _http.error_dict(LABEL, e)
 
-        if not isinstance(data, dict):
-            # Wrong shape, not an empty page — the ``data.get`` calls below
-            # would crash on it, and it must never cache for the TTL.
+        result = _summary_of(data)
+        if result is None:
             return _parse_error_dict()
-
-        result = {
-            "title": data.get("title", ""),
-            "description": data.get("description"),
-            "extract": data.get("extract", ""),
-            "url": _desktop_page_url(data.get("content_urls")),
-            "type": data.get("type", ""),
-            "pageid": data.get("pageid"),
-        }
 
         cache.put(NAMESPACE, "summaries", canonical, result)
         return result

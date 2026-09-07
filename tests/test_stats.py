@@ -280,6 +280,18 @@ class TestThrottleDiscovery:
             assert throttle.namespace == namespace, module_name
         assert checked >= 8, f"only {checked} providers checked — discovery regressed"
 
+    def test_throttle_label_matches_the_modules_label(self):
+        """``error_dict`` prefers the throttle's ``label`` over its own
+        argument, so a module whose two spellings disagree names itself one way
+        under backpressure and another everywhere else."""
+        checked = 0
+        for module_name, throttle in _module_throttles().items():
+            label = getattr(sys.modules[module_name], "LABEL", None)
+            assert label is not None, f"{module_name} has a throttle but no LABEL"
+            checked += 1
+            assert throttle.label == label, module_name
+        assert checked >= 8, f"only {checked} providers checked — discovery regressed"
+
     def test_a_second_throttle_on_a_module_is_discovered(self, monkeypatch):
         """Discovery matches the type, not the attribute name ``_throttle``.
 
