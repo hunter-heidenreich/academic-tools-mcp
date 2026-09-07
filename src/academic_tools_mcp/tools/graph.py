@@ -12,6 +12,7 @@ from .._app import (
     REF_SOURCE,
     _enrich_error,
     mcp,
+    page_bounds,
 )
 from ..providers import crossref, opencitations
 
@@ -71,15 +72,21 @@ def _source_error(result: dict[str, Any]) -> dict[str, Any]:
     return {k: result[k] for k in _FORWARDED_ERROR_KEYS if k in result}
 
 
-def _crossref_refs(work: dict[str, Any]) -> list[Any]:
-    """A Crossref work's reference list, or ``[]``.
+def _crossref_refs(work: dict[str, Any]) -> list[dict[str, Any]]:
+    """A Crossref work's reference rows, or ``[]``.
 
-    Type-checked, not just ``or``-defaulted: ``message`` being a dict is as far
-    as ``crossref.get_work``'s shape ladder reaches, so a string here would
-    ``len()`` to a character count and then slice character-wise.
+    Both the list *and its rows* are type-checked: ``message`` being a dict is
+    as far as ``crossref.get_work``'s shape ladder reaches, so a string here
+    would ``len()`` to a character count and then slice character-wise, and a
+    non-dict row would reach ``_format_crossref_reference`` as an
+    ``AttributeError``. Filtering here — the one list both the count tool and
+    the page tool read — is what keeps them from disagreeing about a work.
+    Mirrors ``opencitations._edges_of``, which drops non-dict records upstream.
     """
     refs = work.get("reference")
-    return refs if isinstance(refs, list) else []
+    if not isinstance(refs, list):
+        return []
+    return [ref for ref in refs if isinstance(ref, dict)]
 
 
 def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
@@ -101,6 +108,11 @@ def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
         entry["first_page"] = ref["first-page"]
     if ref.get("unstructured"):
         entry["unstructured"] = ref["unstructured"]
+    if not entry and ref.get("key"):
+        # A row carrying only bookkeeping fields is a real deposit with no
+        # usable metadata. Emitting Crossref's own `key` says that, where a
+        # bare {} reads as a formatter that lost the entry.
+        entry["key"] = ref["key"]
     return entry
 
 
@@ -119,13 +131,15 @@ async def get_paper_references_count(
 
     Returns ``{doi, sources: {crossref: {count: N} | {error, suggestion?},
     opencitations: {count: M} | {error, suggestion?}}}``. Partial-failure
-    tolerant: if one source errors the other's count is still reported.
+    tolerant: if one source errors the other's count is still reported. The
+    echoed ``doi`` is the canonical form of whatever spelling you passed.
 
     A non-DOI identifier is rejected locally, without a request —
     both providers are DOI-only.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
+    doi = _doi.canonical(doi)
 
     cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
@@ -157,8 +171,7 @@ def _page(
     have to agree with.
     """
     total = len(entries)
-    start = (page - 1) * page_size
-    end = start + page_size
+    start, end = page_bounds(page, page_size)
     return {
         "_source": source,
         "doi": doi,
@@ -240,7 +253,8 @@ async def get_paper_references(
       - crossref: structured metadata, fields conditionally present based
         on publisher deposit quality. Possible keys: doi, author, title,
         year, journal, volume, first_page, unstructured (raw citation
-        text fallback when structured fields are absent).
+        text fallback when structured fields are absent), key (last-resort
+        fallback: the publisher deposited the row with no usable metadata).
       - opencitations: DOI-to-DOI links with cross-referenced IDs flattened
         at the top level. Possible keys: doi (cited paper), omid, openalex,
         pmid, creation (date string), journal_self_citation,
@@ -252,9 +266,13 @@ async def get_paper_references(
     Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
     hints for transient failures. A non-DOI identifier is rejected locally,
     without a request — both providers are DOI-only.
+
+    The echoed ``doi`` is the canonical form of whatever spelling you passed,
+    so every spelling of one paper correlates to one value across calls.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
+    doi = _doi.canonical(doi)
 
     if source == "crossref":
         work = await crossref.get_work(doi, force_refresh=force_refresh)
@@ -279,6 +297,7 @@ async def get_paper_references(
     if page > 1:
         return {
             "error": "source='auto' only resolves on page 1; pin _source to paginate.",
+            "retryable": False,
             "suggestion": (
                 "Re-call get_paper_references with source set to the _source "
                 "value returned on page 1 ('crossref' or 'opencitations') so the "
@@ -302,6 +321,11 @@ async def get_paper_references(
         # decide whether to retry or pick one explicitly.
         return {
             "error": "Both reference sources failed for this DOI.",
+            # Retrying the pair is worth it if *either* source might answer on
+            # a second call, so the top-level verdict is the disjunction of the
+            # two. Without it an agent branching on the top level — the shape
+            # every other tool-layer error carries — learns nothing.
+            "retryable": bool(cr_work.get("retryable") or oc_data.get("retryable")),
             "sources": {
                 "crossref": _source_error(cr_work),
                 "opencitations": _source_error(oc_data),
@@ -340,7 +364,8 @@ async def get_paper_citations_count(
 ) -> dict[str, Any]:
     """Count incoming citations (papers that cite this work) via OpenCitations.
 
-    Returns ``{doi, count}`` on success or ``{error, suggestion}`` on failure.
+    Returns ``{doi, count}`` on success or ``{error, suggestion}`` on failure;
+    the echoed ``doi`` is the canonical form of whatever spelling you passed.
     OpenCitations is the only source for incoming citations (no Crossref
     equivalent), so unlike get_paper_references_count there is no source
     survey — call this then page with get_paper_citations.
@@ -353,6 +378,7 @@ async def get_paper_citations_count(
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
+    doi = _doi.canonical(doi)
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
@@ -388,9 +414,12 @@ async def get_paper_citations(
     Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
     hints for transient failures. A non-DOI identifier is rejected locally,
     without a request — both providers are DOI-only.
+
+    The echoed ``doi`` is the canonical form of whatever spelling you passed.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
+    doi = _doi.canonical(doi)
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:

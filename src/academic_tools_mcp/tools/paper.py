@@ -18,6 +18,7 @@ from .._app import (
     _enrich_error,
     _first,
     mcp,
+    page_bounds,
 )
 from ..bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 from ..providers import arxiv, biorxiv, crossref, openalex
@@ -505,8 +506,7 @@ async def get_paper_authors(
     if "error" in obj:
         return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
 
-    start = (page - 1) * page_size
-    end = start + page_size
+    start, end = page_bounds(page, page_size)
 
     if source == "openalex":
         page_slice = _format_openalex_authors(obj, start, end)

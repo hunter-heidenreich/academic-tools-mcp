@@ -177,6 +177,18 @@ def _enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
     return result
 
 
+def page_bounds(page: int, page_size: int) -> tuple[int, int]:
+    """Half-open slice bounds for a 1-based ``page``.
+
+    The single home for the page/page_size arithmetic every paginating tool
+    shares, so `tools/graph.py` and `get_paper_authors` cannot drift apart on
+    where a page starts or on the `has_more = end < total` rule that goes with
+    it. Each tool keeps its own envelope keys — only the arithmetic is shared.
+    """
+    start = (page - 1) * page_size
+    return start, start + page_size
+
+
 def _first(value: Any) -> Any:
     """First element of a list, else the value itself (or None for empties).
 
@@ -390,8 +402,10 @@ REF_SOURCE = Annotated[
     Field(
         description="Which reference source to page through. "
         "'auto' (default) surveys both providers in parallel and picks "
-        "the one with more references — saves a turn versus calling "
-        "get_paper_references_count first. "
+        "the better-covered one, biased toward Crossref for its richer "
+        "per-entry metadata: OpenCitations wins only when it has materially "
+        "more references, not on a one-or-two-entry margin — saves a turn "
+        "versus calling get_paper_references_count first. "
         "'crossref' gives structured metadata (author, title, year, journal, DOI) "
         "but quality varies by publisher. "
         "'opencitations' gives DOI-to-DOI links with cross-referenced IDs "

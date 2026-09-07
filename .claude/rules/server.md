@@ -73,9 +73,21 @@ Beyond that shape, the branches are distinguished by what the suggestion should 
 
 **`source="auto"` resolves on page 1 only** — `page > 1` with `auto` returns an error telling the agent to pin the `_source` from page 1. Re-surveying mid-walk could pick a different provider and silently shift `total` and the slice offsets. Pages 2..N should also drop `force_refresh` so they reuse the warmed cache.
 
+**The echoed `doi` is canonical, not the caller's spelling.** Each tool canonicalizes right after `_reject_non_doi` and echoes that, so `10.1234/X`, `doi:10.1234/x` and the resolver URL — one cache key already — also correlate to one value across calls. Same contract as the paper family's `_canonical_id`.
+
+**Crossref reference rows are type-checked, not just the list.** `crossref.get_work` returns the upstream `message` verbatim and `_message_of` only checks it is a dict, so `_crossref_refs` filters `reference` to dicts. It is the one list both the count tool and the page tool read, which is what stops the survey from sending an agent to page a source that then raises. `_format_crossref_reference` falls back to Crossref's own `key` when no recognized field matched, so a bookkeeping-only deposit never renders as a bare `{}`.
+
+**Every graph error carries a verdict.** Including the two the tool layer raises itself: `page > 1` with `auto` is `retryable: False` (re-issuing the identical call cannot help), and the both-sources-failed envelope carries a top-level `retryable` that is the disjunction of the nested ones.
+
 **A single-source failure is surfaced, not swallowed.** An errored source counts as `-1` so the survivor wins automatically. When exactly one failed, the response gains `partial_failure: {source, ...}` (built by `_source_error`) so a short or empty result isn't read as a confident "no references." Both failing → both error messages.
 
 All four graph tools thread `force_refresh` into every source they touch — both providers for the references pair, OpenCitations alone for the citations pair, which has no `source` parameter because OpenCitations is the only provider of incoming citations and a one-value knob is noise. Add one when a second source ships.
+
+## Pagination
+
+**`_app.page_bounds` is the one home for the page/page_size arithmetic.** `tools/graph.py`'s `_page` and `get_paper_authors` both take their `start`/`end` from it, so they cannot drift on where a page begins or on the `has_more = end < total` rule. Only the arithmetic is shared — each tool keeps its own envelope keys (`total` + `doi` + a caller-named list key vs. `author_count` + `_canonical_id` + `authors`), because `_format_openalex_authors` slices inside a source-specific formatter. `get_paper_section` pages by character offset instead and shares none of this.
+
+The bounds themselves are enforced at the MCP boundary by `PAGE` (`ge=1`) and `PAGE_SIZE` (`ge=1, le=50`), not in Python — an in-process caller can pass `page=0`. Don't add defensive clamping for inputs an agent cannot send; constrain the test domain instead.
 
 ## Search tools
 
