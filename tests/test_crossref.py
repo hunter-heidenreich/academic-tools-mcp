@@ -609,13 +609,13 @@ class TestSearchPacing:
         real_search = crossref._throttled_search_get
         real_get = crossref._throttled_get
 
-        async def spy_search(client, url, **kwargs):
+        async def spy_search(url, **kwargs):
             calls.append("search")
-            return await real_search(client, url, **kwargs)
+            return await real_search(url, **kwargs)
 
-        async def spy_get(client, url, **kwargs):
+        async def spy_get(url, **kwargs):
             calls.append("single")
-            return await real_get(client, url, **kwargs)
+            return await real_get(url, **kwargs)
 
         monkeypatch.setattr(crossref, "_throttled_search_get", spy_search)
         monkeypatch.setattr(crossref, "_throttled_get", spy_get)
@@ -858,7 +858,15 @@ def test_the_requested_path_round_trips_to_the_bare_doi(monkeypatch, doi):
 
     # force_refresh so every example fetches: hypothesis reuses one cache root,
     # and two DOIs differing only in case share a canonical key.
-    asyncio.run(crossref.get_work(doi, force_refresh=True))
+    result = asyncio.run(crossref.get_work(doi, force_refresh=True))
+
+    if not recorder.urls:
+        # `_http.addresses_a_record` refused before the request was spent — an
+        # encoded path that no longer names a record (a trailing `/` leaves the
+        # /works *collection*). Nothing round-trips, and that is the outcome
+        # this guard exists to produce. Mirrors the OpenCitations twin.
+        assert result["not_found"] is True
+        return
 
     prefix = f"{crossref.CROSSREF_BASE_URL}/works/"
     url = recorder.urls[0]

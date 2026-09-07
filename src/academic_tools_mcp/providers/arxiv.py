@@ -29,11 +29,14 @@ _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable arXiv response — it speaks XML, not JSON."""
-    return _http.parse_error_dict("arXiv", detail="could not be parsed as XML")
+    return _http.parse_error_dict(LABEL, detail="could not be parsed as XML")
 
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 NAMESPACE = "arxiv"
+
+# Agent-facing provider name; every site that names us reads it (providers.md).
+LABEL = "arXiv"
 
 # XML namespaces
 _ATOM_NS = "http://www.w3.org/2005/Atom"
@@ -77,7 +80,7 @@ def _get_client() -> httpx.AsyncClient:
 
 _throttle = Throttle(
     namespace=NAMESPACE,
-    label="arXiv",
+    label=LABEL,
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
@@ -92,9 +95,9 @@ def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
     return _throttle.slot(url)
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET respecting arXiv's rate limit (see ``Throttle.get``)."""
-    return await _throttle.get(client, url, **kwargs)
+async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
+    """GET at arXiv's rate. Url-only: ``_get_client`` is the only place to configure it."""
+    return await _throttle.get(_get_client(), url, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -284,13 +287,12 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
     async def _fetch() -> dict[str, Any]:
         def _not_found() -> dict[str, Any]:
             """Definitive absence — arXiv spells it three ways, all cached here."""
-            err = {"error": f"No paper found for arXiv ID: {arxiv_id}", "not_found": True}
+            err = _http.not_found(f"No paper found for arXiv ID: {arxiv_id}")
             cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
             return err
 
         try:
             response = await _throttled_get(
-                _get_client(),
                 ARXIV_BASE_URL,
                 params={"id_list": normalize_arxiv_id(arxiv_id)},
             )
@@ -308,7 +310,7 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
         except _PARSE_ERRORS:
             return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
-            return _http.error_dict("arXiv", e)
+            return _http.error_dict(LABEL, e)
 
         entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
@@ -343,7 +345,6 @@ async def search_papers(
 
     try:
         response = await _throttled_get(
-            _get_client(),
             ARXIV_BASE_URL,
             params={
                 "search_query": query,
@@ -359,7 +360,7 @@ async def search_papers(
     except _PARSE_ERRORS:
         return _parse_error_dict()
     except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("arXiv", e)
+        return _http.error_dict(LABEL, e)
 
     entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
@@ -437,7 +438,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
             dest,
             slot_factory=lambda: _request_slot(pdf_url),
             namespace=NAMESPACE,
-            provider_label="arXiv",
+            provider_label=LABEL,
             timeout=_PDF_TIMEOUT_SECONDS,
             not_found_message=f"No PDF found for arXiv ID: {arxiv_id}",
         )

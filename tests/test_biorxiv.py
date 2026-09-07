@@ -870,6 +870,59 @@ class TestRequestPath:
         assert "/10.1101/2024.01.01.573838/na/json" in str(calls[0].url)
 
 
+class TestPathTraversalIsRefused:
+    """The DOI is a middle path segment, so a `.`/`..` or empty one shortens
+    `/details/{server}/{doi}/na/json` to the endpoint's interval/cursor form —
+    a live route whose collection would cache as this DOI's paper."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gap(self, monkeypatch):
+        _reset_biorxiv(monkeypatch)
+
+    @pytest.mark.parametrize(
+        "doi",
+        [
+            "10.1101/..",
+            "10.1101/x/..",
+            "10.1101/2024.01.01.573838/../../na",
+            "10.1101/.",
+            "10.1101/",
+            "",
+            "   ",
+            "doi:",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_it_is_refused_before_any_request(self, monkeypatch, doi):
+        # A live-looking collection, so a leaked request would cache a paper.
+        calls = _stub_json_responses(monkeypatch, _collection(), _collection())
+
+        result = await biorxiv.get_paper(doi)
+
+        assert result["not_found"] is True
+        assert calls == []
+
+    @pytest.mark.parametrize("doi", ["10.1101/..", "10.1101/", ""])
+    @pytest.mark.asyncio
+    async def test_the_refusal_is_uncached(self, monkeypatch, doi):
+        # No request was spent, so nothing was learned worth caching.
+        _stub_json_responses(monkeypatch, _collection())
+        canonical = biorxiv.canonical_key(doi)
+
+        await biorxiv.get_paper(doi)
+
+        assert cache.get(biorxiv.NAMESPACE, "papers", canonical) is None
+        assert cache.get_negative(biorxiv.NAMESPACE, "papers", canonical) is None
+
+    @pytest.mark.asyncio
+    async def test_the_router_really_sends_these_here(self):
+        # `is_biorxiv_doi` is a bare prefix test, so these really do route here.
+        from academic_tools_mcp import manual
+
+        assert biorxiv.is_biorxiv_doi("10.1101/x/..") is True
+        assert manual.resolve_target("10.1101/x/..")["namespace"] == biorxiv.NAMESPACE
+
+
 class TestGetPaperCaching:
     @pytest.fixture(autouse=True)
     def _no_gap(self, monkeypatch):

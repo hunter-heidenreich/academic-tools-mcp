@@ -13,6 +13,9 @@ from .._throttle import Throttle
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
 
+# Agent-facing provider name; every site that names us reads it (providers.md).
+LABEL = "OpenAlex"
+
 # The OpenAlex API returns JSON; a malformed/truncated 200 body raises
 # ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
 # errors so the tool always returns the uniform ``{error}`` contract rather
@@ -22,7 +25,7 @@ _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable OpenAlex response."""
-    return _http.parse_error_dict("OpenAlex")
+    return _http.parse_error_dict(LABEL)
 
 
 # Rate limiting. OpenAlex's polite-pool soft cap is 10 req/sec; we set
@@ -48,15 +51,6 @@ _single_flight = _singleflight.SingleFlight()
 # isn't frozen forever. Authors share the same TTL — h_index and
 # works_count drift on the same timescale.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
-
-
-def _normalize_doi(doi: str) -> str:
-    """Normalize a DOI to bare form; the caller adds the ``doi:`` path prefix.
-
-    Thin wrapper over :mod:`_doi`, the single home for this logic — a local
-    copy lands one paper under several cache keys.
-    """
-    return _doi.normalize(doi)
 
 
 def canonical_doi(doi: str) -> str:
@@ -111,7 +105,7 @@ def _get_client() -> httpx.AsyncClient:
 
 _throttle = Throttle(
     namespace=NAMESPACE,
-    label="OpenAlex",
+    label=LABEL,
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
@@ -154,6 +148,7 @@ async def _fetch_singleton(
     *,
     entity: str,
     url: str,
+    bare: str,
     canonical: str,
     not_found_error: str,
 ) -> dict[str, Any]:
@@ -163,17 +158,20 @@ async def _fetch_singleton(
     ordering, the negative-cache write, the shape guard and the uncached
     transient failures cannot drift between them. The caller owns the URL and
     its ``quote`` policy, the canonical key, the wording and the ``sf_key``.
+
+    Both guards are needed: a ``doi:`` prefix keeps the last path segment
+    non-empty, so ``bare`` is tested too (as ``opencitations`` does).
     """
-    if not _http.addresses_a_record(url):
+    if not bare or not _http.addresses_a_record(url):
         # Definitively a bad identifier, and refused before it is spent
         # upstream — as ``acl._strip_acl_prefix`` refuses an empty suffix.
-        return {"error": not_found_error, "not_found": True}
+        return _http.not_found(not_found_error)
 
     try:
         response = await _throttled_get(url, params=_build_params())
 
         if response.status_code == 404:
-            err = {"error": not_found_error, "not_found": True}
+            err = _http.not_found(not_found_error)
             cache.put_negative(NAMESPACE, entity, canonical, err)
             return err
 
@@ -182,7 +180,7 @@ async def _fetch_singleton(
     except _PARSE_ERRORS:
         return _parse_error_dict()
     except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("OpenAlex", e)
+        return _http.error_dict(LABEL, e)
 
     if not isinstance(data, dict) or "id" not in data:
         return _parse_error_dict()
@@ -203,10 +201,12 @@ async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str
         # Percent-encode as get_work does, so reserved characters can't split
         # the path. ``:`` and ``/`` stay literal so the ORCID-URL spelling
         # OpenAlex resolves survives byte-identical.
-        api_id = quote(_normalize_author_id(author_id), safe=":/")
+        bare_id = _normalize_author_id(author_id)
+        api_id = quote(bare_id, safe=":/")
         return await _fetch_singleton(
             entity="authors",
             url=f"{OPENALEX_BASE_URL}/authors/{api_id}",
+            bare=bare_id,
             canonical=canonical,
             not_found_error=f"No author found for ID: {author_id}",
         )
@@ -237,10 +237,12 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         # misread as a URL fragment/query and silently truncate the request
         # to the wrong record. The prefix/suffix slash stays literal
         # (safe="/"); the "doi:" path prefix is added outside the encode.
-        api_doi = f"doi:{quote(_normalize_doi(doi), safe='/')}"
+        bare_doi = _doi.normalize(doi)
+        api_doi = f"doi:{quote(bare_doi, safe='/')}"
         return await _fetch_singleton(
             entity="works",
             url=f"{OPENALEX_BASE_URL}/works/{api_doi}",
+            bare=bare_doi,
             canonical=canonical,
             not_found_error=f"No work found for DOI: {doi}",
         )
@@ -333,7 +335,7 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
         # call" and ``cached_lookup``'s deep-copy discipline.
         return {c: _parse_error_dict() for c in chunk}
     except _http.HTTPX_ERRORS as e:
-        return {c: _http.error_dict("OpenAlex", e) for c in chunk}
+        return {c: _http.error_dict(LABEL, e) for c in chunk}
 
     if not isinstance(data, dict):
         return {c: _parse_error_dict() for c in chunk}

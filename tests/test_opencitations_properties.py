@@ -120,12 +120,16 @@ def test_every_spelling_of_one_doi_is_one_fetch(monkeypatch, doi, prefix, direct
     first = asyncio.run(fetch(doi, force_refresh=True))
     second = asyncio.run(fetch(f"{prefix}{doi}"))
 
-    assert first == second
     if not requests:
-        # A spelling the request-side guard refuses is refused identically
-        # whichever way it was written — which is the same invariant.
+        # A spelling the request-side guard refuses is refused for *both*
+        # spellings, before any keying happens — so the invariant here is
+        # "neither fetched", not "same payload". The message echoes the
+        # caller's own spelling, which every provider does by design.
         assert first["not_found"] is True
+        assert second["not_found"] is True
         return
+
+    assert first == second
     assert len(requests) == 1
 
 

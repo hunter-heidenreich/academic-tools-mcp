@@ -13,12 +13,15 @@ from .._throttle import Throttle
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
 
+# Agent-facing provider name; every site that names us reads it (providers.md).
+LABEL = "Crossref"
+
 _PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable Crossref response."""
-    return _http.parse_error_dict("Crossref")
+    return _http.parse_error_dict(LABEL)
 
 
 # The rate we take must follow the identity we send: hardcoding the polite
@@ -77,16 +80,16 @@ def _get_client() -> httpx.AsyncClient:
 
 _throttle = Throttle(
     namespace=NAMESPACE,
-    label="Crossref",
+    label=LABEL,
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
 )
 
 
-async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a GET respecting Crossref's rate limit (see ``Throttle.get``)."""
-    return await _throttle.get(client, url, **kwargs)
+async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
+    """GET at Crossref's rate. Url-only: ``_get_client`` is the only place to configure it."""
+    return await _throttle.get(_get_client(), url, **kwargs)
 
 
 # A lock, not a second Throttle: its semaphore would let searches and singles
@@ -106,9 +109,7 @@ def reset_search_pacing() -> None:
     _last_search_time = 0.0
 
 
-async def _throttled_search_get(
-    client: httpx.AsyncClient, url: str, **kwargs: Any
-) -> httpx.Response:
+async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
     """Execute a search GET, honouring Crossref's tighter search rate limit.
 
     Stamped before the singles hand-off, so a queued search can start after its
@@ -120,21 +121,12 @@ async def _throttled_search_get(
         if _last_search_time > 0 and elapsed < _SEARCH_REQUEST_GAP:
             await asyncio.sleep(_SEARCH_REQUEST_GAP - elapsed)
         _last_search_time = time.monotonic()
-    return await _throttled_get(client, url, **kwargs)
+    return await _throttled_get(url, **kwargs)
 
 
 # ---------------------------------------------------------------------------
 # DOI normalization
 # ---------------------------------------------------------------------------
-
-
-def _normalize_doi(doi: str) -> str:
-    """Normalize a DOI to bare form (e.g., 10.1234/example).
-
-    Thin wrapper over :mod:`_doi`, the single home for this logic — a local
-    copy lands one paper under several cache keys.
-    """
-    return _doi.normalize(doi)
 
 
 def canonical_doi(doi: str) -> str:
@@ -145,6 +137,18 @@ def canonical_doi(doi: str) -> str:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _message_of(data: object) -> dict[str, object] | None:
+    """Crossref's ``message`` envelope, or ``None`` for a wrong-shape body.
+
+    The first two rungs of the shape ladder, shared by both readers;
+    ``search_works`` adds the ``items`` rungs on top.
+    """
+    if not isinstance(data, dict):
+        return None
+    message = data.get("message")
+    return message if isinstance(message, dict) else None
 
 
 async def search_works(
@@ -169,27 +173,19 @@ async def search_works(
         params["filter"] = f"from-pub-date:{year},until-pub-date:{year}"
 
     try:
-        client = _get_client()
-        response = await _throttled_search_get(
-            client,
-            f"{CROSSREF_BASE_URL}/works",
-            params=params,
-        )
+        response = await _throttled_search_get(f"{CROSSREF_BASE_URL}/works", params=params)
 
         response.raise_for_status()
         data = response.json()
     except _PARSE_ERRORS:
         return _parse_error_dict()
     except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("Crossref", e)
+        return _http.error_dict(LABEL, e)
 
     # Every rung is a shape that raises out of the provider unguarded, and none
     # is an empty result set: "no papers match" ends the agent's search.
-    if not isinstance(data, dict) or "message" not in data:
-        return _parse_error_dict()
-
-    message = data["message"]
-    if not isinstance(message, dict):
+    message = _message_of(data)
+    if message is None:
         return _parse_error_dict()
 
     items = message.get("items") or []
@@ -227,7 +223,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     not_found_error = f"No work found on Crossref for DOI: {doi}"
 
     async def _fetch() -> dict[str, Any]:
-        bare_doi = _normalize_doi(doi)
+        bare_doi = _doi.normalize(doi)
         # Percent-encoded so a reserved character can't truncate the request
         # to the wrong record; the DOI's own slash stays literal.
         url = f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}"
@@ -237,16 +233,15 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             # whose 200 carries a work-list under a dict `message` — it clears
             # the shape ladder below and would cache as this DOI's work.
             # Refused before the request is spent, so nothing is cached.
-            return {"error": not_found_error, "not_found": True}
+            return _http.not_found(not_found_error)
 
         try:
-            client = _get_client()
-            response = await _throttled_get(client, url)
+            response = await _throttled_get(url)
 
             if response.status_code == 404:
                 # Definitive, hence both the negative entry and the flag
                 # tools/graph.py forwards.
-                err = {"error": not_found_error, "not_found": True}
+                err = _http.not_found(not_found_error)
                 cache.put_negative(NAMESPACE, "works", canonical, err)
                 return err
 
@@ -256,14 +251,11 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             # Transient, not "not found" — uncached, so a retry re-fetches.
             return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
-            return _http.error_dict("Crossref", e)
+            return _http.error_dict(LABEL, e)
 
         # Wrong shape, not an empty work: never positive-cached for the TTL.
-        if not isinstance(data, dict) or "message" not in data:
-            return _parse_error_dict()
-
-        work = data["message"]
-        if not isinstance(work, dict):
+        work = _message_of(data)
+        if work is None:
             return _parse_error_dict()
         cache.put(NAMESPACE, "works", canonical, work)
         return work

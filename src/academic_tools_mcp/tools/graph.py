@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from .. import _doi
+from .. import _doi, _http
 from .._app import (
     DOI,
     FORCE_REFRESH,
@@ -47,8 +47,7 @@ def _reject_non_doi(doi: str) -> dict[str, Any] | None:
     if _doi.looks_like_doi(doi):
         return None
     return {
-        "error": f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only.",
-        "not_found": True,
+        **_http.not_found(f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only."),
         "suggestion": (
             "Pass a DOI (e.g. 10.1038/nature12373), in bare, doi: or "
             "https://doi.org/ form. For an arXiv paper, call get_paper_metadata "

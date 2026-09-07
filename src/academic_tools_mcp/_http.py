@@ -16,7 +16,7 @@ rate limiting, retry and stats (see ``.claude/rules/http.md``)::
     try:
         response = await _throttled_get(_get_client(), url, params=params)
         if response.status_code == 404:
-            return {"error": "No paper found for ..."}
+            return _http.not_found("No paper found for ...")
         response.raise_for_status()
         # ... parse and return success
     except _PARSE_ERRORS:
@@ -104,6 +104,15 @@ def addresses_a_record(url: str) -> bool:
     # On the *encoded* path: RFC 3986 removes a literal `.`/`..` segment before
     # percent-decoding, so an escaped `%2E` is a normal segment and is fine.
     return not any(segment in (".", "..") for segment in path.split("/"))
+
+
+def not_found(message: str) -> dict[str, Any]:
+    """Fresh definitive miss: the provider does not have this record.
+
+    ``not_found: True`` is what separates "absent" from "briefly unreachable".
+    A new dict each call, as ``parse_error_dict`` is.
+    """
+    return {"error": message, "not_found": True}
 
 
 def parse_error_dict(provider: str, *, detail: str = "could not be parsed") -> dict[str, Any]:
