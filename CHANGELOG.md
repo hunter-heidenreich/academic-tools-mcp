@@ -39,6 +39,14 @@ grouped by milestone rather than per commit.
   `force_refresh` cascade, so a typo can no longer drop cached markdown either.
   ([#93])
 
+### Removed
+
+- **`papers.HEADING_PATTERN` and `papers.SECTION_LEVELS`.** Both were exported
+  so `cache_search` could share the heading grammar; it now delegates
+  `first_section_heading()` instead, which is stronger, and neither symbol had
+  a reader left anywhere. The levels constant stays as a module-private
+  `_SECTION_LEVELS`. ([#93])
+
 ### Fixed
 
 - **Reading a paper's section index inflated the cache-hit counter.** The

@@ -4,8 +4,17 @@ Covers ``papers.sections`` — the pure half of the pipeline. No cache, no
 subprocess: every test here is text in, dicts out.
 """
 
+import pytest
+
 from academic_tools_mcp import papers
-from academic_tools_mcp.papers import get_section_content, parse_sections
+from academic_tools_mcp.papers import (
+    first_section_heading,
+    get_section_content,
+    has_detected_sections,
+    parse_sections,
+    section_at_offset,
+    section_boundaries,
+)
 
 from ._section_fixtures import (
     _H1_MARKDOWN,
@@ -409,3 +418,56 @@ class TestSectionAtOffsetPastTheLastSection:
         index, title = papers.section_at_offset(markdown, len(markdown) * 10)
         assert (index, title) == (0, "A")
         assert "error" not in papers.get_section_content(markdown, index)
+
+
+class TestSectionIndexBounds:
+    """Python's negative indexing makes the lower half of the range guard
+    load-bearing: without it ``spans[-1]`` reads the *last* section instead of
+    erroring, and an agent paging backwards is silently served the wrong text.
+    """
+
+    @pytest.mark.parametrize("index", [-1, -2, -100])
+    def test_a_negative_index_is_out_of_range(self, index):
+        result = get_section_content(_H2_MARKDOWN, index)
+        assert "out of range" in result["error"]
+        assert "content" not in result
+
+    def test_the_first_index_past_the_end_is_out_of_range(self):
+        count = len(section_boundaries(_H2_MARKDOWN))
+        assert "out of range" in get_section_content(_H2_MARKDOWN, count)["error"]
+
+    def test_the_last_valid_index_still_reads(self):
+        count = len(section_boundaries(_H2_MARKDOWN))
+        assert "error" not in get_section_content(_H2_MARKDOWN, count - 1)
+
+
+class TestDeepHeadingsAreIgnored:
+    """H4+ open nothing and are collected nowhere — stated in the module
+    docstring and in the rules, and previously asserted by nothing: adding 4 to
+    the section levels passed the whole suite.
+    """
+
+    _DOC = "## Real\n\nbody one\n\n#### Deep\n\nbody two\n\n### Sub\n\nbody three\n"
+
+    def test_an_h4_does_not_open_a_section(self):
+        assert [sp.title for sp in section_boundaries(self._DOC)] == ["Real"]
+
+    def test_an_h4_is_not_collected_as_a_subheading(self):
+        assert parse_sections(self._DOC)[0]["h3s"] == ["Sub"]
+
+    def test_an_h4_is_not_title_level(self):
+        assert first_section_heading("#### Deep\n\nbody\n") is None
+
+    def test_an_h4_only_document_detects_no_sections(self):
+        assert has_detected_sections("#### Deep\n\nbody\n") is False
+
+
+class TestOffsetOnASurvivingHeading:
+    def test_a_heading_resolves_forward_to_the_section_it_opens(self):
+        """Documented in ``section_at_offset``'s comment and pinned nowhere:
+        resolving backwards to the *previous* section kept every test green.
+        """
+        md = "## Intro\n\nfirst\n\n## Methods\n\nsecond chunk here\n"
+        assert section_at_offset(md, md.index("## Methods")) == (1, "Methods")
+        # And the byte before it still belongs to the previous section.
+        assert section_at_offset(md, md.index("first")) == (0, "Intro")

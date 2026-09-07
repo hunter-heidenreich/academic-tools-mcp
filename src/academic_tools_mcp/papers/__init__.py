@@ -33,8 +33,6 @@ from .index import (
     store_markdown_and_index,
 )
 from .sections import (
-    HEADING_PATTERN,
-    SECTION_LEVELS,
     Section,
     find_in_markdown,
     first_section_heading,
@@ -47,8 +45,6 @@ from .sections import (
 )
 
 __all__ = [
-    "HEADING_PATTERN",
-    "SECTION_LEVELS",
     "ConverterTemplateError",
     "Section",
     "checksum_text",

@@ -10,11 +10,13 @@ tracked as the sub-heading level, and H4+ are ignored.
 
 **One heading scan, one set of boundaries.** ``parse_sections``,
 ``find_in_markdown``, ``get_section_content`` and ``cache_search.search`` all
-route through :func:`_scan`. A second implementation is agent-visible, not
-merely untidy: drop the empty-section filter and a search hit names a section
-the reader's index does not have; return a title instead of an index and the
-agent's chain into ``get_paper_section`` dies on "Ambiguous section title"
-whenever a paper repeats a heading.
+route through :func:`_scan`; ``first_section_heading`` is the one deliberate
+exception, short-circuiting on the first heading rather than parsing the whole
+document. A second implementation is agent-visible, not merely untidy: drop the
+empty-section filter and a search hit names a section the reader's index does
+not have; return a title instead of an index and the agent's chain into
+``get_paper_section`` dies on "Ambiguous section title" whenever a paper repeats
+a heading.
 """
 
 import re
@@ -25,21 +27,12 @@ from .. import _textnorm
 # Approximate tokens per character (conservative estimate for English text)
 _CHARS_PER_TOKEN = 4
 
-# Regex for heading lines: captures (level, title)
-#   "# Foo"   -> (1, "Foo")
-#   "## Bar"  -> (2, "Bar")
-#   "### Baz" -> (3, "Baz")
-# The *pattern* is the shared unit, not the compiled object: this module scans
-# line by line while ``cache_search._extract_title`` scans a whole document, so
-# the two need different flags but must agree on what a heading is.
-HEADING_PATTERN = r"^(#{1,6})\s+(.+)$"
-_HEADING_RE = re.compile(HEADING_PATTERN)
+# Heading lines: captures (level, title). Matched per line, so no re.MULTILINE.
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 
-
-# Fixed heading levels: H1 and H2 both open a new section (converters
-# disagree on which level to use for the top), H3 is tracked as the
-# sub-heading level, everything deeper is ignored.
-SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
+# H1 and H2 both open a new section (converters disagree on which level the
+# paper title gets), H3 is the sub-heading level, H4+ are ignored entirely.
+_SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
 _SUB_LEVEL: int = 3
 
 
@@ -91,7 +84,7 @@ def _scan(markdown: str) -> tuple[list[Section], bool]:
         if not m:
             continue
         level = len(m.group(1))
-        if level in SECTION_LEVELS:
+        if level in _SECTION_LEVELS:
             detected = True
             spans.append(Section(title, start, i, h3s))
             title = m.group(2).strip()
@@ -131,7 +124,7 @@ def first_section_heading(markdown: str) -> str | None:
     """
     for line in markdown.split("\n"):
         m = _HEADING_RE.match(line)
-        if m is not None and len(m.group(1)) in SECTION_LEVELS:
+        if m is not None and len(m.group(1)) in _SECTION_LEVELS:
             return m.group(2).strip()
     return None
 
