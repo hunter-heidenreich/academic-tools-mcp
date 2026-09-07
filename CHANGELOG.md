@@ -24,6 +24,21 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **arXiv IDs are now recognised in five more spellings, so one paper no longer
+  caches twice.** `get_paper_metadata`, `download_pdf` and every other unified
+  tool now route these to arXiv instead of filing them under the `manual`
+  namespace: arXiv's own DataCite DOI (`10.48550/arXiv.2301.00001`, also via
+  `https://doi.org/...` and `doi:...`), and `abs`/`pdf` URLs carrying a `www.`
+  or `export.` host label, no scheme at all, an uppercase host, or a trailing
+  slash. Each previously normalized to itself, so `is_arxiv_id` said no and the
+  same paper got a second PDF, markdown and section index. One user-visible
+  consequence: `get_paper_metadata("10.48550/arXiv.X")` now answers with
+  `_source: "arxiv"` (arXiv's native record) where it used to answer
+  `_source: "openalex"` — the shape-based dispatch every other arXiv spelling
+  already got. Artifacts already cached under `manual` are re-filed
+  automatically: the existing startup sweep now also recovers a URL-shaped
+  legacy stem, whose slashes `safe_stem` had all mapped to `_`. ([#95])
+
 - **`providers/acl_anthology.py` is now `providers/acl.py`.** Import it as
   `from .providers import acl`. Its `NAMESPACE` is unchanged — the cache still
   lives in `.cache/acl_anthology/`, and `search_cached_papers(namespace=...)`
@@ -62,6 +77,27 @@ grouped by milestone rather than per commit.
   `_SECTION_LEVELS`. ([#93])
 
 ### Fixed
+
+- **A malformed `search_arxiv` query no longer comes back as a search hit.**
+  arXiv answers a bad `search_query` with HTTP 200 and a synthetic entry whose
+  id points at `api/errors`; `search_papers` parsed it as a normal paper, so
+  the agent received `{arxiv_id: "http://arxiv.org/api/errors#...", title:
+  "Error"}` and chained its next call onto that. It is now a structured
+  `{error, retryable: false}`, classified by the same check the single-paper
+  path has always applied to the equivalent shape. ([#95])
+
+- **An arXiv HTTP 404 now caches the same payload as arXiv's other two "not
+  found" shapes.** That branch classified from the raised exception, so what
+  got negative-cached for the hour was `arXiv HTTP 404:` followed by 200 bytes
+  of arXiv's error page, where an empty feed or an `api/errors` entry cached a
+  clean `No paper found for arXiv ID: X`. All three now share one payload and
+  carry `not_found: true`, the flag the rest of the codebase reads to tell
+  definitive absence from a transient failure. ([#95])
+
+- **`search_arxiv` could raise instead of returning the `{error}` contract.** A
+  `totalResults` made of superscript digits passes `str.isdigit()` but is
+  rejected by `int()`, and the resulting `ValueError` matched neither except
+  clause. ([#95])
 
 - **A bare `10.18653/v1/` was treated as an ACL Anthology paper.** It names no
   paper, and the empty Anthology ID it produced mapped to an empty filename
@@ -2231,3 +2267,4 @@ grouped by milestone rather than per commit.
 [#92]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/92
 [#93]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/93
 [#94]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/94
+[#95]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/95

@@ -10,7 +10,17 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import _clients, _http, _pdf_download, _singleflight, _stems, _useragent, cache, config
+from .. import (
+    _clients,
+    _doi,
+    _http,
+    _pdf_download,
+    _singleflight,
+    _stems,
+    _useragent,
+    cache,
+    config,
+)
 from .._throttle import Throttle
 
 # Parsing the arXiv Atom feed can fail two ways: a malformed/truncated body
@@ -63,6 +73,10 @@ _NEG_ENTITY = "downloads"
 
 # PDF downloads are larger than a metadata call; use a generous timeout.
 _PDF_TIMEOUT_SECONDS = 60.0
+
+# Upper bound on a single search page. Exported so the ``search_arxiv`` tool's
+# validation bound is this number rather than a second spelling of it.
+MAX_SEARCH_RESULTS = 50
 
 # Positive cache TTL. arXiv records are stable per-version, but a bare id
 # keys on "whatever is current", so an entry cached today wouldn't reflect a
@@ -132,41 +146,64 @@ async def _throttled_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> 
 # ID normalization
 # ---------------------------------------------------------------------------
 
-# The ID stops at the first ``?`` or ``#`` so a query string / fragment
-# (e.g. ``/abs/2301.00001?context=cs``) doesn't end up baked into the
-# canonical cache key.
-_ARXIV_URL_RE = re.compile(r"https?://arxiv\.org/(?:abs|pdf)/([^?#]+?)(?:\.pdf)?(?:[?#].*)?$")
+# Scheme and host label optional, matched case-insensitively, for the reason
+# ``_doi._DOI_URL_RE`` is: pasted citations carry ``www.``/``export.`` hosts, a
+# bare ``arxiv.org/abs/...`` and upstream's varying case, and every spelling
+# this misses is one ``manual`` files the same paper under a second time. The
+# ID stops at the first ``?`` or ``#`` so a query string / fragment doesn't end
+# up baked into the canonical cache key.
+_ARXIV_URL_RE = re.compile(
+    r"(?:https?://)?(?:www\.|export\.)?arxiv\.org/(?:abs|pdf)/([^?#]+?)(?:\.pdf)?/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
 
-# The two ID forms. Exported as patterns because ``cache_search`` matches the
-# old-style one over ``safe_stem``'s ``_`` rather than ``/``; a second spelling
+# arXiv's own DataCite DOI. Exported for the reason ``acl.ACL_DOI_PREFIX`` is:
+# ``bibtex`` needs the prefix for its ``eprint`` field, and a second spelling
+# would let the router and the BibTeX writer disagree about which papers are
+# arXiv's.
+ARXIV_DOI_PREFIX = "10.48550/arXiv."
+_ARXIV_DOI_RE = re.compile(rf"^{re.escape(ARXIV_DOI_PREFIX)}(.+)$", re.IGNORECASE)
+
+# The two ID forms. The old-style pair is exported because ``cache_search``
+# matches it over ``safe_stem``'s ``_`` rather than ``/``; a second spelling
 # there would let it invert a stem that never routes here.
 # ``math.GT``/``cond-mat.stat-mech`` are why the archive class carries ``.``.
-VERSION_PATTERN = r"(?:v\d+)?"
-NEW_ID_PATTERN = rf"\d{{4}}\.\d{{4,5}}{VERSION_PATTERN}"
 OLD_ARCHIVE_PATTERN = r"[a-z][a-z.\-]*"
-OLD_NUMBER_PATTERN = rf"\d{{7}}{VERSION_PATTERN}"
+_VERSION_PATTERN = r"(?:v\d+)?"
+OLD_NUMBER_PATTERN = rf"\d{{7}}{_VERSION_PATTERN}"
+_NEW_ID_PATTERN = rf"\d{{4}}\.\d{{4,5}}{_VERSION_PATTERN}"
 
-_NEW_ID_RE = re.compile(rf"^{NEW_ID_PATTERN}$")
+_NEW_ID_RE = re.compile(rf"^{_NEW_ID_PATTERN}$")
 _OLD_ID_RE = re.compile(rf"^{OLD_ARCHIVE_PATTERN}/{OLD_NUMBER_PATTERN}$")
+_VERSION_SUFFIX_RE = re.compile(r"v\d+$")
 
 
-def _normalize_arxiv_id(arxiv_id: str) -> str:
+def _is_arxiv_shape(candidate: str) -> bool:
+    """Whether an already-bare id matches either arXiv grammar, ignoring case."""
+    lowered = candidate.lower()
+    return bool(_NEW_ID_RE.match(lowered) or _OLD_ID_RE.match(lowered))
+
+
+def normalize_arxiv_id(arxiv_id: str) -> str:
     """Normalize an arXiv identifier to a bare ID (with version if present).
 
     Accepts:
       - bare ID: 2301.00001, 2301.00001v2, hep-th/9901001
       - ``arXiv:`` prefix in any case, with or without a space
-      - abstract URL: https://arxiv.org/abs/2301.00001v2
-      - PDF URL: https://arxiv.org/pdf/2301.00001v2.pdf
-      - PDF URL without extension: https://arxiv.org/pdf/2301.00001v2
+      - an ``abs``/``pdf`` URL, either scheme (or none), optional ``www.`` /
+        ``export.`` host label, optional ``.pdf`` extension and trailing slash
+      - arXiv's DataCite DOI, ``10.48550/arXiv.2301.00001``, in any spelling
+        ``_doi.normalize`` accepts
 
-    A string that is not recognisably an arXiv ID is returned stripped but
-    otherwise untouched — the caller decides whether that is an error.
+    Case is preserved; ``canonical_arxiv_id`` owns the fold, exactly as
+    ``_doi.canonical`` does for DOIs. A string that is not recognisably an
+    arXiv ID is returned stripped but otherwise untouched — the caller decides
+    whether that is an error.
 
     Idempotent for every input, which is what the prefix loop buys: a single
     pass leaves ``arXiv:arXiv:2301.00001`` keying separately from its own
-    output. The prefix is stripped **before** the URL handling for the same
-    reason ``_doi.normalize`` strips ``doi:`` first — ``arXiv:https://...``
+    output. The prefix is stripped **before** the URL and DOI handling for the
+    same reason ``_doi.normalize`` strips ``doi:`` first — ``arXiv:https://...``
     occurs in pasted citations.
     """
     arxiv_id = arxiv_id.strip()
@@ -174,59 +211,89 @@ def _normalize_arxiv_id(arxiv_id: str) -> str:
     while arxiv_id[:6].lower() == "arxiv:":
         arxiv_id = arxiv_id[6:].strip()
 
-    m = _ARXIV_URL_RE.match(arxiv_id)
-    if m:
+    if m := _ARXIV_URL_RE.match(arxiv_id):
         return m.group(1)
+
+    # Through the shared normalizer, so ``https://doi.org/10.48550/...`` and
+    # ``doi:10.48550/...`` collapse onto the bare form's key. The tail must
+    # itself be arXiv-shaped: that keeps the rewrite from mangling an unrelated
+    # DataCite record, and keeps this pass idempotent for a nested spelling.
+    if (m := _ARXIV_DOI_RE.match(_doi.normalize(arxiv_id))) and _is_arxiv_shape(m.group(1)):
+        return m.group(1)
+
     return arxiv_id
 
 
 def canonical_arxiv_id(arxiv_id: str) -> str:
     """Return a canonical arXiv ID for cache keying, **version included**.
 
-    The version is part of a paper's identity, so it is part of the key. A
-    bare ``2301.00001`` means "whatever is current" and keys on the bare
-    form; an explicit ``2301.00001v2`` means that revision and keys on
-    ``2301.00001v2``.
+    Only a lowercase fold is layered on ``normalize_arxiv_id`` (old-style IDs
+    like ``math.GT/0309136`` vary in case upstream); the API request keeps the
+    caller's case.
 
-    **Do not strip the version here.** The *fetch* (``_normalize_arxiv_id``)
-    keeps it, so a stripped key silently serves the wrong paper: whichever
-    version is requested first wins the shared entry and every later one is a
-    cache hit returning the earlier paper's title, abstract and authors, with
-    ``download_pdf`` handing back its bytes marked ``cached: True``.
-    ``force_refresh`` cannot rescue it — it invalidates that same shared key.
-
-    Only lowercasing is applied (old-style IDs like ``math.GT/0309136``
-    vary in case upstream); the API request itself keeps the original case.
+    **Do not strip the version here.** The *fetch* keeps it, so a stripped key
+    silently serves the wrong paper: whichever version is requested first wins
+    the shared entry, and ``force_refresh`` cannot rescue it — it invalidates
+    that same shared key.
     """
-    return _normalize_arxiv_id(arxiv_id).lower()
+    return normalize_arxiv_id(arxiv_id).lower()
 
 
 def is_arxiv_id(identifier: str) -> bool:
     """Whether *identifier* is an arXiv ID in any of its spellings.
 
     The shape test ``manual``'s two dispatchers route on, beside
-    ``biorxiv.is_biorxiv_doi`` and ``acl.is_acl_doi``. Tests the
-    canonical form, so the ``arXiv:`` prefix, an abs/pdf URL and upstream's
-    varying case are all handled before the shape is looked at. An id this
-    rejects still keys exactly as arXiv would, so it lands in ``manual`` and
-    the same paper caches, downloads and converts twice.
+    ``biorxiv.is_biorxiv_doi`` and ``acl.is_acl_doi``. Tests the canonical
+    form, so every prefix, URL and DOI spelling is resolved before the shape is
+    looked at. An id this rejects still keys exactly as arXiv would, so it
+    lands in ``manual`` and the same paper caches, downloads and converts twice.
     """
-    canonical = canonical_arxiv_id(identifier)
-    return bool(_NEW_ID_RE.match(canonical) or _OLD_ID_RE.match(canonical))
+    return _is_arxiv_shape(canonical_arxiv_id(identifier))
+
+
+def strip_version(arxiv_id: str) -> str:
+    """Drop a trailing ``v<n>`` from an already-bare ID, preserving case.
+
+    Case-preserving because BibTeX's ``eprint`` field must keep an old-style
+    id's archive class (``math.GT/0309136``); ``base_arxiv_id`` is the folded
+    cache-key form of the same rule.
+    """
+    return _VERSION_SUFFIX_RE.sub("", arxiv_id)
 
 
 def base_arxiv_id(arxiv_id: str) -> str:
-    """Return the version-stripped ("latest") form of an arXiv ID.
+    """Return the version-stripped ("latest") cache key for an arXiv ID.
 
     This is the key a bare request uses. Kept separate from
     ``canonical_arxiv_id`` so callers must say which they mean.
     """
-    return re.sub(r"v\d+$", "", canonical_arxiv_id(arxiv_id))
+    return strip_version(canonical_arxiv_id(arxiv_id))
+
+
+def id_from_entry(paper: dict[str, Any]) -> str:
+    """The bare, versioned arXiv ID from a parsed Atom entry's ``id`` URL.
+
+    One home for it: the tool layer echoes this as ``arxiv_id`` and
+    ``search_papers`` warms the cache on it. A local ``split("/abs/")`` is what
+    this replaces, and it would not survive an ``export.arxiv.org`` id URL.
+    """
+    return normalize_arxiv_id(paper.get("id") or "")
 
 
 # ---------------------------------------------------------------------------
 # XML parsing
 # ---------------------------------------------------------------------------
+
+
+def _is_error_entry(entry: ET.Element) -> bool:
+    """Whether an Atom entry is arXiv's HTTP-200 stand-in for an error.
+
+    arXiv answers an invalid id *and* a malformed ``search_query`` with 200 and
+    a single entry whose ``<id>`` points at ``api/errors``. Shared so
+    ``search_papers`` classifies it the same way ``get_paper`` does.
+    """
+    id_el = entry.find(f"{{{_ATOM_NS}}}id")
+    return id_el is not None and "api/errors" in (id_el.text or "")
 
 
 def _parse_entry(entry: ET.Element) -> dict[str, Any]:
@@ -312,56 +379,46 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
     canonical = canonical_arxiv_id(arxiv_id)
 
     async def _fetch() -> dict[str, Any]:
-        api_id = _normalize_arxiv_id(arxiv_id)
+        def _not_found() -> dict[str, Any]:
+            """Definitive absence — arXiv spells it three ways, all cached here."""
+            err = {"error": f"No paper found for arXiv ID: {arxiv_id}", "not_found": True}
+            cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
+            return err
 
         try:
-            client = _get_client()
             response = await _throttled_get(
-                client,
+                _get_client(),
                 ARXIV_BASE_URL,
-                params={"id_list": api_id},
+                params={"id_list": normalize_arxiv_id(arxiv_id)},
             )
+
+            # Before raise_for_status, as every sibling does: routing a 404
+            # through error_dict would negative-cache a raw body snippet where
+            # the other two not-found shapes cache a clean message.
+            if response.status_code == 404:
+                return _not_found()
 
             response.raise_for_status()
 
             root = _safe_fromstring(response.text)
         except _PARSE_ERRORS:
-            # A 200 body we couldn't parse: a truncated/garbled response,
-            # or a hostile entity-expansion payload defusedxml refused.
-            # Transient (or adversarial), not a definitive "not found" —
-            # surface a retryable error and do NOT negative-cache it, so a
-            # retry re-fetches rather than serving a poisoned entry.
+            # A 200 body we couldn't parse: a truncated/garbled response, or a
+            # hostile entity-expansion payload defusedxml refused. Transient
+            # (or adversarial), not a definitive "not found" — surface a
+            # retryable error and do NOT negative-cache it, so a retry
+            # re-fetches rather than serving a poisoned entry.
             return _parse_error_dict()
         except _http.HTTPX_ERRORS as e:
-            err = _http.error_dict("arXiv", e)
-            # A genuine HTTP 404 is a definitive "not found" — negative-cache
-            # it (same as arXiv's 200-with-error-entry shape) so a retrying
-            # agent doesn't re-hit the network every call. Transient failures
-            # (5xx / timeout / 429 / backpressure) must NOT be cached.
-            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404:
-                cache.put_negative(
-                    NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS
-                )
-            return err
+            # Transient failures (5xx / timeout / 429 / backpressure) must NOT
+            # be cached.
+            return _http.error_dict("arXiv", e)
 
         entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
-        if not entries:
-            err = {"error": f"No paper found for arXiv ID: {arxiv_id}"}
-            cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
-            return err
+        if not entries or _is_error_entry(entries[0]):
+            return _not_found()
 
-        # arXiv returns HTTP 200 with an error entry for invalid IDs.
-        # Cache it the same way as a real 404 — both mean "definitively
-        # not found", which is what negative caching is for.
-        entry = entries[0]
-        id_el = entry.find(f"{{{_ATOM_NS}}}id")
-        if id_el is not None and id_el.text and "api/errors" in id_el.text:
-            err = {"error": f"No paper found for arXiv ID: {arxiv_id}"}
-            cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
-            return err
-
-        data = _parse_entry(entry)
+        data = _parse_entry(entries[0])
         cache.put(NAMESPACE, "papers", canonical, data)
         return data
 
@@ -385,13 +442,15 @@ async def search_papers(
     The query supports field prefixes: ti:, au:, abs:, cat:, etc.
     Boolean operators: AND, OR, ANDNOT.
     Returns a dict with total_results and a list of parsed entries.
+
+    The result list is not cached (ad-hoc queries); individual hits warm the
+    paper cache, so a follow-up ``get_paper`` on a hit is free.
     """
-    capped = min(max(max_results, 1), 50)
+    capped = min(max(max_results, 1), MAX_SEARCH_RESULTS)
 
     try:
-        client = _get_client()
         response = await _throttled_get(
-            client,
+            _get_client(),
             ARXIV_BASE_URL,
             params={
                 "search_query": query,
@@ -402,48 +461,47 @@ async def search_papers(
 
         response.raise_for_status()
 
-        # Parse and extract inside the guarded block: a truncated/garbled
-        # 200 body (ParseError), a hostile entity payload (defusedxml), or a
-        # non-numeric totalResults must surface a structured error, not raise.
+        # Parse inside the guarded block: a truncated/garbled 200 body
+        # (ParseError) or a hostile entity payload (defusedxml) must surface a
+        # structured error, not raise.
         root = _safe_fromstring(response.text)
-        total_el = root.find(f"{{{_OPENSEARCH_NS}}}totalResults")
-        total_text = total_el.text.strip() if total_el is not None and total_el.text else ""
-        total_results = int(total_text) if total_text.isdigit() else 0
-        entries = root.findall(f"{{{_ATOM_NS}}}entry")
-        papers = [_parse_entry(e) for e in entries]
     except _PARSE_ERRORS:
         return _parse_error_dict()
     except _http.HTTPX_ERRORS as e:
         return _http.error_dict("arXiv", e)
 
-    # Opportunistically cache individual papers. The check is TTL-aware so
-    # fresher search data replaces an entry already past the positive TTL.
-    # Both keys are warmed: warming only the versioned one would leave every
-    # bare lookup a miss.
+    entries = root.findall(f"{{{_ATOM_NS}}}entry")
+
+    # arXiv rejects a malformed search_query with HTTP 200 and one error entry.
+    # Classified here as get_paper classifies it, or the agent is handed a hit
+    # whose id is an errors URL. Not retryable: the query is what's wrong.
+    if entries and _is_error_entry(entries[0]):
+        summary_el = entries[0].find(f"{{{_ATOM_NS}}}summary")
+        detail = " ".join((summary_el.text or "").split()) if summary_el is not None else ""
+        return {
+            "error": f"arXiv rejected the search query: {detail or query}",
+            "retryable": False,
+        }
+
+    papers = [_parse_entry(e) for e in entries]
+
+    # ``isdecimal``, not ``isdigit``: ``int()`` rejects the superscripts
+    # ``isdigit`` accepts, and ValueError is in neither except clause above.
+    total_el = root.find(f"{{{_OPENSEARCH_NS}}}totalResults")
+    total_text = total_el.text.strip() if total_el is not None and total_el.text else ""
+
+    # Search always returns the current version, so each hit is valid under
+    # *both* the versioned key (that exact revision) and the bare key (whatever
+    # is current). Warming only the versioned one leaves every bare lookup a miss.
     for paper in papers:
-        raw_id = paper.get("id", "")
-        if "/abs/" in raw_id:
-            paper_id = raw_id.split("/abs/")[-1]
-            # Search always returns the current version, so this entry is
-            # valid under *both* the versioned key (that exact revision) and
-            # the bare key (whatever is current). Warming only the versioned
-            # one would leave every bare lookup a miss.
-            keys = {canonical_arxiv_id(paper_id), base_arxiv_id(paper_id)}
-            for paper_canonical in keys:
-                if (
-                    cache.get(
-                        NAMESPACE,
-                        "papers",
-                        paper_canonical,
-                        max_age_seconds=_POSITIVE_TTL_SECONDS,
-                        count=False,
-                    )
-                    is None
-                ):
-                    cache.put(NAMESPACE, "papers", paper_canonical, paper)
+        paper_id = id_from_entry(paper)
+        if not is_arxiv_id(paper_id):
+            continue
+        for key in {canonical_arxiv_id(paper_id), base_arxiv_id(paper_id)}:
+            cache.warm(NAMESPACE, "papers", key, paper, max_age_seconds=_POSITIVE_TTL_SECONDS)
 
     return {
-        "total_results": total_results,
+        "total_results": int(total_text) if total_text.isdecimal() else 0,
         "entries": papers,
     }
 

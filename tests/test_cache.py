@@ -203,6 +203,60 @@ def test_max_age_seconds_keeps_fresh_entry(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# warm() — the search cache-warming probe, single-homed here
+# ---------------------------------------------------------------------------
+#
+# Both search-warming providers (arxiv.search_papers, crossref.search_works)
+# route through this, so the "TTL-aware, not a presence test" rule earns its
+# tests once rather than per provider.
+
+
+def test_warm_writes_when_nothing_is_cached(tmp_path, monkeypatch):
+    cache.warm("crossref", "works", "10.1/x", {"title": "From search"}, max_age_seconds=3600)
+    assert cache.get("crossref", "works", "10.1/x") == {"title": "From search"}
+
+
+def test_warm_refreshes_an_entry_past_the_ttl(tmp_path, monkeypatch):
+    """Fresher search data replaces a stale record rather than being dropped."""
+    import os
+
+    cache.put("crossref", "works", "10.1/x", {"title": "Stale"})
+    path = tmp_path / "crossref" / "works" / f"{cache._cache_key('10.1/x')}.json"
+    old = path.stat().st_mtime - 3600
+    os.utime(path, (old, old))
+
+    cache.warm("crossref", "works", "10.1/x", {"title": "Fresh"}, max_age_seconds=60)
+
+    assert cache.get("crossref", "works", "10.1/x") == {"title": "Fresh"}
+
+
+def test_warm_never_clobbers_a_within_ttl_entry(tmp_path, monkeypatch):
+    """A presence test here would be *stronger* than intended, not weaker.
+
+    A search hit is a slimmer record than a singleton fetch for some providers,
+    so overwriting a live entry would downgrade it.
+    """
+    cache.put("crossref", "works", "10.1/x", {"title": "Live", "reference": [1, 2]})
+
+    cache.warm("crossref", "works", "10.1/x", {"title": "From search"}, max_age_seconds=3600)
+
+    assert cache.get("crossref", "works", "10.1/x") == {"title": "Live", "reference": [1, 2]}
+
+
+def test_warm_does_not_move_the_hit_counter(tmp_path, monkeypatch):
+    """The probe is not a lookup being served — `count=False`."""
+    from academic_tools_mcp import _stats
+
+    cache.put("crossref", "works", "10.1/x", {"title": "Live"})
+    before = _stats.snapshot()["providers"].get("crossref", {}).get("cache_hits", 0)
+
+    cache.warm("crossref", "works", "10.1/x", {"title": "From search"}, max_age_seconds=3600)
+
+    after = _stats.snapshot()["providers"].get("crossref", {}).get("cache_hits", 0)
+    assert after == before
+
+
+# ---------------------------------------------------------------------------
 # TTL / sweep boundaries — exactly at the limit must fall on the safe side
 # ---------------------------------------------------------------------------
 

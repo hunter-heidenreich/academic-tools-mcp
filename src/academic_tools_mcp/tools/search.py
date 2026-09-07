@@ -13,7 +13,6 @@ from .._app import (
     _FIND_MAX_RESULTS,
     FORCE_REFRESH,
     PAPER_ID,
-    _arxiv_id_from_entry,
     _crossref_date,
     _enrich_error,
     _first,
@@ -50,7 +49,11 @@ async def search_arxiv(
     ],
     max_results: Annotated[
         int,
-        Field(description="Maximum results to return (1-50).", ge=1, le=50),
+        Field(
+            description=f"Maximum results to return (1-{arxiv.MAX_SEARCH_RESULTS}).",
+            ge=1,
+            le=arxiv.MAX_SEARCH_RESULTS,
+        ),
     ] = 10,
 ) -> dict[str, Any]:
     """Search arXiv papers. Returns a slim triage list.
@@ -80,7 +83,7 @@ async def search_arxiv(
 
     results = [
         {
-            "arxiv_id": _arxiv_id_from_entry(p),
+            "arxiv_id": arxiv.id_from_entry(p),
             "title": p.get("title"),
             "first_author": _first_author_name(p),
             "author_count": len(p.get("authors") or []),

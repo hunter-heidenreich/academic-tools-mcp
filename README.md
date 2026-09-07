@@ -104,7 +104,9 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
 
-Pass an arXiv ID (`2301.00001`, `hep-th/9901001`) or any DOI — including bioRxiv/medRxiv (`10.1101/...`), ACL Anthology (`10.18653/v1/...`), or generic publisher DOIs. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"openalex"`) so you know which provider answered and which fields to expect. arXiv IDs always route to arXiv; bioRxiv DOIs route to bioRxiv; everything else (including ACL) routes to OpenAlex.
+Pass an arXiv ID or any DOI — including bioRxiv/medRxiv (`10.1101/...`), ACL Anthology (`10.18653/v1/...`), or generic publisher DOIs. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"openalex"`) so you know which provider answered and which fields to expect. arXiv IDs always route to arXiv; bioRxiv DOIs route to bioRxiv; everything else (including ACL) routes to OpenAlex.
+
+An arXiv ID is accepted in every spelling that names the same paper, so one paper never caches twice: bare (`2301.00001`, `2301.00001v2`, `hep-th/9901001`), arXiv's `arXiv:` "Cite as" prefix, an `abs`/`pdf` URL (any scheme or none, with or without a `www.`/`export.` host label), and arXiv's own DataCite DOI (`10.48550/arXiv.2301.00001`). The version suffix is part of the identity: `2301.00001` means "whatever is current" and `2301.00001v2` means that revision, and the two cache separately.
 
 | Tool | Description |
 |------|-------------|
