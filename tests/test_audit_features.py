@@ -137,8 +137,14 @@ class TestDownloadPdfCascade:
         assert cache.get(acl.NAMESPACE, "sections", papers.sections_key(canonical)) is None
 
     @pytest.mark.asyncio
-    async def test_no_cascade_when_force_refresh_false(self, monkeypatch):
-        """Without force_refresh, cascade never fires even on cache miss."""
+    async def test_fresh_bytes_cascade_without_force_refresh(self, monkeypatch):
+        """New bytes on disk invalidate the markdown they superseded.
+
+        The cascade is keyed on what happened, not on what the caller asked
+        for: a PDF that was evicted and re-fetched leaves the old markdown
+        describing a file that is gone, and ``convert_paper`` would serve it as
+        ``cached: True``.
+        """
 
         async def fake_download(arxiv_id, *, force_refresh=False):
             return {"path": "/tmp/dummy.pdf", "size_bytes": 100, "cached": False}
@@ -148,14 +154,51 @@ class TestDownloadPdfCascade:
         canonical = "2301.00003"
         md_path = papers.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text("# Untouched\n")
+        md_path.write_text("# Stale\n")
+        cache.put(
+            "arxiv",
+            "sections",
+            papers.sections_key(canonical),
+            {"sections": [], "markdown_checksum": "x", "conversion_mode": "full"},
+        )
 
-        try:
-            result = await server._download_pdf_by_provider("2301.00003", force_refresh=False)
-            assert "cascaded_invalidated" not in result
-            assert md_path.exists()
-        finally:
-            md_path.unlink(missing_ok=True)
+        result = await server._download_pdf_by_provider("2301.00003", force_refresh=False)
+
+        assert result["cascaded_invalidated"] == ["markdown", "sections"]
+        assert not md_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_imported_markdown_survives_an_implicit_cascade(self, monkeypatch):
+        """Markdown the operator supplied is not converter output to redo.
+
+        No converter can reproduce it, so a download that merely refilled an
+        absent PDF must not destroy it. Explicit ``force_refresh=True`` still
+        does — that is what the flag means.
+        """
+
+        async def fake_download(arxiv_id, *, force_refresh=False):
+            return {"path": "/tmp/dummy.pdf", "size_bytes": 100, "cached": False}
+
+        monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
+
+        canonical = "2301.00004"
+        md_path = papers.markdown_path("arxiv", canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# Hand written\n")
+        cache.put(
+            "arxiv",
+            "sections",
+            papers.sections_key(canonical),
+            {"sections": [], "markdown_checksum": "x", "conversion_mode": "imported"},
+        )
+
+        result = await server._download_pdf_by_provider("2301.00004", force_refresh=False)
+        assert "cascaded_invalidated" not in result
+        assert md_path.read_text() == "# Hand written\n"
+
+        forced = await server._download_pdf_by_provider("2301.00004", force_refresh=True)
+        assert forced["cascaded_invalidated"] == ["markdown", "sections"]
+        assert not md_path.exists()
 
 
 # ---------------------------------------------------------------------------

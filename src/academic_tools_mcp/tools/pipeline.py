@@ -27,6 +27,16 @@ from ..providers import acl, arxiv, biorxiv
 
 _INTERNAL_PATH_KEYS = ("path", "markdown_path")
 
+# Single-homed: the download refusal, a failed download and an unusable file
+# all point the agent at the same escape hatch.
+_IMPORT_FALLBACK = (
+    "Obtain the PDF yourself (publisher site, institutional access, browser, "
+    "curl, etc.), then call import_paper(file_path, identifier) with the SAME "
+    "identifier — it will be cached in the correct namespace so convert_paper "
+    "→ get_paper_sections → get_paper_section find it. import_paper also "
+    "accepts pre-converted .md/.markdown files, which skip convert_paper."
+)
+
 
 def _strip_internal_paths(result: dict[str, Any]) -> dict[str, Any]:
     """Drop cache filesystem paths before returning to the agent.
@@ -34,8 +44,6 @@ def _strip_internal_paths(result: dict[str, Any]) -> dict[str, Any]:
     The agent should drive the pipeline by identifier; exposing on-disk
     paths tempts it to read files directly instead of using the tools.
     """
-    if not isinstance(result, dict):
-        return result
     return {k: v for k, v in result.items() if k not in _INTERNAL_PATH_KEYS}
 
 
@@ -44,13 +52,17 @@ async def _download_pdf_by_provider(
 ) -> dict[str, Any]:
     """Dispatch PDF download to the correct provider based on identifier type.
 
-    When ``force_refresh=True`` causes a real re-download (``cached``
-    comes back ``False``), the cached markdown + section index for this
-    paper become stale relative to the new bytes on disk. Drop them
-    here so the next ``convert_paper`` picks up the replacement file
-    instead of returning previously-converted text — without this
-    cascade an agent that re-downloads has to remember to also
-    ``convert_paper(force_refresh=True)`` or quietly read stale text.
+    Whenever fresh bytes land (``cached`` comes back ``False``), the cached
+    markdown + section index describe the file they replaced. Drop them here so
+    the next ``convert_paper`` picks up the replacement instead of returning
+    previously-converted text — without this cascade an agent that re-downloads
+    has to remember to also ``convert_paper(force_refresh=True)`` or quietly
+    read stale text.
+
+    The one exception is markdown an operator imported themselves
+    (``conversion_mode == "imported"``): no converter can reproduce it, so an
+    *implicit* cascade would destroy it. An explicit ``force_refresh=True``
+    still replaces it, which is what that flag means.
     """
     target = manual.resolve_target(identifier)
     ns = target["namespace"]
@@ -77,27 +89,34 @@ async def _download_pdf_by_provider(
             ),
             "suggestion": (
                 "For a generic publisher DOI, retry with allow_oa_url=True to "
-                "fetch the open-access PDF URL OpenAlex reports (if any). "
-                "Otherwise obtain the PDF yourself (publisher site, "
-                "institutional access, browser, curl, etc.), then call "
-                "import_paper(file_path, identifier) with the SAME identifier "
-                "— it will be cached in the correct namespace so convert_paper "
-                "→ get_paper_sections → get_paper_section find it. import_paper "
-                "also accepts pre-converted .md/.markdown files, which skip the "
-                "convert_paper step entirely."
+                f"fetch the open-access PDF URL OpenAlex reports (if any). {_IMPORT_FALLBACK}"
             ),
         }
 
-    # Cascade only on a real re-download. Every provider download_pdf returns an
-    # explicit cached flag, so `cached is False` distinguishes a fresh fetch from
-    # a cache hit (cached True) or a failure (handled by the "error" guard).
-    if force_refresh and "error" not in result and result.get("cached") is False:
+    if "error" in result:
+        # A provider download error arrives with a retry verdict but no
+        # recovery advice — _http builds the transport vocabulary, not the
+        # pipeline's. Agents branch on `suggestion` (see _app.not_converted_error),
+        # so this is the one error shape in the module that would reach them
+        # without one.
+        return _enrich_error(
+            result,
+            "Wait and retry — the provider is temporarily unavailable."
+            if result.get("retryable") is True
+            else _IMPORT_FALLBACK,
+        )
+
+    # Every provider download_pdf returns an explicit cached flag, so
+    # `cached is False` means new bytes replaced whatever was on disk.
+    if result.get("cached") is False:
         canonical = target["canonical"]
         # Under the per-paper lock so a concurrent convert_pdf can't read a
-        # half-cleared state.
+        # half-cleared state — and so the provenance read below can't race the
+        # writer that recorded it.
         async with papers.sections_lock(ns, canonical):
-            papers.drop_derived(ns, canonical)
-        result["cascaded_invalidated"] = ["markdown", "sections"]
+            if force_refresh or papers.recorded_conversion_mode(ns, canonical) != "imported":
+                papers.drop_derived(ns, canonical)
+                result["cascaded_invalidated"] = ["markdown", "sections"]
 
     return result
 
@@ -128,12 +147,20 @@ async def download_pdf(
     works and deduplicates with the rest of the pipeline.
 
     Skips download if already cached unless ``force_refresh=True``.
-    ``force_refresh=True`` **cascades**: when the PDF is actually
-    re-downloaded, the cached markdown and section index for that paper are
-    dropped automatically, so the next ``convert_paper`` picks up the new
-    bytes. You do not need to pass ``force_refresh`` to ``convert_paper`` as
-    well. The response reports this as
-    ``cascaded_invalidated: ["markdown", "sections"]``.
+
+    Returns ``{size_bytes, cached}``; ACL Anthology papers also carry
+    ``{anthology_id, pdf_url}``. Errors are ``{error, suggestion, retryable?,
+    not_found?, max_bytes?}`` — ``retryable: True`` is the only value that
+    means a retry might work.
+
+    Whenever the PDF is actually downloaded (``cached: False``) the cached
+    markdown and section index for that paper are dropped automatically, so
+    the next ``convert_paper`` picks up the new bytes and you never need to
+    pass ``force_refresh`` to it as well. The response reports this as
+    ``cascaded_invalidated: ["markdown", "sections"]``. Markdown you supplied
+    yourself via ``import_paper`` is the exception: it survives, since no
+    converter can reproduce it — pass ``force_refresh=True`` to replace it
+    anyway.
 
     Next step: convert_paper → get_paper_sections → get_paper_section.
     """
@@ -141,6 +168,42 @@ async def download_pdf(
         await _download_pdf_by_provider(
             identifier, force_refresh=force_refresh, allow_oa_url=allow_oa_url
         )
+    )
+
+
+def _convert_suggestion(result: dict[str, Any], mode: str) -> str:
+    """Recovery advice for a conversion failure, chosen per cause.
+
+    One message for every cause contradicts the ``error`` string it rides
+    beside: a fast-mode timeout is told to raise PDF_FAST_CONVERT_TIMEOUT and
+    then that the PDF is corrupt. The residual is deliberately cause-neutral
+    and defers to ``error``, which names what actually failed.
+    """
+    if result.get("busy"):
+        return (
+            "Another PDF is being converted right now. Wait and retry; in the "
+            "meantime you can still read sections of papers that are already "
+            "converted, retry this one with mode='fast' (a quick degraded "
+            "text-only extraction that skips the lock), or work on non-PDF tools."
+        )
+    if result.get("timed_out"):
+        if mode == "full":
+            return (
+                "Full conversion exceeded the timeout. For a quick degraded "
+                "fallback, retry with mode='fast' (plain-text extraction, no "
+                "tables/equations) — or raise PDF_CONVERT_TIMEOUT if you need "
+                "the full-quality markdown."
+            )
+        return (
+            "Fast extraction exceeded its timeout — a fast retry will hit the "
+            "same wall. Retry with mode='full', which has a far longer budget "
+            "and produces better markdown, or raise PDF_FAST_CONVERT_TIMEOUT."
+        )
+    return (
+        "Read the error above: it names what failed. If the converter is "
+        "missing or misconfigured, that is an operator fix, not a retry. If it "
+        "ran and rejected the file, the PDF may be corrupted or unsupported — "
+        f"try a different version, or hand it over pre-converted. {_IMPORT_FALLBACK}"
     )
 
 
@@ -159,8 +222,9 @@ async def convert_paper(
     cached markdown and the section index so the converter re-runs.
 
     ``mode="full"`` (default): heavy converter (MinerU/Marker), high quality
-    (tables/equations), but slow (up to 10 minutes, hard timeout) and
-    serialised — only one full conversion runs server-wide at a time.
+    (tables/equations), but slow (minutes to tens of minutes, capped by
+    ``PDF_CONVERT_TIMEOUT``) and serialised — only one full conversion runs
+    server-wide at a time.
     ``mode="fast"``: lightweight text extractor (pdftotext/pymupdf), runs
     *outside* that lock — seconds, never ``busy`` — but DEGRADED (plain text,
     no tables/equations/figures/headings). Reach for it when ``full`` times
@@ -184,9 +248,13 @@ async def convert_paper(
       - Server already running another conversion (full mode only) →
         ``{busy: True, retryable: True, in_progress: {...}}``. Retry shortly,
         or call again with ``mode="fast"`` (it doesn't take the lock).
-      - Conversion failure (subprocess error, timeout, no output) →
-        non-retryable. On a full-mode timeout the suggestion points at
-        ``mode="fast"``.
+      - Timeout → ``{timed_out: True, timeout_seconds}``, non-retryable in the
+        mode that failed. The suggestion points at the *other* mode: a
+        full-mode timeout at ``mode="fast"``, a fast-mode one at ``mode="full"``,
+        which has a far longer budget.
+      - Any other conversion failure (subprocess error, no output, converter
+        missing) → non-retryable. The ``error`` string names the cause; the
+        suggestion does not guess at one.
     """
     target = manual.resolve_target(identifier)
     pdf = target["pdf_path"]
@@ -207,35 +275,7 @@ async def convert_paper(
         # Error responses cross the same MCP boundary as success ones — strip
         # cache filesystem paths here too so a future error shape that happens
         # to carry one can't leak it to the agent.
-        if result.get("busy"):
-            return _strip_internal_paths(
-                _enrich_error(
-                    result,
-                    "Another PDF is being converted right now. Wait and retry; "
-                    "in the meantime you can still read sections of papers that "
-                    "are already converted, retry this one with mode='fast' (a "
-                    "quick degraded text-only extraction that skips the lock), or "
-                    "work on non-PDF tools.",
-                )
-            )
-        if result.get("timed_out") and mode == "full":
-            return _strip_internal_paths(
-                _enrich_error(
-                    result,
-                    "Full conversion exceeded the timeout. For a quick degraded "
-                    "fallback, retry with mode='fast' (plain-text extraction, no "
-                    "tables/equations) — or raise PDF_CONVERT_TIMEOUT if you need "
-                    "the full-quality markdown.",
-                )
-            )
-        return _strip_internal_paths(
-            _enrich_error(
-                result,
-                "Conversion failed permanently — do not retry. "
-                "The PDF may be too large, corrupted, or in an unsupported format. "
-                "Try importing a different version or pre-converted markdown via import_paper.",
-            )
-        )
+        return _strip_internal_paths(_enrich_error(result, _convert_suggestion(result, mode)))
     return _strip_internal_paths(result)
 
 
@@ -252,8 +292,11 @@ async def get_paper_sections(
     the next read re-parses the markdown.
 
     Returns ``{total_sections, total_approx_tokens, sections_detected,
-    sections}`` where each section entry has ``{index, title, h3s,
-    approx_tokens}`` — ``h3s`` is the list of sub-headings under that section.
+    conversion_mode, sections}`` where each section entry has ``{index, title,
+    h3s, approx_tokens}`` — ``h3s`` is the list of sub-headings under that
+    section. ``conversion_mode`` is what produced the markdown: ``"full"`` or
+    ``"fast"``, ``"imported"`` for a pre-converted file handed to import_paper,
+    or null for a paper converted before the field existed.
 
     ``sections_detected: false`` means the converted markdown had **no
     headings at all**, so the single section returned is synthetic and its
@@ -270,15 +313,21 @@ async def get_paper_sections(
     if sections_data is None:
         return not_converted_error(identifier)
 
-    sections_list = sections_data.get("sections", [])
-    # Always recorded: ``papers._reparse_sections_locked`` treats an entry
-    # without this key as stale and re-parses, so a cached index predating the
-    # flag yields the real answer rather than an optimistic default.
+    # Subscripted, not defaulted: ``papers._reparse_sections_locked`` treats an
+    # entry missing either key as stale and re-parses, so a cached index
+    # predating the flag yields the real answer rather than an optimistic
+    # default. ``conversion_mode`` is the one that legitimately may be null.
+    sections_list = sections_data["sections"]
     detected = sections_data["sections_detected"]
     response: dict[str, Any] = {
         "total_sections": len(sections_list),
+        # Defaulted, unlike the two above: the entry invariant covers the four
+        # top-level keys, not the shape of each section row.
         "total_approx_tokens": sum(s.get("approx_tokens", 0) for s in sections_list),
         "sections_detected": detected,
+        # The sections_note below tells the agent to re-convert if this was a
+        # fast extraction; without the field it cannot tell.
+        "conversion_mode": sections_data.get("conversion_mode"),
         "sections": sections_list,
     }
     if not detected:
@@ -388,14 +437,26 @@ async def import_paper(
 
     Returns ``{identifier, namespace, size_bytes, cached}`` for PDFs, or
     ``{identifier, namespace, section_count, cached}`` for markdown — call
-    get_paper_sections for the full section index with previews.
+    get_paper_sections for the full section index with previews. A PDF import
+    that replaced an existing one also carries
+    ``cascaded_invalidated: ["markdown", "sections"]``.
     ``identifier`` is the canonical cache key the file was filed under, which
     may differ from what you passed (``arXiv:2301.00001v2`` → ``2301.00001v2``).
 
     Errors: file not found, blank identifier, not a valid PDF, non-UTF-8
-    markdown, or unsupported extension → ``{error}``.
+    markdown, or unsupported extension → ``{error, suggestion?}``.
     """
+    # Cheapest rejection first, before any routing work.
     ext = Path(file_path).suffix.lower()
+    if ext != ".pdf" and ext not in _MARKDOWN_EXTS:
+        return {
+            "error": f"Unsupported file extension {ext!r}.",
+            "suggestion": (
+                "Pass a .pdf (routed through the conversion pipeline) or a "
+                ".md/.markdown file (imported directly, skipping conversion). "
+                "Convert or rename the file first if it is neither."
+            ),
+        }
 
     # Both import paths run off the event loop. import_local_pdf copies an
     # arbitrarily large file through atomic.copy (MAX_PDF_BYTES bounds
@@ -419,21 +480,15 @@ async def import_paper(
                     manual.import_local_pdf, file_path, identifier, force_refresh=force_refresh
                 )
             )
-    if ext in _MARKDOWN_EXTS:
-        async with papers.sections_lock(target["namespace"], target["canonical"]):
-            result = _strip_internal_paths(
-                await asyncio.to_thread(
-                    manual.import_markdown, file_path, identifier, force_refresh=force_refresh
-                )
+    # Markdown — the extension guard above left no third possibility.
+    async with papers.sections_lock(target["namespace"], target["canonical"]):
+        result = _strip_internal_paths(
+            await asyncio.to_thread(
+                manual.import_markdown, file_path, identifier, force_refresh=force_refresh
             )
-        if "sections" in result:
-            sections = result.pop("sections")
-            result["section_count"] = len(sections)
-        return result
-    return {
-        "error": (
-            f"Unsupported file extension {ext!r}. "
-            "Expected .pdf (for the PDF pipeline) or .md/.markdown (for "
-            "pre-converted text)."
-        ),
-    }
+        )
+    # Slimmed for the agent, on the cached hit as well as the fresh import:
+    # get_paper_sections is where the full index belongs.
+    if "sections" in result:
+        result["section_count"] = len(result.pop("sections"))
+    return result

@@ -37,6 +37,26 @@ def drop_derived(namespace: str, canonical: str) -> None:
     cache.invalidate(namespace, "sections", sections_key(canonical))
 
 
+def recorded_conversion_mode(namespace: str, canonical: str) -> str | None:
+    """Provenance of this paper's cached markdown, or ``None`` if unrecorded.
+
+    ``"full"`` / ``"fast"`` for converter output, ``"imported"`` for a file an
+    operator handed to ``import_paper``, ``None`` for an entry predating the
+    field or no entry at all. The named read for callers deciding whether they
+    may replace the markdown — ``tools/pipeline``'s download cascade is the
+    one, and it must not reach into the sections cache itself. Caller holds
+    :func:`sections_lock`, as :func:`drop_derived` requires.
+
+    ``None`` for a markdown file whose index was deleted by hand: nothing
+    recorded, nothing to protect.
+    """
+    entry = cache.get(namespace, "sections", sections_key(canonical), count=False)
+    if entry is None:
+        return None
+    mode = entry.get("conversion_mode")
+    return mode if isinstance(mode, str) else None
+
+
 # Per-paper locks, LRU-capped so a long session touching thousands of papers
 # doesn't grow this map without bound.
 _SECTION_LOCKS_MAX: int = 1024
