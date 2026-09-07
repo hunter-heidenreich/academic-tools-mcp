@@ -9,6 +9,24 @@ from academic_tools_mcp.providers import opencitations
 # ---------------------------------------------------------------------------
 
 
+class TestParseIdsNonString:
+    """The field comes from untyped JSON; a non-string reaches ``.split()``."""
+
+    @pytest.mark.parametrize("raw", [True, 5, ["doi:10.1/a"], {"doi": "10.1/a"}, 1.5])
+    def test_a_non_string_id_field_yields_no_ids(self, raw):
+        assert opencitations._parse_ids(raw) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_a_non_string_id_field_is_not_fatal(self, tmp_path, monkeypatch):
+        _reset_opencitations(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, [{"cited": 7, "creation": "2020"}])
+
+        result = await opencitations.get_references("10.1234/x")
+
+        assert result["count"] == 1
+        assert result["references"][0]["creation"] == "2020"
+
+
 class TestParseIds:
     def test_full_string(self):
         result = opencitations._parse_ids(

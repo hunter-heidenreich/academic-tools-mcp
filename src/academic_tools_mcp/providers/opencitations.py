@@ -96,14 +96,17 @@ def canonical_doi(doi: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _parse_ids(raw: str | None) -> dict[str, str]:
+def _parse_ids(raw: Any) -> dict[str, str]:
     """Parse a space-delimited OpenCitations ID string into a dict.
 
     Input:  "omid:br/062102024238 doi:10.1103/physrevx.2.031001 openalex:W3101024234 pmid:20079334"
     Output: {"omid": "br/062102024238", "doi": "10.1103/physrevx.2.031001",
              "openalex": "W3101024234", "pmid": "20079334"}
+
+    ``Any``, not ``str | None``: the value comes from untyped JSON, and a
+    non-string reaches ``.split()`` and raises where no except clause catches it.
     """
-    if not raw:
+    if not isinstance(raw, str) or not raw:
         return {}
     ids: dict[str, str] = {}
     for token in raw.split():

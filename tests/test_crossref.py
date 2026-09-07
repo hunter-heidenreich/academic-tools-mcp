@@ -268,6 +268,20 @@ class TestSearchWorksShapeGuards:
         assert "error" in result
         assert result["retryable"] is True
 
+    @pytest.mark.parametrize("doi", [True, 5, ["10.1/a"], {"v": "10.1/a"}])
+    @pytest.mark.asyncio
+    async def test_a_non_string_doi_is_skipped_not_fatal(self, monkeypatch, tmp_path, doi):
+        """Truthiness isn't enough: a non-string DOI reaches _doi.normalize and
+        raises AttributeError, caught by neither except clause."""
+        _reset_crossref(monkeypatch, tmp_path)
+        good = {"DOI": "10.1234/A", "title": ["A"]}
+        _stub_json_responses(monkeypatch, _search_response([{"DOI": doi}, good]))
+
+        result = await crossref.search_works("some title")
+
+        assert result["items"] == [{"DOI": doi}, good]
+        assert cache.get(crossref.NAMESPACE, "works", "10.1234/a") == good
+
     @pytest.mark.asyncio
     async def test_non_dict_items_are_skipped_not_fatal(self, monkeypatch, tmp_path):
         """A partly-garbled list still yields its good hits, and warms only those."""

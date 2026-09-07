@@ -85,7 +85,9 @@ grouped by milestone rather than per commit.
   as an empty—but successful—result set, indistinguishable from a query that
   genuinely matched nothing. Both are now the uniform retryable error, and
   individual non-object hits inside an otherwise valid list are skipped rather
-  than fatal. ([#97])
+  than fatal, as are hits whose `DOI` field is not a string. The same class of
+  crash is fixed in the OpenCitations reference/citation records, whose ID field
+  was also assumed to be a string. ([#97])
 - **Crossref and OpenCitations "not found" errors now carry `not_found: true`.**
   Every other provider already did. `get_paper_references_count`,
   `get_paper_references` and `get_paper_citations` forward the flag, so a source

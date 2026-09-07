@@ -201,7 +201,9 @@ async def search_works(
     # get_work is a free cache hit. Mirrors arxiv.search_papers.
     for item in items:
         doi = item.get("DOI")
-        if not doi:
+        # isinstance, not truthiness: a non-string DOI reaches _doi.normalize
+        # and raises AttributeError, which no except clause here catches.
+        if not isinstance(doi, str) or not doi:
             continue
         cache.warm(
             NAMESPACE, "works", canonical_doi(doi), item, max_age_seconds=_POSITIVE_TTL_SECONDS
