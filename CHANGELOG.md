@@ -78,6 +78,41 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **bioRxiv/medRxiv identifiers are now recognised in every rendering of a
+  preprint, so one paper no longer caches several times.** A version suffix
+  (`10.1101/2024.01.01.573838v1`) and a content URL carrying an uppercase host,
+  no scheme, a trailing slash, or a page tail other than `.full`/`.full.pdf`
+  (`.abstract`, `.full-text`, `.supplementary-material`, `.article-info`) each
+  used to normalize to itself. The uppercase and scheme-less spellings then
+  failed `is_biorxiv_doi` and were filed under the `manual` namespace, so
+  `get_paper_metadata` answered "could not determine the provider" for a URL
+  copied out of a browser; the rest became their own cache key and were
+  rejected upstream as "DOI not recognizable", which bioRxiv reports as an
+  empty result — negative-cached as `No paper found` for the hour. All of them
+  now collapse onto the bare DOI, which is the identity bioRxiv actually mints:
+  it issues one DOI for every version, so the version is deliberately *not*
+  part of the key here, unlike arXiv's. ([#96])
+
+- **A bioRxiv "not found" now requires both servers to have answered.** Nothing
+  in the shared `10.1101/` prefix tells bioRxiv from medRxiv, so `get_paper`
+  asks both. If one returned an anomalous body and the other a well-formed
+  empty result, the miss was still negative-cached as definitive — filing a
+  live preprint as absent for the hour on half the evidence. That case is now a
+  retryable error and is not cached. ([#96])
+
+- **A definitive bioRxiv miss now carries `not_found: True`**, matching arXiv,
+  OpenAlex and Wikipedia. It was the one metadata provider whose 404 a caller
+  could only distinguish from a transient failure by the *absence* of
+  `retryable`. ([#96])
+
+- **A bioRxiv DOI containing `#` or `?` no longer silently fetches a different
+  record.** The identifier is percent-encoded into the request path, as every
+  other provider's already was. ([#96])
+
+- **A bioRxiv record whose `version` or `doi` field is absent or null no longer
+  yields a broken PDF URL** (`.../10.1101/xvNone.full.pdf`, or
+  `.../content/v1.full.pdf` naming no paper at all). ([#96])
+
 - **A malformed `search_arxiv` query no longer comes back as a search hit.**
   arXiv answers a bad `search_query` with HTTP 200 and a synthetic entry whose
   id points at `api/errors`; `search_papers` parsed it as a normal paper, so
@@ -2268,3 +2303,4 @@ grouped by milestone rather than per commit.
 [#93]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/93
 [#94]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/94
 [#95]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/95
+[#96]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/96

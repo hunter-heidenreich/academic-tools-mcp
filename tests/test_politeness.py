@@ -45,7 +45,15 @@ def test_every_client_module_was_discovered():
     # parametrized politeness check below would vacuously pass.
     names = [name for name, _ in _ALL_CLIENTS]
     assert "oa_download" in names
-    assert {"arxiv", "openalex", "crossref", "wikipedia"} <= set(names)
+    assert {
+        "acl",
+        "arxiv",
+        "biorxiv",
+        "crossref",
+        "openalex",
+        "opencitations",
+        "wikipedia",
+    } <= set(names)
     assert len(names) == len(set(names))
 
 

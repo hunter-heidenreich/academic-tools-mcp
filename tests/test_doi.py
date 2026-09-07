@@ -186,9 +186,9 @@ class TestIdempotence:
 #
 # `acl` belongs here too: its Anthology-prefix policy lives in
 # `_strip_acl_prefix`, so its `_normalize_doi` is the same pure delegation.
-# `biorxiv` is the one deliberate absence — `_normalize_doi` layers
-# `_BIORXIV_URL_RE` on top of `_doi.normalize`, so equality is not its
-# contract and its own tests cover it.
+# `biorxiv` is the one deliberate absence — `_normalize_doi` layers a content
+# URL and a version-stripping rule on top of `_doi.normalize`, so equality is
+# not its contract. `test_biorxiv_properties.py` states what is.
 # (module, the name that provider gives its cache-key wrapper). The two
 # spellings are the router's: `manual._ROUTES` passes `canonical_key` for the
 # DOI-prefix providers.
