@@ -125,9 +125,9 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 
 | Tool | Description |
 |------|-------------|
-| `download_pdf` | Download and cache the PDF — auto-detects arXiv, ACL Anthology, bioRxiv/medRxiv. Streams chunks to disk (peak memory = 64 KiB) and aborts mid-stream if the response would exceed `MAX_PDF_BYTES` (default 200 MB). Re-downloading with `force_refresh=True` cascades: the cached markdown + section index are dropped automatically so the next `convert_paper` picks up the new bytes. |
+| `download_pdf` | Download and cache the PDF — auto-detects arXiv, ACL Anthology, bioRxiv/medRxiv. Streams chunks to disk (peak memory = 64 KiB) and aborts mid-stream if the response would exceed `MAX_PDF_BYTES` (default 200 MB). Whenever it actually downloads (not on a cache hit), the cached markdown + section index are dropped automatically so the next `convert_paper` picks up the new bytes. Markdown you imported yourself survives that; pass `force_refresh=True` to replace it too. |
 | `convert_paper` | Convert PDF to markdown, parse into sections (slow: tens of minutes; `PDF_CONVERT_TIMEOUT` caps it at 30 min by default). The server runs at most one conversion at a time across all callers — a second concurrent caller gets `{busy: True, retryable: True, in_progress: {...}}` immediately rather than queueing |
-| `get_paper_sections` | Section index with titles, sub-heading previews, token counts |
+| `get_paper_sections` | Section index with titles, sub-heading previews, token counts, and `conversion_mode` — what produced the markdown (`full` / `fast` / `imported`) |
 | `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
 | `find_in_paper` | Substring (or whole-word) search inside one converted paper. Returns each hit's section + char offset + ~120-char snippet. Char offsets align with `get_paper_section`'s stripped text so you can chain straight to the surrounding context. |
 | `search_cached_papers` | BM25 keyword search across **every** converted paper in the local cache. Answers "which paper mentioned X?"; pair it with `find_in_paper` for "where in that paper?". |

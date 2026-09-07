@@ -29,6 +29,7 @@ from .convert import ConverterTemplateError, convert_pdf
 from .index import (
     drop_derived,
     get_or_parse_sections,
+    recorded_conversion_mode,
     sections_lock,
     store_markdown_and_index,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "migrate_legacy_stems",
     "parse_sections",
     "parse_sections_and_detect",
+    "recorded_conversion_mode",
     "safe_stem",
     "section_at_offset",
     "section_boundaries",

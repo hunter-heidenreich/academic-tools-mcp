@@ -24,6 +24,20 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **`download_pdf` now drops stale markdown whenever it actually downloads,
+  not just on `force_refresh=True`.** A PDF that was evicted or pruned and then
+  re-fetched left the previous markdown in place, and the next `convert_paper`
+  served it as `cached: True` — text for a file that no longer exists. The
+  cascade is now keyed on new bytes landing. Markdown you supplied yourself via
+  `import_paper` is exempt, since no converter can reproduce it; pass
+  `force_refresh=True` to replace that too. ([#104])
+
+- **`get_paper_sections` now reports `conversion_mode`.** Its own
+  `sections_note` tells you to re-run `convert_paper` with `mode='full'` if the
+  markdown came from a fast extraction — which you could not tell from the
+  response. `"full"` / `"fast"` / `"imported"`, or null for a paper converted
+  before the field existed. ([#104])
+
 - **Four `@mcp.tool` docstrings now name every key their tool returns.**
   `get_paper_metadata`'s `openalex` branch was missing `pdf_url` (the best
   open-access PDF link, already in every response), and `get_paper_authors` /
@@ -90,6 +104,34 @@ grouped by milestone rather than per commit.
   `_SECTION_LEVELS`. ([#93])
 
 ### Fixed
+
+- **A failed conversion no longer blames the PDF for every cause.**
+  `convert_paper` answered one catch-all — "Conversion failed permanently — do
+  not retry. The PDF may be too large, corrupted, or in an unsupported format"
+  — to three failures that contradict it: a `mode='fast'` timeout (whose own
+  error says to raise `PDF_FAST_CONVERT_TIMEOUT`), a missing fast extractor
+  (an operator fix), and a PDF unlinked mid-call (re-download it). A fast-mode
+  timeout now points at `mode='full'`, which has a far longer budget, and the
+  residual message defers to the `error` string instead of guessing a cause.
+  ([#104])
+
+- **`download_pdf` errors now carry a `suggestion`.** A withdrawn arXiv paper,
+  a 503 and a size-cap abort all arrived with a retry verdict and no next step,
+  making `download_pdf` the one pipeline tool that could hand an agent a dead
+  end. Transient failures say to retry; the rest point at `import_paper`.
+  ([#104])
+
+- **`import_paper`'s unsupported-extension error moved its advice into
+  `suggestion`.** Agents branch on `suggestion`, not on prose inside `error`.
+  ([#104])
+
+- **`convert_paper`'s docstring said full conversion takes "up to 10
+  minutes".** `PDF_CONVERT_TIMEOUT` defaults to 30 minutes, so an agent reading the
+  tool description gave up or downgraded three times too early. It now names
+  the knob instead of a number. `download_pdf` and `import_paper` also now name
+  the response keys they had been returning undocumented (`size_bytes`,
+  `cached`, ACL's `anthology_id` / `pdf_url`, and `cascaded_invalidated`).
+  ([#104])
 
 - **`get_paper_authors` no longer raises on an OpenAlex work with a null
   authorship field.** OpenAlex emits `"authorships": null`, `"author": null`
@@ -2513,3 +2555,4 @@ grouped by milestone rather than per commit.
 [#101]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/101
 [#102]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/102
 [#103]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/103
+[#104]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/104
