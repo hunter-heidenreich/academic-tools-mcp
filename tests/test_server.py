@@ -195,9 +195,11 @@ class TestFollowPublished:
 
 
 class TestReferencesAutoSource:
-    """source='auto' fires Crossref and OpenCitations in parallel and
-    pages from whichever has more references — saves a turn vs. calling
-    get_paper_references_count first.
+    """source='auto' fires Crossref and OpenCitations in parallel and pages
+    from the better-covered source — saves a turn vs. calling
+    get_paper_references_count first. Selection is biased toward Crossref by
+    `_CROSSREF_HYSTERESIS`: OpenCitations wins only on a material margin, not
+    on a row or two. The exact edge is pinned in TestHysteresisBoundary.
     """
 
     @pytest.mark.asyncio
@@ -593,6 +595,447 @@ class TestReferencesCount:
         await server.get_paper_references_count("10.1234/x", force_refresh=True)
 
         assert seen == {"crossref": True, "opencitations": True}
+
+
+class TestGraphPagination:
+    """`_page` is the one home for the slice arithmetic every graph response
+    carries, and `has_more` is the field an agent's walk terminates on."""
+
+    @staticmethod
+    def _refs(n):
+        return {"references": [{"doi": f"10.2/{i}"} for i in range(n)], "count": n}
+
+    @pytest.mark.asyncio
+    async def test_consecutive_pages_are_disjoint_and_cover_the_list(self, monkeypatch):
+        async def fake_oc(doi, **kwargs):
+            return TestGraphPagination._refs(25)
+
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        first = await server.get_paper_references(
+            "10.1234/x", source="opencitations", page=1, page_size=10
+        )
+        second = await server.get_paper_references(
+            "10.1234/x", source="opencitations", page=2, page_size=10
+        )
+        third = await server.get_paper_references(
+            "10.1234/x", source="opencitations", page=3, page_size=10
+        )
+
+        assert first["has_more"] is True
+        assert second["has_more"] is True
+        assert third["has_more"] is False
+        assert len(third["references"]) == 5
+
+        walked = first["references"] + second["references"] + third["references"]
+        assert walked == [{"doi": f"10.2/{i}"} for i in range(25)]
+        assert all(r["total"] == 25 for r in (first, second, third))
+
+    @pytest.mark.asyncio
+    async def test_a_page_past_the_end_is_empty_and_says_so(self, monkeypatch):
+        async def fake_oc(doi, **kwargs):
+            return TestGraphPagination._refs(3)
+
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references(
+            "10.1234/x", source="opencitations", page=9, page_size=20
+        )
+
+        assert result["references"] == []
+        assert result["has_more"] is False
+        assert result["total"] == 3, "total still names the full list, so the overshoot is visible"
+
+    @pytest.mark.parametrize("page_size", [1, 50])
+    @pytest.mark.asyncio
+    async def test_both_page_size_bounds_are_honoured(self, monkeypatch, page_size):
+        # Exactly at a cap must pass; the MCP boundary refuses anything past it.
+        async def fake_oc(doi, **kwargs):
+            return TestGraphPagination._refs(60)
+
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references(
+            "10.1234/x", source="opencitations", page=1, page_size=page_size
+        )
+
+        assert len(result["references"]) == page_size
+        assert result["has_more"] is True
+
+    @pytest.mark.asyncio
+    async def test_citations_paginate_on_the_same_arithmetic(self, monkeypatch):
+        async def fake_oc(doi, **kwargs):
+            return {"citations": [{"doi": f"10.3/{i}"} for i in range(7)], "count": 7}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations("10.1234/x", page=2, page_size=5)
+
+        assert result["citations"] == [{"doi": "10.3/5"}, {"doi": "10.3/6"}]
+        assert result["has_more"] is False
+        assert result["total"] == 7
+
+
+class TestCrossrefReferenceFormatting:
+    """The per-entry shape `get_paper_references` promises for `source="crossref"`.
+
+    Publisher deposits vary field by field, so the formatter's job is to emit
+    what is there and omit what is not — an absent field must not become a null
+    the agent has to filter.
+    """
+
+    def test_every_documented_field_is_mapped(self):
+        from academic_tools_mcp.tools import graph
+
+        entry = graph._format_crossref_reference(
+            {
+                "key": "ref12",
+                "DOI": "10.1/a",
+                "author": "Curie",
+                "article-title": "On Radioactivity",
+                "year": "1898",
+                "journal-title": "Comptes Rendus",
+                "volume": "127",
+                "first-page": "1215",
+                "unstructured": "Curie, M. (1898).",
+            }
+        )
+
+        assert entry == {
+            "doi": "10.1/a",
+            "author": "Curie",
+            "title": "On Radioactivity",
+            "year": "1898",
+            "journal": "Comptes Rendus",
+            "volume": "127",
+            "first_page": "1215",
+            "unstructured": "Curie, M. (1898).",
+        }
+
+    def test_absent_and_empty_fields_are_omitted_not_nulled(self):
+        from academic_tools_mcp.tools import graph
+
+        entry = graph._format_crossref_reference({"DOI": "10.1/a", "year": "", "volume": None})
+
+        assert entry == {"doi": "10.1/a"}
+
+    def test_a_bookkeeping_only_row_falls_back_to_its_key(self):
+        # Crossref deposits rows carrying only `key` + `doi-asserted-by`. A bare
+        # {} reads to an agent as a formatter that lost the entry; the key says
+        # "deposited, no usable metadata".
+        from academic_tools_mcp.tools import graph
+
+        assert graph._format_crossref_reference(
+            {"key": "ref12", "doi-asserted-by": "publisher"}
+        ) == {"key": "ref12"}
+
+    def test_the_key_is_a_last_resort_not_an_extra_field(self):
+        from academic_tools_mcp.tools import graph
+
+        assert graph._format_crossref_reference({"key": "ref12", "DOI": "10.1/a"}) == {
+            "doi": "10.1/a"
+        }
+
+
+class TestCrossrefReferenceRowsAreTypeChecked:
+    """`crossref.get_work` returns the upstream `message` verbatim and only
+    guarantees it is a dict. A non-dict reference row reaches
+    `_format_crossref_reference` as an `AttributeError` — and, because the body
+    was positive-cached, it does so for the whole TTL.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_non_dict_row_yields_a_page_not_a_traceback(self, monkeypatch):
+        async def fake_cr(doi, **kwargs):
+            return {"reference": ["10.1/x", None, 7, {"DOI": "10.1/a"}]}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+
+        result = await server.get_paper_references("10.1234/x", source="crossref")
+
+        assert result["references"] == [{"doi": "10.1/a"}]
+
+    @pytest.mark.asyncio
+    async def test_the_survey_and_the_page_agree_about_the_same_work(self, monkeypatch):
+        # Both read the list through `_crossref_refs`, so the count tool can
+        # never send an agent to page a source that then raises on it.
+        async def fake_cr(doi, **kwargs):
+            return {"reference": ["10.1/x", {"DOI": "10.1/a"}]}
+
+        async def fake_oc(doi, **kwargs):
+            return {"error": "OpenCitations down"}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        survey = await server.get_paper_references_count("10.1234/x")
+        page = await server.get_paper_references("10.1234/x", source="crossref")
+
+        assert survey["sources"]["crossref"]["count"] == page["total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_non_list_reference_field_is_no_references(self, monkeypatch):
+        async def fake_cr(doi, **kwargs):
+            return {"reference": "10.1/x"}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+
+        result = await server.get_paper_references("10.1234/x", source="crossref")
+
+        assert result["total"] == 0
+        assert result["references"] == []
+
+
+class TestGraphEchoesACanonicalDoi:
+    """The echoed `doi` is what an agent correlates results by across calls.
+
+    Echoing the raw input gives one paper as many identities as it has
+    spellings, all of which share a single cache key — the opposite of the
+    `_canonical_id` contract the paper family holds.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub(self, monkeypatch):
+        async def fake_oc(doi, **kwargs):
+            return {"references": [], "citations": [], "count": 0}
+
+        async def fake_cr(doi, **kwargs):
+            return {"reference": []}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["10.1234/x", "10.1234/X", "doi:10.1234/x", "DOI: 10.1234/x", "https://doi.org/10.1234/X"],
+    )
+    @pytest.mark.asyncio
+    async def test_every_spelling_echoes_one_value(self, spelling):
+        for call in (
+            server.get_paper_references_count(spelling),
+            server.get_paper_references(spelling),
+            server.get_paper_citations_count(spelling),
+            server.get_paper_citations(spelling),
+        ):
+            assert (await call)["doi"] == "10.1234/x"
+
+
+class TestGraphErrorsCarryAVerdict:
+    """Every tool-layer error names whether retrying it can help. Without one,
+    a classifier reads "you called this wrong" as "unknown, maybe retry"."""
+
+    @pytest.mark.asyncio
+    async def test_auto_past_page_one_is_not_retryable(self):
+        result = await server.get_paper_references("10.1234/x", source="auto", page=2)
+
+        assert result["retryable"] is False, "re-issuing the identical call can never help"
+
+    @pytest.mark.asyncio
+    async def test_both_failing_is_retryable_when_either_source_might_answer(self, monkeypatch):
+        async def fake_cr(doi, **kwargs):
+            return {"error": "Crossref 503", "retryable": True}
+
+        async def fake_oc(doi, **kwargs):
+            return {"error": "No references found", "not_found": True}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.1234/x", source="auto")
+
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_both_definitively_absent_is_not_retryable(self, monkeypatch):
+        async def fake(doi, **kwargs):
+            return {"error": "No record", "not_found": True}
+
+        monkeypatch.setattr(crossref, "get_work", fake)
+        monkeypatch.setattr(opencitations, "get_references", fake)
+
+        result = await server.get_paper_references("10.1234/x", source="auto")
+
+        assert result["retryable"] is False
+
+
+class TestGraphForceRefreshThreading:
+    """`force_refresh` has to reach every source a tool touches, or the agent
+    asks for fresh coverage and silently gets the cached half."""
+
+    @pytest.mark.asyncio
+    async def test_auto_refreshes_both_sources(self, monkeypatch):
+        seen = {}
+
+        async def fake_cr(doi, *, force_refresh=False):
+            seen["crossref"] = force_refresh
+            return {"reference": []}
+
+        async def fake_oc(doi, *, force_refresh=False):
+            seen["opencitations"] = force_refresh
+            return {"references": [], "count": 0}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        await server.get_paper_references("10.1234/x", force_refresh=True)
+
+        assert seen == {"crossref": True, "opencitations": True}
+
+    @pytest.mark.parametrize("source", ["crossref", "opencitations"])
+    @pytest.mark.asyncio
+    async def test_an_explicit_source_refreshes_only_itself(self, monkeypatch, source):
+        seen = {}
+
+        async def fake_cr(doi, *, force_refresh=False):
+            seen["crossref"] = force_refresh
+            return {"reference": []}
+
+        async def fake_oc(doi, *, force_refresh=False):
+            seen["opencitations"] = force_refresh
+            return {"references": [], "count": 0}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        await server.get_paper_references("10.1234/x", source=source, force_refresh=True)
+
+        assert seen == {source: True}
+
+    @pytest.mark.asyncio
+    async def test_both_citation_tools_refresh_opencitations(self, monkeypatch):
+        seen = []
+
+        async def fake_oc(doi, *, force_refresh=False):
+            seen.append(force_refresh)
+            return {"citations": [], "count": 0}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        await server.get_paper_citations_count("10.1234/x", force_refresh=True)
+        await server.get_paper_citations("10.1234/x", force_refresh=True)
+
+        assert seen == [True, True]
+
+
+class TestGraphSingleSourceErrors:
+    """A pinned source has no survivor to fall back on, so its structured error
+    is the whole response — and it must arrive with something to do next."""
+
+    @pytest.mark.asyncio
+    async def test_crossref_error_names_the_title_search(self, monkeypatch):
+        async def fake_cr(doi, **kwargs):
+            return {"error": "No work found on Crossref", "not_found": True}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+
+        result = await server.get_paper_references("10.1234/x", source="crossref")
+
+        assert result["not_found"] is True
+        assert "search_crossref_by_title" in result["suggestion"]
+        assert "references" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_count_tool_surfaces_its_error_with_a_suggestion(self, monkeypatch):
+        async def fake_oc(doi, **kwargs):
+            return {"error": "OpenCitations 503", "retryable": True}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["retryable"] is True
+        assert "suggestion" in result
+        assert "count" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_providers_own_suggestion_is_not_overwritten(self, monkeypatch):
+        async def fake_oc(doi, **kwargs):
+            return {"error": "nope", "suggestion": "Do this instead."}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["suggestion"] == "Do this instead."
+
+
+class TestPartialFailureBothDirections:
+    """`partial_failure` names whichever source died, so a short page is never
+    read as a confident "no references". Both directions, or the ternary that
+    picks the name is only half covered."""
+
+    @pytest.mark.asyncio
+    async def test_opencitations_failing_is_named(self, monkeypatch):
+        async def fake_cr(doi, **kwargs):
+            return {"reference": [{"DOI": "10.1/a"}]}
+
+        async def fake_oc(doi, **kwargs):
+            return {"error": "OpenCitations 503", "retryable": True}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.1234/x")
+
+        assert result["_source"] == "crossref"
+        assert result["partial_failure"] == {
+            "source": "opencitations",
+            "error": "OpenCitations 503",
+            "retryable": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_partial_failure_when_both_answered(self, monkeypatch):
+        async def fake_cr(doi, **kwargs):
+            return {"reference": [{"DOI": "10.1/a"}]}
+
+        async def fake_oc(doi, **kwargs):
+            return {"references": [], "count": 0}
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+        result = await server.get_paper_references("10.1234/x")
+
+        assert "partial_failure" not in result
+
+
+class TestHysteresisBoundary:
+    """`_CROSSREF_HYSTERESIS` is the policy: OpenCitations takes over only on a
+    material margin. The exact edge is what a "simplify this to oc > cr" edit
+    would move."""
+
+    @staticmethod
+    def _stub(monkeypatch, cr_count, oc_count):
+        async def fake_cr(doi, **kwargs):
+            return {"reference": [{"DOI": f"10.1/{i}"} for i in range(cr_count)]}
+
+        async def fake_oc(doi, **kwargs):
+            return {
+                "references": [{"doi": f"10.2/{i}"} for i in range(oc_count)],
+                "count": oc_count,
+            }
+
+        monkeypatch.setattr(crossref, "get_work", fake_cr)
+        monkeypatch.setattr(opencitations, "get_references", fake_oc)
+
+    @pytest.mark.parametrize(
+        ("cr_count", "oc_count", "expected"),
+        [
+            (10, 12, "crossref"),  # exactly at the margin — not material
+            (10, 13, "opencitations"),  # one past it
+            (0, 0, "crossref"),  # nothing either way: richer shape wins
+            (0, 1, "opencitations"),  # any coverage beats none
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_margin_decides(self, monkeypatch, cr_count, oc_count, expected):
+        self._stub(monkeypatch, cr_count, oc_count)
+
+        result = await server.get_paper_references("10.1234/x")
+
+        assert result["_source"] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1102,11 +1545,10 @@ class TestCanonicalIdInResponses:
 # ---------------------------------------------------------------------------
 
 
-class TestCitationsSourceParam:
-    """The `source` parameter is reserved so a future second source can
-    ship without a breaking change. Both 'auto' and 'opencitations'
-    dispatch identically today; pinning source='opencitations' is the
-    forward-stable choice for code that always wants OpenCitations."""
+class TestCitationsDispatch:
+    """OpenCitations is the only source of incoming citations, so this tool
+    takes no `source` parameter — a one-value knob is noise. One would be
+    reintroduced if a second citation source ever shipped."""
 
     @pytest.mark.asyncio
     async def test_auto_dispatches_to_opencitations(self, monkeypatch):
@@ -1333,3 +1775,59 @@ class TestSourceErrorForwarding:
 
         out = graph._source_error({"error": "x", "results": [1, 2, 3], "doi": "10.1/x"})
         assert out == {"error": "x"}
+
+    def test_forwards_a_suggestion_a_tool_already_attached(self):
+        from academic_tools_mcp.tools import graph
+
+        out = graph._source_error({"error": "x", "suggestion": "Try the other source."})
+        assert out["suggestion"] == "Try the other source."
+
+    def test_the_allowlist_covers_every_key_http_can_emit(self):
+        """`_source_error` projects an allowlist, so a classification key added
+        to `_http` is dropped from every multi-source response — silently, since
+        an absent key looks exactly like an inapplicable one. Nothing else
+        couples the two, so this is the coupling.
+        """
+        import httpx
+
+        from academic_tools_mcp import _http
+        from academic_tools_mcp.tools import graph
+
+        request = httpx.Request("GET", "https://example.test/works/10.1/x")
+
+        def status_error(code, headers=None):
+            return httpx.HTTPStatusError(
+                "boom",
+                request=request,
+                response=httpx.Response(code, request=request, headers=headers or {}),
+            )
+
+        produced = [
+            _http.not_found("gone"),
+            _http.parse_error_dict("Crossref"),
+            _http.error_dict(
+                "Crossref", _http.LocalBackpressureError("Crossref", pending=5, max_pending=5)
+            ),
+            _http.error_dict(
+                "Crossref",
+                _http.LocalBackpressureError(
+                    "Crossref", pending=5, max_pending=5, min_gap_seconds=3.0
+                ),
+            ),
+            _http.error_dict("Crossref", status_error(429, {"Retry-After": "7"})),
+            _http.error_dict("Crossref", status_error(503)),
+            _http.error_dict("Crossref", status_error(418)),
+            _http.error_dict("Crossref", httpx.TimeoutException("slow", request=request)),
+            _http.error_dict("Crossref", httpx.RequestError("dns", request=request)),
+        ]
+
+        emitted = {key for err in produced for key in err}
+        unforwarded = emitted - set(graph._FORWARDED_ERROR_KEYS)
+
+        assert not unforwarded, (
+            f"_http can emit {sorted(unforwarded)}, which _source_error would drop — "
+            "add them to _FORWARDED_ERROR_KEYS or decide deliberately not to forward them"
+        )
+        # And each forwarded key survives the projection intact.
+        for err in produced:
+            assert graph._source_error(err) == err

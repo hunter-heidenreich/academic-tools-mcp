@@ -143,12 +143,12 @@ Every tool above except `search_cached_papers` (which takes a query, not a paper
 | Tool | Description |
 |------|-------------|
 | `get_paper_references_count` | Survey outgoing-reference coverage across both Crossref and OpenCitations in one call — returns per-source counts so you can pick which to page through |
-| `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from whichever has more; pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
+| `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from the better-covered one, biased toward Crossref for its richer per-entry metadata (OpenCitations wins only on a materially larger reference list); pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
 | `get_paper_citations_count` | Number of incoming citations (OpenCitations) |
 | `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
 | `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); each hit warms the Crossref works cache, so a follow-up `get_paper_references(doi, source="crossref")` is free |
 
-For citations, follow the **count-then-page** pattern: call `get_paper_citations_count` first to see the total, then page through with `page` and `page_size`. For references the `source="auto"` default does the survey for you on the first call. Paginated responses include `_source` (on references) and `has_more` so agents know which shape to expect and when to stop. This prevents token blowouts on papers with long bibliographies or many citations.
+For citations, follow the **count-then-page** pattern: call `get_paper_citations_count` first to see the total, then page through with `page` and `page_size`. For references the `source="auto"` default does the survey for you on the first call. Paginated responses include `_source` (on references) and `has_more` so agents know which shape to expect and when to stop, and echo `doi` in canonical form so every spelling of one paper correlates to a single value across calls. This prevents token blowouts on papers with long bibliographies or many citations.
 
 **Source trade-off for references**: Crossref returns structured reference metadata (author, title, year, journal, DOI) when publishers deposit it; quality varies. OpenCitations aggregates from Crossref, PubMed, DataCite, OpenAIRE, and JaLC — it may have entries Crossref lacks, but returns DOI-to-DOI links only (no bibliographic metadata).
 
@@ -333,7 +333,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
 - **The rate we take follows the identity we send.** Crossref publishes two service tiers; the client picks its limits from whether `CROSSREF_MAILTO` is configured rather than assuming the polite tier. Every provider sends a descriptive `User-Agent` naming the project and its repository, with a contact address appended when one is set.
 - **Streaming PDF downloads with size guard.** PDFs stream chunked to a temp file with atomic rename — peak memory = 64 KiB, not 2× the PDF — and abort mid-stream if `MAX_PDF_BYTES` (default 200 MB) is exceeded. Force-refresh cascades: re-downloading drops the cached markdown + sections so the next conversion picks up the new bytes.
 - **Single-conversion lock for PDFs.** At most one PDF→markdown subprocess runs at a time across the whole server; concurrent callers get a `busy` error with what's running and how long it's been going.
-- **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching. `get_paper_references(source="auto")` does the survey for you.
+- **Count-then-page for large data.** Citation and reference tools expose a `_count` tool so agents can check sizes before fetching. `get_paper_references(source="auto")` does the survey for you, biased toward Crossref's richer per-entry metadata.
 - **Provider-aware routing.** Manual imports auto-detect identifier types and store in the correct provider's cache, preventing duplicates.
 - **Subprocess isolation for PDF converters.** The PDF pipeline shells out to external tools rather than importing them, keeping the dependency tree light and avoiding license entanglement.
 - **Pre-computed aggregates.** List responses include counts (`author_count`, `topic_count`, `total_sections`, etc.) so agents don't need follow-up calls to check sizes.

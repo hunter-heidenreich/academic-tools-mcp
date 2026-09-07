@@ -84,6 +84,46 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`get_paper_references` no longer crashes on a Crossref work whose reference
+  list contains a non-dict row.** `crossref.get_work` returns the upstream
+  `message` object verbatim and only guarantees that it *is* a dict — nothing
+  types `message["reference"]` or the rows inside it. A body such as
+  `{"message": {"reference": ["10.1/x"]}}` cleared every guard, was
+  positive-cached for the full TTL, and then reached
+  `_format_crossref_reference` as `AttributeError: 'str' object has no
+  attribute 'get'` on every call until the entry expired. It was also
+  asymmetric: `get_paper_references_count` counted the same row happily, so the
+  survey pointed the agent at a source that then raised. Rows are now filtered
+  to dicts in `_crossref_refs`, the one list both tools read. ([#102])
+
+- **A Crossref reference row carrying only bookkeeping fields no longer renders
+  as an empty `{}`.** Publishers deposit rows with just `key` and
+  `doi-asserted-by`; with none of the eight recognized fields present the entry
+  came back empty, indistinguishable from a formatter that had lost it. Such a
+  row now falls back to Crossref's own `key`, so the agent can tell "deposited,
+  no usable metadata" from a bug. `key` is a last resort — it never appears
+  alongside a recognized field. ([#102])
+
+- **The four graph tools now echo `doi` in canonical form.** `10.1234/X`,
+  `doi:10.1234/x` and `https://doi.org/10.1234/x` are one paper sharing one
+  cache key, but each was echoed back verbatim, so an agent correlating results
+  by DOI across calls saw three identities for one work. They now echo what the
+  paper family's `_canonical_id` has always echoed. ([#102])
+
+- **Two graph errors that carried no retry verdict now carry one.** `page > 1`
+  with `source="auto"` is `retryable: False` — re-issuing the identical call can
+  never help — and the both-sources-failed envelope gained a top-level
+  `retryable` that is true when either nested source might answer on a retry.
+  Previously an agent branching on the top level could not tell "you called this
+  wrong" from "unknown, maybe retry". ([#102])
+
+- **`get_paper_references`' `source="auto"` is documented as what it does.** The
+  `source` parameter description an agent reads, and `README.md`, both said auto
+  "picks the one with more references"; it is deliberately biased toward
+  Crossref by `_CROSSREF_HYSTERESIS`, so OpenCitations wins only on a materially
+  larger list. Behaviour is unchanged — the docs were wrong, not the code.
+  ([#102])
+
 - **A bioRxiv/medRxiv DOI containing a `.` or `..` segment no longer caches an
   unrelated preprint as that paper.** The DOI is interpolated *mid-path* into
   `/details/{server}/{doi}/na/json`, and both characters are unreserved, so
@@ -2445,3 +2485,4 @@ grouped by milestone rather than per commit.
 [#99]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/99
 [#100]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/100
 [#101]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/101
+[#102]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/102
