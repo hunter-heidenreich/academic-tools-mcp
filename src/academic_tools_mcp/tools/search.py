@@ -472,7 +472,11 @@ async def search_wikipedia(
     ],
     limit: Annotated[
         int,
-        Field(description="Maximum results to return (1-10).", ge=1, le=10),
+        Field(
+            description=f"Maximum results to return (1-{wikipedia.MAX_SEARCH_LIMIT}).",
+            ge=1,
+            le=wikipedia.MAX_SEARCH_LIMIT,
+        ),
     ] = 5,
 ) -> dict[str, Any]:
     """Search Wikipedia for articles matching a query (titles + URLs only).
