@@ -51,6 +51,24 @@ def _unknown_identifier_error(identifier: str) -> dict[str, Any]:
     }
 
 
+# OpenAlex nulls a key rather than dropping it, and ``_fetch_singleton``'s
+# shape guard only checks the top-level ``id``, so everything below it arrives
+# verbatim. These two name that guard where the reads happen — the same thing
+# ``crossref._message_of`` and ``graph._crossref_refs`` do for their providers.
+# Filtering rather than raising also keeps a count and the slice it describes
+# counting the same objects.
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """``value`` when it is a dict, else ``{}``."""
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    """The dict elements of ``value``, or ``[]`` when it isn't a list."""
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
 def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
     """Extract the PDF link from an arXiv entry's links list."""
     for link in paper.get("links", []):
@@ -151,9 +169,9 @@ def _format_biorxiv_metadata(
 
 
 def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
-    primary_location = work.get("primary_location") or {}
-    source_obj = primary_location.get("source") or {}
-    oa = work.get("open_access") or {}
+    primary_location = _as_dict(work.get("primary_location"))
+    source_obj = _as_dict(primary_location.get("source"))
+    oa = _as_dict(work.get("open_access"))
     return {
         "_source": "openalex",
         "_canonical_id": canonical_id,
@@ -247,14 +265,15 @@ async def get_paper_metadata(
         When ``follow_published=True`` was requested but the OpenAlex lookup
         on the journal version didn't return it, also carries
         ``followed_published=False`` (preprint-era metadata for a paper that
-        *is* published). If that lookup failed *transiently* (5xx/timeout,
-        not a definitive 404), the fallback additionally carries
-        ``published_lookup_retryable=True`` so the agent can retry the chain
-        rather than assume the journal version is unindexed. The
-        ``followed_published`` field is absent when no chain was attempted
-        (``follow_published=False`` or no ``published_doi``).
+        *is* published). If that lookup failed *transiently* (a 5xx, 429 or
+        timeout — the errors OpenAlex reports as retryable), the fallback
+        additionally carries ``published_lookup_retryable=True`` so the agent
+        can retry the chain rather than assume the journal version is
+        unindexed. A definitive 404 and an unclassified error both leave the
+        tag off. The ``followed_published`` field is absent when no chain was
+        attempted (``follow_published=False`` or no ``published_doi``).
       - openalex: title, doi, publication_year, publication_date, type,
-        language, venue, is_oa, oa_status, oa_url.
+        language, venue, is_oa, oa_status, oa_url, pdf_url.
       - openalex_via_biorxiv: identical to openalex, plus preprint_doi and
         ``followed_published=True``. Only produced when ``follow_published=True``
         for a bioRxiv DOI whose journal version is in OpenAlex.
@@ -295,13 +314,16 @@ async def get_paper_metadata(
             # OpenAlex didn't return the journal version — fall back to the
             # preprint record but signal followed_published=False so the agent
             # knows it's looking at preprint-era metadata for a paper that *is*
-            # published (vs. one that simply isn't published yet). A definitive
-            # 404 (not_found) means "not indexed yet"; a transient failure
-            # (5xx / timeout, no not_found) means a retry might surface the
-            # record, so tag it so the agent can distinguish the two rather
-            # than treating a flaky lookup as a permanent miss.
+            # published (vs. one that simply isn't published yet).
+            #
+            # The retry tag reads _http's verdict rather than inverting
+            # not_found: the error vocabulary is three-state, and an
+            # unclassified 4xx ("OpenAlex HTTP 403") carries neither flag, so
+            # "not a definitive 404" is not the same claim as "transient".
+            # Only retryable is True earns the tag — as
+            # oa_download._resolve_and_download's allowlist already has it.
             result = _format_biorxiv_metadata(obj, canonical_id, followed_published=False)
-            if not work.get("not_found"):
+            if work.get("retryable") is True:
                 result["published_lookup_retryable"] = True
             return result
 
@@ -406,6 +428,12 @@ async def get_papers_metadata(
         for slot, ident in openalex_indices:
             canonical = openalex.canonical_doi(ident)
             work = batch.get(canonical)
+            # get_works_batch is total over its input, so `is None` is
+            # unreachable through the provider; it stays because the suite
+            # stubs get_works_batch with fakes that are not. The dict() copy
+            # is load-bearing: batch entries are not deep-copied the way
+            # cache.cached_lookup's are, and two spellings of one DOI share
+            # one entry across two slots.
             if work is None or "error" in work:
                 err = work or {"error": f"No work found for DOI: {ident}"}
                 results[slot] = {
@@ -442,15 +470,15 @@ def _format_openalex_authors(work: dict[str, Any], start: int, end: int) -> dict
     factoring so the tool body stays thin and per-source shaping lives in one
     place.
     """
-    all_authorships = work.get("authorships", [])
+    all_authorships = _dict_list(work.get("authorships"))
     page_authors: list[dict[str, Any]] = []
     page_institutions: list[str] = []
     for a in all_authorships[start:end]:
-        author_info = a.get("author", {})
+        author_info = _as_dict(a.get("author"))
         inst_names = [
-            inst.get("display_name")
-            for inst in a.get("institutions", [])
-            if inst.get("display_name")
+            name
+            for inst in _dict_list(a.get("institutions"))
+            if isinstance(name := inst.get("display_name"), str) and name
         ]
         for name in inst_names:
             if name not in page_institutions:
@@ -485,8 +513,8 @@ async def get_paper_authors(
     papers can have thousands of authors — page through with page / page_size
     (cap 25). Slicing is in-memory against the cached paper, no extra API hits.
 
-    Returns ``{_source, author_count, page, page_size, has_more, authors,
-    page_institutions, page_institution_count, ...}``:
+    Returns ``{_source, _canonical_id, author_count, page, page_size,
+    has_more, authors, page_institutions, page_institution_count, ...}``:
       - arxiv: authors = [{name, affiliations?}]. ``page_institutions``
         is always [] (arXiv has no per-author institution roll-up).
       - biorxiv: authors = [{name}] plus author_corresponding /
@@ -546,7 +574,7 @@ async def get_paper_abstract(
 ) -> dict[str, Any]:
     """Get a paper's abstract as plain text, dispatched by identifier shape.
 
-    Returns ``{_source, title, abstract}``. OpenAlex abstracts are
+    Returns ``{_source, _canonical_id, title, abstract}``. OpenAlex abstracts are
     reconstructed from an inverted index — good enough for an LLM but not
     byte-identical to the publisher's original.
 
@@ -580,7 +608,7 @@ async def get_paper_bibtex(
 ) -> dict[str, Any]:
     """Generate a BibTeX entry, dispatched by identifier shape.
 
-    Returns ``{_source, bibtex}``. Entry type per source:
+    Returns ``{_source, _canonical_id, bibtex}``. Entry type per source:
       - arxiv: @article if the paper has journal_ref, else @misc with
         eprint / archivePrefix / primaryClass.
       - biorxiv: @article when published_doi is present, else @misc with
@@ -635,24 +663,29 @@ async def get_author(
             author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL."
         )
 
-    stats = author.get("summary_stats") or {}
+    stats = _as_dict(author.get("summary_stats"))
     current_institutions = [
-        inst.get("display_name")
-        for inst in (author.get("last_known_institutions") or [])
-        if inst.get("display_name")
+        name
+        for inst in _dict_list(author.get("last_known_institutions"))
+        if isinstance(name := inst.get("display_name"), str) and name
     ]
     top_topics = [
         {"name": t.get("display_name"), "count": t.get("count")}
-        for t in (author.get("topics") or [])[:5]
+        for t in _dict_list(author.get("topics"))[:5]
     ]
     affiliations = []
-    for aff in author.get("affiliations") or []:
-        inst = aff.get("institution") or {}
+    for aff in _dict_list(author.get("affiliations")):
+        inst = _as_dict(aff.get("institution"))
+        raw_years = aff.get("years")
+        years = raw_years if isinstance(raw_years, list) else []
         affiliations.append(
             {
                 "institution": inst.get("display_name"),
                 "country_code": inst.get("country_code"),
-                "years": sorted(aff.get("years") or []),
+                # Ints or nothing, so a null or string year can't make
+                # ``sorted`` raise on a mixed list. ``bibtex._key_year``
+                # narrows the same field the same way.
+                "years": sorted(y for y in years if isinstance(y, int)),
             }
         )
 

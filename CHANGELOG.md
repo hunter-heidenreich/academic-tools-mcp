@@ -24,6 +24,13 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **Four `@mcp.tool` docstrings now name every key their tool returns.**
+  `get_paper_metadata`'s `openalex` branch was missing `pdf_url` (the best
+  open-access PDF link, already in every response), and `get_paper_authors` /
+  `get_paper_abstract` / `get_paper_bibtex` all omitted `_canonical_id`. A
+  docstring is what an agent receives as the tool description, so a key it
+  leaves out is a key no agent looks for. ([#103])
+
 - **arXiv IDs are now recognised in five more spellings, so one paper no longer
   caches twice.** `get_paper_metadata`, `download_pdf` and every other unified
   tool now route these to arXiv instead of filing them under the `manual`
@@ -83,6 +90,25 @@ grouped by milestone rather than per commit.
   `_SECTION_LEVELS`. ([#93])
 
 ### Fixed
+
+- **`get_paper_authors` no longer raises on an OpenAlex work with a null
+  authorship field.** OpenAlex emits `"authorships": null`, `"author": null`
+  and `"institutions": null` rather than dropping the key, and the work is
+  positive-cached before the tool ever sees it — so one such record turned
+  every `get_paper_authors` call for that paper into a traceback for the full
+  cache TTL. `get_paper_metadata`'s OpenAlex branch and `get_author` are now
+  guarded the same way; `get_author` additionally drops a non-integer entry
+  from an affiliation's `years` instead of letting `sorted` raise on a mixed
+  list. ([#103])
+
+- **`published_lookup_retryable` no longer promises a retry that cannot
+  succeed.** When `follow_published=True` falls back to the preprint record,
+  the tag is now set only for errors OpenAlex actually reports as retryable
+  (5xx, 429, timeouts). It was previously set for anything that was not a
+  definitive 404, which swept in unclassified 4xx responses — an OpenAlex
+  `403` told the agent to keep retrying the chain. Both the parameter
+  description and the tool docstring already documented the narrower
+  behaviour. ([#103])
 
 - **`get_paper_references` no longer crashes on a Crossref work whose reference
   list contains a non-dict row.** `crossref.get_work` returns the upstream
@@ -2486,3 +2512,4 @@ grouped by milestone rather than per commit.
 [#100]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/100
 [#101]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/101
 [#102]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/102
+[#103]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/103

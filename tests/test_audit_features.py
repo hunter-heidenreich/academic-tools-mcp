@@ -20,6 +20,7 @@ import pytest
 
 from academic_tools_mcp import cache, papers, server
 from academic_tools_mcp.providers import openalex
+from academic_tools_mcp.tools import paper
 
 # ---------------------------------------------------------------------------
 # Cascade: re-downloading a PDF should drop cached markdown + sections
@@ -216,11 +217,17 @@ class TestGetPapersMetadataTool:
 
     @pytest.mark.asyncio
     async def test_per_paper_failure_isolates(self, monkeypatch):
-        """One failing identifier doesn't fail the whole batch."""
+        """One failing identifier doesn't fail the whole batch.
+
+        The failing id must be arXiv-*shaped*: an unresolvable one is answered
+        by the dispatch loop and never reaches a provider, so it exercises the
+        unknown-identifier branch rather than the per-paper error branch that
+        `test_unknown_identifier_returns_per_input_error` already covers.
+        """
 
         async def fake_arxiv(ident, *, force_refresh=False):
-            if ident == "2301.fail":
-                return {"error": "No paper found"}
+            if ident == "2301.00099":
+                return {"error": "No paper found", "not_found": True}
             return {
                 "id": f"http://arxiv.org/abs/{ident}",
                 "title": "OK",
@@ -231,12 +238,14 @@ class TestGetPapersMetadataTool:
 
         monkeypatch.setattr(server.arxiv, "get_paper", fake_arxiv)
         result = await server.get_papers_metadata(
-            identifiers=["2301.0001", "2301.fail", "2301.0002"]
+            identifiers=["2301.0001", "2301.00099", "2301.0002"]
         )
         assert result["count"] == 3
         assert result["papers"][0]["_source"] == "arxiv"
         assert "error" in result["papers"][1]
-        assert result["papers"][1]["_input"] == "2301.fail"
+        assert result["papers"][1]["_input"] == "2301.00099"
+        # Enriched with the shared arXiv hint, like the single-paper tools.
+        assert result["papers"][1]["suggestion"] == paper._ARXIV_METADATA_HINT
         assert result["papers"][2]["_source"] == "arxiv"
 
 
