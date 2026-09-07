@@ -177,14 +177,6 @@ def _enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
     return result
 
 
-def _arxiv_id_from_entry(paper: dict[str, Any]) -> str:
-    """Extract the bare arXiv ID from an arXiv entry's id URL."""
-    raw_id = paper.get("id", "")
-    if "/abs/" in raw_id:
-        return raw_id.split("/abs/")[-1]
-    return raw_id
-
-
 def _first(value: Any) -> Any:
     """First element of a list, else the value itself (or None for empties).
 

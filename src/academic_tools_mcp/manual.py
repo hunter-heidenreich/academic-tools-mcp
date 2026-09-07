@@ -159,9 +159,14 @@ def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> bool:
 def _misrouted_arxiv_id(stem: str) -> str | None:
     """The arXiv key a ``manual`` stem belongs under, or None if it is manual's.
 
-    Both candidates, because the stem alone doesn't say whether an ``_`` was a
-    slash: ``arxiv%3A2301.00001`` carries none, ``arxiv%3Ahep-th_9901001``
-    does. Repair then decode is the order ``cache_search`` inverts stems in.
+    Three candidates, because the stem alone doesn't say which ``_`` were
+    slashes: ``arxiv%3A2301.00001`` carries none, ``arxiv%3Ahep-th_9901001``
+    carries one, and a URL spelling
+    (``https%3A__www.arxiv.org_abs_2301.00001``) carries one per path segment.
+    Restoring *every* ``_`` is safe only because ``is_arxiv_id`` adjudicates:
+    a candidate it rejects is discarded, so an over-eager repair cannot claim
+    a label that is genuinely manual's. Repair then decode is the order
+    ``cache_search`` inverts stems in.
 
     Deliberately *not* ``cache_search._filename_to_canonical``, despite being
     the same shape of operation. That one repairs the slash with each
@@ -171,7 +176,7 @@ def _misrouted_arxiv_id(stem: str) -> str | None:
     ``_ARXIV_OLDSTYLE_STEM_RE`` (``^archive_number$``) can never match. Sharing
     the grammar makes the sweep miss the prefixed spellings it exists for.
     """
-    for candidate in (stem, stem.replace("_", "/", 1)):
+    for candidate in (stem, stem.replace("_", "/", 1), stem.replace("_", "/")):
         recovered = unquote(candidate)
         if arxiv.is_arxiv_id(recovered):
             return arxiv.canonical_arxiv_id(recovered)

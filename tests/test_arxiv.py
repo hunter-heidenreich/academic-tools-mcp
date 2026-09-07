@@ -14,51 +14,49 @@ from academic_tools_mcp.providers import arxiv
 
 class TestNormalizeArxivId:
     def test_bare_new_style(self):
-        assert arxiv._normalize_arxiv_id("2301.00001") == "2301.00001"
+        assert arxiv.normalize_arxiv_id("2301.00001") == "2301.00001"
 
     def test_bare_new_style_with_version(self):
-        assert arxiv._normalize_arxiv_id("2301.00001v2") == "2301.00001v2"
+        assert arxiv.normalize_arxiv_id("2301.00001v2") == "2301.00001v2"
 
     def test_bare_old_style(self):
-        assert arxiv._normalize_arxiv_id("hep-th/9901001") == "hep-th/9901001"
+        assert arxiv.normalize_arxiv_id("hep-th/9901001") == "hep-th/9901001"
 
     def test_bare_old_style_with_version(self):
-        assert arxiv._normalize_arxiv_id("hep-th/9901001v1") == "hep-th/9901001v1"
+        assert arxiv.normalize_arxiv_id("hep-th/9901001v1") == "hep-th/9901001v1"
 
     def test_abs_url(self):
-        assert arxiv._normalize_arxiv_id("https://arxiv.org/abs/2301.00001") == "2301.00001"
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/abs/2301.00001") == "2301.00001"
 
     def test_abs_url_with_version(self):
-        assert arxiv._normalize_arxiv_id("https://arxiv.org/abs/2301.00001v2") == "2301.00001v2"
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/abs/2301.00001v2") == "2301.00001v2"
 
     def test_pdf_url_with_extension(self):
-        assert arxiv._normalize_arxiv_id("https://arxiv.org/pdf/2301.00001.pdf") == "2301.00001"
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/pdf/2301.00001.pdf") == "2301.00001"
 
     def test_pdf_url_without_extension(self):
-        assert arxiv._normalize_arxiv_id("https://arxiv.org/pdf/2301.00001v2") == "2301.00001v2"
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/pdf/2301.00001v2") == "2301.00001v2"
 
     def test_old_style_abs_url(self):
-        assert arxiv._normalize_arxiv_id("https://arxiv.org/abs/hep-th/9901001") == "hep-th/9901001"
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/abs/hep-th/9901001") == "hep-th/9901001"
 
     def test_strips_whitespace(self):
-        assert arxiv._normalize_arxiv_id("  2301.00001  ") == "2301.00001"
+        assert arxiv.normalize_arxiv_id("  2301.00001  ") == "2301.00001"
 
     def test_http_url(self):
-        assert arxiv._normalize_arxiv_id("http://arxiv.org/abs/2301.00001") == "2301.00001"
+        assert arxiv.normalize_arxiv_id("http://arxiv.org/abs/2301.00001") == "2301.00001"
 
     def test_abs_url_with_query_string(self):
         assert (
-            arxiv._normalize_arxiv_id("https://arxiv.org/abs/2301.00001?context=cs") == "2301.00001"
+            arxiv.normalize_arxiv_id("https://arxiv.org/abs/2301.00001?context=cs") == "2301.00001"
         )
 
     def test_abs_url_with_fragment(self):
-        assert (
-            arxiv._normalize_arxiv_id("https://arxiv.org/abs/2301.00001#abstract") == "2301.00001"
-        )
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/abs/2301.00001#abstract") == "2301.00001"
 
     def test_pdf_url_with_extension_and_query(self):
         assert (
-            arxiv._normalize_arxiv_id("https://arxiv.org/pdf/2301.00001v2.pdf?download=1")
+            arxiv.normalize_arxiv_id("https://arxiv.org/pdf/2301.00001v2.pdf?download=1")
             == "2301.00001v2"
         )
 
@@ -823,14 +821,539 @@ class TestArxivPrefixNormalization:
         ],
     )
     def test_the_prefix_is_stripped(self, spelling, expected):
-        assert arxiv._normalize_arxiv_id(spelling) == expected
+        assert arxiv.normalize_arxiv_id(spelling) == expected
         assert arxiv.canonical_arxiv_id(spelling) == expected.lower()
 
     def test_normalization_is_idempotent(self):
         for spelling in ("arXiv:2301.00001", "arXiv:arXiv:2301.00001", "2301.00001", "notes"):
-            once = arxiv._normalize_arxiv_id(spelling)
-            assert arxiv._normalize_arxiv_id(once) == once
+            once = arxiv.normalize_arxiv_id(spelling)
+            assert arxiv.normalize_arxiv_id(once) == once
 
     def test_a_string_that_merely_contains_arxiv_is_untouched(self):
-        assert arxiv._normalize_arxiv_id("my-arxiv:notes") == "my-arxiv:notes"
-        assert arxiv._normalize_arxiv_id("arxivorama") == "arxivorama"
+        assert arxiv.normalize_arxiv_id("my-arxiv:notes") == "my-arxiv:notes"
+        assert arxiv.normalize_arxiv_id("arxivorama") == "arxivorama"
+
+
+# ---------------------------------------------------------------------------
+# search_papers: cap, error entry, totalResults, warming
+# ---------------------------------------------------------------------------
+
+
+def _feed(*entries: str, total: str = "1") -> str:
+    """An Atom search feed wrapping *entries*, with a totalResults of *total*."""
+    body = "".join(entries)
+    return (
+        '<?xml version="1.0"?>\n'
+        '<feed xmlns="http://www.w3.org/2005/Atom">\n'
+        "  <opensearch:totalResults"
+        ' xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">'
+        f"{total}</opensearch:totalResults>\n{body}</feed>"
+    )
+
+
+def _search_entry(arxiv_id: str, title: str = "A Paper") -> str:
+    return (
+        f"  <entry>\n    <id>http://arxiv.org/abs/{arxiv_id}</id>\n"
+        f"    <title>{title}</title>\n    <summary>An abstract.</summary>\n"
+        "    <published>2023-01-01T00:00:00Z</published>\n"
+        "    <updated>2023-01-01T00:00:00Z</updated>\n"
+        "    <author><name>Jane Doe</name></author>\n  </entry>\n"
+    )
+
+
+# arXiv answers a malformed search_query with HTTP 200 and this entry.
+_ERROR_ENTRY = (
+    "  <entry>\n"
+    "    <id>http://arxiv.org/api/errors#incorrect_id_format_for_x</id>\n"
+    "    <title>Error</title>\n"
+    "    <summary>incorrect id format for x</summary>\n"
+    "    <published>2023-01-01T00:00:00Z</published>\n"
+    "    <updated>2023-01-01T00:00:00Z</updated>\n"
+    "    <author><name>arXiv api core</name></author>\n"
+    "  </entry>\n"
+)
+
+
+def _stub_capturing_client(monkeypatch, text):
+    """Install a stub client returning ``text`` and recording each GET's params."""
+    from academic_tools_mcp import _clients
+
+    seen: list[dict] = []
+
+    class StubResponse:
+        def __init__(self):
+            self.text = text
+            self.status_code = 200
+            self.headers: dict[str, str] = {}
+
+        def raise_for_status(self):
+            pass
+
+    class StubClient:
+        async def get(self, url, **kwargs):
+            seen.append(kwargs.get("params") or {})
+            return StubResponse()
+
+    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+    return seen
+
+
+class TestSearchMaxResults:
+    """The cap is a boundary: exactly at it must pass, one past it must clamp."""
+
+    @pytest.mark.parametrize(
+        ("requested", "sent"),
+        [
+            (-5, "1"),
+            (0, "1"),
+            (1, "1"),
+            (10, "10"),
+            (arxiv.MAX_SEARCH_RESULTS, str(arxiv.MAX_SEARCH_RESULTS)),
+            (arxiv.MAX_SEARCH_RESULTS + 1, str(arxiv.MAX_SEARCH_RESULTS)),
+            (10_000, str(arxiv.MAX_SEARCH_RESULTS)),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_max_results_is_clamped_to_the_cap(self, tmp_path, monkeypatch, requested, sent):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_capturing_client(monkeypatch, _feed(total="0"))
+
+        await arxiv.search_papers("anything", max_results=requested)
+
+        assert seen[0]["max_results"] == sent
+
+    @pytest.mark.asyncio
+    async def test_the_tool_bound_is_the_provider_constant(self):
+        """`search_arxiv`'s validation bound is arxiv's constant, not a copy of it."""
+        from academic_tools_mcp.tools import search as search_tools
+
+        field = search_tools.search_arxiv.__annotations__["max_results"].__metadata__[0]
+        assert [m.le for m in field.metadata if hasattr(m, "le")] == [arxiv.MAX_SEARCH_RESULTS]
+        assert str(arxiv.MAX_SEARCH_RESULTS) in field.description
+
+
+class TestSearchErrorEntry:
+    @pytest.mark.asyncio
+    async def test_arxiv_error_entry_is_not_returned_as_a_hit(self, tmp_path, monkeypatch):
+        """Regression: a rejected query surfaced as a result whose id was an errors URL.
+
+        `get_paper` has always classified this shape; `search_papers` parsed it
+        as a normal entry, so the agent got `{arxiv_id: ".../api/errors#...",
+        title: "Error"}` and chained the next tool call onto garbage.
+        """
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, _feed(_ERROR_ENTRY))
+
+        result = await arxiv.search_papers("ti:(unbalanced")
+
+        assert "entries" not in result
+        assert "incorrect id format" in result["error"]
+        # The query is what's wrong; retrying it verbatim cannot help.
+        assert result["retryable"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_error_entry_never_warms_the_cache(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, _feed(_ERROR_ENTRY))
+
+        await arxiv.search_papers("ti:(unbalanced")
+
+        assert not list(cache.cache_dir(arxiv.NAMESPACE, "papers").glob("*.json"))
+
+
+class TestSearchTotalResults:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("1", 1),
+            ("0", 0),
+            ("12345", 12345),
+            ("  7  ", 7),
+            ("", 0),
+            ("many", 0),
+            ("-3", 0),
+            ("1.5", 0),
+            # `isdigit` accepts a superscript that `int()` rejects; `isdecimal`
+            # does not, which is what keeps a ValueError out of the response.
+            ("²", 0),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_total_results_degrades_to_zero_rather_than_raising(
+        self, tmp_path, monkeypatch, raw, expected
+    ):
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, _feed(_search_entry("2301.00001v1"), total=raw))
+
+        result = await arxiv.search_papers("anything")
+
+        assert result["total_results"] == expected
+
+    @pytest.mark.asyncio
+    async def test_a_missing_total_results_element_is_zero(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(
+            monkeypatch,
+            '<?xml version="1.0"?>\n<feed xmlns="http://www.w3.org/2005/Atom">'
+            f"{_search_entry('2301.00001v1')}</feed>",
+        )
+
+        result = await arxiv.search_papers("anything")
+
+        assert result["total_results"] == 0
+        assert len(result["entries"]) == 1
+
+
+class TestSearchFailurePaths:
+    @pytest.mark.asyncio
+    async def test_http_error_returns_the_structured_contract(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, "", status_code=503, raises=_http_status_error(503))
+
+        result = await arxiv.search_papers("anything")
+
+        assert "entries" not in result
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_entity_expansion_payload_is_refused(self, tmp_path, monkeypatch):
+        """defusedxml refuses the bomb; search classifies it as get_paper does."""
+        _reset_throttle(monkeypatch, tmp_path)
+        bomb = (
+            '<?xml version="1.0"?>\n'
+            "<!DOCTYPE feed [\n"
+            '  <!ENTITY a "aaaaaaaaaa">\n'
+            '  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">\n'
+            "]>\n"
+            '<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>&b;</title></entry></feed>'
+        )
+        _stub_text_response(monkeypatch, bomb)
+
+        result = await arxiv.search_papers("anything")
+
+        assert "entries" not in result
+        assert result["retryable"] is True
+
+
+class TestSearchWarmsBothKeys:
+    @pytest.mark.asyncio
+    async def test_both_the_versioned_and_the_bare_key_are_warmed(self, tmp_path, monkeypatch):
+        """A search hit is the current version, so it answers both lookups.
+
+        Warming only the versioned key leaves every bare `get_paper` a miss —
+        and the bare form is what an agent pastes.
+        """
+        from academic_tools_mcp import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, _feed(_search_entry("2301.00001v7", "Fresh")))
+
+        await arxiv.search_papers("anything")
+
+        for key in ("2301.00001v7", "2301.00001"):
+            entry = cache.get(arxiv.NAMESPACE, "papers", key)
+            assert entry is not None, key
+            assert entry["title"] == "Fresh"
+
+    @pytest.mark.asyncio
+    async def test_a_within_ttl_entry_is_never_clobbered(self, tmp_path, monkeypatch):
+        """The probe is TTL-aware, not a presence test — but a live entry wins."""
+        from academic_tools_mcp import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        cache.put(arxiv.NAMESPACE, "papers", "2301.00001v7", {"title": "Live", "id": "kept"})
+        _stub_text_response(monkeypatch, _feed(_search_entry("2301.00001v7", "Fresh")))
+
+        await arxiv.search_papers("anything")
+
+        assert cache.get(arxiv.NAMESPACE, "papers", "2301.00001v7")["title"] == "Live"
+        # The bare key had no entry, so it is warmed from the search hit.
+        assert cache.get(arxiv.NAMESPACE, "papers", "2301.00001")["title"] == "Fresh"
+
+    @pytest.mark.asyncio
+    async def test_a_hit_whose_id_is_not_arxiv_shaped_is_skipped(self, tmp_path, monkeypatch):
+        from academic_tools_mcp import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(
+            monkeypatch,
+            _feed("  <entry><id>http://example.com/nonsense</id><title>X</title></entry>\n"),
+        )
+
+        result = await arxiv.search_papers("anything")
+
+        assert len(result["entries"]) == 1
+        assert not list(cache.cache_dir(arxiv.NAMESPACE, "papers").glob("*.json"))
+
+
+# ---------------------------------------------------------------------------
+# The three definitive "not found" shapes, and the two the tests missed
+# ---------------------------------------------------------------------------
+
+
+class TestNotFoundShapes:
+    """arXiv spells "definitively absent" three ways; all three cache one payload.
+
+    Regression: the 404 branch classified from the raised ``HTTPStatusError``,
+    so what landed in the negative cache for the full TTL was
+    ``_http.error_dict``'s fallthrough — ``arXiv HTTP 404: <body snippet>`` —
+    where the other two branches cached a clean message.
+    """
+
+    _EMPTY_FEED = _feed(total="0")
+    _ERROR_FEED = _feed(_ERROR_ENTRY)
+
+    @staticmethod
+    def _shapes():
+        return {
+            # A *valid* feed body, so only the status check can classify it:
+            # a parse failure or an empty feed would pass this test for the
+            # wrong reason.
+            "http_404": {"text": _feed(_search_entry("2301.99999v1")), "status_code": 404},
+            "empty_feed": {"text": TestNotFoundShapes._EMPTY_FEED},
+            "error_entry": {"text": TestNotFoundShapes._ERROR_FEED},
+        }
+
+    @pytest.mark.parametrize("shape", ["http_404", "empty_feed", "error_entry"])
+    @pytest.mark.asyncio
+    async def test_each_shape_is_negative_cached_with_one_payload(
+        self, tmp_path, monkeypatch, shape
+    ):
+        from academic_tools_mcp import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        calls = _stub_text_response(monkeypatch, **self._shapes()[shape])
+
+        result = await arxiv.get_paper("2301.99999")
+
+        assert result == {
+            "error": "No paper found for arXiv ID: 2301.99999",
+            "not_found": True,
+        }, shape
+        # `not_found` is the flag oa_download and wikipedia read as
+        # "definitively absent"; a body snippet is not one.
+        assert "404" not in result["error"]
+
+        canonical = arxiv.canonical_arxiv_id("2301.99999")
+        assert cache.get_negative(arxiv.NAMESPACE, "papers", canonical) == result
+
+        assert await arxiv.get_paper("2301.99999") == result
+        assert calls[0] == 1, "second call must be served from the negative cache"
+
+    @pytest.mark.asyncio
+    async def test_a_404_is_checked_before_raise_for_status(self, tmp_path, monkeypatch):
+        """The status check, not the exception, is what classifies it.
+
+        A stub whose ``raise_for_status`` is a no-op still yields the clean
+        not-found payload — which it could not if the branch lived in
+        ``except _http.HTTPX_ERRORS``.
+        """
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(
+            monkeypatch, _feed(_search_entry("2301.99999v1")), status_code=404, raises=None
+        )
+
+        assert (await arxiv.get_paper("2301.99999"))["not_found"] is True
+
+
+# ---------------------------------------------------------------------------
+# download_pdf: the branches the stubs were hiding
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadPdfMetadataBranches:
+    @pytest.mark.asyncio
+    async def test_a_paper_with_no_pdf_link_is_a_definitive_failure(self, tmp_path, monkeypatch):
+        """How a withdrawn paper presents: an Atom entry carrying no pdf link.
+
+        ``retryable: False`` is load-bearing — ``_pdf_download.is_definitive_failure``
+        reads exactly that key to decide whether to negative-cache.
+        """
+        from academic_tools_mcp import _pdf_download, cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+
+        async def fake_get_paper(_id, **_kw):
+            return {"id": "http://arxiv.org/abs/2301.00001v1", "links": []}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_get_paper)
+
+        result = await arxiv.download_pdf("2301.00001")
+
+        assert result["retryable"] is False
+        assert "2301.00001" in result["error"]
+        assert _pdf_download.is_definitive_failure(result)
+
+        canonical = arxiv.canonical_arxiv_id("2301.00001")
+        assert cache.get_negative(arxiv.NAMESPACE, "downloads", canonical) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_metadata_error_is_returned_untouched(self, tmp_path, monkeypatch):
+        """A transient metadata failure must not be recorded as a download failure."""
+        from academic_tools_mcp import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+
+        async def fake_get_paper(_id, **_kw):
+            return {"error": "arXiv server error (HTTP 503).", "retryable": True}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_get_paper)
+
+        result = await arxiv.download_pdf("2301.00001")
+
+        assert result["retryable"] is True
+        canonical = arxiv.canonical_arxiv_id("2301.00001")
+        assert cache.get_negative(arxiv.NAMESPACE, "downloads", canonical) is None
+
+    @pytest.mark.parametrize("force", [False, True])
+    @pytest.mark.asyncio
+    async def test_force_refresh_reaches_the_metadata_lookup(self, tmp_path, monkeypatch, force):
+        """A forced re-download must not resolve its URL from the record it replaces.
+
+        Mutate `download_pdf`'s `force_refresh=force_refresh` away and this is
+        the assertion that fails; every other download test swallows `**_kw`.
+        """
+        from ._download_fakes import install_stream, mock_stream_response
+        from ._download_fakes import passthrough_slot as _passthrough_slot
+
+        _reset_throttle(monkeypatch, tmp_path)
+        seen: list[bool] = []
+
+        async def fake_get_paper(_id, *, force_refresh=False):
+            seen.append(force_refresh)
+            return {"links": [{"title": "pdf", "href": "http://example.com/x.pdf"}]}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_get_paper)
+        monkeypatch.setattr(arxiv, "_request_slot", _passthrough_slot)
+        install_stream(monkeypatch, mock_stream_response())
+
+        result = await arxiv.download_pdf("2301.00001", force_refresh=force)
+
+        assert "error" not in result
+        assert seen == [force]
+
+
+# ---------------------------------------------------------------------------
+# _parse_entry: degenerate elements a real feed can carry
+# ---------------------------------------------------------------------------
+
+
+class TestParseEntryDegenerate:
+    @staticmethod
+    def _parse(inner: str) -> dict:
+        xml = (
+            '<entry xmlns="http://www.w3.org/2005/Atom"'
+            ' xmlns:arxiv="http://arxiv.org/schemas/atom">'
+            f"{inner}</entry>"
+        )
+        return arxiv._parse_entry(ET.fromstring(xml))
+
+    def test_an_author_without_a_name_becomes_an_empty_string(self):
+        parsed = self._parse("<author><arxiv:affiliation>MIT</arxiv:affiliation></author>")
+        assert parsed["authors"] == [{"name": "", "affiliations": ["MIT"]}]
+
+    def test_an_empty_affiliation_is_dropped(self):
+        parsed = self._parse("<author><name>Jane Doe</name><arxiv:affiliation/></author>")
+        assert parsed["authors"] == [{"name": "Jane Doe", "affiliations": []}]
+
+    def test_a_link_without_href_or_rel_keeps_the_shape(self):
+        parsed = self._parse('<link title="pdf"/>')
+        assert parsed["links"] == [{"href": "", "rel": "", "title": "pdf"}]
+
+    def test_a_category_without_a_term_is_dropped(self):
+        parsed = self._parse('<category scheme="x"/><category term="cs.AI"/>')
+        assert parsed["categories"] == ["cs.AI"]
+
+    def test_a_missing_id_and_primary_category_are_empty_strings(self):
+        parsed = self._parse("<title>T</title>")
+        assert parsed["id"] == ""
+        assert parsed["primary_category"] == ""
+
+    def test_an_empty_entry_parses_to_the_full_shape(self):
+        """Every key is present whatever the feed omits — the tool layer slices it."""
+        parsed = self._parse("")
+        assert parsed == {
+            "id": "",
+            "title": "",
+            "summary": "",
+            "published": "",
+            "updated": "",
+            "authors": [],
+            "categories": [],
+            "primary_category": "",
+            "links": [],
+            "comment": None,
+            "journal_ref": None,
+            "doi": None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Spellings that used to route to `manual` under a key already arXiv's
+# ---------------------------------------------------------------------------
+
+
+class TestSpellingsThatMissedTheRouter:
+    """Regression: each of these normalized to itself, so `is_arxiv_id` said no.
+
+    A rejected spelling does not merely fail to fetch — it is not an arXiv
+    *shape*, so `manual.resolve_target` files the paper under `manual` and the
+    same paper caches, downloads and converts a second time.
+    """
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "https://www.arxiv.org/abs/2301.00001",
+            "http://export.arxiv.org/abs/2301.00001",
+            "arxiv.org/abs/2301.00001",
+            "HTTPS://ARXIV.ORG/abs/2301.00001",
+            "https://arxiv.org/abs/2301.00001/",
+            "https://ARXIV.org/pdf/2301.00001.PDF",
+            "10.48550/arXiv.2301.00001",
+            "10.48550/arxiv.2301.00001",
+            "https://doi.org/10.48550/arXiv.2301.00001",
+            "doi:10.48550/arXiv.2301.00001",
+            "arXiv:10.48550/arXiv.2301.00001",
+        ],
+    )
+    def test_it_normalizes_to_the_bare_id(self, spelling):
+        from academic_tools_mcp import manual
+
+        assert arxiv.canonical_arxiv_id(spelling) == "2301.00001"
+        assert arxiv.is_arxiv_id(spelling)
+        assert manual.resolve_target(spelling)["namespace"] == arxiv.NAMESPACE
+
+    def test_an_old_style_id_survives_the_doi_form(self):
+        assert arxiv.normalize_arxiv_id("10.48550/arXiv.hep-th/9901001") == "hep-th/9901001"
+        assert arxiv.canonical_arxiv_id("10.48550/arXiv.math.GT/0309136") == "math.gt/0309136"
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            # The prefix names arXiv's DOI registrant; it does not promise that
+            # what follows is a paper id. Stripping it unconditionally would
+            # mangle the record *and* cost normalize its idempotence.
+            "10.48550/arXiv.not-a-paper",
+            "10.48550/dryad.abc123",
+            "10.1101/2020.01.01.123456",
+            "https://example.com/abs/2301.00001",
+            "notarxiv.org/abs/2301.00001",
+            "my-arxiv:notes",
+        ],
+    )
+    def test_a_look_alike_is_left_alone(self, identifier):
+        assert not arxiv.is_arxiv_id(identifier)
+        assert arxiv.normalize_arxiv_id(identifier) == identifier
+
+    def test_the_doi_prefix_is_exported_for_bibtex(self):
+        """One spelling of the prefix, as `acl.ACL_DOI_PREFIX` is."""
+        from academic_tools_mcp import bibtex
+
+        assert arxiv.ARXIV_DOI_PREFIX == "10.48550/arXiv."
+        assert bibtex._arxiv_eprint_from_doi("10.48550/arXiv.1706.03762v2") == "1706.03762"
+        # Case survives: BibTeX's eprint field keeps the archive class.
+        assert bibtex._arxiv_eprint_from_doi("10.48550/arXiv.math.GT/0309136") == "math.GT/0309136"
+        assert bibtex._arxiv_eprint_from_doi("10.1234/other") == ""

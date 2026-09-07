@@ -25,13 +25,20 @@ from hypothesis import strategies as st
 from academic_tools_mcp import _doi, _stems, cache, cache_search, manual, papers
 
 from .test_cache_search_properties import (
+    arxiv_doi_ids,
     arxiv_new_ids,
     arxiv_old_ids,
+    arxiv_url_ids,
     identifiers,
     prefixed_arxiv_ids,
 )
 
-arxiv_spellings = st.one_of(arxiv_new_ids, arxiv_old_ids, prefixed_arxiv_ids)
+# Every spelling the router claims, so the sweep is exercised over the same set
+# `resolve_target` routes: a spelling the router learns and the sweep doesn't
+# leaves that paper's artifacts stranded in `manual` forever.
+arxiv_spellings = st.one_of(
+    arxiv_new_ids, arxiv_old_ids, prefixed_arxiv_ids, arxiv_url_ids, arxiv_doi_ids
+)
 
 
 # ---------------------------------------------------------------------------

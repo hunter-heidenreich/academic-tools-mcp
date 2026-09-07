@@ -156,6 +156,29 @@ def put(namespace: str, entity: str, identifier: str, data: dict[str, Any]) -> b
     return _write_entry(namespace, _entry_path(namespace, entity, identifier), data)
 
 
+def warm(
+    namespace: str,
+    entity: str,
+    identifier: str,
+    data: dict[str, Any],
+    *,
+    max_age_seconds: float,
+) -> None:
+    """Opportunistically cache a record a *search* returned, never clobbering a live one.
+
+    The probe is TTL-aware rather than a presence test, so fresher search data
+    replaces an entry already past ``max_age_seconds`` but a within-TTL entry
+    wins. Pass the same TTL the provider's reader uses, or the probe and the
+    reader disagree about what "fresh" means. ``count=False``: warming is not a
+    lookup being served.
+
+    Which keys a hit warms is the provider's policy and stays there — crossref
+    derives one from ``item["DOI"]``, arxiv derives a versioned/bare pair.
+    """
+    if get(namespace, entity, identifier, max_age_seconds=max_age_seconds, count=False) is None:
+        put(namespace, entity, identifier, data)
+
+
 # ---------------------------------------------------------------------------
 # Negative cache (TTL-bounded)
 # ---------------------------------------------------------------------------

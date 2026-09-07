@@ -14,7 +14,6 @@ from .._app import (
     FOLLOW_PUBLISHED,
     FORCE_REFRESH,
     PAPER_ID,
-    _arxiv_id_from_entry,
     _crossref_date,
     _enrich_error,
     _first,
@@ -110,7 +109,7 @@ def _format_arxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> d
     return {
         "_source": "arxiv",
         "_canonical_id": canonical_id,
-        "arxiv_id": _arxiv_id_from_entry(paper),
+        "arxiv_id": arxiv.id_from_entry(paper),
         "title": paper.get("title"),
         "published": paper.get("published"),
         "updated": paper.get("updated"),

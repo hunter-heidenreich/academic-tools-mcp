@@ -78,8 +78,42 @@ prefixed_arxiv_ids = st.builds(
     st.one_of(arxiv_new_ids, arxiv_old_ids),
 )
 
+# The URL and DataCite-DOI spellings. Generated rather than listed because the
+# example suite's list is exactly where `www.`, `export.`, a scheme-less host
+# and `10.48550/arXiv.` went missing — each one routing a paper to `manual`
+# under a key that was already arXiv's.
+_bare_arxiv_ids = st.one_of(arxiv_new_ids, arxiv_old_ids)
+
+arxiv_url_ids = st.builds(
+    lambda scheme, host, kind, ident, tail: f"{scheme}{host}arxiv.org/{kind}/{ident}{tail}",
+    st.sampled_from(["https://", "http://", ""]),
+    st.sampled_from(["", "www.", "export."]),
+    st.sampled_from(["abs", "pdf"]),
+    _bare_arxiv_ids,
+    st.sampled_from(["", "/", ".pdf", "?context=cs", "#abstract"]),
+)
+
+arxiv_doi_ids = st.builds(
+    lambda prefix, ident: f"{prefix}{ident}",
+    st.sampled_from(
+        [
+            "10.48550/arXiv.",
+            "10.48550/arxiv.",
+            "https://doi.org/10.48550/arXiv.",
+            "doi:10.48550/arXiv.",
+        ]
+    ),
+    _bare_arxiv_ids,
+)
+
 identifiers = st.one_of(
-    arxiv_new_ids, arxiv_old_ids, prefixed_arxiv_ids, single_slash_dois, freeform_labels
+    arxiv_new_ids,
+    arxiv_old_ids,
+    prefixed_arxiv_ids,
+    arxiv_url_ids,
+    arxiv_doi_ids,
+    single_slash_dois,
+    freeform_labels,
 )
 
 
@@ -119,21 +153,21 @@ def test_a_spelling_of_an_arxiv_id_is_never_a_second_cache_entry(spelling: str) 
 
     target = manual.resolve_target(spelling)
     assert target["namespace"] == "arxiv"
-    assert target["canonical"] == arxiv._normalize_arxiv_id(spelling).lower()
+    assert target["canonical"] == arxiv.normalize_arxiv_id(spelling).lower()
     assert ":" not in target["canonical"]
 
 
 @given(st.text(max_size=40))
 def test_arxiv_normalization_is_idempotent_for_any_input(text: str) -> None:
-    """Feeding `_normalize_arxiv_id` its own output changes nothing.
+    """Feeding `normalize_arxiv_id` its own output changes nothing.
 
     Without the prefix loop, `arXiv:arXiv:2301.00001` survives one pass and
     keys separately from its own normalized form.
     """
     from academic_tools_mcp.providers import arxiv
 
-    once = arxiv._normalize_arxiv_id(text)
-    assert arxiv._normalize_arxiv_id(once) == once
+    once = arxiv.normalize_arxiv_id(text)
+    assert arxiv.normalize_arxiv_id(once) == once
 
 
 @given(arxiv_old_ids, st.lists(st.booleans(), max_size=30))

@@ -6,6 +6,7 @@ from typing import Any
 
 from . import _doi
 from ._textnorm import fold
+from .providers import arxiv
 
 # OpenAlex's own `type` vocabulary (not Crossref's) -> BibTeX entry type;
 # anything unlisted falls to @misc. Re-derive: `works?group_by=type`.
@@ -100,11 +101,6 @@ _ORG_RE = re.compile(
     r"\b(collaboration|consortium|group|team|project|network|initiative|survey)\b",
     re.IGNORECASE,
 )
-
-# The id is what follows the prefix, never the last "/" segment: an old-style
-# id keeps its archive path ("10.48550/arXiv.hep-th/9901001").
-_ARXIV_DOI_RE = re.compile(r"10\.48550/arxiv\.(?P<id>.+)$", re.IGNORECASE)
-_VERSION_SUFFIX_RE = re.compile(r"v\d+$")
 
 
 def _fold_translit(s: str) -> str:
@@ -279,9 +275,14 @@ def _escape_doi(s: str) -> str:
 
 
 def _arxiv_eprint_from_doi(doi: str) -> str:
-    """Bare, unversioned arXiv id out of an arXiv DOI; ``""`` if it isn't one."""
-    match = _ARXIV_DOI_RE.search(doi)
-    return _VERSION_SUFFIX_RE.sub("", match["id"]) if match else ""
+    """Bare, unversioned arXiv id out of an arXiv DOI; ``""`` if it isn't one.
+
+    Through the provider's grammar, not a local copy: the router and the
+    ``eprint`` field must agree about which papers are arXiv's. Case survives
+    (``strip_version``, not ``base_arxiv_id``) so an old-style id keeps its
+    archive class — ``10.48550/arXiv.hep-th/9901001`` is ``hep-th/9901001``.
+    """
+    return arxiv.strip_version(arxiv.normalize_arxiv_id(doi)) if arxiv.is_arxiv_id(doi) else ""
 
 
 def _title_field(title: str) -> tuple[str, str]:
@@ -385,8 +386,8 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     doi = _doi.normalize(paper.get("doi") or "")
 
     entry_type = "article" if journal_ref else "misc"
-    # The id may be a URL or already bare.
-    eprint_id = _VERSION_SUFFIX_RE.sub("", (paper.get("id") or "").split("/abs/")[-1])
+    # The id may be a URL or already bare; case survives for old-style ids.
+    eprint_id = arxiv.strip_version(arxiv.id_from_entry(paper))
 
     fields: list[tuple[str, str]] = [_title_field(paper.get("title") or "")]
     if authors := _format_flat_authors_bibtex(paper.get("authors") or []):

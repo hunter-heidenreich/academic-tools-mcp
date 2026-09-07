@@ -226,20 +226,9 @@ async def search_works(
         doi = item.get("DOI")
         if not doi:
             continue
-        canonical = canonical_doi(doi)
-        # TTL-aware, so a stale-but-present entry is refreshed by fresher
-        # search data while a live one is never clobbered.
-        if (
-            cache.get(
-                NAMESPACE,
-                "works",
-                canonical,
-                max_age_seconds=_POSITIVE_TTL_SECONDS,
-                count=False,
-            )
-            is None
-        ):
-            cache.put(NAMESPACE, "works", canonical, item)
+        cache.warm(
+            NAMESPACE, "works", canonical_doi(doi), item, max_age_seconds=_POSITIVE_TTL_SECONDS
+        )
 
     total = message.get("total-results") if isinstance(message, dict) else None
     return {"items": items, "total_results": total}
