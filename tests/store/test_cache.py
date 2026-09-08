@@ -1,3 +1,12 @@
+"""The on-disk cache: where it lands, what it stores, and how it expires.
+
+``TestCacheRootResolution`` is the one class here that runs against the
+*real* root. Every other test in the suite gets ``cache.CACHE_ROOT``
+redirected to ``tmp_path`` by an autouse fixture, so nothing else exercises
+the resolution itself -- which is how a move of this module one directory
+deeper silently relocated the cache and orphaned everything already in it.
+"""
+
 import contextlib
 import json
 from pathlib import Path
@@ -5,6 +14,66 @@ from pathlib import Path
 import pytest
 
 from academic_tools_mcp.store import cache
+
+
+class TestNamespaceVocabulary:
+    """The cache namespace strings are frozen, and deliberately hardcoded here.
+
+    A namespace is an on-disk directory name, so it is a data-compatibility
+    surface, not an implementation detail: changing one orphans every artifact
+    already filed under it, silently and without an error. It is independent of
+    the module that declares it -- ``providers/acl.py`` still declares
+    ``acl_anthology``, and ``download/openaccess.py`` still declares
+    ``oa_download``.
+
+    Spelled out rather than derived, because the whole point is to disagree
+    with the source when the source changes. A rename that also rewrites the
+    tests -- which is exactly how ``oa_download`` briefly became
+    ``openaccess`` -- passes every test that reads the constant back.
+    """
+
+    EXPECTED = frozenset(
+        {
+            "acl_anthology",
+            "arxiv",
+            "biorxiv",
+            "crossref",
+            "manual",
+            "oa_download",
+            "openalex",
+            "opencitations",
+            "wikipedia",
+        }
+    )
+
+    @staticmethod
+    def _declared():
+        import importlib
+        import pkgutil
+
+        import academic_tools_mcp
+
+        found = {}
+        for info in pkgutil.walk_packages(
+            academic_tools_mcp.__path__, f"{academic_tools_mcp.__name__}."
+        ):
+            module = importlib.import_module(info.name)
+            namespace = getattr(module, "NAMESPACE", None)
+            if isinstance(namespace, str):
+                found[info.name] = namespace
+        return found
+
+    def test_the_scan_found_them(self):
+        # Guards the scan: an empty result would make the set check vacuous.
+        assert len(self._declared()) == len(self.EXPECTED)
+
+    def test_no_namespace_was_added_renamed_or_dropped(self):
+        assert set(self._declared().values()) == self.EXPECTED
+
+    def test_a_module_rename_does_not_move_its_namespace(self):
+        declared = self._declared()
+        assert declared["academic_tools_mcp.providers.acl"] == "acl_anthology"
+        assert declared["academic_tools_mcp.download.openaccess"] == "oa_download"
 
 
 class TestCacheRootResolution:

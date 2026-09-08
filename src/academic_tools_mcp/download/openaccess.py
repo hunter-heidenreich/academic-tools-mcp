@@ -20,7 +20,7 @@ from ..store import singleflight
 from ..util import useragent
 from . import streaming
 
-NAMESPACE = "openaccess"
+NAMESPACE = "oa_download"
 
 # Agent-facing provider name; every site that names us reads it (providers.md).
 LABEL = "OA download"
