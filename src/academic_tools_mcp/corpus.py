@@ -224,7 +224,7 @@ def _scan_markdown() -> list[_ScannedFile]:
     return out
 
 
-# --- Persistent incremental index ---
+# --- The FTS5 index ---
 
 _INDEX_DIRNAME = "__search_index__"
 
@@ -375,6 +375,9 @@ def _sweep_legacy_index() -> None:
             legacy.unlink()
     except OSError:
         pass
+
+
+# --- Staleness and self-healing ---
 
 
 def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | None:
@@ -531,36 +534,6 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
             con.close()
 
 
-def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[dict[str, Any]]:
-    """Papers on disk the index could not use — silently invisible otherwise.
-
-    Records are ``{namespace, stem, canonical_id, reason}``, ``reason`` one of
-    :data:`UNINDEXABLE_REASONS`. ``refresh=False`` is a contract, not an
-    optimisation: it reads what the ``search`` just run left behind.
-    """
-    if refresh:
-        _refresh_index()
-    con = _connect()
-    try:
-        sql = "SELECT ns, stem, unindexable FROM files WHERE unindexable IS NOT NULL"
-        params: tuple[Any, ...] = ()
-        if namespace is not None:
-            sql += " AND ns = ?"
-            params = (namespace,)
-        rows = con.execute(sql + " ORDER BY ns, stem", params).fetchall()
-    finally:
-        con.close()
-    return [
-        {
-            "namespace": r["ns"],
-            "stem": r["stem"],
-            "canonical_id": _filename_to_canonical(r["ns"], r["stem"]),
-            "reason": r["unindexable"],
-        }
-        for r in rows
-    ]
-
-
 # --- Query and ranking ---
 
 # ``unicode61``'s separators, so the query splits the way the corpus did — and
@@ -709,3 +682,33 @@ def search(
     terms = _snippet_terms(query, normalize=normalize)
     hits = (_hit(row, terms, normalize=normalize) for row in rows)
     return [hit for hit in hits if hit is not None]
+
+
+def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[dict[str, Any]]:
+    """Papers on disk the index could not use — silently invisible otherwise.
+
+    Records are ``{namespace, stem, canonical_id, reason}``, ``reason`` one of
+    :data:`UNINDEXABLE_REASONS`. ``refresh=False`` is a contract, not an
+    optimisation: it reads what the ``search`` just run left behind.
+    """
+    if refresh:
+        _refresh_index()
+    con = _connect()
+    try:
+        sql = "SELECT ns, stem, unindexable FROM files WHERE unindexable IS NOT NULL"
+        params: tuple[Any, ...] = ()
+        if namespace is not None:
+            sql += " AND ns = ?"
+            params = (namespace,)
+        rows = con.execute(sql + " ORDER BY ns, stem", params).fetchall()
+    finally:
+        con.close()
+    return [
+        {
+            "namespace": r["ns"],
+            "stem": r["stem"],
+            "canonical_id": _filename_to_canonical(r["ns"], r["stem"]),
+            "reason": r["unindexable"],
+        }
+        for r in rows
+    ]
