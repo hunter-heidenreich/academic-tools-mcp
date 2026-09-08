@@ -7,8 +7,10 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _doi, _http, _singleflight, _useragent, cache, config
-from .._throttle import Throttle
+from ..net import clients, http
+from ..net.throttle import Throttle
+from ..store import cache, singleflight
+from ..util import config, doinorm, useragent
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
@@ -16,12 +18,12 @@ NAMESPACE = "crossref"
 # Agent-facing provider name; every site that names us reads it (providers.md).
 LABEL = "Crossref"
 
-_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
+_PARSE_ERRORS = http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable Crossref response."""
-    return _http.parse_error_dict(LABEL)
+    return http.parse_error_dict(LABEL)
 
 
 # The rate we take must follow the identity we send: hardcoding the polite
@@ -54,7 +56,7 @@ def _resolve_policy() -> tuple[int, float, float]:
 
 _MAX_CONCURRENT, _MIN_REQUEST_GAP, _SEARCH_REQUEST_GAP = _resolve_policy()
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 # Same span as OpenAlex works: a reference list grows as publishers re-deposit.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
@@ -66,16 +68,16 @@ def _build_headers() -> dict[str, str]:
     Gating the whole header on ``CROSSREF_MAILTO`` would leave the default
     configuration identifying as ``python-httpx/x.y``.
     """
-    return _useragent.headers(config.get("CROSSREF_MAILTO"))
+    return useragent.headers(config.get("CROSSREF_MAILTO"))
 
 
 def _get_client() -> httpx.AsyncClient:
     """Return the pooled AsyncClient for Crossref calls.
 
-    Configured here only: ``_clients.get_client`` ignores kwargs on every later
+    Configured here only: ``clients.get_client`` ignores kwargs on every later
     call for this namespace.
     """
-    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
+    return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
 _throttle = Throttle(
@@ -104,7 +106,7 @@ def reset_search_pacing() -> None:
     Mirrors ``Throttle.reset``: a lock left over from a previous event loop
     raises "bound to a different event loop".
     """
-    global _search_lock, _last_search_time  # noqa: PLW0603 — process-wide search throttle
+    global _search_lock, _last_search_time  # noqa: PLW0603 — process-wide search _throttle
     _search_lock = asyncio.Lock()
     _last_search_time = 0.0
 
@@ -115,7 +117,7 @@ async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
     Stamped before the singles hand-off, so a queued search can start after its
     stamp — a known drift, argued in providers.md.
     """
-    global _last_search_time  # noqa: PLW0603 — process-wide search throttle
+    global _last_search_time  # noqa: PLW0603 — process-wide search _throttle
     async with _search_lock:
         elapsed = time.monotonic() - _last_search_time
         if _last_search_time > 0 and elapsed < _SEARCH_REQUEST_GAP:
@@ -131,7 +133,7 @@ async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
 
 def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
-    return _doi.canonical(doi)
+    return doinorm.canonical(doi)
 
 
 # ---------------------------------------------------------------------------
@@ -179,8 +181,8 @@ async def search_works(
         data = response.json()
     except _PARSE_ERRORS:
         return _parse_error_dict()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict(LABEL, e)
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(LABEL, e)
 
     # Every rung is a shape that raises out of the provider unguarded, and none
     # is an empty result set: "no papers match" ends the agent's search.
@@ -197,7 +199,7 @@ async def search_works(
     # get_work is a free cache hit. Mirrors arxiv.search_papers.
     for item in items:
         doi = item.get("DOI")
-        # isinstance, not truthiness: a non-string DOI reaches _doi.normalize
+        # isinstance, not truthiness: a non-string DOI reaches doinorm.normalize
         # and raises AttributeError, which no except clause here catches.
         if not isinstance(doi, str) or not doi:
             continue
@@ -223,17 +225,17 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     not_found_error = f"No work found on Crossref for DOI: {doi}"
 
     async def _fetch() -> dict[str, Any]:
-        bare_doi = _doi.normalize(doi)
+        bare_doi = doinorm.normalize(doi)
         # Percent-encoded so a reserved character can't truncate the request
         # to the wrong record; the DOI's own slash stays literal.
         url = f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}"
 
-        if not _http.addresses_a_record(url):
+        if not http.addresses_a_record(url):
             # A `.`/`..` segment shortens the path to the /works *collection*,
             # whose 200 carries a work-list under a dict `message` — it clears
             # the shape ladder below and would cache as this DOI's work.
             # Refused before the request is spent, so nothing is cached.
-            return _http.not_found(not_found_error)
+            return http.not_found(not_found_error)
 
         try:
             response = await _throttled_get(url)
@@ -241,7 +243,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             if response.status_code == 404:
                 # Definitive, hence both the negative entry and the flag
                 # tools/graph.py forwards.
-                err = _http.not_found(not_found_error)
+                err = http.not_found(not_found_error)
                 cache.put_negative(NAMESPACE, "works", canonical, err)
                 return err
 
@@ -250,8 +252,8 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         except _PARSE_ERRORS:
             # Transient, not "not found" — uncached, so a retry re-fetches.
             return _parse_error_dict()
-        except _http.HTTPX_ERRORS as e:
-            return _http.error_dict(LABEL, e)
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
 
         # Wrong shape, not an empty work: never positive-cached for the TTL.
         work = _message_of(data)

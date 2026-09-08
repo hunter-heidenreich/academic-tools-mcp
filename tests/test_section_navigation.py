@@ -14,7 +14,8 @@ Two failures made that chain unreliable on a real corpus:
 
 import pytest
 
-from academic_tools_mcp import cache, cache_search, papers
+from academic_tools_mcp import corpus, papers
+from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.tools import pipeline as pipeline_tools
 from academic_tools_mcp.tools import search as search_tools
 
@@ -28,7 +29,7 @@ NO_HEADINGS = "plain layout text with no markdown headings at all\n" * 200
 
 
 @pytest.fixture
-def corpus(tmp_path, monkeypatch):
+def markdown_corpus(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
     md = tmp_path / "manual" / "markdown"
     md.mkdir(parents=True)
@@ -65,14 +66,14 @@ class TestSharedBoundaries:
 
 
 class TestChainingByIndex:
-    def test_search_hit_carries_a_chainable_index(self, corpus):
-        hits = cache_search.search("transformers")
+    def test_search_hit_carries_a_chainable_index(self, markdown_corpus):
+        hits = corpus.search("transformers")
         hit = next(h for h in hits if h["canonical_id"] == "dup")
         assert hit["section"] == "Results"
         assert isinstance(hit["section_index"], int)
 
-    def test_index_chains_where_the_title_fails(self, corpus):
-        hits = cache_search.search("transformers")
+    def test_index_chains_where_the_title_fails(self, markdown_corpus):
+        hits = corpus.search("transformers")
         hit = next(h for h in hits if h["canonical_id"] == "dup")
 
         by_index = papers.get_section_content(DUPLICATE_TITLES, hit["section_index"])
@@ -87,13 +88,13 @@ class TestChainingByIndex:
         assert first[1] == second[1] == "Results"
         assert first[0] != second[0]
 
-    def test_char_offset_is_returned_for_chaining(self, corpus):
-        hits = cache_search.search("transformers")
+    def test_char_offset_is_returned_for_chaining(self, markdown_corpus):
+        hits = corpus.search("transformers")
         hit = next(h for h in hits if h["canonical_id"] == "dup")
         assert isinstance(hit["char_offset"], int)
 
     @pytest.mark.asyncio
-    async def test_end_to_end_through_the_tools(self, corpus):
+    async def test_end_to_end_through_the_tools(self, markdown_corpus):
         result = await search_tools.search_cached_papers("transformers")
         hit = next(h for h in result["results"] if h["canonical_id"] == "dup")
 
@@ -105,7 +106,7 @@ class TestChainingByIndex:
 
 class TestHeadinglessDocumentsAreFlagged:
     @pytest.mark.asyncio
-    async def test_flag_is_false_and_a_note_explains(self, corpus):
+    async def test_flag_is_false_and_a_note_explains(self, markdown_corpus):
         result = await pipeline_tools.get_paper_sections("flat")
 
         assert result["total_sections"] == 1
@@ -127,7 +128,7 @@ class TestHeadinglessDocumentsAreFlagged:
         assert "sections_note" not in result
 
     @pytest.mark.asyncio
-    async def test_multi_section_paper_is_not_flagged(self, corpus):
+    async def test_multi_section_paper_is_not_flagged(self, markdown_corpus):
         result = await pipeline_tools.get_paper_sections("dup")
         assert result["sections_detected"] is True
         assert "sections_note" not in result
@@ -140,14 +141,14 @@ class TestHeadinglessDocumentsAreFlagged:
         assert papers.has_detected_sections("plain text only\n") is False
 
     @pytest.mark.asyncio
-    async def test_older_cached_indices_are_recomputed_not_guessed(self, corpus):
+    async def test_older_cached_indices_are_recomputed_not_guessed(self, markdown_corpus):
         # Indices written before this flag existed have no such key. Absent
         # used to read as "not recorded" and default to True, which is a guess
         # — and the wrong one for exactly the papers that need the warning.
         # Re-parsing costs a file read and a regex pass, so the entry is now
         # treated as stale and the real answer computed.
         await pipeline_tools.get_paper_sections("dup")
-        key = papers.sections_key("dup")
+        key = stems.sections_key("dup")
         payload = cache.get("manual", "sections", key)
         payload.pop("sections_detected", None)
         cache.put("manual", "sections", key, payload)
@@ -160,7 +161,9 @@ class TestHeadinglessDocumentsAreFlagged:
         assert cache.get("manual", "sections", key)["sections_detected"] is True
 
     @pytest.mark.asyncio
-    async def test_older_index_on_a_headingless_paper_reports_the_truth(self, corpus, tmp_path):
+    async def test_older_index_on_a_headingless_paper_reports_the_truth(
+        self, markdown_corpus, tmp_path
+    ):
         # The case the default got wrong. A legacy entry on a paper with no
         # headings must not be reported as "sections detected" — that is the
         # reading ``sections_note`` exists to prevent, and defaulting to True
@@ -170,7 +173,7 @@ class TestHeadinglessDocumentsAreFlagged:
         (md / "plain.md").write_text("Body text with no headings at all.\n", encoding="utf-8")
 
         await pipeline_tools.get_paper_sections("plain")
-        key = papers.sections_key("plain")
+        key = stems.sections_key("plain")
         payload = cache.get("manual", "sections", key)
         payload.pop("sections_detected", None)
         cache.put("manual", "sections", key, payload)

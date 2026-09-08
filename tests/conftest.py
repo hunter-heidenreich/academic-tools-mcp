@@ -2,7 +2,7 @@
 
 The persistent ``httpx.AsyncClient`` pool, single-flight registries, and
 backpressure counters all live as module-level state in
-``academic_tools_mcp._clients`` and the per-provider modules. Without a
+``academic_tools_mcp.net.clients`` and the per-provider modules. Without a
 reset between tests, a stale client from one test (often a MagicMock
 with the wrong canned response) is reused by the next test, which
 either fails confusingly or — worse — passes for the wrong reason.
@@ -75,7 +75,7 @@ def _imported_package_modules() -> Iterator[ModuleType]:
     """Yield every already-imported module of the package.
 
     A scan rather than a hand-maintained list of provider paths: that list had
-    to stay in sync with ``_stats``' own copy and nothing enforced it. Imports
+    to stay in sync with ``stats``' own copy and nothing enforced it. Imports
     nothing, so the fixture can't pull half the package into a test that never
     touches it.
     """
@@ -98,7 +98,7 @@ def _scrub_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     ``ACADEMIC_TOOLS_ENV_FILE`` is re-*set* rather than deleted: deleting it
     would re-admit the operator's real ``.env`` on any reload of ``config``,
-    which is exactly what ``test_config.py`` does repeatedly.
+    which is exactly what ``util/test_config.py`` does repeatedly.
     """
     for name in _CONFIG_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
@@ -111,19 +111,20 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Runs before every test in the suite. Idempotent and cheap.
     """
-    from academic_tools_mcp import _clients, _singleflight, _stats
+    from academic_tools_mcp.net import clients, stats
+    from academic_tools_mcp.store import singleflight
 
     # Wipe the per-provider client cache so any test that monkeypatches
     # httpx.AsyncClient sees a fresh build on first use. This drops the
-    # clients without awaiting `_clients.aclose_all()` — a sync fixture can't
+    # clients without awaiting `clients.aclose_all()` — a sync fixture can't
     # — so a test that built a *real* client (test_politeness reads the baked-in
     # User-Agent off one) leaks it. Harmless: an unused client has opened no
     # socket. A test that actually connects must close its own clients.
-    _clients._POOL.clear()
+    clients._POOL.clear()
 
     # Zero the stats counters so a test that asserts on hit/miss totals
     # isn't contaminated by counts from prior tests.
-    _stats.reset()
+    stats.reset()
 
     # Throttle.reset() rebuilds the lock + semaphore because asyncio.Lock /
     # Semaphore bind to the running event loop on first await — a stale
@@ -132,7 +133,7 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
     # error path that raised before the finally block can't leak `pending` into
     # the next test. Same discovery seam the snapshot samples through, so a new
     # provider is covered here without an edit.
-    for throttle in _stats.throttles():
+    for throttle in stats.throttles():
         throttle.reset()
 
     # Single-flight registries and crossref's search gate hang off the module,
@@ -148,7 +149,7 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.setattr(
                 module,
                 "_single_flight",
-                _singleflight.SingleFlight(),
+                singleflight.SingleFlight(),
                 raising=False,
             )
 
@@ -164,10 +165,10 @@ def _isolate_cache_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     — a later ``monkeypatch.setattr`` in the test body wins, and the many
     that set it to this same ``tmp_path`` are now simply redundant.
 
-    ``cache_search`` reads ``cache.CACHE_ROOT`` at call time rather than
+    ``corpus`` reads ``cache.CACHE_ROOT`` at call time rather than
     caching it, so patching the one attribute covers the search index too.
     """
-    from academic_tools_mcp import cache
+    from academic_tools_mcp.store import cache
 
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 
@@ -257,7 +258,7 @@ def isolated_cache(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     conversion suites want ``tmp_path`` itself free for the PDF and the
     extraction dir.
     """
-    from academic_tools_mcp import cache
+    from academic_tools_mcp.store import cache
 
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     return tmp_path

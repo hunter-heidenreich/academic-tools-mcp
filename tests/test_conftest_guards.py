@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import cache, config, papers
+from academic_tools_mcp import papers
+from academic_tools_mcp.store import cache
+from academic_tools_mcp.util import config
 from tests.conftest import _CONFIG_ENV_VARS, _EMPTY_ENV_FILE
 
 

@@ -6,8 +6,8 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from .. import _pdf_download, manual, oa_download, papers
-from .._app import (
+from .. import manual, papers
+from ..app import (
     _SECTION_HARNESS_CAP,
     ALLOW_OA_URL,
     CONVERT_FORCE_REFRESH,
@@ -24,6 +24,7 @@ from .._app import (
     pdf_not_cached_error,
     read_markdown,
 )
+from ..download import openaccess, streaming
 from ..providers import acl, arxiv, biorxiv
 
 _INTERNAL_PATH_KEYS = ("path", "markdown_path")
@@ -63,7 +64,7 @@ async def _download_pdf_by_provider(
         result = await biorxiv.download_pdf(identifier, force_refresh=force_refresh)
     elif allow_oa_url:
         # Only the URL OpenAlex reports, never an arbitrary one. Lands in `manual`.
-        result = await oa_download.download_pdf(identifier, force_refresh=force_refresh)
+        result = await openaccess.download_pdf(identifier, force_refresh=force_refresh)
     else:
         return {
             "error": (
@@ -79,7 +80,7 @@ async def _download_pdf_by_provider(
         }
 
     if "error" in result:
-        # _http supplies a retry verdict, never advice; agents branch on `suggestion`.
+        # http supplies a retry verdict, never advice; agents branch on `suggestion`.
         return _enrich_error(
             result,
             "Wait and retry — the provider is temporarily unavailable."
@@ -193,7 +194,7 @@ async def convert_paper(
     pdf = target["pdf_path"]
 
     # Not merely absent: a 0-byte or non-%PDF- leftover is a miss too.
-    if not _pdf_download.is_usable_pdf(pdf):
+    if not streaming.is_usable_pdf(pdf):
         return pdf_not_cached_error(identifier)
 
     result = await papers.convert_pdf(

@@ -28,8 +28,8 @@ import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .. import config
-from .._stems import markdown_path, safe_stem
+from ..store.stems import markdown_path, safe_stem
+from ..util import config
 from .index import (
     _reparse_sections_locked,
     drop_derived,
@@ -59,7 +59,7 @@ _CONVERTERS: dict[str, str] = {
 # runner at the env where the optional `[fast]` extra is installed.
 _FAST_CONVERTERS: dict[str, str] = {
     "pdftotext": "pdftotext -layout {input} -",
-    "pymupdf": "{python} -m academic_tools_mcp._fast_extract {input}",
+    "pymupdf": "{python} -m academic_tools_mcp.fast_extract {input}",
 }
 
 

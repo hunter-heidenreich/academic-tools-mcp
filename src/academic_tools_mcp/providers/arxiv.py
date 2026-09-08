@@ -10,18 +10,11 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import (
-    _clients,
-    _doi,
-    _http,
-    _pdf_download,
-    _singleflight,
-    _stems,
-    _useragent,
-    cache,
-    config,
-)
-from .._throttle import Throttle
+from ..download import streaming
+from ..net import clients, http
+from ..net.throttle import Throttle
+from ..store import cache, singleflight, stems
+from ..util import config, doinorm, useragent
 
 # Both are transient, not "not found" — .claude/rules/providers.md § arxiv.py.
 _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
@@ -29,7 +22,7 @@ _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable arXiv response — it speaks XML, not JSON."""
-    return _http.parse_error_dict(LABEL, detail="could not be parsed as XML")
+    return http.parse_error_dict(LABEL, detail="could not be parsed as XML")
 
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
@@ -49,7 +42,7 @@ _MAX_CONCURRENT = 1
 _MIN_REQUEST_GAP = 3.0
 _MAX_PENDING = 5
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 # Short: an arXiv id goes live mid-session, so a 404 at 9am should clear by 10am.
 _NEG_TTL_SECONDS = 3600.0
@@ -70,12 +63,12 @@ _POSITIVE_TTL_SECONDS = 14 * 86400.0
 
 def _build_headers() -> dict[str, str]:
     """Descriptive User-Agent, mailto or not: arXiv's edge throttles generic ones harder."""
-    return _useragent.headers(config.get("ARXIV_MAILTO"))
+    return useragent.headers(config.get("ARXIV_MAILTO"))
 
 
 def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``."""
-    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
+    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
+    return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
 _throttle = Throttle(
@@ -104,7 +97,7 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 # ID normalization
 # ---------------------------------------------------------------------------
 
-# As permissive as ``_doi._DOI_URL_RE``, and for the same reason: a spelling
+# As permissive as ``doinorm._DOI_URL_RE``, and for the same reason: a spelling
 # this misses is one ``manual`` files the same paper under a second time.
 _ARXIV_URL_RE = re.compile(
     r"(?:https?://)?(?:www\.|export\.)?arxiv\.org/(?:abs|pdf)/([^?#]+?)(?:\.pdf)?/?(?:[?#].*)?$",
@@ -116,7 +109,7 @@ _ARXIV_URL_RE = re.compile(
 ARXIV_DOI_PREFIX = "10.48550/arXiv."
 _ARXIV_DOI_RE = re.compile(rf"^{re.escape(ARXIV_DOI_PREFIX)}(.+)$", re.IGNORECASE)
 
-# The old-style pair is exported: ``cache_search`` matches it over
+# The old-style pair is exported: ``corpus`` matches it over
 # ``safe_stem``'s ``_`` rather than ``/``. ``math.GT``/``cond-mat.stat-mech``
 # are why the archive class carries ``.``.
 OLD_ARCHIVE_PATTERN = r"[a-z][a-z.\-]*"
@@ -144,7 +137,7 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
       - an ``abs``/``pdf`` URL, either scheme (or none), optional ``www.`` /
         ``export.`` host label, optional ``.pdf`` extension and trailing slash
       - arXiv's DataCite DOI, ``10.48550/arXiv.2301.00001``, in any spelling
-        ``_doi.normalize`` accepts
+        ``doinorm.normalize`` accepts
 
     Case is preserved (``canonical_arxiv_id`` owns the fold) and an
     unrecognised string comes back stripped but untouched. **Idempotent for
@@ -161,7 +154,7 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
     # Via the shared normalizer, so the ``doi.org`` and ``doi:`` spellings
     # collapse too. Only an arXiv-shaped tail: an unrelated DataCite record
     # must survive, and a nested spelling must stay idempotent.
-    if (m := _ARXIV_DOI_RE.match(_doi.normalize(arxiv_id))) and _is_arxiv_shape(m.group(1)):
+    if (m := _ARXIV_DOI_RE.match(doinorm.normalize(arxiv_id))) and _is_arxiv_shape(m.group(1)):
         return m.group(1)
 
     return arxiv_id
@@ -292,7 +285,7 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
     async def _fetch() -> dict[str, Any]:
         def _not_found() -> dict[str, Any]:
             """Definitive absence — arXiv spells it three ways, all cached here."""
-            err = _http.not_found(f"No paper found for arXiv ID: {arxiv_id}")
+            err = http.not_found(f"No paper found for arXiv ID: {arxiv_id}")
             cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
             return err
 
@@ -314,8 +307,8 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
         # both say nothing about whether the paper exists.
         except _PARSE_ERRORS:
             return _parse_error_dict()
-        except _http.HTTPX_ERRORS as e:
-            return _http.error_dict(LABEL, e)
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
 
         entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
@@ -364,8 +357,8 @@ async def search_papers(
         root = _safe_fromstring(response.text)
     except _PARSE_ERRORS:
         return _parse_error_dict()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict(LABEL, e)
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(LABEL, e)
 
     entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
@@ -404,7 +397,7 @@ async def search_papers(
 def pdf_path(arxiv_id: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
     canonical = canonical_arxiv_id(arxiv_id)
-    return _stems.pdf_path(NAMESPACE, canonical)
+    return stems.pdf_path(NAMESPACE, canonical)
 
 
 async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -412,10 +405,10 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
 
     ``force_refresh=True`` re-downloads and atomically replaces the cached
     file, keeping the old one if the re-download fails. Streaming, the byte cap
-    and the atomic rename are ``_pdf_download.stream_to_file``'s.
+    and the atomic rename are ``streaming.stream_to_file``'s.
     """
     canonical = canonical_arxiv_id(arxiv_id)
-    dest = _stems.pdf_path(NAMESPACE, canonical)
+    dest = stems.pdf_path(NAMESPACE, canonical)
 
     async def _fetch() -> dict[str, Any]:
         # force_refresh threaded through: resolving the URL from a stale
@@ -437,7 +430,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
                 "retryable": False,
             }
 
-        return await _pdf_download.stream_to_file(
+        return await streaming.stream_to_file(
             _get_client(),
             pdf_url,
             dest,
@@ -449,7 +442,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
         )
 
     # Tuple-keyed to stay distinct from get_paper's slot, which _fetch awaits.
-    return await _pdf_download.cached_download(
+    return await streaming.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,

@@ -80,8 +80,8 @@ ignore = [
     "RUF003",
     "SIM108",   # long ternaries read worse than the explicit if/else
     "TC001",    # TC001-003 want imports deferred into TYPE_CHECKING blocks. httpx is
-    "TC002",    # loaded at runtime by _clients regardless and the rest is stdlib, so
-    "TC003",    # it buys no import time. The rest of TC guards the blocks themselves.
+    "TC002",    # loaded at runtime by net.clients regardless and the rest is stdlib,
+    "TC003",    # so it buys no import time. The rest of TC guards the blocks themselves.
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -90,8 +90,8 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN", "B011", "D", "S"]
 # Both write to stderr on purpose: stdout is the JSON-RPC channel.
-"src/academic_tools_mcp/_fast_extract.py" = ["T201"]
-"src/academic_tools_mcp/_stats.py" = ["T201"]
+"src/academic_tools_mcp/fast_extract.py" = ["T201"]
+"src/academic_tools_mcp/net/stats.py" = ["T201"]
 
 [tool.mypy]
 python_version = "3.11"

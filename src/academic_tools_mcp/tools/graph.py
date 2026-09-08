@@ -3,8 +3,7 @@
 import asyncio
 from typing import Any
 
-from .. import _doi, _http
-from .._app import (
+from ..app import (
     DOI,
     FORCE_REFRESH,
     PAGE,
@@ -14,7 +13,9 @@ from .._app import (
     mcp,
     page_bounds,
 )
+from ..net import http
 from ..providers import crossref, opencitations
+from ..util import doinorm
 
 # Auto source-selection bias. Crossref entries carry structured
 # bibliographic metadata (author/title/year/journal/DOI); OpenCitations
@@ -45,10 +46,10 @@ def _reject_non_doi(doi: str) -> dict[str, Any] | None:
     cache entry keyed to an identifier that could never have resolved. Uses the
     same predicate as the metadata dispatcher, so the two agree on what a DOI is.
     """
-    if _doi.looks_like_doi(doi):
+    if doinorm.looks_like_doi(doi):
         return None
     return {
-        **_http.not_found(f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only."),
+        **http.not_found(f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only."),
         "suggestion": (
             "Pass a DOI (e.g. 10.1038/nature12373), in bare, doi: or "
             "https://doi.org/ form. For an arXiv paper, call get_paper_metadata "
@@ -139,7 +140,7 @@ async def get_paper_references_count(
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
-    doi = _doi.canonical(doi)
+    doi = doinorm.canonical(doi)
 
     cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
@@ -263,16 +264,21 @@ async def get_paper_references(
     Defaults: page=1, page_size=20 (1-50). Call get_paper_references_count
     explicitly only if you want to compare coverage before committing.
 
-    Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
-    hints for transient failures. A non-DOI identifier is rejected locally,
-    without a request — both providers are DOI-only.
+    Errors: bad DOI / upstream failure → ``{error, suggestion, retryable}``.
+    ``retryable`` is always present on a tool-layer error, so branch on it
+    rather than on the message: ``source="auto"`` past page 1 is
+    ``retryable: false`` (re-issuing the identical call cannot help). When
+    *both* providers fail the response adds ``sources: {crossref, opencitations}``
+    carrying each one's own error, and the top-level ``retryable`` is the
+    disjunction of the two. A non-DOI identifier is rejected locally, without
+    a request — both providers are DOI-only.
 
     The echoed ``doi`` is the canonical form of whatever spelling you passed,
     so every spelling of one paper correlates to one value across calls.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
-    doi = _doi.canonical(doi)
+    doi = doinorm.canonical(doi)
 
     if source == "crossref":
         work = await crossref.get_work(doi, force_refresh=force_refresh)
@@ -378,7 +384,7 @@ async def get_paper_citations_count(
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
-    doi = _doi.canonical(doi)
+    doi = doinorm.canonical(doi)
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
@@ -411,15 +417,18 @@ async def get_paper_citations(
     pass it on the first page for fresh coverage; omit it when paginating so
     page 2..N reuse the warmed cache.
 
-    Errors: bad DOI / upstream failure → ``{error, suggestion}`` with retry
-    hints for transient failures. A non-DOI identifier is rejected locally,
-    without a request — both providers are DOI-only.
+    Errors: bad DOI / upstream failure → ``{error, suggestion}``, plus
+    ``retryable`` and ``retry_after_seconds`` on a transient one, forwarded
+    from OpenCitations. There is no ``sources`` envelope here and no
+    ``source`` parameter: OpenCitations is the only index of incoming
+    citations, so there is nothing to survey between. A non-DOI identifier is
+    rejected locally, without a request, and carries ``not_found: true``.
 
     The echoed ``doi`` is the canonical form of whatever spelling you passed.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
-    doi = _doi.canonical(doi)
+    doi = doinorm.canonical(doi)
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:

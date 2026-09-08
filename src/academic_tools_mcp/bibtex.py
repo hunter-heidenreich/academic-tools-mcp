@@ -4,9 +4,9 @@ import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from . import _doi
-from ._textnorm import fold
 from .providers import arxiv
+from .util import doinorm
+from .util.textnorm import fold
 
 # OpenAlex's own `type` vocabulary (not Crossref's) -> BibTeX entry type;
 # anything unlisted falls to @misc. Re-derive: `works?group_by=type`.
@@ -312,7 +312,7 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     # OpenAlex returns the DOI as a resolver URL, and not always over https —
     # strip it through the shared normalizer rather than a local prefix test,
     # or an http:// record emits `doi={http://doi.org/...}`, which is not a DOI.
-    doi = _doi.normalize(work.get("doi") or "")
+    doi = doinorm.normalize(work.get("doi") or "")
 
     biblio = work.get("biblio") or {}
     source = (work.get("primary_location") or {}).get("source") or {}
@@ -383,7 +383,7 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     key = _flat_key(paper, "published")
     year = _year_from_date(paper, "published")
     journal_ref = paper.get("journal_ref")
-    doi = _doi.normalize(paper.get("doi") or "")
+    doi = doinorm.normalize(paper.get("doi") or "")
 
     entry_type = "article" if journal_ref else "misc"
     # The id may be a URL or already bare; case survives for old-style ids.
@@ -420,8 +420,8 @@ def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     """
     key = _flat_key(paper, "date")
     year = _year_from_date(paper, "date")
-    doi = _doi.normalize(paper.get("doi") or "")
-    published_doi = _doi.normalize(paper.get("published_doi") or "")
+    doi = doinorm.normalize(paper.get("doi") or "")
+    published_doi = doinorm.normalize(paper.get("published_doi") or "")
     server = paper.get("server") or "biorxiv"
 
     entry_type = "article" if published_doi else "misc"

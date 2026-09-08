@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, TypedDict
 from urllib.parse import unquote
 
-from . import _doi, _pdf_download, _stats, _stems, atomic, cache, papers
+from . import papers
+from .download import streaming
+from .net import stats
 from .providers import acl, arxiv, biorxiv
+from .store import atomic, cache, stems
+from .util import doinorm
 
 NAMESPACE = "manual"
 
@@ -63,7 +67,7 @@ def resolve_target(identifier: str) -> Target:
     An identifier no provider claims falls back to the ``manual`` namespace,
     keyed by its bare DOI or, for a freeform label, by the label itself.
     """
-    normalized = _doi.normalize(identifier)
+    normalized = doinorm.normalize(identifier)
 
     for route in _ROUTES:
         if route.claims(normalized):
@@ -74,7 +78,7 @@ def resolve_target(identifier: str) -> Target:
                 pdf_path=route.pdf_path(canonical),
             )
 
-    canonical = _doi.canonical(normalized)
+    canonical = doinorm.canonical(normalized)
     return Target(
         namespace=NAMESPACE,
         canonical=canonical,
@@ -105,7 +109,7 @@ def resolve_metadata_source(identifier: str) -> MetadataSource | None:
     if source := _METADATA_SOURCE_BY_NAMESPACE.get(target["namespace"]):
         return source
 
-    return "openalex" if _doi.looks_like_doi(target["canonical"]) else None
+    return "openalex" if doinorm.looks_like_doi(target["canonical"]) else None
 
 
 def migrate_misrouted_arxiv() -> int:
@@ -116,18 +120,18 @@ def migrate_misrouted_arxiv() -> int:
     ``arxiv%3A2301.00001`` where only ``2301.00001`` is ever looked up.
 
     Run once at startup, idempotent and best-effort like
-    ``papers.migrate_legacy_stems``. Returns the number of files moved.
+    ``stems.migrate_legacy_stems``. Returns the number of files moved.
     """
     moved = 0
     for entity in ("pdfs", "markdown"):
         target_dir = cache.cache_dir(arxiv.NAMESPACE, entity)
         # Shared listing: materialised, and never raises out of the lifespan.
-        for path in _stems.list_dir(cache.cache_dir(NAMESPACE, entity)):
+        for path in stems.list_dir(cache.cache_dir(NAMESPACE, entity)):
             if not _refile_misrouted_arxiv(path, target_dir):
                 continue
             moved += 1
             if entity == "markdown":
-                cache.invalidate(NAMESPACE, "sections", _stems.sections_key_for_stem(path.stem))
+                cache.invalidate(NAMESPACE, "sections", stems.sections_key_for_stem(path.stem))
     return moved
 
 
@@ -144,7 +148,7 @@ def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> bool:
     if recovered is None:
         return False
 
-    target = target_dir / (papers.safe_stem(recovered) + path.suffix)
+    target = target_dir / (stems.safe_stem(recovered) + path.suffix)
     if target.exists():
         return False
 
@@ -166,9 +170,9 @@ def _misrouted_arxiv_id(stem: str) -> str | None:
     Restoring *every* ``_`` is safe only because ``is_arxiv_id`` adjudicates:
     a candidate it rejects is discarded, so an over-eager repair cannot claim
     a label that is genuinely manual's. Repair then decode is the order
-    ``cache_search`` inverts stems in.
+    ``corpus`` inverts stems in.
 
-    Deliberately *not* ``cache_search._filename_to_canonical``, despite being
+    Deliberately *not* ``corpus._filename_to_canonical``, despite being
     the same shape of operation. That one repairs the slash with each
     namespace's own anchored grammar, which is right for a stem that namespace
     wrote — and wrong here: these stems were written under the legacy
@@ -194,7 +198,7 @@ def _manual_pdf_path(canonical: str) -> Path:
     Folds its argument first, like every provider's ``pdf_path``, so a raw
     spelling can't build a path the cache never writes.
     """
-    return _stems.pdf_path(NAMESPACE, _doi.canonical(canonical))
+    return stems.pdf_path(NAMESPACE, doinorm.canonical(canonical))
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +211,7 @@ def _identifier_error(identifier: str) -> dict[str, Any] | None:
 
     The empty key stems to ``""``, so every blank import shares one entry.
     """
-    if not _doi.normalize(identifier):
+    if not doinorm.normalize(identifier):
         return {
             "error": (
                 f"Blank identifier: {identifier!r}. Pass the paper's DOI, arXiv ID, "
@@ -256,7 +260,7 @@ def import_local_pdf(
     if err := _source_error(source, file_path):
         return err
 
-    # Not _pdf_download.is_usable_pdf: an unopenable source earns its own error.
+    # Not streaming.is_usable_pdf: an unopenable source earns its own error.
     try:
         with source.open("rb") as f:
             header = f.read(5)
@@ -280,7 +284,7 @@ def import_local_pdf(
     existed = dest.exists()
     if not force_refresh:
         # cached_hit owns the stat, and the race it absorbs (pdf-download.md).
-        hit = _pdf_download.cached_hit(dest)
+        hit = streaming.cached_hit(dest)
         if hit is not None:
             return {"identifier": canonical, "namespace": namespace, **hit}
 
@@ -292,7 +296,7 @@ def import_local_pdf(
         size_bytes = dest.stat().st_size
     except OSError as e:
         # cache.put's counter, so one row shows an operator any failed write.
-        _stats.incr(namespace, "cache_write_failures")
+        stats.incr(namespace, "cache_write_failures")
         return {"error": f"Could not copy {file_path} into the cache: {e}"}
 
     result: dict[str, Any] = {
@@ -338,7 +342,7 @@ def import_markdown(
     target = resolve_target(identifier)
     namespace = target["namespace"]
     canonical = target["canonical"]
-    md_path = papers.markdown_path(namespace, canonical)
+    md_path = stems.markdown_path(namespace, canonical)
 
     if not force_refresh and md_path.exists():
         return _cached_markdown(md_path, namespace, canonical, identifier)

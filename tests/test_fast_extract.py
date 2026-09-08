@@ -1,4 +1,4 @@
-"""``_fast_extract`` — the bundled pymupdf runner for ``mode="fast"``.
+"""``fast_extract`` — the bundled pymupdf runner for ``mode="fast"``.
 
 This module was at 0% coverage: the only test mentioning it asserted on the
 *command string* built for it, never running it. Its whole job is to behave
@@ -11,19 +11,19 @@ import sys
 
 import pytest
 
-from academic_tools_mcp import _fast_extract
+from academic_tools_mcp import fast_extract
 
 
 class TestArgvHandling:
     @pytest.mark.parametrize("argv", [[], ["prog"], ["prog", "a", "b"]])
     def test_wrong_arity_exits_2_with_usage(self, argv, capsys):
-        assert _fast_extract.main(argv) == 2
+        assert fast_extract.main(argv) == 2
         assert "usage:" in capsys.readouterr().err
 
     def test_usage_goes_to_stderr_not_stdout(self, capsys):
         # stdout is the extracted-text channel; anything else there would be
         # cached as if it were the paper.
-        _fast_extract.main(["prog"])
+        fast_extract.main(["prog"])
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err
@@ -42,7 +42,7 @@ class TestMissingDependency:
 
         monkeypatch.setattr(builtins, "__import__", no_pymupdf)
 
-        assert _fast_extract.main(["prog", "/nonexistent.pdf"]) == 1
+        assert fast_extract.main(["prog", "/nonexistent.pdf"]) == 1
         err = capsys.readouterr().err
         assert "pymupdf is not installed" in err
         assert "academic-tools-mcp[fast]" in err
@@ -59,7 +59,7 @@ class TestMissingDependency:
             return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", no_pymupdf)
-        _fast_extract.main(["prog", "/nonexistent.pdf"])
+        fast_extract.main(["prog", "/nonexistent.pdf"])
         # A non-zero exit with empty markdown must not be cached as a paper.
         assert capsys.readouterr().out == ""
 
@@ -83,11 +83,11 @@ class TestExtraction:
         bad = tmp_path / "corrupt.pdf"
         bad.write_bytes(b"not a pdf at all")
 
-        assert _fast_extract.main(["prog", str(bad)]) == 1
+        assert fast_extract.main(["prog", str(bad)]) == 1
         assert "failed to extract text" in capsys.readouterr().err
 
     def test_missing_file_exits_1(self, tmp_path, capsys):
-        assert _fast_extract.main(["prog", str(tmp_path / "absent.pdf")]) == 1
+        assert fast_extract.main(["prog", str(tmp_path / "absent.pdf")]) == 1
         assert capsys.readouterr().err
 
     def test_real_pdf_text_goes_to_stdout(self, tmp_path, capsys):
@@ -98,7 +98,7 @@ class TestExtraction:
         doc.save(str(pdf))
         doc.close()
 
-        assert _fast_extract.main(["prog", str(pdf)]) == 0
+        assert fast_extract.main(["prog", str(pdf)]) == 0
         assert "Hello from a real PDF" in capsys.readouterr().out
 
     def test_runs_as_a_module_end_to_end(self, tmp_path):
@@ -111,7 +111,7 @@ class TestExtraction:
         doc.close()
 
         proc = subprocess.run(
-            [sys.executable, "-m", "academic_tools_mcp._fast_extract", str(pdf)],
+            [sys.executable, "-m", "academic_tools_mcp.fast_extract", str(pdf)],
             capture_output=True,
             text=True,
             check=False,
@@ -127,7 +127,7 @@ class TestExtraction:
         doc.close()
 
         proc = subprocess.run(
-            [sys.executable, "-m", "academic_tools_mcp._fast_extract", str(pdf)],
+            [sys.executable, "-m", "academic_tools_mcp.fast_extract", str(pdf)],
             capture_output=True,
             text=True,
             check=False,

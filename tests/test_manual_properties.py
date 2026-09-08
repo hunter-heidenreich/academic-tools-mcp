@@ -10,21 +10,22 @@ Three invariants stronger than any example set:
   spellings whose legacy ``manual`` key happened to equal the arXiv one — the
   ``arXiv:`` prefix, which the manual key kept and the arXiv key drops, is the
   counterexample an example suite missed.
-* ``_stems.pdf_path`` output reaches a ``bash -c`` command line, so its safety
+* ``stems.pdf_path`` output reaches a ``bash -c`` command line, so its safety
   claim has to hold for arbitrary text, not for the identifiers someone thought
   of.
 
 The identifier strategies are shared with the corpus-search properties, which
 build them from the same routing; importing them here is the same move that
-file makes with ``from .test_doi_properties import dois``.
+file makes with ``from tests.util.test_doinorm_properties import dois``.
 """
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, _stems, cache, cache_search, manual, papers
-
-from .test_cache_search_properties import (
+from academic_tools_mcp import corpus, manual
+from academic_tools_mcp.store import cache, stems
+from academic_tools_mcp.util import doinorm
+from tests.test_corpus_properties import (
     arxiv_doi_ids,
     arxiv_new_ids,
     arxiv_old_ids,
@@ -72,7 +73,7 @@ def test_a_non_arxiv_identifier_never_claims_the_arxiv_namespace(identifier: str
 def test_the_router_and_the_stem_inversion_share_one_grammar(identifier: str) -> None:
     """An id the router accepts inverts from its stem, and vice versa.
 
-    ``arxiv._OLD_ID_RE`` and ``cache_search._ARXIV_OLDSTYLE_STEM_RE`` are the
+    ``arxiv._OLD_ID_RE`` and ``corpus._ARXIV_OLDSTYLE_STEM_RE`` are the
     same grammar over ``/`` and over ``safe_stem``'s ``_``; both are built from
     ``providers.arxiv``'s exported patterns. Forked, one accepts an archive
     class the other doesn't and a hit's ``canonical_id`` goes nowhere.
@@ -82,7 +83,7 @@ def test_the_router_and_the_stem_inversion_share_one_grammar(identifier: str) ->
     canonical = manual.resolve_target(identifier)["canonical"]
 
     assert arxiv._OLD_ID_RE.match(canonical)
-    assert cache_search._ARXIV_OLDSTYLE_STEM_RE.match(papers.safe_stem(canonical))
+    assert corpus._ARXIV_OLDSTYLE_STEM_RE.match(stems.safe_stem(canonical))
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +96,7 @@ def test_the_router_and_the_stem_inversion_share_one_grammar(identifier: str) ->
 def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatch, spelling):
     """Every spelling's legacy ``manual`` file becomes readable under ``arxiv``.
 
-    The legacy key is what the pre-fix router produced: ``_doi.canonical``,
+    The legacy key is what the pre-fix router produced: ``doinorm.canonical``,
     which strips ``doi:`` but not ``arXiv:``. A sweep that reuses the source
     filename leaves the prefixed spellings in the arXiv namespace under a stem
     that namespace never builds — moved, but still unreachable.
@@ -103,8 +104,8 @@ def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatc
     root = tmp_path_factory.mktemp("cache")
     monkeypatch.setattr(cache, "CACHE_ROOT", root)
 
-    legacy_key = _doi.canonical(spelling)
-    legacy = papers.markdown_path(manual.NAMESPACE, legacy_key)
+    legacy_key = doinorm.canonical(spelling)
+    legacy = stems.markdown_path(manual.NAMESPACE, legacy_key)
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("# Body", encoding="utf-8")
 
@@ -112,7 +113,7 @@ def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatc
 
     target = manual.resolve_target(spelling)
     assert target["namespace"] == "arxiv"
-    assert papers.markdown_path(target["namespace"], target["canonical"]).exists()
+    assert stems.markdown_path(target["namespace"], target["canonical"]).exists()
     assert not legacy.exists()
 
 
@@ -123,7 +124,7 @@ def test_the_sweep_is_idempotent(tmp_path_factory, monkeypatch, spelling):
     root = tmp_path_factory.mktemp("cache")
     monkeypatch.setattr(cache, "CACHE_ROOT", root)
 
-    legacy = papers.markdown_path(manual.NAMESPACE, _doi.canonical(spelling))
+    legacy = stems.markdown_path(manual.NAMESPACE, doinorm.canonical(spelling))
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("# Body", encoding="utf-8")
 
@@ -147,8 +148,8 @@ def test_a_pdf_filename_is_filesystem_and_shell_safe(canonical: str) -> None:
     stem the path builder never produces. ``~`` is the character that broke
     that agreement.
     """
-    name = _stems.pdf_path(manual.NAMESPACE, canonical).name
+    name = stems.pdf_path(manual.NAMESPACE, canonical).name
 
     assert name.endswith(".pdf")
-    assert _stems._MIGRATED_STEM_RE.match(name.removesuffix(".pdf"))
+    assert stems._MIGRATED_STEM_RE.match(name.removesuffix(".pdf"))
     assert "/" not in name

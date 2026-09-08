@@ -23,7 +23,7 @@ from academic_tools_mcp import bibtex
 text = st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=60)
 years = st.one_of(st.none(), st.integers(min_value=1400, max_value=2100), text)
 # A DOI suffix is near-freeform but carries no whitespace — the same exclusion
-# `test_doi_properties` makes, for the same reason: it wouldn't be a DOI.
+# `util/test_doinorm_properties` makes, for the same reason: it wouldn't be a DOI.
 _doi_suffix = st.text(
     alphabet=st.characters(blacklist_categories=("Cs", "Cc", "Zs", "Zl", "Zp")), max_size=40
 ).filter(lambda s: not any(c.isspace() for c in s))

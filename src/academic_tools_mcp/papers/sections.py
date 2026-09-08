@@ -7,7 +7,7 @@ converter.
 Section splitting is fixed, not adaptive — see ``_SECTION_LEVELS``.
 
 **One heading scan, one set of boundaries.** ``parse_sections``,
-``find_in_markdown``, ``get_section_content`` and ``cache_search.search`` all
+``find_in_markdown``, ``get_section_content`` and ``corpus.search`` all
 route through :func:`_scan`; ``first_section_heading`` is the one deliberate
 exception, short-circuiting on the first heading rather than parsing the whole
 document. A second implementation is agent-visible, not merely untidy: drop the
@@ -20,7 +20,7 @@ a heading.
 import re
 from typing import Any
 
-from .. import _textnorm
+from ..util import textnorm
 
 # Approximate tokens per character (conservative estimate for English text)
 _CHARS_PER_TOKEN = 4
@@ -201,7 +201,7 @@ def find_in_markdown(
     straight into ``get_paper_section``.
 
     Under ``normalize`` the match runs on folded text but every reported value
-    is sliced from the original, via ``_textnorm``'s position map. A query
+    is sliced from the original, via ``textnorm``'s position map. A query
     matching part of one character's expansion (the "f" of a "fi" ligature)
     reports the whole original character as ``match``.
 
@@ -214,7 +214,7 @@ def find_in_markdown(
     lines, spans, _ = _scan(markdown)
 
     if normalize:
-        folded_query = _textnorm.fold(query)
+        folded_query = textnorm.fold(query)
         if not folded_query:
             # Query was entirely combining marks — an empty pattern would
             # match at every position, so there is nothing to find.
@@ -231,7 +231,7 @@ def find_in_markdown(
     for section_index, span in enumerate(spans):
         section_text = span.body(lines)
         if normalize:
-            search_text, index_map = _textnorm.fold_with_map(section_text)
+            search_text, index_map = textnorm.fold_with_map(section_text)
         else:
             search_text, index_map = section_text, None
         for match in regex.finditer(search_text):
@@ -241,7 +241,7 @@ def find_in_markdown(
                 pos = match.start()
                 matched = match.group()
             else:
-                pos, span_end = _textnorm.original_span(index_map, match.start(), match.end())
+                pos, span_end = textnorm.original_span(index_map, match.start(), match.end())
                 matched = section_text[pos:span_end]
             ws = max(0, pos - _FIND_SNIPPET_WINDOW)
             we = min(len(section_text), pos + len(matched) + _FIND_SNIPPET_WINDOW)
@@ -271,8 +271,8 @@ def _match_section_title(section: str, spans: list[Section]) -> list[tuple[int, 
     matches = [(i, sp) for i, sp in enumerate(spans) if query in sp.title.lower()]
     if matches:
         return matches
-    folded = _textnorm.fold(section).lower()
-    return [(i, sp) for i, sp in enumerate(spans) if folded in _textnorm.fold(sp.title).lower()]
+    folded = textnorm.fold(section).lower()
+    return [(i, sp) for i, sp in enumerate(spans) if folded in textnorm.fold(sp.title).lower()]
 
 
 def get_section_content(
