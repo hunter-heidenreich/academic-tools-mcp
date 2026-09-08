@@ -24,8 +24,7 @@ from hypothesis import strategies as st
 
 from academic_tools_mcp.tools import graph
 from academic_tools_mcp.util import doinorm
-
-from .test_doi_properties import dois
+from tests.util.test_doinorm_properties import dois
 
 _SETTINGS = settings(max_examples=100)
 

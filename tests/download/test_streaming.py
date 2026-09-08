@@ -19,11 +19,10 @@ import pytest
 
 from academic_tools_mcp.download import streaming
 from academic_tools_mcp.net import stats
-
-from ._download_fakes import TIMEOUT as _TIMEOUT
-from ._download_fakes import mock_stream_response as _mock_stream_response
-from ._download_fakes import passthrough_slot as _passthrough_slot
-from ._download_fakes import streaming_client as _streaming_client
+from tests.helpers.download_fakes import TIMEOUT as _TIMEOUT
+from tests.helpers.download_fakes import mock_stream_response as _mock_stream_response
+from tests.helpers.download_fakes import passthrough_slot as _passthrough_slot
+from tests.helpers.download_fakes import streaming_client as _streaming_client
 
 
 class TestResolveMaxPdfBytes:

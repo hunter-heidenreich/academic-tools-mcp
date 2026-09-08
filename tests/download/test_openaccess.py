@@ -21,12 +21,11 @@ from academic_tools_mcp.download import openaccess, streaming
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 from academic_tools_mcp.store import cache, stems
-
-from ._download_fakes import TIMEOUT as _TIMEOUT
-from ._download_fakes import install_stream as _install_stream
-from ._download_fakes import mock_stream_response as _mock_stream_response
-from ._download_fakes import passthrough_slot as _passthrough_slot
-from ._download_fakes import streaming_client as _streaming_client
+from tests.helpers.download_fakes import TIMEOUT as _TIMEOUT
+from tests.helpers.download_fakes import install_stream as _install_stream
+from tests.helpers.download_fakes import mock_stream_response as _mock_stream_response
+from tests.helpers.download_fakes import passthrough_slot as _passthrough_slot
+from tests.helpers.download_fakes import streaming_client as _streaming_client
 
 _DOI = "10.1162/tacl_a_00001"
 

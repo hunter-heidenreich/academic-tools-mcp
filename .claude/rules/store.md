@@ -72,4 +72,4 @@ Providers reach `do` through a protocol wrapper — `cache.cached_lookup` or its
 
 **A writer checksums the string it parsed (`checksum_text`), never the file it just wrote.** The two are separated by a window another writer fits through, and an index stamped with the *other* document's checksum matches disk forever — so `_reparse_sections_locked` accepts it and never re-parses. This is what makes the entry correct by construction rather than by lock discipline: a losing writer's entry simply mismatches and self-heals. It rests on `atomic.write_text` pinning `newline=""`, so the bytes on disk are exactly the UTF-8 encoding of the payload.
 
-The on-disk half of that comparison is a *test* oracle — `tests/_checksums.py`, deliberately not importable from `src/`. Re-adding it to `stems` so a writer can reach it is the bug the paragraph above describes.
+The on-disk half of that comparison is a *test* oracle — `tests/helpers/checksums.py`, deliberately not importable from `src/`. Re-adding it to `stems` so a writer can reach it is the bug the paragraph above describes.

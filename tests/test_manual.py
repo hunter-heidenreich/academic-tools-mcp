@@ -5,8 +5,7 @@ import pytest
 
 from academic_tools_mcp import manual
 from academic_tools_mcp.store import atomic, stems
-
-from ._checksums import markdown_checksum
+from tests.helpers.checksums import markdown_checksum
 
 # ---------------------------------------------------------------------------
 # PDF filename

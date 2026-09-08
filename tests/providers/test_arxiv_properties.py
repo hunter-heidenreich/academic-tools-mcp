@@ -20,8 +20,7 @@ from hypothesis import strategies as st
 
 from academic_tools_mcp import manual
 from academic_tools_mcp.providers import arxiv
-
-from .test_cache_search_properties import arxiv_new_ids, arxiv_old_ids
+from tests.test_corpus_properties import arxiv_new_ids, arxiv_old_ids
 
 bare_arxiv_ids = st.one_of(arxiv_new_ids, arxiv_old_ids)
 

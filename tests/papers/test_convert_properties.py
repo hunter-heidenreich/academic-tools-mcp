@@ -31,8 +31,7 @@ from academic_tools_mcp.papers.convert import (
     _build_converter_command,
     _build_fast_converter_command,
 )
-
-from ._conversion_fakes import env
+from tests.helpers.conversion_fakes import env
 
 # Paths as an operator can really produce them: safe_stem output is tame, but
 # PDF_CONVERTER_VENV and an imported local file are arbitrary operator text.

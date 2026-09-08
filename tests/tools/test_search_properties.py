@@ -36,8 +36,7 @@ from academic_tools_mcp import corpus, manual, server
 from academic_tools_mcp.providers import arxiv, crossref, wikipedia
 from academic_tools_mcp.store import stems
 from academic_tools_mcp.tools import search
-
-from .test_cache_search_properties import identifiers
+from tests.test_corpus_properties import identifiers
 
 _SETTINGS = settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
 # For the properties that drive several tool calls per example.

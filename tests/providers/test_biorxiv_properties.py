@@ -23,8 +23,7 @@ from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.providers import biorxiv
 from academic_tools_mcp.store import stems
 from academic_tools_mcp.util import doinorm
-
-from .test_doi_properties import dois
+from tests.util.test_doinorm_properties import dois
 
 # bioRxiv's own suffix grammar: a submission date and a number, plus the legacy
 # bare-number form. Freeform `dois` suffixes are deliberately *not* used here —

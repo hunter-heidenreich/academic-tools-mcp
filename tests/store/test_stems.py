@@ -11,8 +11,7 @@ from pathlib import Path
 import pytest
 
 from academic_tools_mcp.store import cache, stems
-
-from ._checksums import markdown_checksum
+from tests.helpers.checksums import markdown_checksum
 
 
 def _seed(tmp_path, namespace, entity, names):

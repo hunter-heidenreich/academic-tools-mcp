@@ -26,8 +26,7 @@ import pytest
 
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import arxiv, biorxiv
-
-from ._download_fakes import passthrough_slot as _passthrough_slot
+from tests.helpers.download_fakes import passthrough_slot as _passthrough_slot
 
 _ARXIV_ID = "2301.00001"
 _BIORXIV_DOI = "10.1101/2020.01.01.000001"

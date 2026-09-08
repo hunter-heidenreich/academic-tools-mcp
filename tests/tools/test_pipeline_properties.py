@@ -34,9 +34,8 @@ from academic_tools_mcp.download import openaccess
 from academic_tools_mcp.providers import acl, arxiv, biorxiv
 from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.tools import pipeline
-
-from .test_cache_search_properties import identifiers
-from .test_doi_properties import generic_dois
+from tests.test_corpus_properties import identifiers
+from tests.util.test_doinorm_properties import generic_dois
 
 _SETTINGS = settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
 _FEW = settings(max_examples=25, suppress_health_check=[HealthCheck.function_scoped_fixture])

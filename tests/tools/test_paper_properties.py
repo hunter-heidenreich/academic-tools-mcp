@@ -30,10 +30,9 @@ from academic_tools_mcp import server
 from academic_tools_mcp.providers import arxiv, biorxiv, openalex
 from academic_tools_mcp.tools import paper
 from academic_tools_mcp.util import doinorm
-
-from .test_arxiv_properties import bare_arxiv_ids
-from .test_biorxiv_properties import biorxiv_dois
-from .test_doi_properties import generic_dois
+from tests.providers.test_arxiv_properties import bare_arxiv_ids
+from tests.providers.test_biorxiv_properties import biorxiv_dois
+from tests.util.test_doinorm_properties import generic_dois
 
 _SETTINGS = settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
 # For the properties that drive several tool calls per example; the domain is

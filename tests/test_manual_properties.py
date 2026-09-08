@@ -25,8 +25,7 @@ from hypothesis import strategies as st
 from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.util import doinorm
-
-from .test_cache_search_properties import (
+from tests.test_corpus_properties import (
     arxiv_doi_ids,
     arxiv_new_ids,
     arxiv_old_ids,

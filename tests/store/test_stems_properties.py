@@ -38,8 +38,7 @@ from hypothesis import strategies as st
 
 from academic_tools_mcp import papers
 from academic_tools_mcp.store import cache, stems
-
-from .test_cache_search_properties import identifiers
+from tests.test_corpus_properties import identifiers
 
 # Documents shaped like converter output: heading lines at every level mixed
 # with prose and blank lines, so the degenerate cases (no headings, empty

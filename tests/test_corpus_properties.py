@@ -25,8 +25,7 @@ from hypothesis import strategies as st
 from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.util import textnorm
-
-from .test_doi_properties import dois
+from tests.util.test_doinorm_properties import dois
 
 # ---------------------------------------------------------------------------
 # Identifier strategies, one per shape the router can assign a namespace to

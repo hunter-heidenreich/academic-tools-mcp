@@ -19,9 +19,8 @@ from hypothesis import strategies as st
 from academic_tools_mcp import manual
 from academic_tools_mcp.download import openaccess
 from academic_tools_mcp.providers import openalex
-
-from ._download_fakes import install_stream, mock_stream_response, passthrough_slot
-from .test_doi_properties import generic_dois
+from tests.helpers.download_fakes import install_stream, mock_stream_response, passthrough_slot
+from tests.util.test_doinorm_properties import generic_dois
 
 _SPELLINGS = ("{doi}", "  {doi}  ", "doi:{doi}", "DOI:{doi}", "https://doi.org/{doi}")
 

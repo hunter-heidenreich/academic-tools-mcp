@@ -15,8 +15,7 @@ from academic_tools_mcp.papers import (
     section_at_offset,
     section_boundaries,
 )
-
-from ._section_fixtures import (
+from tests.helpers.section_fixtures import (
     _H1_MARKDOWN,
     _H2_MARKDOWN,
     _H2_ONLY_MARKDOWN,

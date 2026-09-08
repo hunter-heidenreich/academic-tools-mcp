@@ -23,9 +23,8 @@ from academic_tools_mcp.papers.convert import (
     _resolve_fast_convert_timeout,
 )
 from academic_tools_mcp.store import cache, stems
-
-from ._checksums import markdown_checksum
-from ._conversion_fakes import env, fake_proc, spawning
+from tests.helpers.checksums import markdown_checksum
+from tests.helpers.conversion_fakes import env, fake_proc, spawning
 
 # ---------------------------------------------------------------------------
 # convert_pdf cache paths (subprocess path is not exercised here)
@@ -673,9 +672,7 @@ class TestBuildFastConverterCommand:
 
         with env(PDF_FAST_CONVERTER="pymupdf"):
             cmd = _build_fast_converter_command(Path("/a/b.pdf"))
-        assert cmd == (
-            f"{shlex.quote(sys.executable)} -m academic_tools_mcp.fast_extract /a/b.pdf"
-        )
+        assert cmd == (f"{shlex.quote(sys.executable)} -m academic_tools_mcp.fast_extract /a/b.pdf")
 
     def test_custom_command_template(self):
         # Bare placeholder per the shell-quoted-substitution contract.

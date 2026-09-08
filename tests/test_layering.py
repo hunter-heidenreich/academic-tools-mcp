@@ -167,6 +167,26 @@ def test_discovery_found_the_package():
     assert _GRAPH["server"], "server.py imports the whole tool surface"
 
 
+def test_tests_mirror_the_source_packages():
+    """Every `tests/<pkg>/` names a real source package, and vice versa.
+
+    Catches the half of a move that gets forgotten: a package renamed in
+    `src/` while its test directory keeps the old name still passes every
+    other check here, because nothing imports a directory name.
+    """
+    tests_root = pathlib.Path(__file__).parent
+    test_pkgs = {
+        d.name
+        for d in tests_root.iterdir()
+        if d.is_dir() and (d / "__init__.py").exists() and d.name != "helpers"
+    }
+    src_pkgs = {d.name for d in ROOT.iterdir() if d.is_dir() and (d / "__init__.py").exists()}
+    assert test_pkgs <= src_pkgs, f"no such source package: {sorted(test_pkgs - src_pkgs)}"
+    assert src_pkgs <= test_pkgs, (
+        f"source package with no test directory: {sorted(src_pkgs - test_pkgs)}"
+    )
+
+
 def test_no_module_name_starts_with_an_underscore():
     """The naming rule, enforced rather than asked for.
 

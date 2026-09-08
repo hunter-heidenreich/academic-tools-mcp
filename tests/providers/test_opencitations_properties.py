@@ -23,8 +23,8 @@ from hypothesis import strategies as st
 from academic_tools_mcp.providers import opencitations
 from academic_tools_mcp.store import cache
 from academic_tools_mcp.util import doinorm
+from tests.util.test_doinorm_properties import generic_dois
 
-from .test_doi_properties import generic_dois
 from .test_opencitations import _stub_json_responses, _stub_no_network
 
 _SETTINGS = settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])

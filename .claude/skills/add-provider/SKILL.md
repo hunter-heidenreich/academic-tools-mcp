@@ -10,7 +10,7 @@ description: Add a new API provider client or a new OpenAlex entity to academic-
 1. Add `_normalize_*` and `_canonical_*` functions in `providers/openalex.py`.
 2. Add an async `get_*` function that checks cache, fetches, stores.
 3. Add focused tool(s) in the matching `tools/*.py` module (OpenAlex metadata → `tools/paper.py`) that extract lean slices; shared param types live in `app.py`.
-4. Add unit tests for normalization in `tests/test_openalex.py`.
+4. Add unit tests for normalization in `tests/providers/test_openalex.py`.
 
 ## Adding a new API provider
 
