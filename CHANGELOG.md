@@ -143,6 +143,19 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`search_cached_papers` ranking no longer degrades as the index ages.**
+  The FTS5 tables are contentless, so SQLite cannot decrement their corpus
+  statistics when a document is deleted — every re-converted or removed paper
+  permanently inflated the document count and average length that `bm25()`
+  divides by. Left to accumulate, a rare query term's relevance converged with
+  a common one's, and the same query over the same files started returning
+  different papers: in a 100-paper corpus, 40 forced refreshes pushed every
+  paper containing the rare term out of the top six entirely. The statistics
+  are now reset on `force_refresh` (free — that path re-indexes everything
+  regardless) and whenever replacements plus removals reach the corpus size,
+  which bounds drift instead of letting it compound. Scores are also
+  reproducible across forced refreshes now, where they previously moved by
+  orders of magnitude. ([#107])
 - **`get_paper_bibtex` no longer crashes on a dissertation with a null
   authorship.** The `@phdthesis` school lookup was the one place in
   `bibtex.py` that read an `authorships` / `institutions` element without an

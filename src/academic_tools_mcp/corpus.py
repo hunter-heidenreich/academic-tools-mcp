@@ -421,6 +421,39 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     return None
 
 
+# FTS5 cannot decrement a contentless table's corpus statistics on DELETE — it
+# has no stored content to subtract — so every replaced or removed document
+# inflates the N and average length that `bm25()` divides by. Left alone, rare
+# terms stop out-ranking common ones. Reset once churn matches the corpus size:
+# amortised O(1) per change, drift bounded to roughly a factor of two.
+_CHURN_KEY = "stat_churn"
+
+
+def _churn(con: sqlite3.Connection) -> int:
+    """Documents replaced or removed since the statistics were last reset."""
+    row = con.execute("SELECT value FROM meta WHERE key = ?", (_CHURN_KEY,)).fetchone()
+    try:
+        return int(row["value"]) if row else 0
+    except (ValueError, TypeError):
+        # Same rule as the schema version: an unreadable counter is not a
+        # claim that the statistics are clean.
+        return 0
+
+
+def _set_churn(con: sqlite3.Connection, value: int) -> None:
+    con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (_CHURN_KEY, str(value)))
+
+
+def _reset_postings(con: sqlite3.Connection) -> None:
+    """Drop every posting so FTS5 recomputes its statistics from scratch.
+
+    ``delete-all`` is the only reset a contentless table has; ``rebuild``
+    needs stored content. Callers must re-insert every document afterwards.
+    """
+    con.execute("INSERT INTO fts(fts) VALUES('delete-all')")
+    con.execute("INSERT INTO fts_norm(fts_norm) VALUES('delete-all')")
+
+
 def _is_fresh(found: _ScannedFile, existing: _IndexedFile | None) -> bool:
     """Does the recorded row already describe the file on disk?"""
     return (
@@ -430,10 +463,12 @@ def _is_fresh(found: _ScannedFile, existing: _IndexedFile | None) -> bool:
 
 def _reindex_file(
     con: sqlite3.Connection, found: _ScannedFile, existing: _IndexedFile | None
-) -> None:
+) -> int:
     """Bring one file's ``files`` row and its postings up to date.
 
     Caller holds the ``with con:`` transaction — this issues writes only.
+    Returns the statistics churn incurred: 1 when it displaced an existing
+    document's postings, 0 for a first-time insert, which FTS5 counts exactly.
     """
     reason: str | None
     try:
@@ -463,24 +498,28 @@ def _reindex_file(
     # unreadable file leaves behind.
     probed = _index_document(con, rowid, text)
     con.execute("UPDATE files SET unindexable = ? WHERE rowid = ?", (reason or probed, rowid))
+    return 0 if existing is None else 1
 
 
 def _prune_missing(
     con: sqlite3.Connection,
     known: dict[tuple[str, str], _IndexedFile],
     seen: set[tuple[str, str]],
-) -> None:
-    """Drop every indexed row the walk did not return.
+) -> int:
+    """Drop every indexed row the walk did not return; returns how many.
 
     Why ``_scan_markdown`` must stay unfiltered: a namespace-filtered walk
     would make every other namespace look missing here.
     """
+    removed = 0
     for key, row in known.items():
         if key in seen:
             continue
         con.execute("DELETE FROM fts WHERE rowid = ?", (row.rowid,))
         con.execute("DELETE FROM fts_norm WHERE rowid = ?", (row.rowid,))
         con.execute("DELETE FROM files WHERE rowid = ?", (row.rowid,))
+        removed += 1
+    return removed
 
 
 def _refresh_index(*, force_refresh: bool = False) -> None:
@@ -500,15 +539,25 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                 for row in con.execute("SELECT rowid, ns, stem, mtime_ns, size FROM files")
             }
             seen: set[tuple[str, str]] = set()
+            # Both paths re-index every file, so the reset costs nothing extra.
+            # The counter is what previous refreshes recorded, so a threshold
+            # crossing resets on the next search — one refresh of slack, not drift.
+            reset = force_refresh or (known and _churn(con) >= len(known))
 
             with con:
+                if reset:
+                    _reset_postings(con)
+                churn = 0
                 for found in _scan_markdown():
                     key = (found.namespace, found.stem)
                     seen.add(key)
                     existing = known.get(key)
-                    if force_refresh or not _is_fresh(found, existing):
-                        _reindex_file(con, found, existing)
-                _prune_missing(con, known, seen)
+                    if reset or not _is_fresh(found, existing):
+                        churn += _reindex_file(con, found, existing)
+                churn += _prune_missing(con, known, seen)
+                # After a reset the postings were rebuilt from nothing, so the
+                # displacements counted above are already accounted for.
+                _set_churn(con, 0 if reset else _churn(con) + churn)
         finally:
             con.close()
 
