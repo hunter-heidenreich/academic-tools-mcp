@@ -12,7 +12,8 @@ and four URL forms (`www.`, `export.`, scheme-less, uppercase host) were not
 among them, which is why they are generated here rather than listed.
 
 The bare-id strategies are shared with the corpus-search properties, the same
-move that file makes with `from .test_doi_properties import dois`.
+move that file makes with
+`from tests.util.test_doinorm_properties import dois`.
 """
 
 from hypothesis import given

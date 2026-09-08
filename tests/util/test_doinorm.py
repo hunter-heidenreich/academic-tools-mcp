@@ -1,6 +1,6 @@
 """Unit tests for the shared DOI normalizer.
 
-`test_doi_properties.py` pins the invariants that hold for *every* DOI; this
+`test_doinorm_properties.py` pins the invariants that hold for *every* DOI; this
 file pins the individual decisions those properties can't express — where the
 accepted-spelling boundary sits, and which near-miss forms are deliberately
 rejected rather than accidentally unhandled.
@@ -191,7 +191,7 @@ class TestIdempotence:
 # a normalizer. `biorxiv` is the one provider that keeps a `_normalize_doi`,
 # because it layers a content URL and a version-stripping rule on top of
 # `doinorm.normalize` — equality is not its contract, and
-# `test_biorxiv_properties.py` states what is.
+# `providers/test_biorxiv_properties.py` states what is.
 #
 # (module, the name that provider gives its cache-key wrapper). The two
 # spellings are the router's: `manual._ROUTES` passes `canonical_key` for the

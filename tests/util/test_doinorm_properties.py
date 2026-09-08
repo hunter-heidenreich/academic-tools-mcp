@@ -16,7 +16,7 @@ from academic_tools_mcp.util import doinorm
 # near-freeform but may not contain whitespace. `?`/`#` are excluded because
 # the bare and URL spellings *deliberately* diverge on them — a bare DOI keeps
 # them, a URL cuts at them. That documented asymmetry is pinned by example in
-# `test_doi.py`; folding it in here would only weaken this strategy.
+# `test_doinorm.py`; folding it in here would only weaken this strategy.
 # The `.filter` is not redundant with the categories: `str.strip()` and `\S`
 # both go by `str.isspace()`, which is True for U+2028 (category Zl) and U+2029
 # (Zp) as well as Zs. A suffix carrying one is stripped away by `normalize` and

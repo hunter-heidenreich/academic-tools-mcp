@@ -9,7 +9,7 @@ single-flight — keyed ``("pdf", canonical)`` so the inner ``get_paper`` call,
 which is single-flighted on the bare ``canonical``, doesn't deadlock on the
 download's own slot. These tests pin it for arXiv and
 bioRxiv. ACL keys on the bare canonical instead — it is PDF-only, so it has
-no inner getter to collide with — and is pinned in ``test_acl.py``.
+no inner getter to collide with — and is pinned in ``providers/test_acl.py``.
 
 The conftest autouse fixture installs a fresh ``_single_flight`` per provider
 before each test, so no manual reset is needed here.

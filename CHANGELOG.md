@@ -27,6 +27,14 @@ grouped by milestone rather than per commit.
   now also carries `canonical_id` — the note tells the agent to run
   `find_in_paper` on those papers, and it was handing over an on-disk `stem`
   that no tool resolves. ([#105])
+- **`get_paper_references` / `get_paper_citations` document their error
+  shapes.** Both returned `retryable` on every tool-layer error, and
+  `get_paper_references` adds `sources: {crossref, opencitations}` when both
+  providers fail, with the top-level `retryable` the disjunction of the two —
+  none of it named in a docstring, so no agent had reason to branch on it.
+  The citations docstring also now says what it does *not* have: no `source`
+  parameter and no `sources` envelope, because OpenCitations is the only index
+  of incoming citations. ([#106])
 
 - **`{python}` now works in `PDF_CONVERTER`, not just `PDF_FAST_CONVERTER`.**
   One placeholder vocabulary across both templates, so a converter installed

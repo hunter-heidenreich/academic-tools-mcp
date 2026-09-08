@@ -2,17 +2,18 @@
 
 Resolution must work from an installed wheel, not only a source checkout — the
 package ships an ``academic-tools-mcp`` console script and ``.env.example``
-tells operators to set ``CACHE_DIR`` for exactly that case. A single
-``<package>/../../../.env`` rule points inside the virtualenv from
-``site-packages`` and silently disables every env var there.
+tells operators to set ``CACHE_DIR`` for exactly that case. Any single
+project-relative rule resolves to somewhere inside the virtualenv when the
+package lives in ``site-packages``, and would silently disable every env var
+there; that is why there is a candidate list rather than one path.
 
 ``ACADEMIC_TOOLS_ENV_FILE`` is authoritative: when it is set it is the *only*
 candidate, so a typo'd path means "no ``.env``" rather than a silent fallback
 to a different operator's config. Otherwise candidates are tried in order and
 the first that exists wins:
 
-1. The project root relative to this file — the source-checkout case, kept
-   first among the implicit paths so existing setups behave identically.
+1. :func:`project_root` ``/.env`` — the source-checkout case, kept first among
+   the implicit paths so existing setups behave identically.
 2. ``$PWD/.env`` — running the server from a directory holding its config.
 3. ``$XDG_CONFIG_HOME`` (or ``~/.config``) ``/academic-tools-mcp/.env`` — the
    conventional home for an installed tool's configuration.
@@ -153,9 +154,10 @@ def _candidate_env_paths() -> list[Path]:
         try:
             candidates.append(build())
         except (OSError, RuntimeError):
-            # Path.cwd() raises on a deleted working directory and
-            # expanduser() on an unresolvable home. Neither is worth aborting
-            # the import over, let alone skipping the remaining candidates.
+            # project_root() raises when the package sits in no directory of
+            # its own name, Path.cwd() on a deleted working directory, and
+            # expanduser() on an unresolvable home. None is worth aborting the
+            # import over, let alone skipping the remaining candidates.
             continue
     return candidates
 

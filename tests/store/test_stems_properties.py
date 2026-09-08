@@ -24,8 +24,13 @@ depends on, and each spans two functions that an example suite can only sample:
   ``get_section_content`` accepts, for any document a converter can emit —
   including the degenerate ones (no headings, empty bodies, headings only).
 
-The identifier strategies are shared with the corpus-search properties, which
-build them from the same routing.
+It sits under ``store/`` because naming is its dominant subject — four of
+the six invariants are ``safe_stem``'s. The last two reach up into
+``papers``: they are here because they share the document strategies
+below, and splitting them out would duplicate those.
+
+The identifier strategies are shared with the corpus-search properties,
+which build them from the same routing.
 """
 
 import asyncio

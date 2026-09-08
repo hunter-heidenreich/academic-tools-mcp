@@ -29,7 +29,7 @@ NO_HEADINGS = "plain layout text with no markdown headings at all\n" * 200
 
 
 @pytest.fixture
-def converted_corpus(tmp_path, monkeypatch):
+def markdown_corpus(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
     md = tmp_path / "manual" / "markdown"
     md.mkdir(parents=True)
@@ -66,13 +66,13 @@ class TestSharedBoundaries:
 
 
 class TestChainingByIndex:
-    def test_search_hit_carries_a_chainable_index(self, converted_corpus):
+    def test_search_hit_carries_a_chainable_index(self, markdown_corpus):
         hits = corpus.search("transformers")
         hit = next(h for h in hits if h["canonical_id"] == "dup")
         assert hit["section"] == "Results"
         assert isinstance(hit["section_index"], int)
 
-    def test_index_chains_where_the_title_fails(self, converted_corpus):
+    def test_index_chains_where_the_title_fails(self, markdown_corpus):
         hits = corpus.search("transformers")
         hit = next(h for h in hits if h["canonical_id"] == "dup")
 
@@ -88,13 +88,13 @@ class TestChainingByIndex:
         assert first[1] == second[1] == "Results"
         assert first[0] != second[0]
 
-    def test_char_offset_is_returned_for_chaining(self, converted_corpus):
+    def test_char_offset_is_returned_for_chaining(self, markdown_corpus):
         hits = corpus.search("transformers")
         hit = next(h for h in hits if h["canonical_id"] == "dup")
         assert isinstance(hit["char_offset"], int)
 
     @pytest.mark.asyncio
-    async def test_end_to_end_through_the_tools(self, converted_corpus):
+    async def test_end_to_end_through_the_tools(self, markdown_corpus):
         result = await search_tools.search_cached_papers("transformers")
         hit = next(h for h in result["results"] if h["canonical_id"] == "dup")
 
@@ -106,7 +106,7 @@ class TestChainingByIndex:
 
 class TestHeadinglessDocumentsAreFlagged:
     @pytest.mark.asyncio
-    async def test_flag_is_false_and_a_note_explains(self, converted_corpus):
+    async def test_flag_is_false_and_a_note_explains(self, markdown_corpus):
         result = await pipeline_tools.get_paper_sections("flat")
 
         assert result["total_sections"] == 1
@@ -128,7 +128,7 @@ class TestHeadinglessDocumentsAreFlagged:
         assert "sections_note" not in result
 
     @pytest.mark.asyncio
-    async def test_multi_section_paper_is_not_flagged(self, converted_corpus):
+    async def test_multi_section_paper_is_not_flagged(self, markdown_corpus):
         result = await pipeline_tools.get_paper_sections("dup")
         assert result["sections_detected"] is True
         assert "sections_note" not in result
@@ -141,7 +141,7 @@ class TestHeadinglessDocumentsAreFlagged:
         assert papers.has_detected_sections("plain text only\n") is False
 
     @pytest.mark.asyncio
-    async def test_older_cached_indices_are_recomputed_not_guessed(self, converted_corpus):
+    async def test_older_cached_indices_are_recomputed_not_guessed(self, markdown_corpus):
         # Indices written before this flag existed have no such key. Absent
         # used to read as "not recorded" and default to True, which is a guess
         # — and the wrong one for exactly the papers that need the warning.
@@ -162,7 +162,7 @@ class TestHeadinglessDocumentsAreFlagged:
 
     @pytest.mark.asyncio
     async def test_older_index_on_a_headingless_paper_reports_the_truth(
-        self, converted_corpus, tmp_path
+        self, markdown_corpus, tmp_path
     ):
         # The case the default got wrong. A legacy entry on a paper with no
         # headings must not be reported as "sections detected" — that is the

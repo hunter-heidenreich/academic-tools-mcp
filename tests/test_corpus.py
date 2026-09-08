@@ -1617,19 +1617,19 @@ class TestStopwordsStayOutOfTheMatchExpression:
     """
 
     @pytest.fixture
-    def indexed_corpus(self, isolated_cache):
+    def markdown_corpus(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "relevant", "# A\n\nThe transformer model.\n")
         _seed_markdown(isolated_cache, "arxiv", "irrelevant", "# B\n\nThe cat sat on the mat.\n")
         return isolated_cache
 
-    def test_stopword_does_not_drag_in_unrelated_documents(self, indexed_corpus):
+    def test_stopword_does_not_drag_in_unrelated_documents(self, markdown_corpus):
         found = {h["canonical_id"] for h in corpus.search("the transformer")}
         assert found == {"relevant"}
 
-    def test_an_all_stopword_query_matches_nothing(self, indexed_corpus):
+    def test_an_all_stopword_query_matches_nothing(self, markdown_corpus):
         assert corpus.search("the and of") == []
 
-    def test_single_characters_are_dropped(self, indexed_corpus):
+    def test_single_characters_are_dropped(self, markdown_corpus):
         assert corpus.search("a") == []
         assert corpus.search("x") == []
 

@@ -98,7 +98,7 @@ def _scrub_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     ``ACADEMIC_TOOLS_ENV_FILE`` is re-*set* rather than deleted: deleting it
     would re-admit the operator's real ``.env`` on any reload of ``config``,
-    which is exactly what ``test_config.py`` does repeatedly.
+    which is exactly what ``util/test_config.py`` does repeatedly.
     """
     for name in _CONFIG_ENV_VARS:
         monkeypatch.delenv(name, raising=False)

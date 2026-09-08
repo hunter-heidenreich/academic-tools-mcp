@@ -9,16 +9,17 @@ The pipeline in three layers, each importable on its own:
 * :mod:`.convert` — running a converter subprocess and storing what it
   produced. Owns the global single-conversion gate.
 
-Artifact *naming* deliberately lives below all three, in
-:mod:`academic_tools_mcp.store.stems` — one layer down, in the storage
-package, so a provider that needs to name a PDF does not import a
-converter. It is deliberately **not** re-exported here: routing it through
-this facade would give one module two import names, which is how
-``manual`` came to reach the same layer as both ``papers.safe_stem`` and
-``stems.pdf_path``.
+Artifact *naming* deliberately lives one layer down, in
+:mod:`academic_tools_mcp.store.stems`, so a provider that needs to name a PDF
+does not import a converter. It is **not** re-exported here, and that is the
+point: doing so gave the module two import names and only re-exported some of
+its symbols, so ``manual`` reached one layer as both ``papers.safe_stem`` and
+``stems.pdf_path`` in the same file. Reach naming through
+:mod:`~academic_tools_mcp.store.stems`, never through this package.
 
-This module re-exports the surface the rest of the server uses; the submodules
-are the home of each symbol and the place to read about it.
+This module re-exports the surface the rest of the server uses from its own
+three submodules; each submodule is the home of its symbols and the place to
+read about them.
 """
 
 from .convert import ConverterTemplateError, convert_pdf

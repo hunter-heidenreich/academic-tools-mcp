@@ -1,11 +1,11 @@
 """Shared fakes for the PDF-download tests.
 
-Four test modules drive ``streaming.stream_to_file`` — directly
-(``test_pdf_download``) or through a provider's ``download_pdf``
-(``test_oa_download``, ``test_force_refresh_pdf``, ``test_download_singleflight``).
-They used to carry near-copies of the same stubs, and the copies had drifted:
-only one set ``response.headers``, so the OA path's Content-Type guard had
-nothing to read anywhere else.
+Every suite under ``download/`` drives ``streaming.stream_to_file`` — directly
+(``download/test_streaming.py``) or through a provider's ``download_pdf``
+(the rest of ``download/``, plus ``providers/test_arxiv.py``). They used to
+carry near-copies of the same stubs, and the copies had drifted: only one set
+``response.headers``, so the OA path's Content-Type guard had nothing to read
+anywhere else.
 
 Two fidelities are offered, and the choice matters. ``mock_stream_response`` +
 ``install_stream`` build a ``MagicMock`` whose ``.stream(*args, **kwargs)``

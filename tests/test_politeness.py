@@ -109,7 +109,7 @@ def _hardcoded_name_sites(module):
 
 class TestTheProviderNameHasOneHome:
     """Four sites name the provider and must agree. Three take the name as a
-    plain argument, so only a source scan can compare them; ``test_stats.py``
+    plain argument, so only a source scan can compare them; ``net/test_stats.py``
     pins the fourth (``Throttle(label=)``) at runtime."""
 
     @pytest.mark.parametrize(("name", "module"), _ALL_CLIENTS)
@@ -185,7 +185,7 @@ class TestCrossrefPoolSelection:
         # limit was never enforced in either tier. This pins the *policy* — that
         # the two gaps are ordered. That `search_works` actually goes through
         # the search gate, and that the gate sleeps, is behaviour, and lives
-        # with the rest of the module's behaviour in test_crossref.py.
+        # with the rest of the module's behaviour in providers/test_crossref.py.
         assert crossref._SEARCH_REQUEST_GAP > crossref._MIN_REQUEST_GAP
 
 

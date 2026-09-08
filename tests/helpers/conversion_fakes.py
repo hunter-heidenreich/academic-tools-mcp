@@ -1,6 +1,6 @@
 """Shared fixtures and subprocess stand-ins for the conversion tests.
 
-Sibling of ``_download_fakes``. The conversion suites split along the same
+Sibling of ``download_fakes``. The conversion suites split along the same
 seams the package does, and all of them need a cache root, a PDF that exists,
 a way to pin ``config.get``, and a process that never really ran.
 """

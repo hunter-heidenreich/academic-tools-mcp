@@ -231,7 +231,7 @@ class TestUnindexableDocumentsAreReported:
     """
 
     @pytest.fixture
-    def indexed_corpus(self, tmp_path, monkeypatch):
+    def markdown_corpus(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
@@ -242,13 +242,13 @@ class TestUnindexableDocumentsAreReported:
         (md / "emoji.md").write_text("# \U0001f642\n\n\U0001f600 \U0001f389\n", encoding="utf-8")
         return md
 
-    def test_tokenless_documents_are_recorded_not_dropped(self, indexed_corpus):
+    def test_tokenless_documents_are_recorded_not_dropped(self, markdown_corpus):
         reported = corpus.unindexable()
         stems = {r["stem"] for r in reported}
         assert stems == {"punctuation", "emoji"}
         assert all(r["reason"] == "no_indexable_tokens" for r in reported)
 
-    def test_a_tokenless_document_leaves_no_postings(self, indexed_corpus):
+    def test_a_tokenless_document_leaves_no_postings(self, markdown_corpus):
         """Absent from the index, exactly as an unreadable paper is.
 
         It used to be inserted into both tables and *then* declared unusable,
@@ -271,19 +271,19 @@ class TestUnindexableDocumentsAreReported:
         finally:
             con.close()
 
-    def test_indexable_documents_are_not_reported(self, indexed_corpus):
+    def test_indexable_documents_are_not_reported(self, markdown_corpus):
         assert "english" not in {r["stem"] for r in corpus.unindexable()}
 
-    def test_namespace_filter_applies(self, indexed_corpus):
+    def test_namespace_filter_applies(self, markdown_corpus):
         assert corpus.unindexable("arxiv") == []
         assert len(corpus.unindexable("manual")) == 2
 
-    def test_search_still_returns_the_indexable_paper(self, indexed_corpus):
+    def test_search_still_returns_the_indexable_paper(self, markdown_corpus):
         hits = corpus.search("transformer", top_k=5)
         assert [h["canonical_id"] for h in hits] == ["english"]
 
     @pytest.mark.asyncio
-    async def test_tool_surfaces_the_gap(self, indexed_corpus):
+    async def test_tool_surfaces_the_gap(self, markdown_corpus):
         result = await search_tools.search_cached_papers("transformer")
 
         assert result["unindexable_count"] == 2
@@ -291,7 +291,7 @@ class TestUnindexableDocumentsAreReported:
         assert "find_in_paper" in result["unindexable_note"]
 
     @pytest.mark.asyncio
-    async def test_the_note_states_the_actual_reason(self, indexed_corpus):
+    async def test_the_note_states_the_actual_reason(self, markdown_corpus):
         """The note is built from the reasons present, not from one asserted
         cause. It blamed "the tokeniser is ASCII-only, so non-Latin scripts
         yield no terms" — which the any-Unicode-letter probe made false, and
@@ -304,7 +304,7 @@ class TestUnindexableDocumentsAreReported:
         assert "non-Latin" not in note
 
     @pytest.mark.asyncio
-    async def test_an_unreadable_paper_gets_its_own_reason(self, indexed_corpus, monkeypatch):
+    async def test_an_unreadable_paper_gets_its_own_reason(self, markdown_corpus, monkeypatch):
         """``unreadable`` is an I/O failure, not a tokenisation one, and the
         recovery differs — re-import rather than "there is nothing to index"."""
         monkeypatch.setattr(
@@ -320,7 +320,7 @@ class TestUnindexableDocumentsAreReported:
 
     @pytest.mark.asyncio
     async def test_both_reasons_are_explained_when_both_are_present(
-        self, indexed_corpus, monkeypatch
+        self, markdown_corpus, monkeypatch
     ):
         # Every fixture seeds one reason, so the "; ".join over a sorted set --
         # the whole point of building the note per-reason -- was never run.
@@ -346,7 +346,7 @@ class TestUnindexableDocumentsAreReported:
 
     @pytest.mark.asyncio
     async def test_the_reported_list_is_a_sample_and_the_count_is_not(
-        self, indexed_corpus, monkeypatch
+        self, markdown_corpus, monkeypatch
     ):
         """`unindexable_count` is the whole set; `unindexable` is a sample.
 
@@ -370,7 +370,7 @@ class TestUnindexableDocumentsAreReported:
         assert len(result["unindexable"]) == search_tools._UNINDEXABLE_SAMPLE
 
     @pytest.mark.asyncio
-    async def test_the_reported_id_chains_back_into_find_in_paper(self, indexed_corpus):
+    async def test_the_reported_id_chains_back_into_find_in_paper(self, markdown_corpus):
         """The note tells the agent to use find_in_paper on these papers.
 
         It was handed a `stem`, which is the on-disk filename and not an
@@ -402,17 +402,17 @@ class TestUnindexableDocumentsAreReported:
         (md / "blank.md").write_text("", encoding="utf-8")
         assert {r["stem"] for r in corpus.unindexable()} == {"blank"}
 
-    def test_a_document_that_becomes_indexable_is_promoted(self, indexed_corpus):
+    def test_a_document_that_becomes_indexable_is_promoted(self, markdown_corpus):
         assert len(corpus.unindexable()) == 2
-        (indexed_corpus / "punctuation.md").write_text(
+        (markdown_corpus / "punctuation.md").write_text(
             "# Title\n\nattention mechanism study.\n", encoding="utf-8"
         )
         reported = corpus.unindexable()
         assert {r["stem"] for r in reported} == {"emoji"}
         assert "punctuation" in {h["canonical_id"] for h in corpus.search("attention")}
 
-    def test_a_deleted_document_is_pruned_from_the_report(self, indexed_corpus):
-        (indexed_corpus / "punctuation.md").unlink()
+    def test_a_deleted_document_is_pruned_from_the_report(self, markdown_corpus):
+        (markdown_corpus / "punctuation.md").unlink()
         assert {r["stem"] for r in corpus.unindexable()} == {"emoji"}
 
 
@@ -427,7 +427,7 @@ class TestNonLatinDocumentsAreIndexedNotReported:
     """
 
     @pytest.fixture
-    def indexed_corpus(self, tmp_path, monkeypatch):
+    def markdown_corpus(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
@@ -436,18 +436,18 @@ class TestNonLatinDocumentsAreIndexedNotReported:
         (md / "japanese.md").write_text("# 研究\n\n用語 注意力機構 が現れる。\n", encoding="utf-8")
         return md
 
-    def test_none_are_reported_unindexable(self, indexed_corpus):
+    def test_none_are_reported_unindexable(self, markdown_corpus):
         assert corpus.unindexable() == []
 
     @pytest.mark.parametrize(
         ("query", "expected"),
         [("нейронных", "russian"), ("νευρωνικά", "greek"), ("注意力機構", "japanese")],
     )
-    def test_each_is_findable_in_its_own_script(self, indexed_corpus, query, expected):
+    def test_each_is_findable_in_its_own_script(self, markdown_corpus, query, expected):
         assert [h["canonical_id"] for h in corpus.search(query)] == [expected]
 
     @pytest.mark.asyncio
-    async def test_the_tool_reports_no_gap(self, indexed_corpus):
+    async def test_the_tool_reports_no_gap(self, markdown_corpus):
         result = await search_tools.search_cached_papers("нейронных")
 
         assert result["result_count"] == 1

@@ -24,7 +24,7 @@ from academic_tools_mcp.util import doinorm
 
 # An Anthology ID is the DOI suffix, verbatim — `_strip_acl_prefix` hands back
 # whatever followed the prefix. So the alphabet is `dois`'s suffix alphabet
-# (`?`/`#` excluded for the reason `test_doi_properties` gives: the bare and URL
+# (`?`/`#` excluded for the reason `util/test_doinorm_properties` gives: the bare and URL
 # spellings deliberately diverge on them), not the shapes ACL actually mints.
 _SUFFIX_ALPHABET = st.characters(
     min_codepoint=33,

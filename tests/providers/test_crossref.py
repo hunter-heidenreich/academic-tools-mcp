@@ -813,7 +813,7 @@ _search_bodies = st.one_of(
     ),
 )
 
-# `#` and `?` are included, unlike `test_doi_properties.dois`: they are exactly
+# `#` and `?` are included, unlike `util/test_doinorm_properties.dois`: they are exactly
 # what `quote(..., safe="/")` exists to neutralise.
 _doi_suffix_chars = st.characters(
     min_codepoint=33,

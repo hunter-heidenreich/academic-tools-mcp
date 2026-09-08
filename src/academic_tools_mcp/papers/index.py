@@ -124,7 +124,7 @@ async def _reparse_sections_locked(
     markdown is unchanged, so what converted it is too.
     """
     # Read before the invalidate, or force_refresh has no mode left to keep.
-    # count=False: this served no upstream lookup (.claude/rules/cache.md).
+    # count=False: this served no upstream lookup (.claude/rules/store.md).
     cached = cache.get(namespace, "sections", sections_key(canonical), count=False)
     if force_refresh:
         cache.invalidate(namespace, "sections", sections_key(canonical))

@@ -59,7 +59,7 @@ arxiv_old_ids = st.builds(
 # The suffix must not carry a further "/": `safe_stem` maps every slash to "_"
 # and only the one a known prefix introduced is decidable, so such a DOI
 # round-trips imperfectly by design. That exclusion is pinned by example in
-# `test_cache_search.py`, not waved away here.
+# `test_corpus.py`, not waved away here.
 single_slash_dois = dois.filter(lambda d: d.count("/") == 1)
 
 # Freeform manual labels: what `import_paper` accepts when the identifier is

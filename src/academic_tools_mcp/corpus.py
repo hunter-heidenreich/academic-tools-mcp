@@ -8,7 +8,7 @@ section index an agent chains into ``get_paper_section``.
 
 Design rationale — the contentless index, the two tokenizer tables, the
 ``(mtime_ns, size)`` refresh and the invariants each of them holds — is in
-``.claude/rules/search.md``, which loads whenever this file is opened.
+``.claude/rules/corpus.md``, which loads whenever this file is opened.
 """
 
 import contextlib

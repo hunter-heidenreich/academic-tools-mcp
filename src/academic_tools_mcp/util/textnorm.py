@@ -3,7 +3,7 @@
 NFKD-normalize then drop combining marks so "cafe" matches "café". ``fold``
 returns just the folded string; the ``*_with_map`` pair also returns an index
 map back to ORIGINAL offsets, which ``original_span`` reads to slice a match
-out of the untransformed text. Rationale in ``.claude/rules/utils.md``.
+out of the untransformed text. Rationale in ``.claude/rules/util.md``.
 """
 
 import re

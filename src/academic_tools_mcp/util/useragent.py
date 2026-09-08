@@ -5,7 +5,7 @@ Wikimedia, Crossref and OpenAlex all ask for the same shape::
     academic-tools-mcp/<version> (+<project url>; mailto:<contact>)
 
 The version is read from installed distribution metadata, never written as a
-literal. Contact scrubbing and the other invariants: ``.claude/rules/utils.md``.
+literal. Contact scrubbing and the other invariants: ``.claude/rules/util.md``.
 """
 
 import re

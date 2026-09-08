@@ -1,6 +1,6 @@
 """Bundled pymupdf text-extraction runner for the fast conversion path.
 
-Invoked as a subprocess by ``papers._convert_fast`` when
+Invoked as a subprocess by ``papers.convert._convert_fast`` when
 ``PDF_FAST_CONVERTER=pymupdf``:
 
     python -m academic_tools_mcp.fast_extract <pdf_path>

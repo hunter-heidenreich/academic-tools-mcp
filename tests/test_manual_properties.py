@@ -16,7 +16,7 @@ Three invariants stronger than any example set:
 
 The identifier strategies are shared with the corpus-search properties, which
 build them from the same routing; importing them here is the same move that
-file makes with ``from .test_doi_properties import dois``.
+file makes with ``from tests.util.test_doinorm_properties import dois``.
 """
 
 from hypothesis import HealthCheck, given, settings

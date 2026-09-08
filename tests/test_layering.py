@@ -1,17 +1,15 @@
-"""The package's layer order, machine-checked.
+"""The package's layer order and module-naming rule, machine-checked.
 
-Every module here already obeys a strict, acyclic layer order, but until now
-that order lived only in prose -- ``.claude/rules/python-design.md`` and the
-README's architecture diagram. Prose does not fail CI, so a back-edge added in
-good faith survives review.
+Both are also stated in prose — ``.claude/rules/python-design.md`` and the
+README's architecture diagram — and prose does not fail CI, so a back-edge
+added in good faith survives review and a convention nothing checks drifts
+back into chronology.
 
-This module discovers the import graph by AST (never by importing, so it is
-immune to import side effects) and asserts the order directly. It also owns
-the module-naming rule, for the same reason: a convention nothing checks is
-a convention that drifts back into chronology. When a module
-moves between layers, ``_LAYERS`` is the one place to edit -- and a module that
-is not listed there fails ``test_every_module_is_classified`` rather than
-silently escaping every check below.
+This module discovers the import graph by AST. It never imports the modules it
+checks, so one whose import raises is still reported on. When a module moves
+between layers, ``_LAYERS`` is the one place to edit — and a module missing
+from it fails ``test_every_module_is_classified`` rather than silently
+escaping every check below.
 """
 
 import ast
@@ -53,8 +51,11 @@ _LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
 _RANK = {name: rank for rank, (_, names) in enumerate(_LAYERS) for name in names}
 _LAYER_NAME = {rank: label for rank, (label, _) in enumerate(_LAYERS)}
 
-# Only these may import httpx. The four content/provider entries need it for a
-# ``_get_client() -> httpx.AsyncClient`` annotation; nobody above them does.
+# May import httpx, alongside every `providers/*` module — those are allowed by
+# the assertion itself rather than listed here, since a new provider needs no
+# edit. `net/` owns the pooling, retry and pacing; the two under `download/`
+# need it for their `_get_client() -> httpx.AsyncClient` annotation. Nothing
+# above them talks HTTP directly.
 _MAY_IMPORT_HTTPX = frozenset(
     {"net.clients", "net.http", "net.throttle", "download.streaming", "download.openaccess"}
 )

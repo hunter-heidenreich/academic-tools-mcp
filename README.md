@@ -241,9 +241,12 @@ API responses and downloaded files are cached under `.cache/`:
   opencitations/citations/ # OpenCitations citation lists (JSON)
   wikipedia/summaries/     # Wikipedia page summaries (JSON)
   <namespace>/downloads/_neg/  # Definitive PDF-download failures (TTL below)
+  oa_download/downloads/   # Open-access fetch bookkeeping (the PDF itself is
+                           #   filed under the routed provider's namespace)
   manual/pdfs/             # Manually imported PDFs
   manual/markdown/         # Converted markdown
   manual/sections/         # Section indices (JSON)
+  __search_index__/        # SQLite FTS5 index behind search_cached_papers
 ```
 
 Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp file + `os.replace`) so a crash mid-write can't leave a corrupt entry; corrupt entries from earlier versions self-heal on read.
@@ -284,7 +287,12 @@ uv run pytest -q --cov=academic_tools_mcp --cov-report=term-missing --cov-fail-u
 server.py            thin entry: re-exports mcp + tools, registers the
   │                  optional debug tool
   │
-  ├── app.py        FastMCP instance, lifespan, shared Annotated param types
+  ├── app.py           FastMCP instance, lifespan, shared Annotated param types
+  ├── manual.py        local-file import + identifier dispatch
+  ├── corpus.py        BM25 over cached markdown (SQLite FTS5)
+  ├── bibtex.py        BibTeX generation
+  ├── fast_extract.py  bundled pymupdf text extractor (a `python -m` target)
+  │
   ├── tools/         21 @mcp.tool functions, split by job
   │                    paper.py     metadata / authors / abstract / bibtex
   │                    pipeline.py  download → convert → sections → section
@@ -295,35 +303,32 @@ server.py            thin entry: re-exports mcp + tools, registers the
   │                    openalex.py  arxiv.py     biorxiv.py   crossref.py
   │                    opencitations.py  wikipedia.py  acl.py
   │
-  ├── PDF + content  manual.py         local-file import + identifier dispatch
-  │                  papers/           sections.py  markdown structure + search
-  │                                    index.py     the section index + its lock
-  │                                    convert.py   converter subprocess + gate
-  │                  corpus.py   BM25 over cached markdown (SQLite FTS5)
-  │                  bibtex.py         BibTeX generation
-  │                  fast_extract.py  bundled pymupdf text extractor
+  ├── papers/        PDF → markdown → sections
+  │                    sections.py  markdown structure + search
+  │                    index.py     the section index + its lock
+  │                    convert.py   converter subprocess + gate
   │
   ├── download/      getting PDF bytes onto disk
-  │                  streaming.py   streaming download, size cap, cached-download
-  │                  openaccess.py  gated open-access fetch for generic DOIs
+  │                    streaming.py   streaming download, size cap, cached-download
+  │                    openaccess.py  gated open-access fetch for generic DOIs
   │
   ├── net/           the outbound network edge
-  │                  http.py       retry honouring Retry-After, structured errors
-  │                  throttle.py   burst cap → concurrency cap → inter-start gap
-  │                  clients.py    per-provider pooled httpx.AsyncClient
-  │                  stats.py      per-provider counters, DEBUG_REQUESTS logging
+  │                    http.py      retry honouring Retry-After, structured errors
+  │                    throttle.py  burst cap → concurrency cap → inter-start gap
+  │                    clients.py   per-provider pooled httpx.AsyncClient
+  │                    stats.py     per-provider counters, DEBUG_REQUESTS logging
   │
-  ├── util/          leaf helpers — every module here imports nothing else
-  │                  config.py     .env + environment resolution
-  │                  doinorm.py    DOI normalization — one home, every caller
-  │                  textnorm.py   diacritic folding + maps back to original offsets
-  │                  useragent.py  the outbound User-Agent — one home, every client
+  ├── store/         the on-disk cache (every API client routes through this)
+  │                    cache.py         atomic file cache, TTLs, negative cache
+  │                    atomic.py        temp-file + os.replace, the one write seam
+  │                    singleflight.py  same-key callers coalesce to one fetch
+  │                    stems.py         artifact naming — one sanitizer, every path
   │
-  └── store/         the on-disk cache (every API client routes through this)
-                     cache.py         atomic file cache, TTLs, negative cache
-                     atomic.py        temp-file + os.replace, the one write seam
-                     singleflight.py  same-key callers coalesce to one fetch
-                     stems.py         artifact naming — one sanitizer, every path
+  └── util/          leaf helpers — every module here imports nothing else
+                       config.py     .env + environment resolution
+                       doinorm.py    DOI normalization — one home, every caller
+                       textnorm.py   diacritic folding + maps back to original offsets
+                       useragent.py  the outbound User-Agent — one home, every client
 ```
 
 **Key design decisions:**

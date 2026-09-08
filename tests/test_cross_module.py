@@ -4,11 +4,12 @@ Covers:
   - The download_pdf → markdown/sections cascade in
     ``tools/pipeline._download_pdf_by_provider``.
   - The ``get_papers_metadata`` MCP tool. The
-    ``openalex.get_works_batch`` half lives in ``test_openalex.py``.
+    ``openalex.get_works_batch`` half lives in
+    ``providers/test_openalex.py``.
   - ``papers.find_in_markdown`` and the ``find_in_paper`` MCP tool.
 
 The throttle / streaming primitives have their own focused test
-modules (``test_throttle.py`` and ``test_pdf_download.py``).
+modules (``net/test_throttle.py`` and ``download/test_streaming.py``).
 """
 
 from __future__ import annotations

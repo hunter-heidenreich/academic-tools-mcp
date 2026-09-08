@@ -9,12 +9,12 @@ call failed.
 
 Usage. The client is the provider's pooled singleton and the GET goes through
 its throttle — never a bare ``httpx.AsyncClient``, which would bypass pooling,
-rate limiting, retry and stats (see ``.claude/rules/http.md``)::
+rate limiting, retry and stats (see ``.claude/rules/net.md``)::
 
-    from . import http
+    from ..net import http
 
     try:
-        response = await _throttled_get(_get_client(), url, params=params)
+        response = await _throttled_get(url, params=params)
         if response.status_code == 404:
             return http.not_found("No paper found for ...")
         response.raise_for_status()
@@ -204,7 +204,7 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     **Every transient outcome carries ``retryable: True``**; other 4xx are
     left unflagged rather than ``retryable: False``. ``retry_after_seconds``
     rides along on any transient status the server advertises one for.
-    ``.claude/rules/http.md`` has the why for both.
+    ``.claude/rules/net.md`` has the why for both.
     """
     if isinstance(exc, LocalBackpressureError):
         return _backpressure_dict(provider, exc)

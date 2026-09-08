@@ -31,7 +31,7 @@ The single home for the outbound `User-Agent`: `build(mailto)`, `headers(mailto)
 
 **Invariant: `normalize_mailto` scrubs before stripping the `mailto:` prefix, and the strip is a loop** — the ordering `doinorm.normalize` holds for `doi:`, for the same reason. Scrubbing can *reveal* a prefix (`mail(to:x` → `mailto:x`), so the other order is not idempotent. A contact that normalizes to empty is dropped entirely rather than emitting a bare `mailto:`.
 
-**Every client module builds its headers through `headers()`; none respells the `{"User-Agent": ...}` dict.** Politeness coverage in `tests/test_politeness.py` discovers those modules by import scan — a module holding both `_get_client` and `throttle` — for the reason `stats.throttles` scans rather than reading a roster: a new provider is guarded the moment it exists.
+**Every client module builds its headers through `headers()`; none respells the `{"User-Agent": ...}` dict.** Politeness coverage in `tests/test_politeness.py` discovers those modules by import scan — a module holding both `_get_client` and `_throttle` — for the reason `stats.throttles` scans rather than reading a roster: a new provider is guarded the moment it exists.
 
 ## util/textnorm.py
 

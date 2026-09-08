@@ -29,7 +29,7 @@ from .test_opencitations import _stub_json_responses, _stub_no_network
 
 _SETTINGS = settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
 
-# `#` and `?` are included, unlike `test_doi_properties.dois`: they are exactly
+# `#` and `?` are included, unlike `util/test_doinorm_properties.dois`: they are exactly
 # what `quote(..., safe="/")` exists to neutralise.
 _path_hostile_chars = st.characters(
     min_codepoint=33,

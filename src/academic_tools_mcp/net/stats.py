@@ -55,6 +55,11 @@ def log_request(provider: str, url: str, wait_seconds: float) -> None:
     )
 
 
+# Spelled out rather than imported, so sampling a provider never drags the
+# throttle machinery in. The coupling is real: move throttle.py and
+# ``_is_throttle`` silently matches nothing, which empties ``throttles()``
+# rather than raising. The discovery tests in tests/net/test_stats.py are
+# what make that fail loudly.
 _THROTTLE_MODULE = f"{_PACKAGE_PREFIX}net.throttle"
 
 
@@ -70,7 +75,7 @@ def throttles() -> Iterator["Throttle"]:
     """Yield every ``Throttle`` instance held by an already-imported package module.
 
     Scanned, never imported: sampling a provider must not load it. Every
-    attribute qualifies, not just one named ``throttle``, so a module that
+    attribute qualifies, not just one named ``_throttle``, so a module that
     grows a second throttle cannot drop out of the reset seam or the in-flight
     sample — deduped by identity, since one instance may be re-exported.
     """

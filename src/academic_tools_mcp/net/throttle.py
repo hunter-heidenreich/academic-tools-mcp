@@ -1,9 +1,10 @@
 """Shared per-provider HTTP throttle.
 
-The single home for outbound pacing (mirroring ``singleflight.py`` /
-``http.py`` / ``cache.py``). Each provider holds one configured ``Throttle``
-and exposes thin ``_throttled_get`` / ``_request_slot`` wrappers over it: the
-*mechanism* is shared, the policy is passed at construction.
+The single home for outbound pacing, as ``store/singleflight.py``,
+``net/http.py`` and ``store/cache.py`` are for theirs. Each provider holds one
+configured ``Throttle`` and exposes thin ``_throttled_get`` / ``_request_slot``
+wrappers over it: the *mechanism* is shared, the policy is passed at
+construction.
 
 Gating order (see ``slot``):
 
@@ -18,7 +19,7 @@ Gating order (see ``slot``):
 for the whole stream, its open connection counting against the concurrency cap.
 
 Rationale — sleep outside the lock, who counts ``http_calls``, when
-``per_host`` applies — is in ``.claude/rules/http.md``.
+``per_host`` applies — is in ``.claude/rules/net.md``.
 """
 
 import asyncio

@@ -1,8 +1,11 @@
 """Tests for the unified paper tools in ``tools/paper.py``.
 
-The provider-level tests cover the underlying clients; this file covers
-the dispatch wired up at the @mcp.tool layer — routing on identifier
-shape, the follow_published chain, and the per-source formatters.
+The provider-level tests cover the underlying clients; this file covers what
+the @mcp.tool layer adds on top: routing on identifier shape, the
+``follow_published`` chain and its retry verdict, the per-source metadata
+formatters, author pagination and the shape symmetry that lets a paginating
+agent skip feature-detection, ``get_author``, and the batch branches of
+``get_papers_metadata``.
 """
 
 import pytest
