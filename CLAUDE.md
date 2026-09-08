@@ -26,9 +26,7 @@ Releases are cut deliberately, not per-merge. Calendar versioning: rename `[Unre
 
 ## Where the detail lives
 
-**Layered design — tools never hit the API directly. Every API client uses every shared module.** Deep per-module detail (atomic writes, throttle/backpressure, single-flight slots, provider quirks, PDF subprocess gating, tool shapes and error contracts) lives in `.claude/rules/*.md`, each auto-loading from its own `paths:` frontmatter when you touch a matching file. `python-design.md` covers every file under `src/`. The PDF pipeline is a package — `papers/{sections,index,convert}.py` over the `store/stems.py` naming layer; `pipeline.md` § Layout says which seam is which.
-
-**Where a new file goes, and what to call it, is machine-checked.** `tests/test_layering.py` owns the layer order in its `_LAYERS` table and asserts it by AST — a back-edge up the stack, a provider reaching the conversion pipeline, `httpx` outside the HTTP layer, or a module nobody classified all fail CI rather than review. Module names carry **no leading underscore** and name the one thing they own; `python-design.md` § Module names states why and what the exceptions aren't.
+**Layered design — tools never hit the API directly. Every API client uses every shared module.** Deep per-module detail (atomic writes, throttle/backpressure, single-flight slots, provider quirks, PDF subprocess gating, tool shapes and error contracts) lives in `.claude/rules/*.md`, each auto-loading from its own `paths:` frontmatter when you touch a matching file. `python-design.md` covers every file under `src/`. The PDF pipeline is a package — `papers/{sections,index,convert}.py` over the `_stems.py` naming layer; `pipeline.md` § Layout says which seam is which.
 
 Adding a new API provider or a new OpenAlex entity: use the `add-provider` skill.
 
@@ -38,7 +36,7 @@ Adding a new API provider or a new OpenAlex entity: use the `add-provider` skill
 - **Tool responses are intentionally small.** Each tool fetches the full cached object and returns only the relevant slice — an LLM agent should not receive the full OpenAlex response.
 - **Single shared cache across tools.** All tools for a given DOI or arXiv ID share one cached response: multiple tool calls = one API hit, and concurrent same-key callers coalesce via single-flight to one outbound fetch. Per-provider TTLs are tabulated in `README.md` § Caching; `force_refresh=True` drops both cache halves and re-fetches.
 - **Manual import routes by provider namespace.** `import_paper` stores under the identifier's provider namespace, so a later `download_pdf(identifier)` hits the cached PDF instead of re-downloading.
-- **Operational stats are not agent-facing.** `net/stats.py` counters exist for the operator; `get_server_stats` registers only under `ENABLE_DEBUG_TOOLS=1`, off by default, so an agent can't see or branch on cache/throttle state.
+- **Operational stats are not agent-facing.** `_stats.py` counters exist for the operator; `get_server_stats` registers only under `ENABLE_DEBUG_TOOLS=1`, off by default, so an agent can't see or branch on cache/throttle state.
 
 ## Upstream metadata caveats
 

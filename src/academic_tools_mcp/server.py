@@ -8,8 +8,8 @@ tool callables plus the providers and helpers that tests / callers reach via
 
 from typing import Any
 
-from .app import mcp
-from .net import stats
+from . import _stats, config
+from ._app import mcp
 from .providers import arxiv, biorxiv, crossref, openalex, opencitations, wikipedia
 from .tools.graph import (
     get_paper_citations,
@@ -43,7 +43,6 @@ from .tools.search import (
     search_crossref_by_title,
     search_wikipedia,
 )
-from .util import config
 
 __all__ = [
     "_DEBUG_TOOLS_ENABLED",
@@ -99,7 +98,7 @@ if _DEBUG_TOOLS_ENABLED:
 
         Only registered when ``ENABLE_DEBUG_TOOLS=1`` in the environment;
         agents never see it in normal operation. Returns the per-provider
-        counters tracked by ``stats.snapshot()``: cache_hits / cache_misses
+        counters tracked by ``_stats.snapshot()``: cache_hits / cache_misses
         / negative_hits, http_calls / http_retries, backpressure_refusals,
         cache_write_failures, and live in_flight counts. Cumulative since
         process start. Also reports ``env_file`` — the ``.env`` that won at
@@ -108,7 +107,7 @@ if _DEBUG_TOOLS_ENABLED:
         Use this when something feels slow or rate-limit-pressured to see
         which provider is hitting the network vs. serving from cache.
         """
-        return stats.snapshot()
+        return _stats.snapshot()
 
 
 if __name__ == "__main__":

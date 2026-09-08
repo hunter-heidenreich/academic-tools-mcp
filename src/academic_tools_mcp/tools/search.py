@@ -6,8 +6,8 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from .. import corpus, papers
-from ..app import (
+from .. import cache_search, papers
+from .._app import (
     _CACHE_SEARCH_NAMESPACE,
     _CACHE_SEARCH_TOP_K,
     _FIND_MAX_RESULTS,
@@ -266,11 +266,13 @@ async def find_in_paper(
 
 # One explanation per reason; never assert one cause for all of them.
 _UNINDEXABLE_REASONS: dict[str, str] = {
-    corpus.NO_INDEXABLE_TOKENS: (
+    cache_search.NO_INDEXABLE_TOKENS: (
         "contain no letters or digits in any script (punctuation- or "
         "symbol-only), so there is nothing to index"
     ),
-    corpus.UNREADABLE: ("could not be read from the cache — re-import them with import_paper"),
+    cache_search.UNREADABLE: (
+        "could not be read from the cache — re-import them with import_paper"
+    ),
 }
 
 # How many to name; `unindexable_count` carries the true total.
@@ -360,14 +362,14 @@ async def search_cached_papers(
     # One hop off the event loop, and one corpus walk: `search` refreshes the
     # index, so `unindexable` reads the state it just left behind.
     def _search_and_diagnose() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        hits = corpus.search(
+        hits = cache_search.search(
             query,
             top_k=top_k,
             namespace=namespace,
             normalize=normalize,
             force_refresh=force_refresh,
         )
-        return hits, corpus.unindexable(namespace, refresh=False)
+        return hits, cache_search.unindexable(namespace, refresh=False)
 
     try:
         results, skipped = await asyncio.to_thread(_search_and_diagnose)

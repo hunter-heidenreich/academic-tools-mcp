@@ -8,11 +8,8 @@ from urllib.parse import quote
 
 import httpx
 
-from ..download import streaming
-from ..net import clients, http
-from ..net.throttle import Throttle
-from ..store import cache, singleflight, stems
-from ..util import doinorm, useragent
+from .. import _clients, _doi, _http, _pdf_download, _singleflight, _stems, _useragent, cache
+from .._throttle import Throttle
 
 NAMESPACE = "biorxiv"
 
@@ -20,21 +17,21 @@ NAMESPACE = "biorxiv"
 LABEL = "bioRxiv"
 _BASE_URL = "https://api.biorxiv.org"
 
-_PARSE_ERRORS = http.JSON_PARSE_ERRORS
+_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable bioRxiv response."""
-    return http.parse_error_dict(LABEL)
+    return _http.parse_error_dict(LABEL)
 
 
 def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
-    return clients.get_client(NAMESPACE, headers=useragent.headers(), timeout=30.0)
+    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``."""
+    return _clients.get_client(NAMESPACE, headers=_useragent.headers(), timeout=30.0)
 
 
-# All bioRxiv/medRxiv DOIs share this prefix. Exported for the reason ``doinorm``
-# exports ``REGISTRANT_PATTERN``: ``corpus`` inverts a stored filename
+# All bioRxiv/medRxiv DOIs share this prefix. Exported for the reason ``_doi``
+# exports ``REGISTRANT_PATTERN``: ``cache_search`` inverts a stored filename
 # stem and needs the prefix rather than the function.
 DOI_PREFIX = "10.1101/"
 
@@ -45,7 +42,7 @@ _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 0.5
 _MAX_PENDING = 5
 
-_single_flight = singleflight.SingleFlight()
+_single_flight = _singleflight.SingleFlight()
 
 # Short: bioRxiv DOIs are minted on upload, so a paper that 404'd this morning
 # may be visible within the hour. Definitive PDF-download failures share it —
@@ -84,7 +81,7 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 # DOI normalization
 # ---------------------------------------------------------------------------
 
-# As permissive as ``doinorm._DOI_URL_RE``, and for the same reason: a spelling
+# As permissive as ``_doi._DOI_URL_RE``, and for the same reason: a spelling
 # this misses is one ``manual`` files the same paper under a second time. The
 # capture is everything after ``/content/``; ``_RENDER_TAIL_RE`` trims it.
 _BIORXIV_URL_RE = re.compile(
@@ -122,10 +119,10 @@ def _normalize_doi(doi: str) -> str:
         www.biorxiv.org/content/10.1101/2024.01.01.573838v1.abstract
         https://www.medrxiv.org/content/10.1101/2020.01.01.12345v2.full.pdf
 
-    Generic forms are handled once in :mod:`doinorm`; only the content URL and the
+    Generic forms are handled once in :mod:`_doi`; only the content URL and the
     version rule are bioRxiv's own. Idempotent.
     """
-    doi = doinorm.normalize(doi)
+    doi = _doi.normalize(doi)
 
     if m := _BIORXIV_URL_RE.match(doi):
         doi = m.group(1)
@@ -273,8 +270,8 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
         # The DOI is a middle segment, so an empty one needs catching too;
         # both shorten the path to a live route (providers.md). Uncached.
-        if "" in bare.split("/") or not http.addresses_a_record(biorxiv_url):
-            return http.not_found(not_found_error)
+        if "" in bare.split("/") or not _http.addresses_a_record(biorxiv_url):
+            return _http.not_found(not_found_error)
 
         try:
             response = await _throttled_get(biorxiv_url)
@@ -299,7 +296,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
                     # established, so stay retryable and cache nothing.
                     if collection is None or fallback is None:
                         return _parse_error_dict()
-                    err = http.not_found(not_found_error)
+                    err = _http.not_found(not_found_error)
                     cache.put_negative(
                         NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS
                     )
@@ -312,8 +309,8 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             # A 200 body we couldn't parse is transient, not "not found":
             # surface a retryable error and do NOT negative-cache it.
             return _parse_error_dict()
-        except http.HTTPX_ERRORS as e:
-            return http.error_dict(LABEL, e)
+        except _http.HTTPX_ERRORS as e:
+            return _http.error_dict(LABEL, e)
 
         cache.put(NAMESPACE, "papers", canonical, paper)
         return paper
@@ -331,7 +328,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
 def pdf_path(doi: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
-    return stems.pdf_path(NAMESPACE, canonical_key(doi))
+    return _stems.pdf_path(NAMESPACE, canonical_key(doi))
 
 
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -345,7 +342,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     callers for the same DOI share one download via single-flight.
     """
     canonical = canonical_key(doi)
-    dest = stems.pdf_path(NAMESPACE, canonical)
+    dest = _stems.pdf_path(NAMESPACE, canonical)
 
     async def _fetch() -> dict[str, Any]:
         # force_refresh is threaded through so a forced re-download doesn't
@@ -359,7 +356,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             # Definitive: the record exists but carries no PDF URL.
             return {"error": f"No PDF URL found for DOI: {doi}", "retryable": False}
 
-        return await streaming.stream_to_file(
+        return await _pdf_download.stream_to_file(
             _get_client(),
             pdf_url,
             dest,
@@ -373,7 +370,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     # Tuple-keyed so this slot is distinct from get_paper's (keyed on the bare
     # canonical id): _fetch calls get_paper, which would otherwise await this
     # very slot's future and deadlock.
-    return await streaming.cached_download(
+    return await _pdf_download.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,

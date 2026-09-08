@@ -1,0 +1,562 @@
+"""Tests for the audit-driven feature changes.
+
+Covers:
+  - The download_pdf → markdown/sections cascade in
+    ``server._download_pdf_by_provider`` (item 3 of the audit).
+  - The ``get_papers_metadata`` MCP tool (item 4). The
+    ``openalex.get_works_batch`` half lives in ``test_openalex.py``.
+  - ``papers.find_in_markdown`` and the ``find_in_paper`` MCP tool
+    (item 5).
+
+The throttle / streaming primitives have their own focused test
+modules (``test_concurrency.py`` and ``test_pdf_download.py``).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from academic_tools_mcp import cache, papers, server
+from academic_tools_mcp.providers import openalex
+from academic_tools_mcp.tools import paper
+
+# ---------------------------------------------------------------------------
+# Cascade: re-downloading a PDF should drop cached markdown + sections
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadPdfCascade:
+    @pytest.mark.asyncio
+    async def test_force_refresh_drops_markdown_and_sections(self, tmp_path: Path, monkeypatch):
+        """force_refresh=True with cached=False in the result invalidates
+        the converted markdown and section index for that paper."""
+
+        # Stub arxiv.download_pdf to claim a successful re-download
+        async def fake_download(arxiv_id, *, force_refresh=False):
+            return {
+                "path": "/tmp/dummy.pdf",
+                "size_bytes": 1234,
+                "cached": False,
+            }
+
+        monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
+
+        # Place a fake markdown + sections cache for the canonical id
+        canonical = "2301.00001"
+        md_path = papers.markdown_path("arxiv", canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# Stale\n\nold markdown content\n")
+        cache.put(
+            "arxiv",
+            "sections",
+            papers.sections_key(canonical),
+            {"sections": [{"index": 0, "title": "Stale"}], "markdown_checksum": "x"},
+        )
+        assert md_path.exists()
+
+        try:
+            result = await server._download_pdf_by_provider("2301.00001", force_refresh=True)
+
+            # The cascade must have happened
+            assert "error" not in result
+            assert result.get("cached") is False
+            assert result.get("cascaded_invalidated") == ["markdown", "sections"]
+            assert not md_path.exists(), "Markdown should have been deleted"
+            assert cache.get("arxiv", "sections", papers.sections_key(canonical)) is None, (
+                "Sections cache should have been invalidated"
+            )
+        finally:
+            md_path.unlink(missing_ok=True)
+            cache.invalidate("arxiv", "sections", papers.sections_key(canonical))
+
+    @pytest.mark.asyncio
+    async def test_no_cascade_on_cache_hit(self, tmp_path: Path, monkeypatch):
+        """When the PDF was served from cache (cached=True), no cascade —
+        the existing markdown is still consistent with the bytes on disk."""
+
+        async def fake_download(arxiv_id, *, force_refresh=False):
+            return {
+                "path": "/tmp/dummy.pdf",
+                "size_bytes": 1234,
+                "cached": True,
+            }
+
+        monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
+
+        canonical = "2301.00002"
+        md_path = papers.markdown_path("arxiv", canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# Fresh\n\nstill valid\n")
+
+        try:
+            result = await server._download_pdf_by_provider("2301.00002", force_refresh=True)
+            assert result.get("cached") is True
+            assert "cascaded_invalidated" not in result
+            assert md_path.exists(), "Cached-hit must NOT delete markdown"
+        finally:
+            md_path.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_acl_doi_routes_to_the_anthology_and_cascades(self, monkeypatch):
+        """The ACL branch of the provider dispatch, end to end.
+
+        The cascade drops artifacts keyed on ``target["canonical"]``, so this
+        also pins that the ACL PDF the agent just replaced is filed under that
+        same key rather than under its Anthology ID.
+        """
+        from academic_tools_mcp.providers import acl
+
+        seen = {}
+
+        async def fake_download(doi, *, force_refresh=False):
+            seen["doi"] = doi
+            seen["force_refresh"] = force_refresh
+            return {"path": "/tmp/dummy.pdf", "size_bytes": 1234, "cached": False}
+
+        monkeypatch.setattr(acl, "download_pdf", fake_download)
+
+        doi = "10.18653/v1/P16-1160"
+        canonical = acl.canonical_key(doi)
+        md_path = papers.markdown_path(acl.NAMESPACE, canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# Stale\n")
+        cache.put(
+            acl.NAMESPACE,
+            "sections",
+            papers.sections_key(canonical),
+            {"sections": [], "markdown_checksum": "x"},
+        )
+
+        result = await server._download_pdf_by_provider(doi, force_refresh=True)
+
+        assert seen == {"doi": doi, "force_refresh": True}
+        assert result.get("cascaded_invalidated") == ["markdown", "sections"]
+        assert not md_path.exists()
+        assert cache.get(acl.NAMESPACE, "sections", papers.sections_key(canonical)) is None
+
+    @pytest.mark.asyncio
+    async def test_fresh_bytes_cascade_without_force_refresh(self, monkeypatch):
+        """New bytes on disk invalidate the markdown they superseded.
+
+        The cascade is keyed on what happened, not on what the caller asked
+        for: a PDF that was evicted and re-fetched leaves the old markdown
+        describing a file that is gone, and ``convert_paper`` would serve it as
+        ``cached: True``.
+        """
+
+        async def fake_download(arxiv_id, *, force_refresh=False):
+            return {"path": "/tmp/dummy.pdf", "size_bytes": 100, "cached": False}
+
+        monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
+
+        canonical = "2301.00003"
+        md_path = papers.markdown_path("arxiv", canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# Stale\n")
+        cache.put(
+            "arxiv",
+            "sections",
+            papers.sections_key(canonical),
+            {"sections": [], "markdown_checksum": "x", "conversion_mode": "full"},
+        )
+
+        result = await server._download_pdf_by_provider("2301.00003", force_refresh=False)
+
+        assert result["cascaded_invalidated"] == ["markdown", "sections"]
+        assert not md_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_imported_markdown_survives_an_implicit_cascade(self, monkeypatch):
+        """Markdown the operator supplied is not converter output to redo.
+
+        No converter can reproduce it, so a download that merely refilled an
+        absent PDF must not destroy it. Explicit ``force_refresh=True`` still
+        does — that is what the flag means.
+        """
+
+        async def fake_download(arxiv_id, *, force_refresh=False):
+            return {"path": "/tmp/dummy.pdf", "size_bytes": 100, "cached": False}
+
+        monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
+
+        canonical = "2301.00004"
+        md_path = papers.markdown_path("arxiv", canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# Hand written\n")
+        cache.put(
+            "arxiv",
+            "sections",
+            papers.sections_key(canonical),
+            {"sections": [], "markdown_checksum": "x", "conversion_mode": "imported"},
+        )
+
+        result = await server._download_pdf_by_provider("2301.00004", force_refresh=False)
+        assert "cascaded_invalidated" not in result
+        assert md_path.read_text() == "# Hand written\n"
+
+        forced = await server._download_pdf_by_provider("2301.00004", force_refresh=True)
+        assert forced["cascaded_invalidated"] == ["markdown", "sections"]
+        assert not md_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# server.get_papers_metadata
+# ---------------------------------------------------------------------------
+
+
+class TestGetPapersMetadataTool:
+    @pytest.mark.asyncio
+    async def test_mixed_sources_dispatched_correctly(self, monkeypatch):
+        """A mix of arxiv ID + DOI dispatches each to the right backend
+        and returns one entry per input in order."""
+
+        # Stub the underlying provider getters
+        async def fake_arxiv(ident, *, force_refresh=False):
+            return {
+                "id": f"http://arxiv.org/abs/{ident}",
+                "title": "ArXiv Paper",
+                "authors": [{"name": "A"}],
+                "links": [{"title": "pdf", "href": f"http://arxiv.org/pdf/{ident}"}],
+                "published": "2023-01-01T00:00:00Z",
+            }
+
+        async def fake_batch(dois, *, force_refresh=False):
+            return {
+                openalex.canonical_doi(d): {
+                    "doi": f"https://doi.org/{openalex.canonical_doi(d)}",
+                    "title": f"OA {d}",
+                    "primary_location": {"source": {"display_name": "Journal"}},
+                    "open_access": {"is_oa": True, "oa_status": "gold"},
+                }
+                for d in dois
+            }
+
+        monkeypatch.setattr(server.arxiv, "get_paper", fake_arxiv)
+        monkeypatch.setattr(server.openalex, "get_works_batch", fake_batch)
+
+        result = await server.get_papers_metadata(
+            identifiers=["2301.00001", "10.1234/foo", "10.5678/bar"]
+        )
+
+        assert result["count"] == 3
+        papers_out = result["papers"]
+        assert len(papers_out) == 3
+        # Order preserved
+        assert papers_out[0]["_input"] == "2301.00001"
+        assert papers_out[0]["_source"] == "arxiv"
+        assert papers_out[1]["_input"] == "10.1234/foo"
+        assert papers_out[1]["_source"] == "openalex"
+        assert papers_out[2]["_input"] == "10.5678/bar"
+        assert papers_out[2]["_source"] == "openalex"
+
+    @pytest.mark.asyncio
+    async def test_unknown_identifier_returns_per_input_error(self):
+        result = await server.get_papers_metadata(identifiers=["totally garbage"])
+        assert result["count"] == 1
+        assert "error" in result["papers"][0]
+        assert result["papers"][0]["_input"] == "totally garbage"
+
+    @pytest.mark.asyncio
+    async def test_per_paper_failure_isolates(self, monkeypatch):
+        """One failing identifier doesn't fail the whole batch.
+
+        The failing id must be arXiv-*shaped*: an unresolvable one is answered
+        by the dispatch loop and never reaches a provider, so it exercises the
+        unknown-identifier branch rather than the per-paper error branch that
+        `test_unknown_identifier_returns_per_input_error` already covers.
+        """
+
+        async def fake_arxiv(ident, *, force_refresh=False):
+            if ident == "2301.00099":
+                return {"error": "No paper found", "not_found": True}
+            return {
+                "id": f"http://arxiv.org/abs/{ident}",
+                "title": "OK",
+                "authors": [],
+                "links": [],
+                "published": "",
+            }
+
+        monkeypatch.setattr(server.arxiv, "get_paper", fake_arxiv)
+        result = await server.get_papers_metadata(
+            identifiers=["2301.0001", "2301.00099", "2301.0002"]
+        )
+        assert result["count"] == 3
+        assert result["papers"][0]["_source"] == "arxiv"
+        assert "error" in result["papers"][1]
+        assert result["papers"][1]["_input"] == "2301.00099"
+        # Enriched with the shared arXiv hint, like the single-paper tools.
+        assert result["papers"][1]["suggestion"] == paper._ARXIV_METADATA_HINT
+        assert result["papers"][2]["_source"] == "arxiv"
+
+
+# ---------------------------------------------------------------------------
+# papers.find_in_markdown + server.find_in_paper
+# ---------------------------------------------------------------------------
+
+
+_FIND_DOC = """\
+## Introduction
+
+We use a transformer architecture for token prediction.
+
+## Methods
+
+### Architecture
+
+The transformer has multi-head attention.
+
+### Training
+
+Training uses transformer-friendly batching and self-attention.
+
+## Results
+
+The transformer outperforms baselines on every set.
+"""
+
+
+class TestFindInMarkdown:
+    def test_returns_hits_with_section_and_offset(self):
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "transformer")
+        assert len(hits) >= 4
+        assert truncated is False
+        assert all("section" in h for h in hits)
+        assert all("char_offset" in h for h in hits)
+        assert all("snippet" in h for h in hits)
+        assert all(h["match"] == "transformer" for h in hits)
+        # First hit lands in the Introduction
+        assert hits[0]["section"] == "Introduction"
+
+    def test_case_insensitive_default(self):
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "TRANSFORMER")
+        assert len(hits) >= 4
+        # Match preserves the original case of the matched text
+        assert hits[0]["match"] == "transformer"
+
+    def test_case_sensitive_filters(self):
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "TRANSFORMER", case_sensitive=True)
+        assert hits == []
+        assert truncated is False
+
+    def test_whole_words_excludes_partial(self):
+        # "use" matches both standalone ("We use a transformer") and as
+        # a substring of "uses" ("Training uses transformer-friendly").
+        # whole_words must drop the substring hit.
+        all_hits, _ = papers.find_in_markdown(_FIND_DOC, "use")
+        whole, _ = papers.find_in_markdown(_FIND_DOC, "use", whole_words=True)
+        assert len(all_hits) > len(whole) >= 1
+        for h in whole:
+            assert h["match"] == "use"
+
+    def test_max_results_caps_output_and_flags_truncated(self):
+        # _FIND_DOC has 4+ "transformer" matches; capping at 2 must report
+        # truncated so the caller knows more exist.
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "transformer", max_results=2)
+        assert len(hits) == 2
+        assert truncated is True
+
+    def test_not_truncated_when_under_cap(self):
+        # Exactly one match, well under the cap → not truncated.
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "multi-head attention", max_results=20)
+        assert len(hits) == 1
+        assert truncated is False
+
+    def test_not_truncated_when_matches_equal_cap(self):
+        # When the match count exactly equals max_results the scan finishes
+        # naturally without hitting the early-return, so truncated is False.
+        all_hits, _ = papers.find_in_markdown(_FIND_DOC, "transformer")
+        exact = len(all_hits)
+        hits, truncated = papers.find_in_markdown(_FIND_DOC, "transformer", max_results=exact)
+        assert len(hits) == exact
+        assert truncated is False
+
+    def test_offsets_align_with_get_section_content(self):
+        """The char_offset returned should land at the match in the
+        same string get_section_content exposes."""
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "multi-head attention")
+        assert len(hits) == 1
+        h = hits[0]
+        section = papers.get_section_content(_FIND_DOC, h["section_index"])
+        assert (
+            section["content"][h["char_offset"] : h["char_offset"] + len("multi-head attention")]
+            == "multi-head attention"
+        )
+
+    def test_no_match_returns_empty(self):
+        assert papers.find_in_markdown(_FIND_DOC, "quantum entanglement") == ([], False)
+
+    def test_empty_query_returns_empty(self):
+        assert papers.find_in_markdown(_FIND_DOC, "") == ([], False)
+
+
+_FIND_DOC_ACCENTS = """\
+## References
+
+Work by Gutiérrez on the café method (a naïve baseline).
+
+## Notes
+
+The ﬁnal café result is reported here.
+"""
+
+
+class TestFindInMarkdownNormalize:
+    def test_default_does_not_fold(self):
+        # Opt-in: without normalize, an unaccented query misses the
+        # accented occurrence entirely.
+        hits, truncated = papers.find_in_markdown(_FIND_DOC_ACCENTS, "cafe")
+        assert hits == []
+        assert truncated is False
+
+    def test_unaccented_query_matches_accented_text(self):
+        hits, _ = papers.find_in_markdown(_FIND_DOC_ACCENTS, "cafe", normalize=True)
+        assert len(hits) >= 1
+        # The reported match is the ORIGINAL accented substring.
+        assert hits[0]["match"] == "café"
+
+    def test_accented_query_matches_unaccented_query_direction(self):
+        # Reverse direction: an accented query also matches the plain form.
+        doc = "## S\n\nThe cafe is open.\n"
+        hits, _ = papers.find_in_markdown(doc, "café", normalize=True)
+        assert len(hits) == 1
+        assert hits[0]["match"] == "cafe"
+
+    def test_offsets_align_with_get_section_content(self):
+        # The critical contract: char_offset/match address the ORIGINAL
+        # section text even though matching happened on folded text.
+        hits, _ = papers.find_in_markdown(_FIND_DOC_ACCENTS, "Gutierrez", normalize=True)
+        assert len(hits) == 1
+        h = hits[0]
+        section = papers.get_section_content(_FIND_DOC_ACCENTS, h["section_index"])
+        off = h["char_offset"]
+        assert section["content"][off : off + len(h["match"])] == h["match"]
+        assert h["match"] == "Gutiérrez"
+
+    def test_ligature_folds(self):
+        # "ﬁ" (U+FB01) folds to "fi" and expands length; the reported
+        # match must still be the original single ligature char.
+        hits, _ = papers.find_in_markdown(_FIND_DOC_ACCENTS, "final", normalize=True)
+        assert len(hits) == 1
+        assert hits[0]["match"] == "ﬁnal"
+
+    def test_whole_words_with_normalize(self):
+        doc = "## S\n\nThe café and the cafeteria differ.\n"
+        hits, _ = papers.find_in_markdown(doc, "cafe", normalize=True, whole_words=True)
+        # Matches the whole word "café" (folds to ASCII "cafe"), not the
+        # "cafe" inside "cafeteria".
+        assert len(hits) == 1
+        assert hits[0]["match"] == "café"
+
+    def test_all_combining_query_returns_empty(self):
+        # A query that folds to nothing (a lone combining acute accent)
+        # must not match everywhere.
+        assert papers.find_in_markdown(_FIND_DOC_ACCENTS, "́", normalize=True) == ([], False)
+
+
+class TestFindInPaperTool:
+    @pytest.mark.asyncio
+    async def test_unconverted_paper_returns_error(self):
+        result = await server.find_in_paper(identifier="2301.99999", query="transformer")
+        assert "error" in result
+        assert "not converted" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_finds_query_in_converted_paper(self, tmp_path, monkeypatch):
+        """Place a fake markdown for an arxiv id and verify the tool
+        finds occurrences of a query inside it."""
+        # Use a real-looking arxiv ID so resolve_target routes to the
+        # arxiv namespace (a manual-namespace label would also work but
+        # this is the more interesting code path).
+        identifier = "2301.55555"
+        canonical = server.arxiv.canonical_arxiv_id(identifier)
+        md_path = papers.markdown_path("arxiv", canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(_FIND_DOC)
+
+        try:
+            result = await server.find_in_paper(identifier=identifier, query="transformer")
+            assert "error" not in result, result
+            assert result["query"] == "transformer"
+            assert result["result_count"] >= 4
+            assert result["truncated"] is False
+            assert result["paper_identifier"] == identifier
+            assert all("section" in r for r in result["results"])
+
+            # A low max_results must surface the truncated signal.
+            capped = await server.find_in_paper(
+                identifier=identifier, query="transformer", max_results=2
+            )
+            assert capped["result_count"] == 2
+            assert capped["truncated"] is True
+        finally:
+            md_path.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_normalize_matches_accented_text(self):
+        identifier = "2301.55556"
+        canonical = server.arxiv.canonical_arxiv_id(identifier)
+        md_path = papers.markdown_path("arxiv", canonical)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(_FIND_DOC_ACCENTS)
+
+        try:
+            # Without normalize the unaccented query misses.
+            plain = await server.find_in_paper(identifier=identifier, query="Gutierrez")
+            assert plain["result_count"] == 0
+
+            folded = await server.find_in_paper(
+                identifier=identifier, query="Gutierrez", normalize=True
+            )
+            assert folded["result_count"] == 1
+            assert folded["results"][0]["match"] == "Gutiérrez"
+        finally:
+            md_path.unlink(missing_ok=True)
+
+
+class TestFindInMarkdownSnippets:
+    """The snippet is agent-facing output and was asserted nowhere: every test
+    checked only that the key existed, so an empty or newline-riddled snippet
+    shipped green.
+    """
+
+    def test_a_snippet_contains_the_match_and_its_context(self):
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "multi-head")
+        snippet = hits[0]["snippet"]
+        assert "multi-head" in snippet
+        assert "The transformer has" in snippet, "the left window was not included"
+
+    def test_a_snippet_is_one_line(self):
+        # The section body is multi-line; a raw slice would render as several.
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "Architecture")
+        assert hits, "expected a match spanning the heading/body boundary"
+        assert all("\n" not in h["snippet"] for h in hits)
+
+    def test_a_match_at_the_start_clamps_the_left_window(self):
+        # ws = max(0, pos - window): without the clamp this slices from a
+        # negative index and silently wraps to the end of the section.
+        hits, _ = papers.find_in_markdown("## S\n\nalpha beta gamma\n", "alpha")
+        assert hits[0]["char_offset"] == 0
+        assert hits[0]["snippet"].startswith("alpha")
+
+    def test_a_match_at_the_end_clamps_the_right_window(self):
+        hits, _ = papers.find_in_markdown("## S\n\nalpha beta omega\n", "omega")
+        assert hits[0]["snippet"].endswith("omega")
+
+    def test_case_sensitive_still_finds_a_correctly_cased_match(self):
+        # The negative case was pinned; an implementation that always returned
+        # [] under this flag passed the suite.
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "transformer", case_sensitive=True)
+        assert len(hits) == 4
+
+    def test_every_hit_names_its_own_section(self):
+        # Only hits[0] was checked, so an off-by-one in enumerate(spans) past
+        # the first hit went unnoticed.
+        hits, _ = papers.find_in_markdown(_FIND_DOC, "transformer")
+        assert [h["section"] for h in hits] == ["Introduction", "Methods", "Methods", "Results"]
+        assert [h["section_index"] for h in hits] == [0, 1, 1, 2]
+
+    def test_a_document_with_no_sections_finds_nothing(self):
+        assert papers.find_in_markdown("", "anything") == ([], False)

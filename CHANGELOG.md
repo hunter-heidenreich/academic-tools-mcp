@@ -27,14 +27,6 @@ grouped by milestone rather than per commit.
   now also carries `canonical_id` — the note tells the agent to run
   `find_in_paper` on those papers, and it was handing over an on-disk `stem`
   that no tool resolves. ([#105])
-- **`get_paper_references` / `get_paper_citations` document their error
-  shapes.** Both returned `retryable` on every tool-layer error, and
-  `get_paper_references` adds `sources: {crossref, opencitations}` when both
-  providers fail, with the top-level `retryable` the disjunction of the two —
-  none of it named in a docstring, so no agent had reason to branch on it.
-  The citations docstring also now says what it does *not* have: no `source`
-  parameter and no `sources` envelope, because OpenCitations is the only index
-  of incoming citations. ([#106])
 
 - **`{python}` now works in `PDF_CONVERTER`, not just `PDF_FAST_CONVERTER`.**
   One placeholder vocabulary across both templates, so a converter installed
@@ -42,25 +34,6 @@ grouped by milestone rather than per commit.
   without pointing `PDF_CONVERTER_VENV` at a virtualenv. ([#93])
 
 ### Changed
-
-- **Module layout follows the layering.** The shared HTTP modules moved into
-  `net/` (`http`, `throttle`, `clients`, `stats`) and the leaf helpers into
-  `util/` (`config`, `doinorm`, `textnorm`, `useragent`); module names no
-  longer carry a leading underscore. `_doi` is `util/doinorm` — `doi` is this
-  codebase's most common parameter name, and a module of that name is shadowed
-  at every call site. The cache and its primitives moved into `store/`
-  (`cache`, `atomic`, `singleflight`, `stems`) and the two halves of the
-  download story into `download/` (`streaming`, `openaccess`), which finally
-  makes them siblings. `_app` is `app`, `cache_search` is `corpus`, and
-  `cache_search._MAX_TOP_K` is now the public `corpus.MAX_TOP_K` its three
-  siblings (`arxiv.MAX_SEARCH_RESULTS`, `crossref.MAX_SEARCH_ROWS`,
-  `wikipedia.MAX_SEARCH_LIMIT`) always were. Internal only: no tool, response
-  shape, environment variable or `.cache/` namespace changes. ([#106])
-- **The bundled fast-extraction backend is `academic_tools_mcp.fast_extract`,
-  not `academic_tools_mcp._fast_extract`.** The `PDF_FAST_CONVERTER=pymupdf`
-  key is unaffected and needs no change. This only matters if you copied that
-  backend's literal command template into a custom `PDF_FAST_CONVERTER`
-  value — update the module path if so. ([#106])
 
 - **`download_pdf` now drops stale markdown whenever it actually downloads,
   not just on `force_refresh=True`.** A PDF that was evicted or pruned and then
@@ -142,15 +115,6 @@ grouped by milestone rather than per commit.
   `_SECTION_LEVELS`. ([#93])
 
 ### Fixed
-
-- **`.cache/` and `.env` are found by name, not by counting directories.**
-  Both were resolved with `Path(__file__).parents[n]`, which silently changes
-  meaning when the module holding it moves. Now both go through
-  `config.project_root()`, which walks up to the package directory and is
-  correct at any depth; `net.stats` derives its module-scan prefix the same
-  way. Only reachable on the unreleased layout change above, but the failure
-  mode is worth naming: a cache root pointed one directory off orphans every
-  artifact already in it, without an error. ([#106])
 
 - **A non-dict Crossref author row crashed `search_crossref_by_title`.**
   `search_works` filters `items` to dicts and stops there; the upstream
@@ -2633,4 +2597,3 @@ grouped by milestone rather than per commit.
 [#103]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/103
 [#104]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/104
 [#105]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/105
-[#106]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/106

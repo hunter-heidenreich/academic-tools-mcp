@@ -9,10 +9,8 @@ from urllib.parse import quote
 
 import httpx
 
-from ..net import clients, http
-from ..net.throttle import Throttle
-from ..store import cache, singleflight
-from ..util import config, useragent
+from .. import _clients, _http, _singleflight, _useragent, cache, config
+from .._throttle import Throttle
 
 NAMESPACE = "wikipedia"
 
@@ -25,12 +23,12 @@ _SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary"
 # Exported so ``search_wikipedia``'s validation bound isn't a second spelling of it.
 MAX_SEARCH_LIMIT = 10
 
-_PARSE_ERRORS = http.JSON_PARSE_ERRORS
+_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable Wikipedia response."""
-    return http.parse_error_dict(LABEL)
+    return _http.parse_error_dict(LABEL)
 
 
 # ~1 req/sec keeps the sustained rate well inside the 1,000/hour reader tier;
@@ -39,7 +37,7 @@ _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 1.0
 _MAX_PENDING = 5
 
-_single_flight = singleflight.SingleFlight()
+_single_flight = _singleflight.SingleFlight()
 
 # Articles are edited continuously; a month bounds how stale a summary gets.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
@@ -47,16 +45,16 @@ _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 def _build_headers() -> dict[str, str]:
     """Headers from ``WIKIPEDIA_MAILTO``. Wikimedia's UA policy wants a contact."""
-    return useragent.headers(config.get("WIKIPEDIA_MAILTO"))
+    return _useragent.headers(config.get("WIKIPEDIA_MAILTO"))
 
 
 def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``.
+    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``.
 
     The headers are mandatory here, not polite: Wikimedia may block an
     unidentified agent outright.
     """
-    return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=15.0)
+    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=15.0)
 
 
 _throttle = Throttle(
@@ -115,8 +113,8 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
         data = response.json()
     except _PARSE_ERRORS:
         return _parse_error_dict()
-    except http.HTTPX_ERRORS as e:
-        return http.error_dict(LABEL, e)
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict(LABEL, e)
 
     # OpenSearch returns [query, [titles], [descriptions], [urls]].
     if not isinstance(data, list) or len(data) < 4:
@@ -192,14 +190,14 @@ async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, A
         # The guard `quote` cannot be: `.`/`..` are unreserved, so RFC 3986
         # removes the segment and /page answers 200 with a dict, which would
         # cache as this title. Uncached — no request was spent.
-        if not http.addresses_a_record(url):
-            return http.not_found(not_found_error)
+        if not _http.addresses_a_record(url):
+            return _http.not_found(not_found_error)
 
         try:
             response = await _throttled_get(url)
 
             if response.status_code == 404:
-                err = http.not_found(not_found_error)
+                err = _http.not_found(not_found_error)
                 cache.put_negative(NAMESPACE, "summaries", canonical, err)
                 return err
 
@@ -207,8 +205,8 @@ async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, A
             data = response.json()
         except _PARSE_ERRORS:
             return _parse_error_dict()
-        except http.HTTPX_ERRORS as e:
-            return http.error_dict(LABEL, e)
+        except _http.HTTPX_ERRORS as e:
+            return _http.error_dict(LABEL, e)
 
         result = _summary_of(data)
         if result is None:

@@ -515,7 +515,7 @@ class TestDoiFieldIsAlwaysBare:
     over plain http. A local prefix test that only knows the https spelling
     emits ``doi={http://doi.org/10.x/y}``, which every BibTeX style then
     renders as ``https://doi.org/http://doi.org/10.x/y``. Routing through
-    `doinorm.normalize` is what keeps all three generators honest.
+    `_doi.normalize` is what keeps all three generators honest.
     """
 
     @pytest.mark.parametrize(

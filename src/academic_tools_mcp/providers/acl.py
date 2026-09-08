@@ -8,11 +8,8 @@ from urllib.parse import quote, unquote
 
 import httpx
 
-from ..download import streaming
-from ..net import clients, http
-from ..net.throttle import Throttle
-from ..store import cache, singleflight, stems
-from ..util import doinorm, useragent
+from .. import _clients, _doi, _http, _pdf_download, _singleflight, _stems, _useragent, cache
+from .._throttle import Throttle
 
 # Not "acl": this is the cache *directory* name, so renaming it needs a sweep.
 NAMESPACE = "acl_anthology"
@@ -20,7 +17,7 @@ NAMESPACE = "acl_anthology"
 # Agent-facing provider name; every site that names us reads it (providers.md).
 LABEL = "ACL Anthology"
 
-# Exported: ``corpus`` inverts a stored stem with this same prefix.
+# Exported: ``cache_search`` inverts a stored stem with this same prefix.
 ACL_DOI_PREFIX = "10.18653/v1/"
 
 # PDF downloads are larger than a metadata call; use a generous timeout.
@@ -37,7 +34,7 @@ _MAX_PENDING = 5
 _NEG_ENTITY = "downloads"
 _NEG_TTL_SECONDS = 24 * 60 * 60
 
-_single_flight = singleflight.SingleFlight()
+_single_flight = _singleflight.SingleFlight()
 
 _throttle = Throttle(
     namespace=NAMESPACE,
@@ -49,8 +46,10 @@ _throttle = Throttle(
 
 
 def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
-    return clients.get_client(NAMESPACE, headers=useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS)
+    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``."""
+    return _clients.get_client(
+        NAMESPACE, headers=_useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS
+    )
 
 
 def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
@@ -81,12 +80,12 @@ def _strip_acl_prefix(bare: str) -> str | None:
 
 def is_acl_doi(doi: str) -> bool:
     """Check if a DOI belongs to the ACL Anthology."""
-    return _strip_acl_prefix(doinorm.normalize(doi)) is not None
+    return _strip_acl_prefix(_doi.normalize(doi)) is not None
 
 
 def canonical_key(doi: str) -> str:
     """Return a canonical cache key from an ACL DOI."""
-    return doinorm.canonical(doi)
+    return _doi.canonical(doi)
 
 
 # Pre-2020 IDs: <LETTER><2-digit-year>-<digits>, e.g. P16-1160, W04-1013.
@@ -112,7 +111,7 @@ def doi_to_anthology_id(doi: str) -> str | None:
     DOI is not an ACL one. Invariant: the ID addresses the CDN and names nothing
     on disk — every cached artifact keys on ``canonical_key``.
     """
-    suffix = _strip_acl_prefix(doinorm.normalize(doi))
+    suffix = _strip_acl_prefix(_doi.normalize(doi))
     if suffix is None:
         return None
     return _normalize_anthology_id(suffix)
@@ -140,7 +139,7 @@ def pdf_path(doi: str) -> Path:
     """
     if not is_acl_doi(doi):
         raise ValueError(f"Not an ACL Anthology DOI: {doi}")
-    return stems.pdf_path(NAMESPACE, canonical_key(doi))
+    return _stems.pdf_path(NAMESPACE, canonical_key(doi))
 
 
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -154,14 +153,14 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     aid = doi_to_anthology_id(doi)
     if aid is None:
         # Definitive: unflagged, every classifier downstream reads it as unknown.
-        return http.not_found(f"Not an ACL Anthology DOI: {doi}")
+        return _http.not_found(f"Not an ACL Anthology DOI: {doi}")
 
     canonical = canonical_key(doi)
-    dest = stems.pdf_path(NAMESPACE, canonical)
+    dest = _stems.pdf_path(NAMESPACE, canonical)
     url = pdf_url(aid)
 
     async def _fetch() -> dict[str, Any]:
-        return await streaming.stream_to_file(
+        return await _pdf_download.stream_to_file(
             _get_client(),
             url,
             dest,
@@ -174,7 +173,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
 
     # ``extra_fields`` puts the ACL provenance on a cached hit and a fresh
     # success alike, without this function restating either branch.
-    return await streaming.cached_download(
+    return await _pdf_download.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,
@@ -192,7 +191,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
 # ---------------------------------------------------------------------------
 
 # Derived, never spelled out, so it cannot drift from what ``pdf_path`` writes.
-_CANONICAL_STEM_PREFIX = stems.safe_stem(ACL_DOI_PREFIX)
+_CANONICAL_STEM_PREFIX = _stems.safe_stem(ACL_DOI_PREFIX)
 
 
 def migrate_legacy_pdf_stems() -> int:
@@ -200,13 +199,13 @@ def migrate_legacy_pdf_stems() -> int:
 
     Only ``pdfs/`` moves; markdown and sections were always canonical-keyed.
     Run at startup, so idempotent and best-effort like
-    ``stems.migrate_legacy_stems``: nothing here may raise out of the lifespan.
+    ``papers.migrate_legacy_stems``: nothing here may raise out of the lifespan.
     Returns the number of files moved.
     """
     moved = 0
     pdf_dir = cache.cache_dir(NAMESPACE, "pdfs")
     # Materialised: the loop renames files into the directory it walks.
-    for path in stems.list_dir(pdf_dir):
+    for path in _stems.list_dir(pdf_dir):
         # An in-flight ``.tmp`` still carries the destination's stem; renaming
         # it breaks the writer's ``os.replace``.
         if path.suffix != ".pdf" or path.stem.startswith(_CANONICAL_STEM_PREFIX):
@@ -214,7 +213,7 @@ def migrate_legacy_pdf_stems() -> int:
         if not path.is_file():
             continue
         target = pdf_dir / (
-            stems.safe_stem(canonical_key(ACL_DOI_PREFIX + unquote(path.stem))) + ".pdf"
+            _stems.safe_stem(canonical_key(ACL_DOI_PREFIX + unquote(path.stem))) + ".pdf"
         )
         if target.exists():
             # Already migrated (or a genuine collision) — leave both in place

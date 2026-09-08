@@ -7,10 +7,8 @@ from urllib.parse import quote
 
 import httpx
 
-from ..net import clients, http, stats
-from ..net.throttle import Throttle
-from ..store import cache, singleflight
-from ..util import config, doinorm, useragent
+from .. import _clients, _doi, _http, _singleflight, _stats, _useragent, cache, config
+from .._throttle import Throttle
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
@@ -22,12 +20,12 @@ LABEL = "OpenAlex"
 # ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
 # errors so the tool always returns the uniform ``{error}`` contract rather
 # than crashing on a garbled response. Mirrors crossref/biorxiv.
-_PARSE_ERRORS = http.JSON_PARSE_ERRORS
+_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable OpenAlex response."""
-    return http.parse_error_dict(LABEL)
+    return _http.parse_error_dict(LABEL)
 
 
 # Rate limiting. OpenAlex's polite-pool soft cap is 10 req/sec; we set
@@ -45,7 +43,7 @@ _MAX_PENDING = 5
 # Coalesces concurrent calls for the same DOI / author ID so the
 # unified-paper tools (metadata, authors, abstract, bibtex) plus the
 # OpenAlex-only tools don't all fire in parallel for one paper.
-_single_flight = singleflight.SingleFlight()
+_single_flight = _singleflight.SingleFlight()
 
 # Positive cache TTL. OpenAlex works grow citation counts and gain
 # authors / topics over time; 30 days is long enough to amortise
@@ -57,7 +55,7 @@ _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
-    return doinorm.canonical(doi)
+    return _doi.canonical(doi)
 
 
 def best_pdf_url(work: dict[str, Any]) -> str | None:
@@ -97,12 +95,12 @@ def _build_params() -> dict[str, str]:
 
 def _build_headers() -> dict[str, str]:
     """The polite-pool User-Agent. Sent either way; the mailto is what joins."""
-    return useragent.headers(config.get("OPENALEX_MAILTO"))
+    return _useragent.headers(config.get("OPENALEX_MAILTO"))
 
 
 def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
-    return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
+    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``."""
+    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
 _throttle = Throttle(
@@ -120,7 +118,7 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 
 
 # The openalex.org URL spellings an entity ID is pasted in — the latitude
-# ``doinorm._DOI_URL_RE`` and ``arxiv._ARXIV_URL_RE`` carry, for the same reason.
+# ``_doi._DOI_URL_RE`` and ``arxiv._ARXIV_URL_RE`` carry, for the same reason.
 # Gated on an entity-shaped tail, so an ORCID URL falls through untouched.
 _OPENALEX_URL_RE = re.compile(
     r"^(?:https?://)?(?:www\.|api\.)?openalex\.org/(?:\w+/)?([a-z]\d+)/?$",
@@ -164,16 +162,16 @@ async def _fetch_singleton(
     Both guards are needed: a ``doi:`` prefix keeps the last path segment
     non-empty, so ``bare`` is tested too (as ``opencitations`` does).
     """
-    if not bare or not http.addresses_a_record(url):
+    if not bare or not _http.addresses_a_record(url):
         # Definitively a bad identifier, and refused before it is spent
         # upstream — as ``acl._strip_acl_prefix`` refuses an empty suffix.
-        return http.not_found(not_found_error)
+        return _http.not_found(not_found_error)
 
     try:
         response = await _throttled_get(url, params=_build_params())
 
         if response.status_code == 404:
-            err = http.not_found(not_found_error)
+            err = _http.not_found(not_found_error)
             cache.put_negative(NAMESPACE, entity, canonical, err)
             return err
 
@@ -181,8 +179,8 @@ async def _fetch_singleton(
         data = response.json()
     except _PARSE_ERRORS:
         return _parse_error_dict()
-    except http.HTTPX_ERRORS as e:
-        return http.error_dict(LABEL, e)
+    except _http.HTTPX_ERRORS as e:
+        return _http.error_dict(LABEL, e)
 
     if not isinstance(data, dict) or "id" not in data:
         return _parse_error_dict()
@@ -239,7 +237,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         # misread as a URL fragment/query and silently truncate the request
         # to the wrong record. The prefix/suffix slash stays literal
         # (safe="/"); the "doi:" path prefix is added outside the encode.
-        bare_doi = doinorm.normalize(doi)
+        bare_doi = _doi.normalize(doi)
         api_doi = f"doi:{quote(bare_doi, safe='/')}"
         return await _fetch_singleton(
             entity="works",
@@ -268,7 +266,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 # concurrency 4, the saving is dramatic on reference-graph traversals.
 _BATCH_CHUNK_SIZE = 50
 
-# The resolver prefixes a *response* DOI can carry: ``doinorm._DOI_URL_RE``'s host
+# The resolver prefixes a *response* DOI can carry: ``_doi._DOI_URL_RE``'s host
 # set, deliberately without its DOI-shape requirement on the tail.
 _RESPONSE_DOI_URL_RE = re.compile(r"^https?://(?:dx\.|www\.)?doi\.org/", re.IGNORECASE)
 
@@ -277,7 +275,7 @@ def _canonical_from_response_doi(work_doi: Any) -> str | None:
     """The canonical bare DOI from an OpenAlex work's ``doi``, or None.
 
     Maps a batch response back to the keys we asked for, so it strips the
-    resolver prefix *unconditionally* where ``doinorm.canonical`` strips only a
+    resolver prefix *unconditionally* where ``_doi.canonical`` strips only a
     DOI-shaped path. ``Any``: this runs outside any ``except``.
     """
     if not isinstance(work_doi, str):
@@ -308,7 +306,7 @@ async def _fetch_chunk(
         # This path bypasses cache.cached_lookup, so it books its own misses —
         # one per DOI about to be resolved upstream.
         for _ in chunk:
-            stats.incr(NAMESPACE, "cache_misses")
+            _stats.incr(NAMESPACE, "cache_misses")
         return await _fetch_chunk_uncoalesced(chunk)
 
     return await _single_flight.do(sf_key, _runner)
@@ -336,8 +334,8 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
         # 49 — against ``parse_error_dict``'s documented "fresh dict each
         # call" and ``cached_lookup``'s deep-copy discipline.
         return {c: _parse_error_dict() for c in chunk}
-    except http.HTTPX_ERRORS as e:
-        return {c: http.error_dict(LABEL, e) for c in chunk}
+    except _http.HTTPX_ERRORS as e:
+        return {c: _http.error_dict(LABEL, e) for c in chunk}
 
     if not isinstance(data, dict):
         return {c: _parse_error_dict() for c in chunk}

@@ -10,9 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import papers
-from academic_tools_mcp.net import stats
-from academic_tools_mcp.store import atomic, cache
+from academic_tools_mcp import _stats, atomic, cache, papers
 
 
 class TestCacheWriteFailureIsAbsorbed:
@@ -41,23 +39,23 @@ class TestCacheWriteFailureIsAbsorbed:
         assert cache.get("arxiv", "papers", "2301.00001") == {"title": "T"}
 
     def test_failure_is_counted_for_the_operator(self, full_disk):
-        stats.reset()
+        _stats.reset()
         cache.put("arxiv", "papers", "2301.00001", {"title": "T"})
-        counters = stats.snapshot()["providers"]["arxiv"]
+        counters = _stats.snapshot()["providers"]["arxiv"]
         assert counters["cache_write_failures"] == 1
 
     @pytest.mark.asyncio
     async def test_a_lookup_still_returns_its_data_on_a_full_disk(self, full_disk):
         # The whole point: the caller already has the answer. Not caching it
         # costs a repeat lookup; raising costs the answer.
-        from academic_tools_mcp.store import singleflight
+        from academic_tools_mcp import _singleflight
 
         async def fetch():
             cache.put("arxiv", "papers", "2301.00001", {"title": "Fetched"})
             return {"title": "Fetched"}
 
         result = await cache.cached_lookup(
-            single_flight=singleflight.SingleFlight(),
+            single_flight=_singleflight.SingleFlight(),
             namespace="arxiv",
             entity="papers",
             canonical="2301.00001",

@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from .. import manual
-from ..app import (
+from .._app import (
     AUTHOR_ID,
     AUTHORS_PAGE,
     AUTHORS_PAGE_SIZE,
