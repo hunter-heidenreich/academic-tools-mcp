@@ -22,6 +22,7 @@ from .._app import (
     mcp,
     not_converted_error,
     pdf_not_cached_error,
+    read_markdown,
 )
 from ..providers import acl, arxiv, biorxiv
 
@@ -287,27 +288,21 @@ async def get_paper_section(
     Errors: not yet converted → guidance to run convert_paper. Unknown or
     ambiguous section title → error listing the available titles.
     """
-    target = manual.resolve_target(identifier)
-    md_path = papers.markdown_path(target["namespace"], target["canonical"])
-
-    if not md_path.exists():
-        return not_converted_error(identifier)
-
     try:
         section_key: int | str = int(section)
     except ValueError:
         section_key = section
 
-    # Read + slice off the event loop, explicit UTF-8, as every markdown read is.
-    def _read_and_extract() -> dict[str, Any]:
-        markdown = md_path.read_text(encoding="utf-8")
-        return papers.get_section_content(markdown, section_key, offset=offset, max_chars=max_chars)
-
-    try:
-        return await asyncio.to_thread(_read_and_extract)
-    except FileNotFoundError:
-        # A concurrent cascade unlinked it between the exists() check and the read.
-        return not_converted_error(identifier)
+    read = await read_markdown(
+        identifier,
+        lambda markdown: papers.get_section_content(
+            markdown, section_key, offset=offset, max_chars=max_chars
+        ),
+    )
+    if isinstance(read, dict):
+        return read
+    _, content = read
+    return content
 
 
 @mcp.tool

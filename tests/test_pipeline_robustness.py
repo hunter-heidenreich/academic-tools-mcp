@@ -318,6 +318,67 @@ class TestUnindexableDocumentsAreReported:
         assert "import_paper" in note
 
     @pytest.mark.asyncio
+    async def test_both_reasons_are_explained_when_both_are_present(self, corpus, monkeypatch):
+        # Every fixture seeds one reason, so the "; ".join over a sorted set --
+        # the whole point of building the note per-reason -- was never run.
+        monkeypatch.setattr(
+            cache_search,
+            "unindexable",
+            lambda *a, **kw: [
+                {"namespace": "manual", "stem": "a", "canonical_id": "a", "reason": "unreadable"},
+                {
+                    "namespace": "manual",
+                    "stem": "b",
+                    "canonical_id": "b",
+                    "reason": "no_indexable_tokens",
+                },
+            ],
+        )
+
+        note = (await search_tools.search_cached_papers("transformer"))["unindexable_note"]
+
+        assert "no letters or digits" in note
+        assert "could not be read" in note
+        assert "; " in note
+
+    @pytest.mark.asyncio
+    async def test_the_reported_list_is_a_sample_and_the_count_is_not(self, corpus, monkeypatch):
+        """`unindexable_count` is the whole set; `unindexable` is a sample.
+
+        Reporting both is what stops an agent reading a capped list as the
+        complete inventory of what the search never considered.
+        """
+        skipped = [
+            {
+                "namespace": "manual",
+                "stem": f"s{i}",
+                "canonical_id": f"s{i}",
+                "reason": "no_indexable_tokens",
+            }
+            for i in range(search_tools._UNINDEXABLE_SAMPLE + 5)
+        ]
+        monkeypatch.setattr(cache_search, "unindexable", lambda *a, **kw: skipped)
+
+        result = await search_tools.search_cached_papers("transformer")
+
+        assert result["unindexable_count"] == len(skipped)
+        assert len(result["unindexable"]) == search_tools._UNINDEXABLE_SAMPLE
+
+    @pytest.mark.asyncio
+    async def test_the_reported_id_chains_back_into_find_in_paper(self, corpus):
+        """The note tells the agent to use find_in_paper on these papers.
+
+        It was handed a `stem`, which is the on-disk filename and not an
+        identifier any tool resolves -- a dead end for exactly the papers the
+        diagnostic exists to rescue.
+        """
+        entry = (await search_tools.search_cached_papers("transformer"))["unindexable"][0]
+
+        assert entry["canonical_id"] in {"punctuation", "emoji"}
+        # It resolves: no "not converted" error, just an honest zero hits.
+        assert "error" not in await search_tools.find_in_paper(entry["canonical_id"], "x")
+
+    @pytest.mark.asyncio
     async def test_clean_corpus_stays_lean(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"

@@ -14,7 +14,9 @@ from .._app import (
     FOLLOW_PUBLISHED,
     FORCE_REFRESH,
     PAPER_ID,
+    _as_dict,
     _crossref_date,
+    _dict_list,
     _enrich_error,
     _first,
     mcp,
@@ -44,20 +46,6 @@ def _unknown_identifier_error(identifier: str) -> dict[str, Any]:
             "or call search_arxiv / search_crossref_by_title to find one."
         ),
     }
-
-
-# Shape guards for OpenAlex's verbatim tree: it nulls keys rather than dropping
-# them, and only the top-level ``id`` is checked upstream.
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    """``value`` when it is a dict, else ``{}``."""
-    return value if isinstance(value, dict) else {}
-
-
-def _dict_list(value: Any) -> list[dict[str, Any]]:
-    """The dict elements of ``value``, or ``[]`` when it isn't a list."""
-    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
 
 def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:

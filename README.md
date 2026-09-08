@@ -129,8 +129,8 @@ Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
 | `convert_paper` | Convert PDF to markdown, parse into sections (slow: tens of minutes; `PDF_CONVERT_TIMEOUT` caps it at 30 min by default). The server runs at most one conversion at a time across all callers — a second concurrent caller gets `{busy: True, retryable: True, in_progress: {...}}` immediately rather than queueing |
 | `get_paper_sections` | Section index with titles, sub-heading previews, token counts, and `conversion_mode` — what produced the markdown (`full` / `fast` / `imported`) |
 | `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
-| `find_in_paper` | Substring (or whole-word) search inside one converted paper. Returns each hit's section + char offset + ~120-char snippet. Char offsets align with `get_paper_section`'s stripped text so you can chain straight to the surrounding context. |
-| `search_cached_papers` | BM25 keyword search across **every** converted paper in the local cache. Answers "which paper mentioned X?"; pair it with `find_in_paper` for "where in that paper?". |
+| `find_in_paper` | Substring (or whole-word) search inside one converted paper. Returns each hit's section + char offset + ~120-char snippet, and echoes `paper_identifier` in canonical form. Char offsets align with `get_paper_section`'s stripped text so you can chain straight to the surrounding context. |
+| `search_cached_papers` | BM25 keyword search across **every** converted paper in the local cache. Answers "which paper mentioned X?"; pair it with `find_in_paper` for "where in that paper?". Papers the index could never use are reported separately as `unindexable`, each with a `canonical_id` you can hand straight to `find_in_paper`. |
 
 `convert_paper(mode="fast")` runs a lightweight text-only extractor (`PDF_FAST_CONVERTER`, default `pdftotext`) outside the global conversion lock — seconds instead of minutes, but no tables, equations, figures, or real headings. Use it for triage; re-run in full mode when you need structure.
 
@@ -146,7 +146,7 @@ Every tool above except `search_cached_papers` (which takes a query, not a paper
 | `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from the better-covered one, biased toward Crossref for its richer per-entry metadata (OpenCitations wins only on a materially larger reference list); pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
 | `get_paper_citations_count` | Number of incoming citations (OpenCitations) |
 | `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
-| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); each hit warms the Crossref works cache, so a follow-up `get_paper_references(doi, source="crossref")` is free |
+| `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); `max_results` widens the triage list up to Crossref's cap. Each hit warms the Crossref works cache, so a follow-up `get_paper_references(doi, source="crossref")` is free |
 
 For citations, follow the **count-then-page** pattern: call `get_paper_citations_count` first to see the total, then page through with `page` and `page_size`. For references the `source="auto"` default does the survey for you on the first call. Paginated responses include `_source` (on references) and `has_more` so agents know which shape to expect and when to stop, and echo `doi` in canonical form so every spelling of one paper correlates to a single value across calls. This prevents token blowouts on papers with long bibliographies or many citations.
 

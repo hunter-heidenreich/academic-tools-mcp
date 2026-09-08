@@ -1292,6 +1292,198 @@ class TestSearchAuthorCount:
         assert result["results"][0]["first_author"] is None
 
 
+class TestSearchParameterThreading:
+    """Every search parameter has to reach the provider. Six of them were
+    accepted at the MCP boundary and asserted nowhere, so a mis-wired keyword
+    would have shipped green.
+    """
+
+    @pytest.mark.asyncio
+    async def test_search_arxiv_threads_max_results_at_both_bounds(self, monkeypatch):
+        seen = []
+
+        async def fake_search(query, max_results=10):
+            seen.append(max_results)
+            return {"total_results": 0, "entries": []}
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_search)
+
+        await server.search_arxiv("x", max_results=1)
+        await server.search_arxiv("x", max_results=arxiv.MAX_SEARCH_RESULTS)
+        assert seen == [1, arxiv.MAX_SEARCH_RESULTS]
+
+    @pytest.mark.asyncio
+    async def test_search_crossref_threads_year_and_max_results(self, monkeypatch):
+        seen = {}
+
+        async def fake_search(bibliographic, year=None, rows=5):
+            seen.update(bibliographic=bibliographic, year=year, rows=rows)
+            return {"items": [], "total_results": 0}
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        await server.search_crossref_by_title("attention", year=2017, max_results=20)
+        assert seen == {"bibliographic": "attention", "year": 2017, "rows": 20}
+
+    @pytest.mark.asyncio
+    async def test_the_crossref_bound_is_the_provider_constant(self):
+        # The cap belongs to crossref, not to a number transcribed here.
+        field = server.search_crossref_by_title.__annotations__["max_results"].__metadata__[0]
+        assert field.metadata[1].le == crossref.MAX_SEARCH_ROWS
+
+    @pytest.mark.asyncio
+    async def test_search_crossref_defaults_to_five_rows(self, monkeypatch):
+        seen = []
+
+        async def fake_search(bibliographic, year=None, rows=5):
+            seen.append(rows)
+            return {"items": [], "total_results": 0}
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        await server.search_crossref_by_title("anything")
+        assert seen == [5]
+
+
+class TestSearchErrorContract:
+    """An errored search never leaks a partial result list, and its advice
+    must not argue with the retry verdict it rides beside.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_arxiv_query_is_told_to_rewrite_not_retry(self, monkeypatch):
+        # arXiv answers a malformed query with 200 + an api/errors entry, which
+        # the provider classifies `retryable: False`. Advising a retry sends the
+        # agent back at a call that cannot succeed.
+        async def fake_search(query, max_results=10):
+            return {"error": "arXiv rejected the search query: ti:", "retryable": False}
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_search)
+
+        result = await server.search_arxiv("ti:")
+        assert "Rewrite the query" in result["suggestion"]
+        assert "temporarily unavailable" not in result["suggestion"]
+        assert "results" not in result and "result_count" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_transient_arxiv_failure_is_told_to_retry(self, monkeypatch):
+        async def fake_search(query, max_results=10):
+            return {"error": "arXiv request timed out", "retryable": True}
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_search)
+
+        result = await server.search_arxiv("anything")
+        assert "temporarily unavailable" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_a_crossref_error_points_at_the_preprint_search(self, monkeypatch):
+        async def fake_search(bibliographic, year=None, rows=5):
+            return {"error": "Crossref unavailable", "retryable": True}
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        result = await server.search_crossref_by_title("anything")
+        assert "search_arxiv" in result["suggestion"]
+        assert "results" not in result and "result_count" not in result
+
+
+class TestSearchHitFields:
+    """The triage hit's chainable handles and its year."""
+
+    @pytest.mark.asyncio
+    async def test_the_hit_carries_the_bare_arxiv_id(self, monkeypatch):
+        # `arxiv_id` is what the docstring's "free cache hit" promise rests on;
+        # it must be the bare versioned id, not the Atom URL.
+        async def fake_search(query, max_results=10):
+            return {
+                "total_results": 1,
+                "entries": [
+                    {
+                        "id": "http://arxiv.org/abs/2301.00001v1",
+                        "title": "T",
+                        "published": "2023-04-05T00:00:00Z",
+                        "authors": [{"name": "Jane Doe"}],
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_search)
+
+        hit = (await server.search_arxiv("anything"))["results"][0]
+        assert hit["arxiv_id"] == "2301.00001v1"
+        assert hit["published_year"] == 2023
+
+    @pytest.mark.asyncio
+    async def test_a_superscript_year_degrades_instead_of_raising(self, monkeypatch):
+        """`"²⁰²³".isdigit()` is True and `int()` on it raises ValueError.
+
+        `arxiv.search_papers` documents avoiding the same trap when parsing
+        `totalResults`; the year parse must agree with it.
+        """
+
+        async def fake_search(query, max_results=10):
+            return {
+                "total_results": 1,
+                "entries": [
+                    {
+                        "id": "http://arxiv.org/abs/2301.1",
+                        "title": "T",
+                        "published": "\u00b2\u2070\u00b2\u00b3-01-01",
+                        "authors": [],
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_search)
+
+        hit = (await server.search_arxiv("anything"))["results"][0]
+        assert hit["published_year"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_non_dict_crossref_author_row_is_filtered_not_fatal(self, monkeypatch):
+        """`search_works` types the items but not their `author` rows.
+
+        A bare-string row used to reach `.get()` as an AttributeError, and the
+        wrong-shape body is positive-cached for the full TTL — so every call
+        raised until the entry expired.
+        """
+
+        async def fake_search(bibliographic, year=None, rows=5):
+            return {
+                "items": [
+                    {
+                        "DOI": "10.1234/x",
+                        "title": ["Mixed rows"],
+                        "author": ["Jane Doe", {"given": "John", "family": "Roe"}],
+                    }
+                ],
+                "total_results": 1,
+            }
+
+        monkeypatch.setattr(crossref, "search_works", fake_search)
+
+        hit = (await server.search_crossref_by_title("anything"))["results"][0]
+        # Counted the same list the name came from: one usable row, not two.
+        assert hit["first_author"] == "John Roe"
+        assert hit["author_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_an_absent_upstream_total_is_zero_on_both_tools(self, monkeypatch):
+        # Crossref omits `total-results` on some responses. The key means the
+        # same thing on both tools or an agent cannot branch on it.
+        async def fake_arxiv(query, max_results=10):
+            return {"entries": []}
+
+        async def fake_crossref(bibliographic, year=None, rows=5):
+            return {"items": []}
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_arxiv)
+        monkeypatch.setattr(crossref, "search_works", fake_crossref)
+
+        assert (await server.search_arxiv("x"))["total_results"] == 0
+        assert (await server.search_crossref_by_title("x"))["total_results"] == 0
+
+
 # ---------------------------------------------------------------------------
 # find_in_paper: error contract + happy path
 # ---------------------------------------------------------------------------
@@ -1332,6 +1524,51 @@ class TestFindInPaper:
         hit = result["results"][0]
         assert hit["section"] == "Introduction"
         assert "char_offset" in hit
+
+    @pytest.mark.asyncio
+    async def test_case_sensitive_and_whole_words_reach_the_scanner(self, isolated_cache):
+        # Both flags were exercised only against papers.find_in_markdown, so
+        # the kwarg wiring through the tool was unverified.
+        target = manual.resolve_target("2301.00002")
+        md_path = papers.markdown_path(target["namespace"], target["canonical"])
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# T\n\n## Intro\n\nA subset of the Set of sets.\n")
+
+        loose = await server.find_in_paper("2301.00002", "set")
+        assert loose["result_count"] == 3  # subset, Set, sets
+
+        whole = await server.find_in_paper("2301.00002", "set", whole_words=True)
+        assert [h["match"] for h in whole["results"]] == ["Set"]
+
+        cased = await server.find_in_paper("2301.00002", "Set", case_sensitive=True)
+        assert [h["match"] for h in cased["results"]] == ["Set"]
+
+    @pytest.mark.asyncio
+    async def test_the_echoed_identifier_is_canonical(self, isolated_cache):
+        """One markdown file must not answer to two identities.
+
+        Every other tool that echoes an identifier canonicalizes it first —
+        `_canonical_id` on the paper family, `doi` on the graph tools.
+        """
+        target = manual.resolve_target("2301.00003v2")
+        md_path = papers.markdown_path(target["namespace"], target["canonical"])
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# T\n\n## Intro\n\ndropout.\n")
+
+        for spelling in ("2301.00003v2", "arXiv:2301.00003v2"):
+            result = await server.find_in_paper(spelling, "dropout")
+            assert result["paper_identifier"] == "2301.00003v2"
+
+    @pytest.mark.asyncio
+    async def test_truncated_is_true_when_more_matches_exist(self, isolated_cache):
+        target = manual.resolve_target("2301.00004")
+        md_path = papers.markdown_path(target["namespace"], target["canonical"])
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("# T\n\n## Intro\n\ndropout dropout dropout.\n")
+
+        capped = await server.find_in_paper("2301.00004", "dropout", max_results=2)
+        assert capped["result_count"] == 2
+        assert capped["truncated"] is True
 
 
 # ---------------------------------------------------------------------------
