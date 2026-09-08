@@ -6,7 +6,7 @@ concrete failure the module has to be safe from:
 * one paper, one cache key — the reason `doinorm` is single-homed, restated for the
   provider that layers a prefix on top of it;
 * the PDF, the markdown and the section index all key on that same string, so
-  `cache_search` can invert an ACL filename back to the identifier the router
+  `corpus` can invert an ACL filename back to the identifier the router
   accepts;
 * `pdf_url` addresses exactly the resource it names, whatever the DOI suffix
   turns out to contain.
@@ -17,7 +17,7 @@ from urllib.parse import quote, urlsplit
 from hypothesis import given
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache_search, manual
+from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.providers import acl
 from academic_tools_mcp.store import stems
 from academic_tools_mcp.util import doinorm
@@ -135,7 +135,7 @@ def test_a_stored_stem_inverts_to_an_identifier_the_router_accepts(doi: str) -> 
     """
     canonical = acl.canonical_key(doi)
     stem = acl.pdf_path(doi).stem
-    recovered = cache_search._filename_to_canonical(acl.NAMESPACE, stem)
+    recovered = corpus._filename_to_canonical(acl.NAMESPACE, stem)
     assert recovered == canonical
     target = manual.resolve_target(recovered)
     assert target["namespace"] == acl.NAMESPACE

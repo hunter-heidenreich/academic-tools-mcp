@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from .. import manual, papers
-from .._app import (
+from ..app import (
     _SECTION_HARNESS_CAP,
     ALLOW_OA_URL,
     CONVERT_FORCE_REFRESH,

@@ -20,7 +20,7 @@ NAMESPACE = "acl_anthology"
 # Agent-facing provider name; every site that names us reads it (providers.md).
 LABEL = "ACL Anthology"
 
-# Exported: ``cache_search`` inverts a stored stem with this same prefix.
+# Exported: ``corpus`` inverts a stored stem with this same prefix.
 ACL_DOI_PREFIX = "10.18653/v1/"
 
 # PDF downloads are larger than a metadata call; use a generous timeout.

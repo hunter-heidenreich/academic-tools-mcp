@@ -224,7 +224,7 @@ class TestOffsetMapProperties:
 class TestLowerWithMap:
     """``lower_with_map`` lowercases (optionally NFKD-folding first) while
     tracking an index map back to ORIGINAL offsets. The snippet locator in
-    ``cache_search`` searches the lowered/folded text but must slice the
+    ``corpus`` searches the lowered/folded text but must slice the
     ORIGINAL markdown, so length-changing lowercase mappings (U+0130) and
     folding expansions (ligatures) both have to round-trip."""
 

@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from .._app import (
+from ..app import (
     DOI,
     FORCE_REFRESH,
     PAGE,

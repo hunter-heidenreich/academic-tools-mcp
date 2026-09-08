@@ -1,7 +1,7 @@
 """Per-provider persistent ``httpx.AsyncClient`` pool.
 
 Each provider gets one long-lived client, so a multi-call session pays one
-TCP+TLS handshake rather than one per request. ``_app._lifespan`` calls
+TCP+TLS handshake rather than one per request. ``app._lifespan`` calls
 ``aclose_all`` on shutdown.
 
 Pooling is orthogonal to throttling — servers count requests, not connections —

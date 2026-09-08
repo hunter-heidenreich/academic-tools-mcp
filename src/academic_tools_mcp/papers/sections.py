@@ -7,7 +7,7 @@ converter.
 Section splitting is fixed, not adaptive — see ``_SECTION_LEVELS``.
 
 **One heading scan, one set of boundaries.** ``parse_sections``,
-``find_in_markdown``, ``get_section_content`` and ``cache_search.search`` all
+``find_in_markdown``, ``get_section_content`` and ``corpus.search`` all
 route through :func:`_scan`; ``first_section_heading`` is the one deliberate
 exception, short-circuiting on the first heading rather than parsing the whole
 document. A second implementation is agent-visible, not merely untidy: drop the

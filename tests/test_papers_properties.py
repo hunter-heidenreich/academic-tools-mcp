@@ -213,7 +213,7 @@ def test_detection_and_the_index_are_one_scan(markdown: str) -> None:
 def test_detection_agrees_with_the_title_extractor(markdown: str) -> None:
     """One policy for "which levels are title-level", two readers of it.
 
-    ``cache_search`` names a hit's paper with ``first_section_heading`` while
+    ``corpus`` names a hit's paper with ``first_section_heading`` while
     the reader indexes it with the section scan; a heading one sees and the
     other doesn't is a hit that names a section the index has no entry for.
     """

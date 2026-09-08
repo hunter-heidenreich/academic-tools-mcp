@@ -109,7 +109,7 @@ _ARXIV_URL_RE = re.compile(
 ARXIV_DOI_PREFIX = "10.48550/arXiv."
 _ARXIV_DOI_RE = re.compile(rf"^{re.escape(ARXIV_DOI_PREFIX)}(.+)$", re.IGNORECASE)
 
-# The old-style pair is exported: ``cache_search`` matches it over
+# The old-style pair is exported: ``corpus`` matches it over
 # ``safe_stem``'s ``_`` rather than ``/``. ``math.GT``/``cond-mat.stat-mech``
 # are why the archive class carries ``.``.
 OLD_ARCHIVE_PATTERN = r"[a-z][a-z.\-]*"

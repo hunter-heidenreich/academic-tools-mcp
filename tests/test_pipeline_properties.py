@@ -14,7 +14,7 @@ error, did new bytes land, who wrote the markdown), and only one combination
 may delete anything the operator cannot regenerate.
 
 The **advice** seam: every error an agent receives has to say what to do next.
-`_app.not_converted_error`'s docstring makes it a contract — agents branch on
+`app.not_converted_error`'s docstring makes it a contract — agents branch on
 `suggestion`, never on the prose inside `error` — and the failures arrive from
 four modules that each stop at their own vocabulary.
 """

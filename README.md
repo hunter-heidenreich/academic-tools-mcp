@@ -284,7 +284,7 @@ uv run pytest -q --cov=academic_tools_mcp --cov-report=term-missing --cov-fail-u
 server.py            thin entry: re-exports mcp + tools, registers the
   │                  optional debug tool
   │
-  ├── _app.py        FastMCP instance, lifespan, shared Annotated param types
+  ├── app.py        FastMCP instance, lifespan, shared Annotated param types
   ├── tools/         21 @mcp.tool functions, split by job
   │                    paper.py     metadata / authors / abstract / bibtex
   │                    pipeline.py  download → convert → sections → section
@@ -299,9 +299,9 @@ server.py            thin entry: re-exports mcp + tools, registers the
   │                  papers/           sections.py  markdown structure + search
   │                                    index.py     the section index + its lock
   │                                    convert.py   converter subprocess + gate
-  │                  cache_search.py   BM25 over cached markdown (SQLite FTS5)
+  │                  corpus.py   BM25 over cached markdown (SQLite FTS5)
   │                  bibtex.py         BibTeX generation
-  │                  _fast_extract.py  bundled pymupdf text extractor
+  │                  fast_extract.py  bundled pymupdf text extractor
   │
   ├── download/      getting PDF bytes onto disk
   │                  streaming.py   streaming download, size cap, cached-download

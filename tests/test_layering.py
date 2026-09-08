@@ -27,9 +27,9 @@ ROOT = pathlib.Path(academic_tools_mcp.__file__).parent
 # to the package; a bare package name (``providers``) covers every module in it.
 _LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     # The lowest layer is defined by a property, not a theme: these import
-    # nothing from the package. `_fast_extract` is a `python -m` subprocess
+    # nothing from the package. `fast_extract` is a `python -m` subprocess
     # target with no importers, so it stays flat rather than joining `util/`.
-    ("leaf", frozenset({"util", "_fast_extract"})),
+    ("leaf", frozenset({"util", "fast_extract"})),
     ("net", frozenset({"net"})),
     ("store", frozenset({"store"})),
     # `download/` groups by job, not by layer, and these two really are at
@@ -41,9 +41,9 @@ _LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     ("providers", frozenset({"providers"})),
     (
         "content",
-        frozenset({"papers", "manual", "cache_search", "bibtex", "download.openaccess"}),
+        frozenset({"papers", "manual", "corpus", "bibtex", "download.openaccess"}),
     ),
-    ("app", frozenset({"_app"})),
+    ("app", frozenset({"app"})),
     ("tools", frozenset({"tools"})),
     ("entry", frozenset({"server"})),
 )
@@ -161,7 +161,7 @@ def test_discovery_found_the_package():
     # Guards the scan itself: a walk that silently found nothing would make
     # every parametrized check below vacuously pass.
     assert len(_MODULES) > 30
-    assert {"server", "_app", "store.cache", "providers.arxiv", "tools.paper"} <= set(_MODULES)
+    assert {"server", "app", "store.cache", "providers.arxiv", "tools.paper"} <= set(_MODULES)
     assert _GRAPH["server"], "server.py imports the whole tool surface"
 
 
@@ -236,13 +236,13 @@ def test_no_provider_imports_the_conversion_pipeline():
 
 
 def test_app_never_imports_tools():
-    # The one-way edge that lets every tools/* module import _app without a cycle.
-    offenders = {t for t in _GRAPH["_app"] if t == "tools" or t.startswith("tools.")}
-    assert not offenders, f"_app imports {offenders} — that recreates the import cycle"
+    # The one-way edge that lets every tools/* module import app without a cycle.
+    offenders = {t for t in _GRAPH["app"] if t == "tools" or t.startswith("tools.")}
+    assert not offenders, f"app imports {offenders} — that recreates the import cycle"
 
 
 def test_no_tool_module_imports_another():
-    # A helper needed by two tool modules belongs in _app, not imported sideways.
+    # A helper needed by two tool modules belongs in app, not imported sideways.
     for name in sorted(n for n in _MODULES if n.startswith("tools.")):
         offenders = {t for t in _GRAPH[name] if t.startswith("tools.")}
-        assert not offenders, f"{name} imports {offenders} — move the shared helper to _app"
+        assert not offenders, f"{name} imports {offenders} — move the shared helper to app"

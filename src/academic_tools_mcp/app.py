@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal, TypeVar
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import cache_search, manual
+from . import corpus, manual
 from .net import clients
 from .providers import acl
 from .store import cache, stems
@@ -504,13 +504,13 @@ _CACHE_SEARCH_TOP_K = Annotated[
     int,
     Field(
         description=(
-            f"Maximum number of hits to return (1-{cache_search._MAX_TOP_K}, "
+            f"Maximum number of hits to return (1-{corpus.MAX_TOP_K}, "
             "default 10). Hits are ranked by BM25; ties go to the first-seen "
             "file in alphabetical order."
         ),
         ge=1,
         # Bound to the engine's own cap rather than a transcribed number, so
         # the two can't drift apart.
-        le=cache_search._MAX_TOP_K,
+        le=corpus.MAX_TOP_K,
     ),
 ]

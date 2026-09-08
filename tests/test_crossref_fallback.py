@@ -200,32 +200,32 @@ class TestFormatCrossrefMetadata:
 
 
 class TestFirstHelper:
-    """Unit coverage for the shared _app._first list-unwrap helper."""
+    """Unit coverage for the shared app._first list-unwrap helper."""
 
     def test_unwraps_list(self):
-        from academic_tools_mcp._app import _first
+        from academic_tools_mcp.app import _first
 
         assert _first(["a", "b"]) == "a"
 
     def test_empty_list_is_none(self):
-        from academic_tools_mcp._app import _first
+        from academic_tools_mcp.app import _first
 
         assert _first([]) is None
 
     def test_passes_through_scalar(self):
-        from academic_tools_mcp._app import _first
+        from academic_tools_mcp.app import _first
 
         assert _first("plain") == "plain"
         assert _first(None) is None
 
 
 class TestCrossrefDateHelper:
-    """Unit coverage for the shared _app._crossref_date helper (used by both
+    """Unit coverage for the shared app._crossref_date helper (used by both
     paper.py metadata formatting and search.py year extraction, so the two
     can't drift on whether `posted` counts)."""
 
     def test_reads_posted(self):
-        from academic_tools_mcp._app import _crossref_date
+        from academic_tools_mcp.app import _crossref_date
 
         assert _crossref_date({"posted": {"date-parts": [[2025, 11, 3]]}}) == (
             2025,
@@ -233,13 +233,13 @@ class TestCrossrefDateHelper:
         )
 
     def test_issued_wins_over_posted(self):
-        from academic_tools_mcp._app import _crossref_date
+        from academic_tools_mcp.app import _crossref_date
 
         work = {"issued": {"date-parts": [[2024]]}, "posted": {"date-parts": [[2023]]}}
         assert _crossref_date(work) == (2024, "2024")
 
     def test_guards_malformed_date_parts(self):
-        from academic_tools_mcp._app import _crossref_date
+        from academic_tools_mcp.app import _crossref_date
 
         assert _crossref_date({"issued": {"date-parts": None}}) == (None, None)
         assert _crossref_date({"issued": {"date-parts": []}}) == (None, None)

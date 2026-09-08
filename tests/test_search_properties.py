@@ -32,7 +32,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache_search, manual, server
+from academic_tools_mcp import corpus, manual, server
 from academic_tools_mcp.providers import arxiv, crossref, wikipedia
 from academic_tools_mcp.store import stems
 from academic_tools_mcp.tools import search
@@ -313,9 +313,9 @@ def test_the_note_never_asserts_a_cause_that_is_not_present(reasons: set[str]) -
 
 
 def test_every_reason_the_engine_records_has_an_explanation() -> None:
-    """`_UNINDEXABLE_REASONS` must cover `cache_search`'s whole vocabulary.
+    """`_UNINDEXABLE_REASONS` must cover `corpus`'s whole vocabulary.
 
     A reason added to the engine and not here degrades silently to the
     residual, which is honest but says less than the engine knew.
     """
-    assert set(search._UNINDEXABLE_REASONS) == set(cache_search.UNINDEXABLE_REASONS)
+    assert set(search._UNINDEXABLE_REASONS) == set(corpus.UNINDEXABLE_REASONS)

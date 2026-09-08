@@ -145,7 +145,7 @@ class TestPdfPath:
 
     The Anthology ID addresses the CDN and nothing on disk. Keying the PDF on it
     instead made ACL the one namespace whose PDF stem disagreed with its markdown
-    and section-index stems, which is the identity ``cache_search`` inverts an ACL
+    and section-index stems, which is the identity ``corpus`` inverts an ACL
     filename with.
     """
 
@@ -166,7 +166,7 @@ class TestPdfPath:
         assert acl.pdf_path("10.18653/V1/P16-1160") == acl.pdf_path("10.18653/v1/p16-1160")
 
     def test_agrees_with_the_markdown_stem(self):
-        # The two used to disagree, and cache_search's ACL stem inversion was
+        # The two used to disagree, and corpus's ACL stem inversion was
         # correct only by accident of walking markdown rather than pdfs.
         doi = "10.18653/v1/2023.acl-long.1"
         canonical = acl.canonical_key(doi)

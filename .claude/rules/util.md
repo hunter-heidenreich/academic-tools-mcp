@@ -15,7 +15,7 @@ The single home for DOI normalization: `normalize` (bare form), `canonical` (cac
 
 **Invariant: a bare DOI is verbatim; the URL form cuts at `?`/`#`.** Both are legal DOI suffix characters, so truncating a bare DOI there would silently key a *different* paper; in a URL they are unresolvable unless percent-encoded, so a literal one is a query string. The asymmetry is the policy, not a gap; the property-based strategy excludes `?#` for exactly this reason.
 
-**Never add a local copy for inbound normalization** — including a bare DOI-shape regex, which is a normalization decision in disguise: dispatch and caching must agree on what a DOI is. `REGISTRANT_PATTERN` is exported for the one consumer that needs the pattern rather than the function (`cache_search._MANUAL_DOI_STEM_RE`, inverting a stored filename stem); build from it instead of respelling `10\.\d{4,}`. `biorxiv.DOI_PREFIX` and `acl.ACL_DOI_PREFIX` are exported to that same consumer for the same reason. One deliberate exception, on the *response* side: `openalex._canonical_from_response_doi` strips a `doi.org` URL unconditionally, where `canonical` strips only when the path is DOI-shaped, so a path it doesn't match would survive as a full URL and miss the key the batch asked for.
+**Never add a local copy for inbound normalization** — including a bare DOI-shape regex, which is a normalization decision in disguise: dispatch and caching must agree on what a DOI is. `REGISTRANT_PATTERN` is exported for the one consumer that needs the pattern rather than the function (`corpus._MANUAL_DOI_STEM_RE`, inverting a stored filename stem); build from it instead of respelling `10\.\d{4,}`. `biorxiv.DOI_PREFIX` and `acl.ACL_DOI_PREFIX` are exported to that same consumer for the same reason. One deliberate exception, on the *response* side: `openalex._canonical_from_response_doi` strips a `doi.org` URL unconditionally, where `canonical` strips only when the path is DOI-shaped, so a path it doesn't match would survive as a full URL and miss the key the batch asked for.
 
 **Response-side DOIs get normalized too.** All three `bibtex` generators run the provider's DOI through `normalize` before emitting a `doi=` field: OpenAlex serves the DOI as a resolver URL and, for older records, over plain http, and a `doi=` field holding a URL renders as a doubled resolver link.
 
@@ -35,7 +35,7 @@ The single home for the outbound `User-Agent`: `build(mailto)`, `headers(mailto)
 
 ## util/textnorm.py
 
-Diacritic folding for search: `papers.find_in_markdown`, `papers._match_section_title` and `cache_search` (both halves), `bibtex` key generation (`fold` only).
+Diacritic folding for search: `papers.find_in_markdown`, `papers._match_section_title` and `corpus` (both halves), `bibtex` key generation (`fold` only).
 
 **Any consumer that needs offsets back into the original text takes them from `fold_with_map` / `lower_with_map` — never a hand-rolled `str.lower()`, and not even on the `fold=False` path.** Neither transform is length-preserving (`ﬁ` → `fi`; U+0130 `İ` lowercases to two chars), so the index map is built per *original* character and attributes every produced char to exactly one original index. An unmapped offset drifts the snippet window and the section attribution off the real match.
 

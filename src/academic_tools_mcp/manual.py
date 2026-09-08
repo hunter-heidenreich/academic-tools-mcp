@@ -170,9 +170,9 @@ def _misrouted_arxiv_id(stem: str) -> str | None:
     Restoring *every* ``_`` is safe only because ``is_arxiv_id`` adjudicates:
     a candidate it rejects is discarded, so an over-eager repair cannot claim
     a label that is genuinely manual's. Repair then decode is the order
-    ``cache_search`` inverts stems in.
+    ``corpus`` inverts stems in.
 
-    Deliberately *not* ``cache_search._filename_to_canonical``, despite being
+    Deliberately *not* ``corpus._filename_to_canonical``, despite being
     the same shape of operation. That one repairs the slash with each
     namespace's own anchored grammar, which is right for a stem that namespace
     wrote — and wrong here: these stems were written under the legacy

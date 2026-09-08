@@ -22,7 +22,7 @@ import re
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache_search, manual
+from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.util import textnorm
 
@@ -140,7 +140,7 @@ def test_a_stored_paper_inverts_to_the_key_it_was_stored_under(identifier: str) 
     """
     target = manual.resolve_target(identifier)
     stem = stems.safe_stem(target["canonical"])
-    assert cache_search._filename_to_canonical(target["namespace"], stem) == target["canonical"]
+    assert corpus._filename_to_canonical(target["namespace"], stem) == target["canonical"]
 
 
 @given(st.one_of(arxiv_new_ids, arxiv_old_ids, prefixed_arxiv_ids))
@@ -219,7 +219,7 @@ def test_snippet_offset_lands_on_the_match_not_beside_it(
     """
     term = "zqxwidget"
     markdown = f"{prefix} {term} {suffix}"
-    snippet, offset = cache_search._extract_snippet(markdown, {term}, normalize=normalize)
+    snippet, offset = corpus._extract_snippet(markdown, {term}, normalize=normalize)
     assert offset is not None
     recovered = markdown[offset : offset + len(term)]
     assert (textnorm.fold(recovered) if normalize else recovered).lower() == term
@@ -229,7 +229,7 @@ def test_snippet_offset_lands_on_the_match_not_beside_it(
 @given(_TRICKY)
 def test_a_term_that_is_absent_reports_no_offset(prefix: str) -> None:
     """No match means no offset — the caller must not attribute a section to it."""
-    snippet, offset = cache_search._extract_snippet(prefix, {"zqxwidget"})
+    snippet, offset = corpus._extract_snippet(prefix, {"zqxwidget"})
     assert offset is None
     # The head of the document, shaped like any other snippet: trimmed and
     # whitespace-collapsed, so the key means one thing in both cases.
@@ -264,9 +264,9 @@ def test_search_returns_a_well_formed_list_for_any_query(query: str, top_k: int)
     would be an unhandled exception, not an empty result.
     """
     _seed_once()
-    hits = cache_search.search(query, top_k=top_k)
+    hits = corpus.search(query, top_k=top_k)
     assert isinstance(hits, list)
-    assert len(hits) <= max(0, min(top_k, cache_search._MAX_TOP_K))
+    assert len(hits) <= max(0, min(top_k, corpus.MAX_TOP_K))
     for hit in hits:
         # Invariant the docstring states and the rounding must not break.
         assert hit["score"] > 0
@@ -292,10 +292,10 @@ def test_every_surviving_word_is_a_word_of_the_query(query: str) -> None:
     `unicode61` strips neither stopwords nor single characters, so an
     unfiltered "the" would OR in a term matching essentially every document.
     """
-    for word in cache_search._query_words(query):
+    for word in corpus._query_words(query):
         assert word in query
         assert len(word) > 1
-        assert word.lower() not in cache_search._STOPWORDS
+        assert word.lower() not in corpus._STOPWORDS
 
 
 @given(st.text(max_size=80))
@@ -308,7 +308,7 @@ def test_the_match_expression_is_empty_or_executable(query: str) -> None:
     """
     import sqlite3
 
-    expression = cache_search._fts_query(query)
+    expression = corpus._fts_query(query)
     if not expression:
         return
     con = sqlite3.connect(":memory:")
@@ -323,7 +323,7 @@ def test_the_match_expression_is_empty_or_executable(query: str) -> None:
 @given(st.text(max_size=80))
 def test_the_match_expression_is_deduplicated(query: str) -> None:
     """A word repeated in the query contributes one term, not two."""
-    expression = cache_search._fts_query(query)
+    expression = corpus._fts_query(query)
     assume(expression)
     terms = expression.split(" OR ")
     assert len(terms) == len(set(terms))
@@ -340,8 +340,8 @@ def test_snippet_terms_cover_the_words_the_index_matched(query: str) -> None:
     one, which centres the snippet on the document head and reports no
     section — a hit the index found perfectly well, come back unnavigable.
     """
-    terms = cache_search._snippet_terms(query, normalize=False)
-    for word in cache_search._query_words(query):
+    terms = corpus._snippet_terms(query, normalize=False)
+    for word in corpus._query_words(query):
         assert word.lower() in terms
 
 
@@ -353,10 +353,10 @@ def test_snippet_terms_cover_the_words_the_index_matched(query: str) -> None:
 @given(st.text(max_size=80), st.booleans())
 def test_tokens_are_lowercase_content_words(text: str, normalize: bool) -> None:
     """Every `_content_tokens` token is lowercase, longer than one char, and not a stopword."""
-    for token in cache_search._content_tokens(text, normalize=normalize):
+    for token in corpus._content_tokens(text, normalize=normalize):
         assert token == token.lower()
         assert len(token) > 1
-        assert token not in cache_search._STOPWORDS
+        assert token not in corpus._STOPWORDS
         assert re.fullmatch(r"[a-z0-9][a-z0-9.\-]*", token)
 
 
@@ -367,7 +367,7 @@ def test_normalizing_is_folding_then_tokenizing(text: str) -> None:
     The query and the documents must agree on the folded vocabulary; a second
     normalization policy here would let them diverge.
     """
-    assert cache_search._content_tokens(text, normalize=True) == cache_search._content_tokens(
+    assert corpus._content_tokens(text, normalize=True) == corpus._content_tokens(
         textnorm.fold(text)
     )
 
@@ -407,10 +407,10 @@ def test_the_window_finds_the_densest_cluster(words: list[str]) -> None:
     markdown = " ".join(words)
     assume(any(w in terms for w in words))
 
-    _, offset = cache_search._extract_snippet(markdown, terms)
+    _, offset = corpus._extract_snippet(markdown, terms)
 
     assert offset is not None
-    half = cache_search._SNIPPET_CHARS // 2
+    half = corpus._SNIPPET_CHARS // 2
     expected = _brute_force_best(markdown, terms, half)
     # Equal-density ties resolve to the earliest, which is what both do.
     assert offset == expected

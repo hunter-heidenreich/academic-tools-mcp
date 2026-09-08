@@ -3,7 +3,7 @@
 Invoked as a subprocess by ``papers._convert_fast`` when
 ``PDF_FAST_CONVERTER=pymupdf``:
 
-    python -m academic_tools_mcp._fast_extract <pdf_path>
+    python -m academic_tools_mcp.fast_extract <pdf_path>
 
 Extracts plain text from every page and writes it to **stdout** (the contract
 every fast-converter backend follows). pymupdf is an optional dependency —
@@ -17,8 +17,9 @@ import sys
 
 
 def main(argv: list[str]) -> int:
+    """Print the PDF's text to stdout; diagnostics to stderr, non-zero on failure."""
     if len(argv) != 2:
-        print("usage: python -m academic_tools_mcp._fast_extract <pdf_path>", file=sys.stderr)
+        print("usage: python -m academic_tools_mcp.fast_extract <pdf_path>", file=sys.stderr)
         return 2
 
     pdf_path = argv[1]

@@ -34,7 +34,7 @@ def _get_client() -> httpx.AsyncClient:
 
 
 # All bioRxiv/medRxiv DOIs share this prefix. Exported for the reason ``doinorm``
-# exports ``REGISTRANT_PATTERN``: ``cache_search`` inverts a stored filename
+# exports ``REGISTRANT_PATTERN``: ``corpus`` inverts a stored filename
 # stem and needs the prefix rather than the function.
 DOI_PREFIX = "10.1101/"
 

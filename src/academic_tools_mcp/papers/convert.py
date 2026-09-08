@@ -59,7 +59,7 @@ _CONVERTERS: dict[str, str] = {
 # runner at the env where the optional `[fast]` extra is installed.
 _FAST_CONVERTERS: dict[str, str] = {
     "pdftotext": "pdftotext -layout {input} -",
-    "pymupdf": "{python} -m academic_tools_mcp._fast_extract {input}",
+    "pymupdf": "{python} -m academic_tools_mcp.fast_extract {input}",
 }
 
 

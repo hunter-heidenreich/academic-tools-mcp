@@ -90,7 +90,7 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN", "B011", "D", "S"]
 # Both write to stderr on purpose: stdout is the JSON-RPC channel.
-"src/academic_tools_mcp/_fast_extract.py" = ["T201"]
+"src/academic_tools_mcp/fast_extract.py" = ["T201"]
 "src/academic_tools_mcp/net/stats.py" = ["T201"]
 
 [tool.mypy]

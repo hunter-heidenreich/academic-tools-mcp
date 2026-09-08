@@ -22,7 +22,7 @@ file makes with ``from .test_doi_properties import dois``.
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache_search, manual
+from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.util import doinorm
 
@@ -74,7 +74,7 @@ def test_a_non_arxiv_identifier_never_claims_the_arxiv_namespace(identifier: str
 def test_the_router_and_the_stem_inversion_share_one_grammar(identifier: str) -> None:
     """An id the router accepts inverts from its stem, and vice versa.
 
-    ``arxiv._OLD_ID_RE`` and ``cache_search._ARXIV_OLDSTYLE_STEM_RE`` are the
+    ``arxiv._OLD_ID_RE`` and ``corpus._ARXIV_OLDSTYLE_STEM_RE`` are the
     same grammar over ``/`` and over ``safe_stem``'s ``_``; both are built from
     ``providers.arxiv``'s exported patterns. Forked, one accepts an archive
     class the other doesn't and a hit's ``canonical_id`` goes nowhere.
@@ -84,7 +84,7 @@ def test_the_router_and_the_stem_inversion_share_one_grammar(identifier: str) ->
     canonical = manual.resolve_target(identifier)["canonical"]
 
     assert arxiv._OLD_ID_RE.match(canonical)
-    assert cache_search._ARXIV_OLDSTYLE_STEM_RE.match(stems.safe_stem(canonical))
+    assert corpus._ARXIV_OLDSTYLE_STEM_RE.match(stems.safe_stem(canonical))
 
 
 # ---------------------------------------------------------------------------

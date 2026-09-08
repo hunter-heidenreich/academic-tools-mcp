@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import cache_search, manual, papers, server
+from academic_tools_mcp import corpus, manual, papers, server
 from academic_tools_mcp.store import cache, stems
 
 # ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ def isolated_cache():
     A second redirect here would only move the corpus somewhere the other
     suites don't look; ``_isolate_cache_root`` is autouse and points
     ``cache.CACHE_ROOT`` at this test's ``tmp_path``, which is what
-    ``cache_search`` reads at call time.
+    ``corpus`` reads at call time.
     """
     return cache.CACHE_ROOT
 
@@ -60,7 +60,7 @@ class TestContentTokens:
     def test_lowercases_and_drops_stopwords(self):
         # "is" and "you" are stopwords; "all" is deliberately NOT a
         # stopword (it's content-bearing in academic prose).
-        assert cache_search._content_tokens("Attention Is All You Need") == {
+        assert corpus._content_tokens("Attention Is All You Need") == {
             "attention",
             "all",
             "need",
@@ -71,7 +71,7 @@ class TestContentTokens:
         # period on "al." gets stripped because the regex requires the
         # last char of a multi-char token to be alphanumeric — "al"
         # comes back without it.
-        assert cache_search._content_tokens("Vaswani et al. (2017), [1]") == {
+        assert corpus._content_tokens("Vaswani et al. (2017), [1]") == {
             "vaswani",
             "et",
             "al",
@@ -81,25 +81,25 @@ class TestContentTokens:
     def test_preserves_intra_word_hyphens(self):
         # Domain terms with hyphens must survive as single tokens —
         # otherwise "self-attention" can't be queried as a phrase.
-        toks = cache_search._content_tokens("self-attention and cross-attention")
+        toks = corpus._content_tokens("self-attention and cross-attention")
         assert "self-attention" in toks
         assert "cross-attention" in toks
 
     def test_preserves_intra_word_dots(self):
         # Version strings and acronyms with dots stay intact.
-        assert "bm25" in cache_search._content_tokens("BM25 ranks documents")
-        assert "v1.5" in cache_search._content_tokens("model v1.5 fine-tuned")
+        assert "bm25" in corpus._content_tokens("BM25 ranks documents")
+        assert "v1.5" in corpus._content_tokens("model v1.5 fine-tuned")
 
     def test_drops_stopwords(self):
         # The classic stopwords are gone but content words survive.
-        toks = cache_search._content_tokens("the model is trained on a corpus of papers")
+        toks = corpus._content_tokens("the model is trained on a corpus of papers")
         for stop in ("the", "is", "on", "a", "of"):
             assert stop not in toks
         assert "model" in toks and "trained" in toks and "corpus" in toks
 
     def test_drops_single_char_tokens(self):
         # "x" alone is noise; "x86" is content.
-        toks = cache_search._content_tokens("we run x and y on x86 hardware")
+        toks = corpus._content_tokens("we run x and y on x86 hardware")
         assert "x" not in toks
         assert "y" not in toks
         assert "x86" in toks
@@ -107,9 +107,9 @@ class TestContentTokens:
     def test_normalize_folds_diacritics(self):
         # Without normalize the diacritic splits the token (the regex
         # only keeps [a-z0-9-.] runs), so "Gutiérrez" → ["guti", "rrez"].
-        assert cache_search._content_tokens("Gutiérrez") == {"guti", "rrez"}
+        assert corpus._content_tokens("Gutiérrez") == {"guti", "rrez"}
         # With normalize it folds to a single ASCII token.
-        assert cache_search._content_tokens("Gutiérrez", normalize=True) == {"gutierrez"}
+        assert corpus._content_tokens("Gutiérrez", normalize=True) == {"gutierrez"}
 
 
 # ---------------------------------------------------------------------------
@@ -120,23 +120,23 @@ class TestContentTokens:
 class TestExtractTitle:
     def test_returns_first_h1(self):
         md = "# Attention Is All You Need\n\n## Abstract\n\nbody\n"
-        assert cache_search._extract_title(md) == "Attention Is All You Need"
+        assert corpus._extract_title(md) == "Attention Is All You Need"
 
     def test_returns_first_h2_when_no_h1(self):
         # MinerU output often starts at H2 because the converter uses
         # H1 only for the parent doc; we accept either as the title.
         md = "## Title here\n\n## Section\n\nbody\n"
-        assert cache_search._extract_title(md) == "Title here"
+        assert corpus._extract_title(md) == "Title here"
 
     def test_skips_h3_when_no_h1_or_h2(self):
         # An H3-only document has no real title; return None rather
         # than promote a sub-heading that would mislead the agent.
         md = "### Subsection\n\nbody\n"
-        assert cache_search._extract_title(md) is None
+        assert corpus._extract_title(md) is None
 
     def test_returns_none_for_empty(self):
-        assert cache_search._extract_title("") is None
-        assert cache_search._extract_title("just some prose\n") is None
+        assert corpus._extract_title("") is None
+        assert corpus._extract_title("just some prose\n") is None
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ class TestSectionForOffset:
 class TestExtractSnippet:
     def test_centers_on_query_term(self):
         body = "lorem ipsum " * 50 + "variational dropout " + "lorem " * 50
-        snippet, offset = cache_search._extract_snippet(body, {"variational", "dropout"})
+        snippet, offset = corpus._extract_snippet(body, {"variational", "dropout"})
         # The phrase must appear in the snippet, not just somewhere in
         # the doc — that's the whole point of centering.
         assert "variational dropout" in snippet
@@ -233,7 +233,7 @@ class TestExtractSnippet:
             + "variational dropout helps inference "
             + "padding " * 100
         )
-        snippet, _ = cache_search._extract_snippet(body, {"variational", "dropout"})
+        snippet, _ = corpus._extract_snippet(body, {"variational", "dropout"})
         assert "variational dropout" in snippet
 
     def test_no_terms_reports_no_offset(self):
@@ -241,7 +241,7 @@ class TestExtractSnippet:
         # it is the same "nothing to centre on" case as a term that misses, and
         # must answer the same way — an offset of 0 would let the caller
         # attribute whichever section happens to start the document.
-        snippet, offset = cache_search._extract_snippet("# Title\n\nBody text.", set())
+        snippet, offset = corpus._extract_snippet("# Title\n\nBody text.", set())
         assert offset is None
         assert snippet.startswith("# Title")
 
@@ -253,9 +253,7 @@ class TestExtractSnippet:
         markdown = (
             "alpha alpha alpha " * 5 + gap + " delta " + gap + " alpha alpha beta gamma " + gap
         )
-        snippet, offset = cache_search._extract_snippet(
-            markdown, {"alpha", "beta", "gamma", "delta"}
-        )
+        snippet, offset = corpus._extract_snippet(markdown, {"alpha", "beta", "gamma", "delta"})
         assert offset is not None
         # The cluster carrying three terms wins over the denser alpha-only run
         # and over the lone "delta" the window must drop on its way past.
@@ -275,13 +273,13 @@ class TestExtractSnippet:
         body = "self self-attention " + gap + "gamma delta " + gap
         terms = {"self", "self-attention", "gamma", "delta"}
 
-        _, offset = cache_search._extract_snippet(body, terms)
+        _, offset = corpus._extract_snippet(body, terms)
 
         assert body[offset:].startswith("self self-attention")
 
     def test_falls_back_to_head_when_no_match(self):
         body = "introduction " * 50
-        snippet, offset = cache_search._extract_snippet(body, {"missing"})
+        snippet, offset = corpus._extract_snippet(body, {"missing"})
         assert offset is None
         # Returns a slice from the document head, not an empty string.
         assert "introduction" in snippet
@@ -290,7 +288,7 @@ class TestExtractSnippet:
         # "drop" must NOT match inside "dropout" — otherwise short
         # query terms accidentally hit substrings everywhere.
         body = "we use dropout heavily in training"
-        _, offset = cache_search._extract_snippet(body, {"drop"})
+        _, offset = corpus._extract_snippet(body, {"drop"})
         # No word-boundary match → fallback to head, offset is None.
         assert offset is None
 
@@ -298,7 +296,7 @@ class TestExtractSnippet:
         # The folded query term "gutierrez" must locate the accented
         # occurrence and report an offset into the ORIGINAL markdown.
         body = "padding " * 20 + "Work by Gutiérrez here " + "padding " * 20
-        _, offset = cache_search._extract_snippet(body, {"gutierrez"}, normalize=True)
+        _, offset = corpus._extract_snippet(body, {"gutierrez"}, normalize=True)
         assert offset is not None
         assert body[offset : offset + len("Gutiérrez")] == "Gutiérrez"
 
@@ -311,30 +309,30 @@ class TestExtractSnippet:
 class TestFilenameToCanonical:
     def test_arxiv_new_style_passes_through(self):
         # New-style arXiv IDs have no slashes, so no inversion needed.
-        assert cache_search._filename_to_canonical("arxiv", "2301.00001") == "2301.00001"
+        assert corpus._filename_to_canonical("arxiv", "2301.00001") == "2301.00001"
 
     def test_arxiv_old_style_restores_slash(self):
         # Old-style IDs like hep-th/9901001 are stored with the slash
         # converted to underscore; we must restore the slash so
         # get_paper_metadata still finds them.
-        assert cache_search._filename_to_canonical("arxiv", "hep-th_9901001") == "hep-th/9901001"
+        assert corpus._filename_to_canonical("arxiv", "hep-th_9901001") == "hep-th/9901001"
 
     def test_arxiv_old_style_non_physics_restores_slash(self):
         # Old-style IDs are NOT limited to the hyphenated physics archives.
         # cs/, math/, stat/, etc. take the same archive/NNNNNNN shape and
         # must round-trip too — a hardcoded prefix list silently dropped them.
-        assert cache_search._filename_to_canonical("arxiv", "cs_0501001") == "cs/0501001"
-        assert cache_search._filename_to_canonical("arxiv", "math_0309136") == "math/0309136"
+        assert corpus._filename_to_canonical("arxiv", "cs_0501001") == "cs/0501001"
+        assert corpus._filename_to_canonical("arxiv", "math_0309136") == "math/0309136"
 
     def test_arxiv_old_style_with_subject_class_restores_slash(self):
         # Subject-class form, lowercased by canonical_arxiv_id:
         # "math.GT/0309136" → canonical "math.gt/0309136" → stem
         # "math.gt_0309136" on disk → must invert back.
-        assert cache_search._filename_to_canonical("arxiv", "math.gt_0309136") == "math.gt/0309136"
+        assert corpus._filename_to_canonical("arxiv", "math.gt_0309136") == "math.gt/0309136"
 
     def test_biorxiv_restores_single_slash(self):
         assert (
-            cache_search._filename_to_canonical("biorxiv", "10.1101_2024.01.01.123")
+            corpus._filename_to_canonical("biorxiv", "10.1101_2024.01.01.123")
             == "10.1101/2024.01.01.123"
         )
 
@@ -342,16 +340,13 @@ class TestFilenameToCanonical:
         # ACL DOIs always start with 10.18653/v1/ — both slashes
         # become underscores on disk and must come back.
         assert (
-            cache_search._filename_to_canonical("acl_anthology", "10.18653_v1_2023.acl-long.1")
+            corpus._filename_to_canonical("acl_anthology", "10.18653_v1_2023.acl-long.1")
             == "10.18653/v1/2023.acl-long.1"
         )
 
     def test_manual_freeform_label_passes_through(self):
         # A label that isn't DOI-shaped has no slash to restore.
-        assert (
-            cache_search._filename_to_canonical("manual", "my-imported-paper")
-            == "my-imported-paper"
-        )
+        assert corpus._filename_to_canonical("manual", "my-imported-paper") == "my-imported-paper"
 
     def test_manual_publisher_doi_restores_slash(self):
         # resolve_target sends every non-arXiv/bioRxiv/ACL DOI to the manual
@@ -359,41 +354,39 @@ class TestFilenameToCanonical:
         # digits only, so the first "_" after it is unambiguously the slash —
         # without restoring it the hit's canonical_id chains nowhere.
         assert (
-            cache_search._filename_to_canonical("manual", "10.1038_s41586-021-03819-2")
+            corpus._filename_to_canonical("manual", "10.1038_s41586-021-03819-2")
             == "10.1038/s41586-021-03819-2"
         )
 
     def test_manual_only_the_registrant_slash_is_restored(self):
         # A suffix underscore is left alone: only the slash the registrant
         # prefix introduced is decidable.
-        assert cache_search._filename_to_canonical("manual", "10.1234_a_b") == "10.1234/a_b"
+        assert corpus._filename_to_canonical("manual", "10.1234_a_b") == "10.1234/a_b"
 
     def test_percent_escapes_are_decoded(self):
         # safe_stem percent-encodes anything outside [A-Za-z0-9.-]; the
         # inversion must decode it or the id doesn't round-trip.
         stem = stems.safe_stem("10.1002/(sici)1097-0258")
-        assert cache_search._filename_to_canonical("manual", stem) == "10.1002/(sici)1097-0258"
+        assert corpus._filename_to_canonical("manual", stem) == "10.1002/(sici)1097-0258"
 
     def test_a_literal_percent_is_not_read_as_an_escape(self):
         # safe_stem writes a literal "%" as "%25", so one unquote is its exact
         # inverse and can't manufacture an escape that was never there.
         stem = stems.safe_stem("10.1234/a%2fb")
-        assert cache_search._filename_to_canonical("manual", stem) == "10.1234/a%2fb"
+        assert corpus._filename_to_canonical("manual", stem) == "10.1234/a%2fb"
 
     def test_arxiv_old_style_keeps_its_version(self):
         # canonical_arxiv_id deliberately keeps the version, so a versioned
         # old-style stem occurs and must invert like any other.
-        assert cache_search._filename_to_canonical("arxiv", "hep-th_9901001v2") == (
-            "hep-th/9901001v2"
-        )
+        assert corpus._filename_to_canonical("arxiv", "hep-th_9901001v2") == ("hep-th/9901001v2")
 
     def test_a_namespace_repair_that_does_not_apply_passes_through(self):
         # A bioRxiv stem that does not carry the registrant prefix has no
         # decidable slash to restore.
-        assert cache_search._filename_to_canonical("biorxiv", "weird_stem") == "weird_stem"
+        assert corpus._filename_to_canonical("biorxiv", "weird_stem") == "weird_stem"
 
     def test_an_unknown_namespace_passes_through(self):
-        assert cache_search._filename_to_canonical("openalex", "10.1234_x") == "10.1234_x"
+        assert corpus._filename_to_canonical("openalex", "10.1234_x") == "10.1234_x"
 
     @pytest.mark.parametrize(
         "identifier",
@@ -420,9 +413,7 @@ class TestFilenameToCanonical:
         """
         target = manual.resolve_target(identifier)
         stem = stems.safe_stem(target["canonical"])
-        assert (
-            cache_search._filename_to_canonical(target["namespace"], stem) == (target["canonical"])
-        )
+        assert corpus._filename_to_canonical(target["namespace"], stem) == (target["canonical"])
 
     def test_round_trips_every_namespace(self):
         # The property that matters: safe_stem -> _filename_to_canonical is
@@ -435,7 +426,7 @@ class TestFilenameToCanonical:
             ("manual", "10.1038/s41586-021-03819-2"),
             ("manual", "my-imported-paper"),
         ):
-            assert cache_search._filename_to_canonical(ns, stems.safe_stem(canonical)) == canonical
+            assert corpus._filename_to_canonical(ns, stems.safe_stem(canonical)) == canonical
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +436,7 @@ class TestFilenameToCanonical:
 
 class TestSearch:
     def test_empty_cache_returns_empty(self, isolated_cache):
-        assert cache_search.search("anything") == []
+        assert corpus.search("anything") == []
 
     def test_no_match_returns_empty(self, isolated_cache):
         _seed_markdown(
@@ -454,7 +445,7 @@ class TestSearch:
             "2301.00001",
             "# Paper\n\n## Abstract\n\nThis is about cats and dogs.\n",
         )
-        assert cache_search.search("variational dropout") == []
+        assert corpus.search("variational dropout") == []
 
     def test_query_with_only_stopwords_returns_empty(self, isolated_cache):
         # "the and is" all get filtered before BM25 runs.
@@ -464,7 +455,7 @@ class TestSearch:
             "2301.00001",
             "# Paper\n\nbody with content.\n",
         )
-        assert cache_search.search("the and is") == []
+        assert corpus.search("the and is") == []
 
     def test_ranks_relevant_doc_first(self, isolated_cache):
         _seed_markdown(
@@ -484,7 +475,7 @@ class TestSearch:
             "## Abstract\n\n"
             "We propose a sequence-to-sequence model.\n",
         )
-        hits = cache_search.search("attention transformer")
+        hits = corpus.search("attention transformer")
         assert len(hits) >= 1
         assert hits[0]["canonical_id"] == "1706.03762"
         assert hits[0]["title"] == "Attention Is All You Need"
@@ -499,8 +490,8 @@ class TestSearch:
             "2301.00002",
             "# Survey\n\n## Refs\n\nMethod introduced by Gutiérrez et al.\n",
         )
-        assert cache_search.search("gutierrez") == []
-        hits = cache_search.search("gutierrez", normalize=True)
+        assert corpus.search("gutierrez") == []
+        hits = corpus.search("gutierrez", normalize=True)
         assert len(hits) == 1
         assert hits[0]["canonical_id"] == "2301.00002"
         assert hits[0]["score"] > 0
@@ -516,7 +507,7 @@ class TestSearch:
             "## Methods\n\n" + "The transformer applies attention everywhere. " * 5 + "\n"
         )
         _seed_markdown(isolated_cache, "arxiv", "1706.03762", body)
-        hits = cache_search.search("transformer attention")
+        hits = corpus.search("transformer attention")
         assert len(hits) == 1
         h = hits[0]
         assert set(h.keys()) == {
@@ -544,7 +535,7 @@ class TestSearch:
                 f"230{i}.00001",
                 f"# Paper {i}\n\n## Abstract\n\nattention is the topic.\n",
             )
-        hits = cache_search.search("attention", top_k=2)
+        hits = corpus.search("attention", top_k=2)
         assert len(hits) == 2
 
     def test_namespace_filter(self, isolated_cache):
@@ -561,7 +552,7 @@ class TestSearch:
             "my-paper",
             "# Manual paper\n\nattention mechanism here.\n",
         )
-        hits = cache_search.search("attention", namespace="manual")
+        hits = corpus.search("attention", namespace="manual")
         assert len(hits) == 1
         assert hits[0]["namespace"] == "manual"
         assert hits[0]["canonical_id"] == "my-paper"
@@ -575,7 +566,7 @@ class TestSearch:
             "10.18653_v1_2023.acl-long.1",
             "# Some ACL paper\n\nattention.\n",
         )
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
         assert hits[0]["canonical_id"] == "10.18653/v1/2023.acl-long.1"
 
     def test_zero_score_hits_dropped(self, isolated_cache):
@@ -592,18 +583,18 @@ class TestSearch:
             "1706.03762",
             "# Real paper\n\nattention everywhere.\n",
         )
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
         assert all(h["score"] > 0 for h in hits)
         assert all(h["canonical_id"] != "2301.99999" for h in hits)
 
     def test_top_k_zero_returns_empty(self, isolated_cache):
         # top_k=0 means "give me none" — it must not silently return one hit.
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# x\n\nattention.\n")
-        assert cache_search.search("attention", top_k=0) == []
+        assert corpus.search("attention", top_k=0) == []
 
     def test_top_k_negative_returns_empty(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# x\n\nattention.\n")
-        assert cache_search.search("attention", top_k=-5) == []
+        assert corpus.search("attention", top_k=-5) == []
 
     def test_tie_break_is_deterministic_by_stem(self, isolated_cache):
         # Identical content → identical BM25 score. Pre-fix, equal-scored hits
@@ -614,9 +605,9 @@ class TestSearch:
         content = "# Doc\n\n## Abstract\n\nattention transformer model.\n"
         _seed_markdown(isolated_cache, "arxiv", "b", content)
         _seed_markdown(isolated_cache, "arxiv", "c", content)
-        cache_search.search("attention")  # builds index with entries [b, c]
+        corpus.search("attention")  # builds index with entries [b, c]
         _seed_markdown(isolated_cache, "arxiv", "a", content)  # appended at end
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
         assert [h["canonical_id"] for h in hits] == ["a", "b", "c"]
 
     def test_top_k_clamped_to_max(self, isolated_cache):
@@ -627,9 +618,9 @@ class TestSearch:
             "2301.00001",
             "# x\n\nattention.\n",
         )
-        # Doesn't crash; the clamp on _MAX_TOP_K is internal.
-        hits = cache_search.search("attention", top_k=99999)
-        assert len(hits) <= cache_search._MAX_TOP_K
+        # Doesn't crash; the clamp on MAX_TOP_K is internal.
+        hits = corpus.search("attention", top_k=99999)
+        assert len(hits) <= corpus.MAX_TOP_K
 
     def test_a_hit_the_snippet_scan_cannot_locate_reports_no_section(self, isolated_cache):
         """FTS5 and the snippet scan disagree about "_", and the hit says so.
@@ -644,7 +635,7 @@ class TestSearch:
             isolated_cache, "arxiv", "p", "# T\n\n## Body\n\nthe attention_model was used.\n"
         )
 
-        (hit,) = cache_search.search("attention")
+        (hit,) = corpus.search("attention")
 
         assert hit["char_offset"] is None
         assert hit["section"] is None
@@ -669,7 +660,7 @@ class TestSearch:
         _seed_markdown(isolated_cache, "arxiv", "ghost", "attention too\n")
 
         self._break_reads_of(monkeypatch, "ghost.md")
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
 
         assert [h["canonical_id"] for h in hits] == ["2301.00001"]
 
@@ -684,10 +675,10 @@ class TestSearch:
         """
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# Real\n\nattention here.\n")
         _seed_markdown(isolated_cache, "arxiv", "ghost", "# Ghost\n\nattention too.\n")
-        assert len(cache_search.search("attention")) == 2
+        assert len(corpus.search("attention")) == 2
 
         self._break_reads_of(monkeypatch, "ghost.md")
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
 
         assert [h["canonical_id"] for h in hits] == ["2301.00001"]
 
@@ -709,7 +700,7 @@ class TestSearch:
         for i in range(40):
             _seed_markdown(isolated_cache, "arxiv", f"tiny{i}", f"# T{i}\n\ncommon tiny\n")
 
-        hits = cache_search.search("common", top_k=50)
+        hits = corpus.search("common", top_k=50)
 
         assert len(hits) == 41
         assert all(h["score"] > 0 for h in hits)
@@ -720,8 +711,8 @@ class TestSearch:
         _seed_markdown(isolated_cache, "arxiv", "a", "# A\n\nattention model here.\n")
         _seed_markdown(isolated_cache, "manual", "b", "# B\n\nattention attention model.\n")
 
-        unfiltered = {h["canonical_id"]: h["score"] for h in cache_search.search("attention")}
-        filtered = cache_search.search("attention", namespace="manual")
+        unfiltered = {h["canonical_id"]: h["score"] for h in corpus.search("attention")}
+        filtered = corpus.search("attention", namespace="manual")
 
         assert [h["canonical_id"] for h in filtered] == ["b"]
         assert filtered[0]["score"] == unfiltered["b"]
@@ -729,12 +720,12 @@ class TestSearch:
     def test_top_k_boundary_and_clamp(self, isolated_cache):
         # Exactly at the cap must pass; one past it must clamp. A one-document
         # corpus makes both assertions vacuous.
-        cap = cache_search._MAX_TOP_K
+        cap = corpus.MAX_TOP_K
         for i in range(cap + 5):
             _seed_markdown(isolated_cache, "arxiv", f"p{i:03d}", f"# P{i}\n\nattention model.\n")
 
-        assert len(cache_search.search("attention", top_k=cap)) == cap
-        assert len(cache_search.search("attention", top_k=cap + 1)) == cap
+        assert len(corpus.search("attention", top_k=cap)) == cap
+        assert len(corpus.search("attention", top_k=cap + 1)) == cap
 
 
 # ---------------------------------------------------------------------------
@@ -772,21 +763,21 @@ class TestSearchCachedPapersTool:
         assert one["result_count"] == 1
 
         # At the engine's cap must pass; the Field bound is that constant.
-        many = await server.search_cached_papers("transformer", top_k=cache_search._MAX_TOP_K)
+        many = await server.search_cached_papers("transformer", top_k=corpus.MAX_TOP_K)
         assert many["result_count"] == 3
 
     @pytest.mark.asyncio
     async def test_tool_threads_normalize_and_force_refresh(self, isolated_cache, monkeypatch):
         # Neither flag was passed through the tool in any test, so the
-        # keyword wiring into cache_search.search was unverified.
+        # keyword wiring into corpus.search was unverified.
         seen = {}
-        original = cache_search.search
+        original = corpus.search
 
         def spy(query, **kwargs):
             seen.update(kwargs)
             return original(query, **kwargs)
 
-        monkeypatch.setattr(cache_search, "search", spy)
+        monkeypatch.setattr(corpus, "search", spy)
 
         await server.search_cached_papers(
             "cafe", top_k=3, namespace="arxiv", normalize=True, force_refresh=True
@@ -810,7 +801,7 @@ class TestSearchCachedPapersTool:
     async def test_the_top_k_bound_is_the_engine_constant(self):
         # Not a number transcribed at the boundary.
         field = server.search_cached_papers.__annotations__["top_k"].__metadata__[0]
-        assert field.metadata[1].le == cache_search._MAX_TOP_K
+        assert field.metadata[1].le == corpus.MAX_TOP_K
 
     @pytest.mark.asyncio
     async def test_tool_namespace_filter(self, isolated_cache):
@@ -862,7 +853,7 @@ class TestIncrementalIndex:
         return seen
 
     def _index_rows(self):
-        con = cache_search._connect()
+        con = corpus._connect()
         try:
             return {(r["ns"], r["stem"]) for r in con.execute("SELECT ns, stem FROM files")}
         finally:
@@ -871,19 +862,19 @@ class TestIncrementalIndex:
     def test_index_is_created_and_populated(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
 
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
 
         assert len(hits) == 1
-        assert cache_search._index_path().exists()
+        assert corpus._index_path().exists()
         assert self._index_rows() == {("arxiv", "2301.00001")}
 
     def test_unchanged_files_are_not_reread(self, isolated_cache, monkeypatch):
         body = "# Paper\n\n## Abstract\n\n" + "attention transformer " * 50
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", body)
-        cache_search.search("attention")  # build
+        corpus.search("attention")  # build
 
         seen = self._count_markdown_reads(monkeypatch)
-        cache_search.search("attention")
+        corpus.search("attention")
 
         # Only the winner is re-read, to extract its snippet — never for
         # re-indexing.
@@ -891,20 +882,20 @@ class TestIncrementalIndex:
 
     def test_content_change_is_picked_up(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention\n")
-        assert cache_search.search("diffusion") == []
+        assert corpus.search("diffusion") == []
 
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\ndiffusion model\n")
 
-        assert len(cache_search.search("diffusion")) == 1
+        assert len(corpus.search("diffusion")) == 1
 
     def test_unchanged_sibling_not_reindexed(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "stable", "# A\n\nattention alpha\n")
         _seed_markdown(isolated_cache, "arxiv", "churn", "# B\n\nattention beta\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
         _seed_markdown(isolated_cache, "arxiv", "churn", "# B\n\nattention gamma\n")
         seen = self._count_markdown_reads(monkeypatch)
-        cache_search.search("zzzznomatch")
+        corpus.search("zzzznomatch")
 
         assert "churn" in seen
         assert "stable" not in seen
@@ -912,11 +903,11 @@ class TestIncrementalIndex:
     def test_deletion_pruning(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "keep", "# A\n\nattention alpha\n")
         _seed_markdown(isolated_cache, "arxiv", "gone", "# B\n\nattention beta\n")
-        cache_search.search("attention")
+        corpus.search("attention")
         assert self._index_rows() == {("arxiv", "keep"), ("arxiv", "gone")}
 
         (isolated_cache / "arxiv" / "markdown" / "gone.md").unlink()
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
 
         assert [h["canonical_id"] for h in hits] == ["keep"]
         assert self._index_rows() == {("arxiv", "keep")}
@@ -925,52 +916,52 @@ class TestIncrementalIndex:
         _seed_markdown(isolated_cache, "arxiv", "a", "# A\n\nshared model term\n")
         _seed_markdown(isolated_cache, "manual", "b", "# B\n\nshared model term\n")
 
-        hits = cache_search.search("model", namespace="manual")
+        hits = corpus.search("model", namespace="manual")
 
         assert [h["namespace"] for h in hits] == ["manual"]
 
     def test_corrupt_index_self_heals(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
-        cache_search._index_path().write_bytes(b"this is not a database at all")
+        corpus._index_path().write_bytes(b"this is not a database at all")
 
         # Derived state: discard and rebuild rather than failing every search.
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
         assert len(hits) == 1
 
     def test_schema_version_mismatch_rebuilds(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
-        con = cache_search._connect()
+        con = corpus._connect()
         with con:
             con.execute("UPDATE meta SET value = '999' WHERE key = 'schema_version'")
         con.close()
 
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
         assert len(hits) == 1
-        con = cache_search._connect()
+        con = corpus._connect()
         version = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
         con.close()
-        assert int(version) == cache_search._SCHEMA_VERSION
+        assert int(version) == corpus._SCHEMA_VERSION
 
     def test_force_refresh_reindexes_despite_stale_signal(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
         seen = self._count_markdown_reads(monkeypatch)
-        cache_search.search("zzzznomatch", force_refresh=True)
+        corpus.search("zzzznomatch", force_refresh=True)
 
         assert "2301.00001" in seen
 
     def test_normalize_and_default_share_one_index(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "2301.00002", "# S\n\nGutiérrez method\n")
-        cache_search.search("gutierrez", normalize=True)
+        corpus.search("gutierrez", normalize=True)
 
         seen = self._count_markdown_reads(monkeypatch)
-        cache_search.search("gutierrez", normalize=True)
-        cache_search.search("method")
+        corpus.search("gutierrez", normalize=True)
+        corpus.search("method")
 
         # Flipping the mode must not rebuild: both tables are populated in
         # the same pass, so only snippet re-reads happen.
@@ -986,7 +977,7 @@ class TestIncrementalIndex:
             )
 
         def run():
-            return cache_search.search("attention transformer")
+            return corpus.search("attention transformer")
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = [f.result() for f in [pool.submit(run) for _ in range(8)]]
@@ -999,19 +990,19 @@ class TestIncrementalIndex:
         # dir holds the database, not markdown, so indexing it would index the
         # index.
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention\n")
-        cache_search.search("attention")
-        assert cache_search._index_path().exists()
-        walked = cache_search._scan_markdown()
-        assert all(f.namespace != cache_search._INDEX_DIRNAME for f in walked)
-        assert all(ns != cache_search._INDEX_DIRNAME for ns, _ in self._index_rows())
+        corpus.search("attention")
+        assert corpus._index_path().exists()
+        walked = corpus._scan_markdown()
+        assert all(f.namespace != corpus._INDEX_DIRNAME for f in walked)
+        assert all(ns != corpus._INDEX_DIRNAME for ns, _ in self._index_rows())
 
     def test_legacy_json_index_is_swept_away(self, isolated_cache):
-        legacy = cache_search._legacy_index_path()
+        legacy = corpus._legacy_index_path()
         legacy.parent.mkdir(parents=True, exist_ok=True)
         legacy.write_text('{"version": 1, "entries": {}}')
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention\n")
 
-        cache_search.search("attention")
+        corpus.search("attention")
 
         assert not legacy.exists(), "the replaced 193 MB JSON index should be removed"
 
@@ -1041,15 +1032,15 @@ class TestIndexFailuresAreNotSilent:
             return original_read(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "read_text", selective_read)
-        assert cache_search.search("attention") == []
-        assert [r["reason"] for r in cache_search.unindexable()] == ["unreadable"]
+        assert corpus.search("attention") == []
+        assert [r["reason"] for r in corpus.unindexable()] == ["unreadable"]
 
         broken = False  # the lock cleared; the file itself never changed
         assert path.stat().st_mtime_ns == path.stat().st_mtime_ns
 
-        hits = cache_search.search("attention")
+        hits = corpus.search("attention")
         assert [h["canonical_id"] for h in hits] == ["locked"]
-        assert cache_search.unindexable() == []
+        assert corpus.unindexable() == []
 
     def test_a_real_io_failure_reports_the_unreadable_reason(self, isolated_cache, monkeypatch):
         # The engine's own `unreadable` path, not a monkeypatched `unindexable`.
@@ -1062,9 +1053,9 @@ class TestIndexFailuresAreNotSilent:
             return original_read(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "read_text", selective_read)
-        cache_search.search("attention")
+        corpus.search("attention")
 
-        assert cache_search.unindexable() == [
+        assert corpus.unindexable() == [
             {
                 "namespace": "arxiv",
                 "stem": "ghost",
@@ -1081,7 +1072,7 @@ class TestIndexFailuresAreNotSilent:
         is reported unreadable while still holding postings that say otherwise.
         """
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention model.\n")
-        assert len(cache_search.search("attention")) == 1
+        assert len(corpus.search("attention")) == 1
 
         original_read = Path.read_text
 
@@ -1094,10 +1085,10 @@ class TestIndexFailuresAreNotSilent:
         # Touch it so the (mtime, size) signal marks it changed.
         (isolated_cache / "arxiv" / "markdown" / "p.md").write_text("# P\n\nattention model!\n")
 
-        assert cache_search.search("attention") == []
-        assert [r["reason"] for r in cache_search.unindexable()] == ["unreadable"]
+        assert corpus.search("attention") == []
+        assert [r["reason"] for r in corpus.unindexable()] == ["unreadable"]
 
-        con = cache_search._connect()
+        con = corpus._connect()
         try:
             for table in ("fts", "fts_norm"):
                 assert con.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0, (
@@ -1116,7 +1107,7 @@ class TestIndexFailuresAreNotSilent:
         corpus walk on every tool call.
         """
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
         called = False
 
@@ -1124,8 +1115,8 @@ class TestIndexFailuresAreNotSilent:
             nonlocal called
             called = True
 
-        monkeypatch.setattr(cache_search, "_refresh_index", _boom)
-        assert cache_search.unindexable(refresh=False) == []
+        monkeypatch.setattr(corpus, "_refresh_index", _boom)
+        assert corpus.unindexable(refresh=False) == []
         assert not called
 
     @staticmethod
@@ -1137,8 +1128,8 @@ class TestIndexFailuresAreNotSilent:
         meta row asserts the tables exist.
         """
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
-        assert len(cache_search.search("attention")) == 1
-        con = cache_search._connect()
+        assert len(corpus.search("attention")) == 1
+        con = corpus._connect()
         with con:
             con.execute("DROP TABLE fts")
         con.close()
@@ -1153,7 +1144,7 @@ class TestIndexFailuresAreNotSilent:
         self._break_the_index(isolated_cache)
 
         with pytest.raises(sqlite3.OperationalError):
-            cache_search.search("attention")
+            corpus.search("attention")
 
     @pytest.mark.asyncio
     async def test_the_tool_reports_an_unreadable_index_as_an_error(self, isolated_cache):
@@ -1179,16 +1170,16 @@ class TestIndexFailuresAreNotSilent:
         surface, which is half again the whole suite's runtime.
         """
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
-        cache_search.search("attention")
-        db = cache_search._index_path()
+        corpus.search("attention")
+        db = corpus._index_path()
         before = db.read_bytes()
 
         def busy(path):
             raise sqlite3.OperationalError("database is locked")
 
-        monkeypatch.setattr(cache_search, "_open", busy)
+        monkeypatch.setattr(corpus, "_open", busy)
         with pytest.raises(sqlite3.OperationalError):
-            cache_search._connect()
+            corpus._connect()
 
         assert db.read_bytes() == before, "a locked index must not be discarded"
 
@@ -1196,10 +1187,10 @@ class TestIndexFailuresAreNotSilent:
         # The other half of the same branch: not a database at all, so there is
         # nothing to preserve and rebuilding is the only way to answer at all.
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
-        cache_search.search("attention")
-        cache_search._index_path().write_bytes(b"not a database")
+        corpus.search("attention")
+        corpus._index_path().write_bytes(b"not a database")
 
-        assert len(cache_search.search("attention")) == 1
+        assert len(corpus.search("attention")) == 1
 
     @pytest.mark.asyncio
     async def test_an_uncreatable_index_directory_is_reported(self, isolated_cache, monkeypatch):
@@ -1229,7 +1220,7 @@ class TestIndexFailuresAreNotSilent:
         hierarchy missed cases and left `_connect` unlinking a file it still
         held open.
         """
-        cache_search._index_path().parent.mkdir(parents=True, exist_ok=True)
+        corpus._index_path().parent.mkdir(parents=True, exist_ok=True)
         closed: list[bool] = []
         real_connect = sqlite3.connect
 
@@ -1250,16 +1241,14 @@ class TestIndexFailuresAreNotSilent:
                 closed.append(True)
                 self._con.close()
 
-        monkeypatch.setattr(
-            cache_search.sqlite3, "connect", lambda p: _SpyConnection(real_connect(p))
-        )
+        monkeypatch.setattr(corpus.sqlite3, "connect", lambda p: _SpyConnection(real_connect(p)))
 
         def boom(con):
             raise sqlite3.InterfaceError("not a DatabaseError")
 
-        monkeypatch.setattr(cache_search, "_ensure_schema", boom)
+        monkeypatch.setattr(corpus, "_ensure_schema", boom)
         with pytest.raises(sqlite3.InterfaceError):
-            cache_search._open(cache_search._index_path())
+            corpus._open(corpus._index_path())
 
         assert closed == [True], "the connection must be closed before the error propagates"
 
@@ -1272,14 +1261,14 @@ class TestIndexFailuresAreNotSilent:
         the old code skipped the drops and re-stamped whatever was on disk.
         """
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
-        con = cache_search._connect()
+        con = corpus._connect()
         with con:
             con.execute("UPDATE meta SET value = 'not a version' WHERE key = 'schema_version'")
         con.close()
 
-        con = cache_search._connect()
+        con = corpus._connect()
         try:
             assert con.execute("SELECT count(*) FROM fts").fetchone()[0] == 0, (
                 "the postings should have been dropped, not certified"
@@ -1287,10 +1276,10 @@ class TestIndexFailuresAreNotSilent:
             version = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         finally:
             con.close()
-        assert int(version[0]) == cache_search._SCHEMA_VERSION
+        assert int(version[0]) == corpus._SCHEMA_VERSION
 
         # And the corpus is re-indexed on the next search, as after any rebuild.
-        assert len(cache_search.search("attention")) == 1
+        assert len(corpus.search("attention")) == 1
 
     @pytest.mark.asyncio
     async def test_a_query_that_searched_nothing_reports_no_gaps(self, isolated_cache):
@@ -1304,7 +1293,7 @@ class TestIndexFailuresAreNotSilent:
         assert "unindexable_count" not in result
         # No corpus was walked, so the punctuation-only paper is not yet known
         # to be unindexable — reporting it would be inventing a diagnostic.
-        con = cache_search._connect()
+        con = corpus._connect()
         try:
             assert con.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
         finally:
@@ -1316,14 +1305,14 @@ class TestTheCorpusWalkSurvivesIO:
 
     def test_a_cache_root_that_does_not_exist_is_an_empty_corpus(self, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", cache.CACHE_ROOT / "never-created")
-        assert cache_search._scan_markdown() == []
-        assert cache_search.search("attention") == []
+        assert corpus._scan_markdown() == []
+        assert corpus.search("attention") == []
 
     def test_a_stray_file_at_the_cache_root_is_not_a_namespace(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
         (isolated_cache / "README").write_text("not a namespace")
 
-        assert [f.namespace for f in cache_search._scan_markdown()] == ["arxiv"]
+        assert [f.namespace for f in corpus._scan_markdown()] == ["arxiv"]
 
     def test_an_unreadable_cache_root_is_an_empty_corpus(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
@@ -1334,8 +1323,8 @@ class TestTheCorpusWalkSurvivesIO:
                 raise PermissionError("no")
             return real_scandir(path)
 
-        monkeypatch.setattr(cache_search.os, "scandir", guarded)
-        assert cache_search._scan_markdown() == []
+        monkeypatch.setattr(corpus.os, "scandir", guarded)
+        assert corpus._scan_markdown() == []
 
     def test_an_unreadable_namespace_is_skipped_not_fatal(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
@@ -1347,8 +1336,8 @@ class TestTheCorpusWalkSurvivesIO:
                 raise PermissionError("no")
             return real_scandir(path)
 
-        monkeypatch.setattr(cache_search.os, "scandir", guarded)
-        assert [f.namespace for f in cache_search._scan_markdown()] == ["arxiv"]
+        monkeypatch.setattr(corpus.os, "scandir", guarded)
+        assert [f.namespace for f in corpus._scan_markdown()] == ["arxiv"]
 
     def test_a_file_that_cannot_be_statted_is_skipped(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
@@ -1373,24 +1362,24 @@ class TestTheCorpusWalkSurvivesIO:
             with real_scandir(path) as it:
                 return _FakeScandir(_UnstattableEntry(e) if e.name == "ghost.md" else e for e in it)
 
-        monkeypatch.setattr(cache_search.os, "scandir", guarded)
-        assert [f.stem for f in cache_search._scan_markdown()] == ["p"]
+        monkeypatch.setattr(corpus.os, "scandir", guarded)
+        assert [f.stem for f in corpus._scan_markdown()] == ["p"]
 
     def test_a_non_markdown_file_is_ignored(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
         (isolated_cache / "arxiv" / "markdown" / "notes.txt").write_text("attention")
 
-        assert [f.stem for f in cache_search._scan_markdown()] == ["p"]
+        assert [f.stem for f in corpus._scan_markdown()] == ["p"]
 
     def test_a_legacy_index_that_cannot_be_deleted_is_left_alone(self, isolated_cache, monkeypatch):
-        legacy = cache_search._legacy_index_path()
+        legacy = corpus._legacy_index_path()
         legacy.parent.mkdir(parents=True, exist_ok=True)
         legacy.write_text("{}")
         monkeypatch.setattr(Path, "unlink", _raise_oserror)
         _seed_markdown(isolated_cache, "arxiv", "p", "# P\n\nattention.\n")
 
         # Best-effort: the search still succeeds.
-        assert len(cache_search.search("attention")) == 1
+        assert len(corpus.search("attention")) == 1
 
 
 class TestConcurrentRefreshUnderChurn:
@@ -1407,7 +1396,7 @@ class TestConcurrentRefreshUnderChurn:
             path = _seed_markdown(
                 isolated_cache, "manual", f"churn{i}", f"# C{i}\n\nattention model.\n"
             )
-            hits = cache_search.search("attention", top_k=50)
+            hits = corpus.search("attention", top_k=50)
             path.unlink()
             return hits
 
@@ -1417,8 +1406,8 @@ class TestConcurrentRefreshUnderChurn:
         assert all(isinstance(r, list) for r in results)
         # Whatever the interleaving, the settled index names exactly the files
         # still on disk.
-        cache_search.search("attention")
-        con = cache_search._connect()
+        corpus.search("attention")
+        con = corpus._connect()
         try:
             rows = {(r["ns"], r["stem"]) for r in con.execute("SELECT ns, stem FROM files")}
         finally:
@@ -1441,7 +1430,7 @@ class TestSnippetOffsetUnderLowercaseExpansion:
             "## Results\n\nUnrelated closing prose about evaluation.\n"
         )
         _seed_markdown(isolated_cache, "manual", "p", body)
-        hits = cache_search.search("transformer")
+        hits = corpus.search("transformer")
         assert len(hits) == 1
         assert hits[0]["section"] == "Methods"
         assert "transformer" in hits[0]["snippet"].lower()
@@ -1456,7 +1445,7 @@ class TestSnippetOffsetUnderLowercaseExpansion:
             "## Results\n\nUnrelated closing prose about evaluation.\n"
         )
         _seed_markdown(isolated_cache, "manual", "p", body)
-        hits = cache_search.search("transformer", normalize=True)
+        hits = corpus.search("transformer", normalize=True)
         assert len(hits) == 1
         assert hits[0]["section"] == "Methods"
         assert "transformer" in hits[0]["snippet"].lower()
@@ -1478,32 +1467,32 @@ class TestIndexReuse:
 
     def test_unchanged_corpus_triggers_no_reindex(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
         indexed: list[int] = []
-        real = cache_search._index_document
+        real = corpus._index_document
         monkeypatch.setattr(
-            cache_search,
+            corpus,
             "_index_document",
             lambda con, rowid, text: (indexed.append(rowid), real(con, rowid, text))[1],
         )
-        cache_search.search("attention")
+        corpus.search("attention")
 
         assert indexed == [], "an unchanged corpus must not be re-indexed"
 
     def test_corpus_edit_triggers_reindex(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
         indexed: list[int] = []
-        real = cache_search._index_document
+        real = corpus._index_document
         monkeypatch.setattr(
-            cache_search,
+            corpus,
             "_index_document",
             lambda con, rowid, text: (indexed.append(rowid), real(con, rowid, text))[1],
         )
         _seed_markdown(isolated_cache, "arxiv", "2301.00002", "# Q\n\nattention again\n")
-        cache_search.search("attention")
+        corpus.search("attention")
 
         assert len(indexed) == 1, "only the new document should be indexed"
 
@@ -1529,35 +1518,35 @@ class TestQueryTokenizationMatchesTheIndex:
         return isolated_cache
 
     def test_accented_query_finds_accented_document(self, accented):
-        hits = cache_search.search("Gutiérrez")
+        hits = corpus.search("Gutiérrez")
         assert [h["canonical_id"] for h in hits] == ["2301.00002"]
 
     def test_unaccented_query_needs_normalize(self, accented):
         # The documented contract, unchanged: folding is opt-in.
-        assert cache_search.search("gutierrez") == []
-        assert [h["canonical_id"] for h in cache_search.search("gutierrez", normalize=True)] == [
+        assert corpus.search("gutierrez") == []
+        assert [h["canonical_id"] for h in corpus.search("gutierrez", normalize=True)] == [
             "2301.00002"
         ]
 
     def test_accented_query_also_works_under_normalize(self, accented):
-        assert len(cache_search.search("Gutiérrez", normalize=True)) == 1
+        assert len(corpus.search("Gutiérrez", normalize=True)) == 1
 
     @pytest.mark.parametrize("query", ["NOT", "OR", "*", "-", "a:b", 'quote"inside', "( )", "^"])
     def test_fts_syntax_in_a_query_never_raises(self, accented, query):
         # Every term is quoted, so operators are matched literally rather
         # than parsed — an unquoted one would make FTS5 reject the whole
         # expression.
-        assert isinstance(cache_search.search(query), list)
+        assert isinstance(corpus.search(query), list)
 
     def test_multiword_query_ors_its_terms(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "a", "# A\n\nattention only here\n")
         _seed_markdown(isolated_cache, "arxiv", "b", "# B\n\ntransformer only here\n")
-        found = {h["canonical_id"] for h in cache_search.search("attention transformer")}
+        found = {h["canonical_id"] for h in corpus.search("attention transformer")}
         assert found == {"a", "b"}
 
     def test_empty_and_whitespace_queries_return_nothing(self, accented):
         for query in ("", "   ", "\n\t"):
-            assert cache_search.search(query) == []
+            assert corpus.search(query) == []
 
 
 class TestNonLatinQueryReachesTheIndex:
@@ -1587,18 +1576,18 @@ class TestNonLatinQueryReachesTheIndex:
         return isolated_cache
 
     def test_document_is_indexed_not_skipped(self, mixed):
-        cache_search.search("attention")
-        assert cache_search.unindexable() == []
+        corpus.search("attention")
+        assert corpus.unindexable() == []
 
     @pytest.mark.parametrize("query", ["注意力機構", "Нейронные"])
     def test_non_latin_query_finds_the_document(self, mixed, query):
-        assert [h["canonical_id"] for h in cache_search.search(query)] == ["2301.00003"]
+        assert [h["canonical_id"] for h in corpus.search(query)] == ["2301.00003"]
 
     @pytest.mark.parametrize("query", ["注意力機構", "Нейронные"])
     def test_non_latin_hit_is_chainable_into_get_paper_section(self, mixed, query):
         # The whole point of #54's section_index: a hit that resolves to the
         # document head with section None is a dead end for the agent.
-        (hit,) = cache_search.search(query)
+        (hit,) = corpus.search(query)
         assert hit["section"] == "Results"
         assert hit["section_index"] is not None
         assert hit["char_offset"] > 0
@@ -1613,7 +1602,7 @@ class TestNonLatinQueryReachesTheIndex:
             "a",
             "# Paper\n\n## Intro\n\nnothing.\n\n## Results\n\nBy Ana Gutiérrez.\n",
         )
-        (hit,) = cache_search.search("Gutiérrez")
+        (hit,) = corpus.search("Gutiérrez")
         assert hit["section"] == "Results"
         assert hit["char_offset"] > 0
 
@@ -1628,21 +1617,21 @@ class TestStopwordsStayOutOfTheMatchExpression:
     """
 
     @pytest.fixture
-    def corpus(self, isolated_cache):
+    def indexed_corpus(self, isolated_cache):
         _seed_markdown(isolated_cache, "arxiv", "relevant", "# A\n\nThe transformer model.\n")
         _seed_markdown(isolated_cache, "arxiv", "irrelevant", "# B\n\nThe cat sat on the mat.\n")
         return isolated_cache
 
-    def test_stopword_does_not_drag_in_unrelated_documents(self, corpus):
-        found = {h["canonical_id"] for h in cache_search.search("the transformer")}
+    def test_stopword_does_not_drag_in_unrelated_documents(self, indexed_corpus):
+        found = {h["canonical_id"] for h in corpus.search("the transformer")}
         assert found == {"relevant"}
 
-    def test_an_all_stopword_query_matches_nothing(self, corpus):
-        assert cache_search.search("the and of") == []
+    def test_an_all_stopword_query_matches_nothing(self, indexed_corpus):
+        assert corpus.search("the and of") == []
 
-    def test_single_characters_are_dropped(self, corpus):
-        assert cache_search.search("a") == []
-        assert cache_search.search("x") == []
+    def test_single_characters_are_dropped(self, indexed_corpus):
+        assert corpus.search("a") == []
+        assert corpus.search("x") == []
 
     @pytest.mark.parametrize("char", ["x", "ß", "Ω", "ﬁ", "İ"])
     def test_one_character_is_one_character_however_it_lowercases(self, char):
@@ -1651,33 +1640,33 @@ class TestStopwordsStayOutOfTheMatchExpression:
         'İ' lowercases to two characters, so a check on the lowered length let
         exactly one single-character query through while dropping every other.
         """
-        assert cache_search._query_words(char) == []
+        assert corpus._query_words(char) == []
 
     def test_stopword_filtering_survives_into_the_match_expression(self):
-        assert cache_search._fts_query("the transformer") == '"transformer"'
-        assert cache_search._fts_query("the") == ""
+        assert corpus._fts_query("the transformer") == '"transformer"'
+        assert corpus._fts_query("the") == ""
 
     def test_a_quote_in_a_word_is_doubled_not_dropped(self):
         # Inside a quoted phrase only `"` is special to FTS5, and doubling is
         # how it is escaped — an unbalanced one would make the whole
         # expression a syntax error.
-        assert cache_search._fts_query('quote"inside') == '"quote""inside"'
+        assert corpus._fts_query('quote"inside') == '"quote""inside"'
 
     def test_a_repeated_word_contributes_one_term(self):
-        assert cache_search._fts_query("attention attention") == '"attention"'
-        assert cache_search._fts_query("attention model attention") == ('"attention" OR "model"')
+        assert corpus._fts_query("attention attention") == '"attention"'
+        assert corpus._fts_query("attention model attention") == ('"attention" OR "model"')
 
     def test_a_repeat_in_another_case_is_still_one_term(self):
         """FTS5 lowercases, so two spellings are one term — and ORing a term
         with itself counts it twice in the score, skewing the ranking of a
         query that merely varied its capitalisation."""
-        assert cache_search._fts_query("Attention attention") == '"Attention"'
-        assert cache_search._fts_query("BERT bert Bert") == '"BERT"'
+        assert corpus._fts_query("Attention attention") == '"Attention"'
+        assert corpus._fts_query("BERT bert Bert") == '"BERT"'
 
     def test_a_nul_splits_a_query_the_way_the_tokeniser_does(self):
         # sqlite3 cannot bind a string carrying a NUL at all, and `unicode61`
         # treats it as a separator, so the query is split on it.
-        assert cache_search._fts_query("attention\x00model") == '"attention" OR "model"'
+        assert corpus._fts_query("attention\x00model") == '"attention" OR "model"'
 
     def test_empty_match_expression_short_circuits_before_indexing(
         self, isolated_cache, monkeypatch
@@ -1690,6 +1679,6 @@ class TestStopwordsStayOutOfTheMatchExpression:
             nonlocal called
             called = True
 
-        monkeypatch.setattr(cache_search, "_refresh_index", _boom)
-        assert cache_search.search("the") == []
+        monkeypatch.setattr(corpus, "_refresh_index", _boom)
+        assert corpus.search("the") == []
         assert not called

@@ -1,6 +1,6 @@
 ---
 paths:
-  - "src/academic_tools_mcp/cache_search.py"
+  - "src/academic_tools_mcp/corpus.py"
 ---
 
 # Corpus search — BM25 over converted markdown

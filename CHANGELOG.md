@@ -43,8 +43,16 @@ grouped by milestone rather than per commit.
   at every call site. The cache and its primitives moved into `store/`
   (`cache`, `atomic`, `singleflight`, `stems`) and the two halves of the
   download story into `download/` (`streaming`, `openaccess`), which finally
-  makes them siblings. Internal only: no tool, response shape, environment
-  variable or `.cache/` namespace changes. ([#106])
+  makes them siblings. `_app` is `app`, `cache_search` is `corpus`, and
+  `cache_search._MAX_TOP_K` is now the public `corpus.MAX_TOP_K` its three
+  siblings (`arxiv.MAX_SEARCH_RESULTS`, `crossref.MAX_SEARCH_ROWS`,
+  `wikipedia.MAX_SEARCH_LIMIT`) always were. Internal only: no tool, response
+  shape, environment variable or `.cache/` namespace changes. ([#106])
+- **The bundled fast-extraction backend is `academic_tools_mcp.fast_extract`,
+  not `academic_tools_mcp._fast_extract`.** The `PDF_FAST_CONVERTER=pymupdf`
+  key is unaffected and needs no change. This only matters if you copied that
+  backend's literal command template into a custom `PDF_FAST_CONVERTER`
+  value — update the module path if so. ([#106])
 
 - **`download_pdf` now drops stale markdown whenever it actually downloads,
   not just on `force_refresh=True`.** A PDF that was evicted or pruned and then

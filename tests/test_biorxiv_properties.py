@@ -19,7 +19,7 @@ Four invariants, each with a concrete failure the module has to be safe from:
 from hypothesis import given
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache_search, manual
+from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.providers import biorxiv
 from academic_tools_mcp.store import stems
 from academic_tools_mcp.util import doinorm
@@ -127,7 +127,7 @@ def test_every_artifact_keys_on_the_canonical_doi(doi: str) -> None:
     """PDF, markdown and section index share one stem.
 
     It is what `tools/pipeline`'s force_refresh cascade relies on to reach all
-    three, and what `cache_search` inverts.
+    three, and what `corpus` inverts.
     """
     canonical = biorxiv.canonical_key(doi)
     stem = stems.safe_stem(canonical)
@@ -145,7 +145,7 @@ def test_a_stored_stem_inverts_to_an_identifier_the_router_accepts(doi: str) -> 
     """
     canonical = biorxiv.canonical_key(doi)
     stem = biorxiv.pdf_path(doi).stem
-    recovered = cache_search._filename_to_canonical(biorxiv.NAMESPACE, stem)
+    recovered = corpus._filename_to_canonical(biorxiv.NAMESPACE, stem)
     assert recovered == canonical
     target = manual.resolve_target(recovered)
     assert target["namespace"] == biorxiv.NAMESPACE

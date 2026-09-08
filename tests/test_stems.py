@@ -261,7 +261,7 @@ class TestMarkdownPathForStem:
     def test_agrees_with_markdown_path_for_the_identifier_that_named_the_file(self):
         """One naming rule, whether the caller holds the id or the stem.
 
-        ``cache_search`` reads a hit's file from a stem recovered off disk; a
+        ``corpus`` reads a hit's file from a stem recovered off disk; a
         second spelling of the recipe there would read a path nothing wrote.
         """
         for canonical in ["2301.00001", "10.1016/s1-6(03)02831-9", "notes~draft 2024"]:

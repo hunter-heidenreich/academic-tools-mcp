@@ -29,7 +29,7 @@ Two rules, and both are machine-checked by `tests/test_layering.py` — so unlik
 Three consequences worth stating separately, each with its own named test:
 
 - **The lowest layer is defined by a property, not a theme** — its members import nothing intra-package. That is what stops it becoming a junk drawer: membership is checkable.
-- **`_app` never imports `tools`**, and no `tools/*` module imports another. A helper two tool modules need moves *down* into `_app`, never sideways.
+- **`app` never imports `tools`**, and no `tools/*` module imports another. A helper two tool modules need moves *down* into `app`, never sideways.
 - **A type-only import is not a layer edge.** `stats` annotates a `Throttle` under `if TYPE_CHECKING:` while `throttle` imports `stats` for real; that is a legitimate pair, not a cycle, and the scanner prunes `TYPE_CHECKING` blocks accordingly.
 
 ## Layering — tools never reach past their layer

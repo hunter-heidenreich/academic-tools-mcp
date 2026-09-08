@@ -674,7 +674,7 @@ class TestBuildFastConverterCommand:
         with env(PDF_FAST_CONVERTER="pymupdf"):
             cmd = _build_fast_converter_command(Path("/a/b.pdf"))
         assert cmd == (
-            f"{shlex.quote(sys.executable)} -m academic_tools_mcp._fast_extract /a/b.pdf"
+            f"{shlex.quote(sys.executable)} -m academic_tools_mcp.fast_extract /a/b.pdf"
         )
 
     def test_custom_command_template(self):

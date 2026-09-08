@@ -11,7 +11,7 @@ Anthology ID) stays in the provider — only the normalization is shared.
 
 import re
 
-# Exported: `cache_search` inverts a stored filename stem with this same
+# Exported: `corpus` inverts a stored filename stem with this same
 # pattern, and a second spelling would let the two disagree on what a DOI is.
 REGISTRANT_PATTERN = r"10\.\d{4,}"
 

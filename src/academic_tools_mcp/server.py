@@ -8,7 +8,7 @@ tool callables plus the providers and helpers that tests / callers reach via
 
 from typing import Any
 
-from ._app import mcp
+from .app import mcp
 from .net import stats
 from .providers import arxiv, biorxiv, crossref, openalex, opencitations, wikipedia
 from .tools.graph import (

@@ -30,7 +30,7 @@ from .util import doinorm, textnorm
 _SNIPPET_CHARS = 200
 
 # So a noisy query can't pull the whole corpus back in one tool call.
-_MAX_TOP_K = 50
+MAX_TOP_K = 50
 
 # Keeps intra-word hyphens and dots, so "self-attention", "BM25" and "1.5x"
 # stay one token each. Snippet terms only — FTS5 tokenises the corpus.
@@ -633,7 +633,7 @@ def search(
     """
     if top_k <= 0:
         return []
-    top_k = min(top_k, _MAX_TOP_K)
+    top_k = min(top_k, MAX_TOP_K)
     # Gate on the MATCH expression, never the word regex: a non-Latin query
     # tokenises to nothing under it, and FTS5 would have matched.
     match_expr = _fts_query(query)

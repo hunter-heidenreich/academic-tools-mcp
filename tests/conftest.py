@@ -165,7 +165,7 @@ def _isolate_cache_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     — a later ``monkeypatch.setattr`` in the test body wins, and the many
     that set it to this same ``tmp_path`` are now simply redundant.
 
-    ``cache_search`` reads ``cache.CACHE_ROOT`` at call time rather than
+    ``corpus`` reads ``cache.CACHE_ROOT`` at call time rather than
     caching it, so patching the one attribute covers the search index too.
     """
     from academic_tools_mcp.store import cache
