@@ -421,6 +421,68 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     return None
 
 
+def _is_fresh(found: _ScannedFile, existing: _IndexedFile | None) -> bool:
+    """Does the recorded row already describe the file on disk?"""
+    return (
+        existing is not None and existing.mtime_ns == found.mtime_ns and existing.size == found.size
+    )
+
+
+def _reindex_file(
+    con: sqlite3.Connection, found: _ScannedFile, existing: _IndexedFile | None
+) -> None:
+    """Bring one file's ``files`` row and its postings up to date.
+
+    Caller holds the ``with con:`` transaction — this issues writes only.
+    """
+    reason: str | None
+    try:
+        text = Path(found.path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        reason, text = UNREADABLE, ""
+    else:
+        reason = None
+
+    # Storing the stat that succeeded freezes the failure: a chmod leaves
+    # mtime alone, so no retry would ever fire.
+    recorded_mtime = _UNREADABLE_MTIME if reason else found.mtime_ns
+
+    if existing is None:
+        cur = con.execute(
+            "INSERT INTO files(ns, stem, mtime_ns, size) VALUES (?,?,?,?)",
+            (found.namespace, found.stem, recorded_mtime, found.size),
+        )
+        rowid = int(cur.lastrowid or 0)
+    else:
+        rowid = existing.rowid
+        con.execute(
+            "UPDATE files SET mtime_ns = ?, size = ? WHERE rowid = ?",
+            (recorded_mtime, found.size, rowid),
+        )
+    # Always: it drops the old postings, and adds none for the empty text an
+    # unreadable file leaves behind.
+    probed = _index_document(con, rowid, text)
+    con.execute("UPDATE files SET unindexable = ? WHERE rowid = ?", (reason or probed, rowid))
+
+
+def _prune_missing(
+    con: sqlite3.Connection,
+    known: dict[tuple[str, str], _IndexedFile],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Drop every indexed row the walk did not return.
+
+    Why ``_scan_markdown`` must stay unfiltered: a namespace-filtered walk
+    would make every other namespace look missing here.
+    """
+    for key, row in known.items():
+        if key in seen:
+            continue
+        con.execute("DELETE FROM fts WHERE rowid = ?", (row.rowid,))
+        con.execute("DELETE FROM fts_norm WHERE rowid = ?", (row.rowid,))
+        con.execute("DELETE FROM files WHERE rowid = ?", (row.rowid,))
+
+
 def _refresh_index(*, force_refresh: bool = False) -> None:
     """Bring the index in step with the markdown on disk.
 
@@ -444,52 +506,9 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                     key = (found.namespace, found.stem)
                     seen.add(key)
                     existing = known.get(key)
-                    if (
-                        not force_refresh
-                        and existing is not None
-                        and existing.mtime_ns == found.mtime_ns
-                        and existing.size == found.size
-                    ):
-                        continue
-                    reason: str | None
-                    try:
-                        text = Path(found.path).read_text(encoding="utf-8", errors="replace")
-                    except OSError:
-                        reason, text = UNREADABLE, ""
-                    else:
-                        reason = None
-
-                    # Storing the stat that succeeded freezes the failure: a
-                    # chmod leaves mtime alone, so no retry would ever fire.
-                    recorded_mtime = _UNREADABLE_MTIME if reason else found.mtime_ns
-
-                    if existing is None:
-                        cur = con.execute(
-                            "INSERT INTO files(ns, stem, mtime_ns, size) VALUES (?,?,?,?)",
-                            (found.namespace, found.stem, recorded_mtime, found.size),
-                        )
-                        rowid = int(cur.lastrowid or 0)
-                    else:
-                        rowid = existing.rowid
-                        con.execute(
-                            "UPDATE files SET mtime_ns = ?, size = ? WHERE rowid = ?",
-                            (recorded_mtime, found.size, rowid),
-                        )
-                    # Always: it drops the old postings, and adds none for the
-                    # empty text an unreadable file leaves behind.
-                    probed = _index_document(con, rowid, text)
-                    con.execute(
-                        "UPDATE files SET unindexable = ? WHERE rowid = ?",
-                        (reason or probed, rowid),
-                    )
-
-                # Every indexed row the walk missed — why it stays unfiltered.
-                for key, row in known.items():
-                    if key in seen:
-                        continue
-                    con.execute("DELETE FROM fts WHERE rowid = ?", (row.rowid,))
-                    con.execute("DELETE FROM fts_norm WHERE rowid = ?", (row.rowid,))
-                    con.execute("DELETE FROM files WHERE rowid = ?", (row.rowid,))
+                    if force_refresh or not _is_fresh(found, existing):
+                        _reindex_file(con, found, existing)
+                _prune_missing(con, known, seen)
         finally:
             con.close()
 
@@ -588,6 +607,63 @@ def _snippet_terms(query: str, *, normalize: bool) -> set[str]:
     }
 
 
+def _search_sql(
+    table: str, match_expr: str, namespace: str | None, top_k: int
+) -> tuple[str, list[Any]]:
+    """The ranked MATCH query and its bound parameters.
+
+    ``table`` is one of the two literals ``search`` chose, never caller input,
+    and every value is bound with a ``?`` placeholder — the whole reason the
+    f-string here is safe.
+    """
+    sql = (
+        f"SELECT f.ns AS ns, f.stem AS stem, bm25({table}) AS score "  # noqa: S608
+        f"FROM {table} JOIN files f ON f.rowid = {table}.rowid "
+        f"WHERE {table} MATCH ?"
+    )
+    params: list[Any] = [match_expr]
+    if namespace is not None:
+        sql += " AND f.ns = ?"
+        params.append(namespace)
+    # Tie-break by (namespace, stem): FTS5 orders by rank alone, so equal
+    # scores would fall back to insertion order, which drifts.
+    sql += f" ORDER BY bm25({table}), f.ns, f.stem LIMIT ?"
+    params.append(top_k)
+    return sql, params
+
+
+def _hit(row: sqlite3.Row, terms: set[str], *, normalize: bool) -> dict[str, Any] | None:
+    """Shape one result row into an agent-facing hit, or None if unreadable."""
+    # bm25() is negative, most-relevant first. No floor: FTS5 returns only rows
+    # that matched, so a low score is a weak term, not a non-match.
+    score = -float(row["score"])
+    path = stems.markdown_path_for_stem(row["ns"], row["stem"])
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    snippet, snippet_offset = _extract_snippet(text, terms, normalize=normalize)
+    # Never a local heading scan: a copy of papers' drops the empty-section
+    # filter and names a section get_paper_section would refuse.
+    found = papers.section_at_offset(text, snippet_offset) if snippet_offset is not None else None
+    section_index, section = found or (None, None)
+    return {
+        "namespace": row["ns"],
+        "canonical_id": _filename_to_canonical(row["ns"], row["stem"]),
+        # Significant figures, not decimals: a degenerate IDF scales below
+        # 1e-7, which any fixed decimals report as 0.0.
+        "score": float(f"{score:.6g}"),
+        "title": _extract_title(text),
+        "snippet": snippet,
+        "section": section,
+        # The chainable handle: `section` is a title, and a repeated one is
+        # rejected as ambiguous.
+        "section_index": section_index,
+        "char_offset": snippet_offset,
+        "char_count": len(text),
+    }
+
+
 def search(
     query: str,
     *,
@@ -643,23 +719,7 @@ def search(
     _refresh_index(force_refresh=force_refresh)
 
     table = "fts_norm" if normalize else "fts"
-
-    # ``table`` is one of the two literals chosen above, never caller input,
-    # and every value is bound with a ? placeholder.
-    sql = (
-        f"SELECT f.ns AS ns, f.stem AS stem, bm25({table}) AS score "  # noqa: S608
-        f"FROM {table} JOIN files f ON f.rowid = {table}.rowid "
-        f"WHERE {table} MATCH ?"
-    )
-    params: list[Any] = [match_expr]
-    if namespace is not None:
-        sql += " AND f.ns = ?"
-        params.append(namespace)
-    # Tie-break by (namespace, stem): FTS5 orders by rank alone, so equal
-    # scores would fall back to insertion order, which drifts.
-    sql += f" ORDER BY bm25({table}), f.ns, f.stem LIMIT ?"
-    params.append(top_k)
-
+    sql, params = _search_sql(table, match_expr, namespace, top_k)
     con = _connect()
     try:
         rows = con.execute(sql, params).fetchall()
@@ -667,39 +727,5 @@ def search(
         con.close()
 
     terms = _snippet_terms(query, normalize=normalize)
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        # bm25() is negative, most-relevant first. No floor: FTS5 returns only
-        # rows that matched, so a low score is a weak term, not a non-match.
-        score = -float(row["score"])
-        path = stems.markdown_path_for_stem(row["ns"], row["stem"])
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        title = _extract_title(text)
-        snippet, snippet_offset = _extract_snippet(text, terms, normalize=normalize)
-        # Never a local heading scan: a copy of papers' drops the empty-section
-        # filter and names a section get_paper_section would refuse.
-        found = (
-            papers.section_at_offset(text, snippet_offset) if snippet_offset is not None else None
-        )
-        section_index, section = found or (None, None)
-        out.append(
-            {
-                "namespace": row["ns"],
-                "canonical_id": _filename_to_canonical(row["ns"], row["stem"]),
-                # Significant figures, not decimals: a degenerate IDF scales
-                # below 1e-7, which any fixed decimals report as 0.0.
-                "score": float(f"{score:.6g}"),
-                "title": title,
-                "snippet": snippet,
-                "section": section,
-                # The chainable handle: `section` is a title, and a repeated
-                # one is rejected as ambiguous.
-                "section_index": section_index,
-                "char_offset": snippet_offset,
-                "char_count": len(text),
-            }
-        )
-    return out
+    hits = (_hit(row, terms, normalize=normalize) for row in rows)
+    return [hit for hit in hits if hit is not None]
