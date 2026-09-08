@@ -239,9 +239,8 @@ def _format_flat_authors_bibtex(authors: list[dict[str, Any]]) -> str:
     return _format_names(authors, lambda a: (a or {}).get("name") or "")
 
 
-# `str.translate` is one pass and never rescans its output, so the braces
-# `\textbackslash{}` emits survive the `{`/`}` deletions in the same table —
-# the trap a strip-then-escape sequence falls into.
+# One pass, never rescanning its output: the braces `\textbackslash{}` emits
+# survive the `{`/`}` deletions sitting in the same table.
 _BIBTEX_ESCAPES: dict[str, str | None] = {
     "{": None,
     "}": None,
@@ -315,9 +314,8 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     key = _generate_key(work)
     authorships = work.get("authorships") or []
     year = _key_year(work.get("publication_year"))
-    # OpenAlex returns the DOI as a resolver URL, and not always over https —
-    # strip it through the shared normalizer rather than a local prefix test,
-    # or an http:// record emits `doi={http://doi.org/...}`, which is not a DOI.
+    # OpenAlex gives the DOI as a resolver URL, not always https — the shared
+    # normalizer takes both; a local prefix test emits `doi={http://doi.org/...}`.
     doi = doinorm.normalize(work.get("doi") or "")
 
     biblio = work.get("biblio") or {}
@@ -381,9 +379,7 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     return _render_entry(entry_type, key, fields)
 
 
-# ---------------------------------------------------------------------------
-# arXiv BibTeX generation
-# ---------------------------------------------------------------------------
+# --- arXiv BibTeX generation ---
 
 
 def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
@@ -415,9 +411,7 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     return _render_entry(entry_type, key, fields)
 
 
-# ---------------------------------------------------------------------------
-# bioRxiv BibTeX generation
-# ---------------------------------------------------------------------------
+# --- bioRxiv BibTeX generation ---
 
 
 def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
