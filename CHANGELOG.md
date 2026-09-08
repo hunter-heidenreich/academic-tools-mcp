@@ -17,6 +17,17 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`search_crossref_by_title` takes `max_results`.** The triage list was
+  fixed at 5 with no way to widen it, while `search_arxiv` and
+  `search_wikipedia` both exposed their provider's cap. Bounded by
+  `crossref.MAX_SEARCH_ROWS`; the default is unchanged. ([#105])
+- **`search_cached_papers` documents its `unindexable` report.**
+  `unindexable_count`, `unindexable` and `unindexable_note` were returned but
+  named in no docstring, so no agent had reason to look for them. Each entry
+  now also carries `canonical_id` — the note tells the agent to run
+  `find_in_paper` on those papers, and it was handing over an on-disk `stem`
+  that no tool resolves. ([#105])
+
 - **`{python}` now works in `PDF_CONVERTER`, not just `PDF_FAST_CONVERTER`.**
   One placeholder vocabulary across both templates, so a converter installed
   beside the server can be invoked as `{python} -m my_tool {input} {output_dir}`
@@ -105,6 +116,35 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A non-dict Crossref author row crashed `search_crossref_by_title`.**
+  `search_works` filters `items` to dicts and stops there; the upstream
+  `message` arrives verbatim, so an `author` row that is a bare string reached
+  `.get()` as an `AttributeError` — and the wrong-shape body is positive-cached
+  for the full TTL, so every call raised until the entry expired. Rows now go
+  through the shared shape guard, and `author_count` counts the same filtered
+  list `first_author` was chosen from rather than a string's characters.
+  Same class as the `graph.py` fix in [#102]. ([#105])
+- **`_crossref_date` raised on three malformed shapes.** A date value that is a
+  list, a `date-parts` that is not a list, and a `date-parts` holding bare ints
+  each escaped the walker as an `AttributeError` or `TypeError`. It null-checked
+  every level but type-checked none. Both readers — `get_paper_metadata` and
+  `search_crossref_by_title` — were exposed. ([#105])
+- **`search_arxiv` reported a superscript year as a `ValueError`.**
+  `"²⁰²³".isdigit()` is `True` and `int()` on it raises. `arxiv.search_papers`
+  documents avoiding exactly this trap two functions away, and
+  `bibtex._key_year` guards it; the year parse now agrees with both. ([#105])
+- **`find_in_paper` echoed the caller's spelling as `paper_identifier`.**
+  `arXiv:2301.00001v2` and `2301.00001v2` are one markdown file and gave one
+  paper two identities. It now echoes the canonical cache key, the contract
+  `_canonical_id` already held for the paper family and `doi` for the graph
+  tools after [#102]. ([#105])
+- **`arxiv.id_from_entry` raised on a non-string `id`.** Its `or ""` guarded a
+  missing id but not a wrong-typed one, which reached `.strip()` as an
+  `AttributeError`. ([#105])
+- **A rejected arXiv query was told to retry.** The provider classifies a
+  malformed query `retryable: False`; the tool attached one suggestion to every
+  error, inviting a wait for an outage that was not happening. One suggestion
+  per cause. ([#105])
 - **A failed conversion no longer blames the PDF for every cause.**
   `convert_paper` answered one catch-all — "Conversion failed permanently — do
   not retry. The PDF may be too large, corrupted, or in an unsupported format"
@@ -2556,3 +2596,4 @@ grouped by milestone rather than per commit.
 [#102]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/102
 [#103]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/103
 [#104]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/104
+[#105]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/105

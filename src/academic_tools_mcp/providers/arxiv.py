@@ -196,8 +196,13 @@ def base_arxiv_id(arxiv_id: str) -> str:
 
 
 def id_from_entry(paper: dict[str, Any]) -> str:
-    """The bare, versioned ID from an Atom entry's ``id`` URL. Never a local ``split``."""
-    return normalize_arxiv_id(paper.get("id") or "")
+    """The bare, versioned ID from an Atom entry's ``id`` URL. Never a local ``split``.
+
+    ``isinstance``, not truthiness: a non-string ``id`` reaches ``.strip()``
+    as an AttributeError rather than degrading to "".
+    """
+    raw = paper.get("id")
+    return normalize_arxiv_id(raw) if isinstance(raw, str) else ""
 
 
 # ---------------------------------------------------------------------------

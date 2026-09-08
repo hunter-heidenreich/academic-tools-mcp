@@ -763,6 +763,55 @@ class TestSearchCachedPapersTool:
         assert result["results"] == []
 
     @pytest.mark.asyncio
+    async def test_tool_threads_top_k_at_both_bounds(self, isolated_cache):
+        for i in range(3):
+            _seed_markdown(isolated_cache, "arxiv", f"230{i}.00001", "# T\n\ntransformer.\n")
+
+        one = await server.search_cached_papers("transformer", top_k=1)
+        assert one["result_count"] == 1
+
+        # At the engine's cap must pass; the Field bound is that constant.
+        many = await server.search_cached_papers("transformer", top_k=cache_search._MAX_TOP_K)
+        assert many["result_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_tool_threads_normalize_and_force_refresh(self, isolated_cache, monkeypatch):
+        # Neither flag was passed through the tool in any test, so the
+        # keyword wiring into cache_search.search was unverified.
+        seen = {}
+        original = cache_search.search
+
+        def spy(query, **kwargs):
+            seen.update(kwargs)
+            return original(query, **kwargs)
+
+        monkeypatch.setattr(cache_search, "search", spy)
+
+        await server.search_cached_papers(
+            "cafe", top_k=3, namespace="arxiv", normalize=True, force_refresh=True
+        )
+        assert seen == {
+            "top_k": 3,
+            "namespace": "arxiv",
+            "normalize": True,
+            "force_refresh": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_normalize_folds_diacritics_on_both_sides(self, isolated_cache):
+        _seed_markdown(isolated_cache, "arxiv", "2301.00009", "# T\n\nGutiérrez method.\n")
+
+        assert (await server.search_cached_papers("Gutierrez"))["result_count"] == 0
+        folded = await server.search_cached_papers("Gutierrez", normalize=True)
+        assert folded["result_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_top_k_bound_is_the_engine_constant(self):
+        # Not a number transcribed at the boundary.
+        field = server.search_cached_papers.__annotations__["top_k"].__metadata__[0]
+        assert field.metadata[1].le == cache_search._MAX_TOP_K
+
+    @pytest.mark.asyncio
     async def test_tool_namespace_filter(self, isolated_cache):
         _seed_markdown(
             isolated_cache,
@@ -1015,7 +1064,12 @@ class TestIndexFailuresAreNotSilent:
         cache_search.search("attention")
 
         assert cache_search.unindexable() == [
-            {"namespace": "arxiv", "stem": "ghost", "reason": "unreadable"}
+            {
+                "namespace": "arxiv",
+                "stem": "ghost",
+                "canonical_id": "ghost",
+                "reason": "unreadable",
+            }
         ]
 
     def test_a_paper_that_becomes_unreadable_loses_its_postings(self, isolated_cache, monkeypatch):

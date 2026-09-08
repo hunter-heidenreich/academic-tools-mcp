@@ -456,6 +456,23 @@ class TestWikipediaTools:
         assert result["result_count"] == 0
 
     @pytest.mark.asyncio
+    async def test_search_threads_the_limit_at_both_bounds(self, monkeypatch):
+        from academic_tools_mcp import server
+        from academic_tools_mcp.providers import wikipedia as wp
+
+        seen = []
+
+        async def fake_search(query, limit=5):
+            seen.append(limit)
+            return {"results": []}
+
+        monkeypatch.setattr(wp, "search", fake_search)
+
+        await server.search_wikipedia("x", limit=1)
+        await server.search_wikipedia("x", limit=wp.MAX_SEARCH_LIMIT)
+        assert seen == [1, wp.MAX_SEARCH_LIMIT]
+
+    @pytest.mark.asyncio
     async def test_search_error_gains_a_recovery_suggestion(self, monkeypatch):
         from academic_tools_mcp import server
 

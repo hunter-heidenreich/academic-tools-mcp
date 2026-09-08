@@ -6,15 +6,18 @@ providers, and content modules only -- never the `tools` package -- so tool
 modules can import from here without an import cycle.
 """
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 from fastmcp import FastMCP
 from pydantic import Field
 
 from . import _clients, cache, cache_search, manual, papers
 from .providers import acl
+
+_T = TypeVar("_T")
 
 
 @asynccontextmanager
@@ -178,6 +181,38 @@ def _enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
     return result
 
 
+async def read_markdown(
+    identifier: str, scan: Callable[[str], _T]
+) -> tuple[manual.Target, _T] | dict[str, Any]:
+    """Resolve *identifier*, read its cached markdown, and apply ``scan`` to it.
+
+    The single home for the read the two tools outside ``papers.sections_lock``
+    share (``get_paper_section``, ``find_in_paper``), so neither can drop a
+    guard the other keeps. Returns ``(target, scan(markdown))`` or, when no
+    markdown is cached, :func:`not_converted_error`.
+
+    Three things are load-bearing and none is visible at the call site: the read
+    and the scan run off the event loop (either can pin it on a large paper),
+    the encoding is explicit (a host ``LC_ALL=C`` would otherwise raise
+    UnicodeDecodeError past the ``{error}`` contract), and ``FileNotFoundError``
+    degrades to the same error because a concurrent cascade can unlink between
+    the ``exists()`` check and the read.
+    """
+    target = manual.resolve_target(identifier)
+    md_path = papers.markdown_path(target["namespace"], target["canonical"])
+
+    if not md_path.exists():
+        return not_converted_error(identifier)
+
+    def _read_and_scan() -> _T:
+        return scan(md_path.read_text(encoding="utf-8"))
+
+    try:
+        return target, await asyncio.to_thread(_read_and_scan)
+    except FileNotFoundError:
+        return not_converted_error(identifier)
+
+
 def page_bounds(page: int, page_size: int) -> tuple[int, int]:
     """Half-open slice bounds for a 1-based ``page``.
 
@@ -188,6 +223,22 @@ def page_bounds(page: int, page_size: int) -> tuple[int, int]:
     """
     start = (page - 1) * page_size
     return start, start + page_size
+
+
+# Shape guards for a provider's verbatim tree. OpenAlex nulls keys rather than
+# dropping them and only its top-level ``id`` is checked upstream; Crossref
+# returns the upstream ``message`` untouched below ``_message_of``. Shared by
+# paper.py (the OpenAlex work tree) and search.py (Crossref triage hits).
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """``value`` when it is a dict, else ``{}``."""
+    return value if isinstance(value, dict) else {}
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    """The dict elements of ``value``, or ``[]`` when it isn't a list."""
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
 
 
 def _first(value: Any) -> Any:
@@ -216,14 +267,18 @@ def _crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
 
     Crossref dates are ``{"date-parts": [[year, month, day]]}`` with month and
     day optional. Walks ``_CROSSREF_DATE_KEYS`` and returns the year plus, when
-    month (and optionally day) are present, a zero-padded ISO string. Guards
-    malformed ``date-parts`` (``null`` / ``[]`` / ``[[null]]``) so a bad record
-    degrades to ``(None, None)`` instead of crashing.
+    month (and optionally day) are present, a zero-padded ISO string.
+
+    Every level is shape-checked, not just null-checked: Crossref's ``message``
+    reaches both readers verbatim below ``_message_of``, so a date value that
+    is a list, or a ``date-parts`` holding bare ints, is a payload the walker
+    receives rather than a payload it can rule out. A bad record degrades to
+    ``(None, None)`` instead of raising past the ``{error}`` contract.
     """
     for key in _CROSSREF_DATE_KEYS:
-        parts = (work.get(key) or {}).get("date-parts") or [[]]
-        first = parts[0] if parts else []
-        if first and isinstance(first[0], int):
+        parts = _as_dict(work.get(key)).get("date-parts")
+        first = parts[0] if isinstance(parts, list) and parts else []
+        if isinstance(first, list) and first and isinstance(first[0], int):
             year = first[0]
             iso = f"{year:04d}"
             if len(first) >= 2 and isinstance(first[1], int):

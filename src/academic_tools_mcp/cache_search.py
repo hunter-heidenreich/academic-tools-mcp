@@ -258,6 +258,13 @@ _SCHEMA_VERSION = 3
 # Never equals a real stat, so a file that failed to read is retried.
 _UNREADABLE_MTIME = -1
 
+# Every reason a document can be recorded as unusable. Exported because
+# `tools/search.py` owes the agent one explanation per reason, and a reason
+# added here without one there degrades silently to a generic residual.
+NO_INDEXABLE_TOKENS = "no_indexable_tokens"
+UNREADABLE = "unreadable"
+UNINDEXABLE_REASONS = frozenset({NO_INDEXABLE_TOKENS, UNREADABLE})
+
 # One Unicode letter or digit: ``\w`` minus underscore, which is what
 # ``unicode61`` treats as a token character, in any script.
 _ALNUM_RE = re.compile(r"[^\W_]")
@@ -406,7 +413,7 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     # Must agree with ``unicode61`` on what a term is: an ASCII-biased probe
     # calls a Japanese or Cyrillic paper unusable when the index holds it fine.
     if _ALNUM_RE.search(text) is None:
-        return "no_indexable_tokens"
+        return NO_INDEXABLE_TOKENS
     con.execute("INSERT INTO fts(rowid, body) VALUES (?, ?)", (rowid, text))
     con.execute("INSERT INTO fts_norm(rowid, body) VALUES (?, ?)", (rowid, text))
     return None
@@ -446,7 +453,7 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                     try:
                         text = Path(found.path).read_text(encoding="utf-8", errors="replace")
                     except OSError:
-                        reason, text = "unreadable", ""
+                        reason, text = UNREADABLE, ""
                     else:
                         reason = None
 
@@ -488,9 +495,12 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
 def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[dict[str, Any]]:
     """Papers present on disk that the index could not use.
 
-    Each record is ``{namespace, stem, reason}``, where ``reason`` is
-    ``"no_indexable_tokens"`` or ``"unreadable"``. Such papers are invisible
-    to ``search`` correctly but *silently*, which is what this fixes.
+    Each record is ``{namespace, stem, canonical_id, reason}``, where
+    ``reason`` is one of :data:`UNINDEXABLE_REASONS`. Such papers
+    are invisible to ``search`` correctly but *silently*, which is what this
+    fixes. ``canonical_id`` is inverted the same way a hit's is, so the two
+    readers of the ``files`` table name a paper identically and the id can be
+    handed straight back to the paper tools; the raw ``stem`` cannot.
 
     ``refresh=False`` is a contract, not an optimisation: it is how
     ``search_cached_papers`` reads the state the ``search`` it just ran left
@@ -508,7 +518,15 @@ def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[d
         rows = con.execute(sql + " ORDER BY ns, stem", params).fetchall()
     finally:
         con.close()
-    return [{"namespace": r["ns"], "stem": r["stem"], "reason": r["unindexable"]} for r in rows]
+    return [
+        {
+            "namespace": r["ns"],
+            "stem": r["stem"],
+            "canonical_id": _filename_to_canonical(r["ns"], r["stem"]),
+            "reason": r["unindexable"],
+        }
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
