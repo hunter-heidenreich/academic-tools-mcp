@@ -1,15 +1,14 @@
-"""Tests for the audit-driven feature changes.
+"""Tests for tool behaviours that span more than one module.
 
 Covers:
   - The download_pdf → markdown/sections cascade in
-    ``server._download_pdf_by_provider`` (item 3 of the audit).
-  - The ``get_papers_metadata`` MCP tool (item 4). The
+    ``tools/pipeline._download_pdf_by_provider``.
+  - The ``get_papers_metadata`` MCP tool. The
     ``openalex.get_works_batch`` half lives in ``test_openalex.py``.
-  - ``papers.find_in_markdown`` and the ``find_in_paper`` MCP tool
-    (item 5).
+  - ``papers.find_in_markdown`` and the ``find_in_paper`` MCP tool.
 
 The throttle / streaming primitives have their own focused test
-modules (``test_concurrency.py`` and ``test_pdf_download.py``).
+modules (``test_throttle.py`` and ``test_pdf_download.py``).
 """
 
 from __future__ import annotations
