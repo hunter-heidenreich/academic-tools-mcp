@@ -12,13 +12,15 @@ from typing import Any
 
 import httpx
 
-from . import _pdf_download, _singleflight, manual
-from .net import clients
-from .net.throttle import Throttle
-from .providers import openalex
-from .util import useragent
+from .. import manual
+from ..net import clients
+from ..net.throttle import Throttle
+from ..providers import openalex
+from ..store import singleflight
+from ..util import useragent
+from . import streaming
 
-NAMESPACE = "oa_download"
+NAMESPACE = "openaccess"
 
 # Agent-facing provider name; every site that names us reads it (providers.md).
 LABEL = "OA download"
@@ -42,7 +44,7 @@ _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 1.0
 _MAX_PENDING = 5
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 _PDF_TIMEOUT_SECONDS = 60.0
 
@@ -102,7 +104,7 @@ async def _resolve_and_download(
         }
 
     client = _get_client()
-    result = await _pdf_download.stream_to_file(
+    result = await streaming.stream_to_file(
         client,
         url,
         dest,
@@ -114,7 +116,7 @@ async def _resolve_and_download(
         not_found_message=(f"Open-access PDF not found at {url} for {identifier}"),
     )
     # Same hatch for a dead URL. The predicate excludes a cap abort and a 0-byte blip.
-    if _pdf_download.is_definitive_failure(result):
+    if streaming.is_definitive_failure(result):
         return {**result, "suggestion": _IMPORT_SUGGESTION}
     return result
 
@@ -137,7 +139,7 @@ async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[
         return await _resolve_and_download(identifier, dest, force_refresh=force_refresh)
 
     # force_refresh does two jobs: _fetch re-resolves OpenAlex, cached_download re-streams.
-    return await _pdf_download.cached_download(
+    return await streaming.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,

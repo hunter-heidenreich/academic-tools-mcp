@@ -1,6 +1,6 @@
 """Shared per-provider HTTP throttle.
 
-The single home for outbound pacing (mirroring ``_singleflight.py`` /
+The single home for outbound pacing (mirroring ``singleflight.py`` /
 ``http.py`` / ``cache.py``). Each provider holds one configured ``Throttle``
 and exposes thin ``_throttled_get`` / ``_request_slot`` wrappers over it: the
 *mechanism* is shared, the policy is passed at construction.

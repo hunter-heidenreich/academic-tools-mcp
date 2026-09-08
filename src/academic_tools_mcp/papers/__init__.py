@@ -10,21 +10,17 @@ The pipeline in three layers, each importable on its own:
   produced. Owns the global single-conversion gate.
 
 Artifact *naming* deliberately lives below all three, in
-:mod:`academic_tools_mcp._stems`, so a provider that needs to name a PDF does
-not import a converter.
+:mod:`academic_tools_mcp.store.stems` — one layer down, in the storage
+package, so a provider that needs to name a PDF does not import a
+converter. It is deliberately **not** re-exported here: routing it through
+this facade would give one module two import names, which is how
+``manual`` came to reach the same layer as both ``papers.safe_stem`` and
+``stems.pdf_path``.
 
 This module re-exports the surface the rest of the server uses; the submodules
 are the home of each symbol and the place to read about it.
 """
 
-from .._stems import (
-    checksum_text,
-    markdown_path,
-    markdown_path_for_stem,
-    migrate_legacy_stems,
-    safe_stem,
-    sections_key,
-)
 from .convert import ConverterTemplateError, convert_pdf
 from .index import (
     drop_derived,
@@ -48,7 +44,6 @@ from .sections import (
 __all__ = [
     "ConverterTemplateError",
     "Section",
-    "checksum_text",
     "convert_pdf",
     "drop_derived",
     "find_in_markdown",
@@ -56,16 +51,11 @@ __all__ = [
     "get_or_parse_sections",
     "get_section_content",
     "has_detected_sections",
-    "markdown_path",
-    "markdown_path_for_stem",
-    "migrate_legacy_stems",
     "parse_sections",
     "parse_sections_and_detect",
     "recorded_conversion_mode",
-    "safe_stem",
     "section_at_offset",
     "section_boundaries",
-    "sections_key",
     "sections_lock",
     "store_markdown_and_index",
 ]

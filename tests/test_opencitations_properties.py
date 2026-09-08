@@ -20,8 +20,8 @@ from urllib.parse import unquote, urlsplit
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache
 from academic_tools_mcp.providers import opencitations
+from academic_tools_mcp.store import cache
 from academic_tools_mcp.util import doinorm
 
 from .test_doi_properties import generic_dois

@@ -40,7 +40,10 @@ grouped by milestone rather than per commit.
   `util/` (`config`, `doinorm`, `textnorm`, `useragent`); module names no
   longer carry a leading underscore. `_doi` is `util/doinorm` — `doi` is this
   codebase's most common parameter name, and a module of that name is shadowed
-  at every call site. Internal only: no tool, response shape, environment
+  at every call site. The cache and its primitives moved into `store/`
+  (`cache`, `atomic`, `singleflight`, `stems`) and the two halves of the
+  download story into `download/` (`streaming`, `openaccess`), which finally
+  makes them siblings. Internal only: no tool, response shape, environment
   variable or `.cache/` namespace changes. ([#106])
 
 - **`download_pdf` now drops stale markdown whenever it actually downloads,

@@ -26,7 +26,7 @@ Releases are cut deliberately, not per-merge. Calendar versioning: rename `[Unre
 
 ## Where the detail lives
 
-**Layered design — tools never hit the API directly. Every API client uses every shared module.** Deep per-module detail (atomic writes, throttle/backpressure, single-flight slots, provider quirks, PDF subprocess gating, tool shapes and error contracts) lives in `.claude/rules/*.md`, each auto-loading from its own `paths:` frontmatter when you touch a matching file. `python-design.md` covers every file under `src/`. The PDF pipeline is a package — `papers/{sections,index,convert}.py` over the `_stems.py` naming layer; `pipeline.md` § Layout says which seam is which.
+**Layered design — tools never hit the API directly. Every API client uses every shared module.** Deep per-module detail (atomic writes, throttle/backpressure, single-flight slots, provider quirks, PDF subprocess gating, tool shapes and error contracts) lives in `.claude/rules/*.md`, each auto-loading from its own `paths:` frontmatter when you touch a matching file. `python-design.md` covers every file under `src/`. The PDF pipeline is a package — `papers/{sections,index,convert}.py` over the `store/stems.py` naming layer; `pipeline.md` § Layout says which seam is which.
 
 **Where a new file goes, and what to call it, is machine-checked.** `tests/test_layering.py` owns the layer order in its `_LAYERS` table and asserts it by AST — a back-edge up the stack, a provider reaching the conversion pipeline, `httpx` outside the HTTP layer, or a module nobody classified all fail CI rather than review. Module names carry **no leading underscore** and name the one thing they own; `python-design.md` § Module names states why and what the exceptions aren't.
 

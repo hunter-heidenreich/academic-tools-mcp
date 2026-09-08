@@ -301,9 +301,11 @@ server.py            thin entry: re-exports mcp + tools, registers the
   │                                    convert.py   converter subprocess + gate
   │                  cache_search.py   BM25 over cached markdown (SQLite FTS5)
   │                  bibtex.py         BibTeX generation
-  │                  _pdf_download.py  streaming download, size cap, cached-download protocol
-  │                  oa_download.py    gated open-access fetch for generic DOIs
   │                  _fast_extract.py  bundled pymupdf text extractor
+  │
+  ├── download/      getting PDF bytes onto disk
+  │                  streaming.py   streaming download, size cap, cached-download
+  │                  openaccess.py  gated open-access fetch for generic DOIs
   │
   ├── net/           the outbound network edge
   │                  http.py       retry honouring Retry-After, structured errors
@@ -317,10 +319,11 @@ server.py            thin entry: re-exports mcp + tools, registers the
   │                  textnorm.py   diacritic folding + maps back to original offsets
   │                  useragent.py  the outbound User-Agent — one home, every client
   │
-  └── Shared infrastructure (every API client routes through these)
-        _singleflight.py  concurrent same-key callers coalesce to one fetch
-        cache.py          atomic file cache, per-provider TTLs, negative cache
-        _stems.py         cache artifact naming — one sanitizer, every path
+  └── store/         the on-disk cache (every API client routes through this)
+                     cache.py         atomic file cache, TTLs, negative cache
+                     atomic.py        temp-file + os.replace, the one write seam
+                     singleflight.py  same-key callers coalesce to one fetch
+                     stems.py         artifact naming — one sanitizer, every path
 ```
 
 **Key design decisions:**

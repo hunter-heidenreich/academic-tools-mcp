@@ -16,7 +16,8 @@ import asyncio
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import manual, oa_download
+from academic_tools_mcp import manual
+from academic_tools_mcp.download import openaccess
 from academic_tools_mcp.providers import openalex
 
 from ._download_fakes import install_stream, mock_stream_response, passthrough_slot
@@ -53,7 +54,7 @@ def test_every_spelling_shares_one_artifact_and_one_verdict(doi: str) -> None:
 def test_best_pdf_url_never_invents_a_url(best: str | None, primary: str | None, oa: str | None):
     """The resolver only ever returns a URL the work itself carried.
 
-    This is the trust boundary stated as a property: `oa_download` fetches
+    This is the trust boundary stated as a property: `openaccess` fetches
     whatever this returns, so a synthesised or defaulted URL would be an
     arbitrary fetch by another name.
     """
@@ -95,10 +96,10 @@ def test_a_non_pdf_body_never_reaches_disk(monkeypatch, body: bytes, content_typ
         return {"best_oa_location": {"pdf_url": "https://pub.example/p.pdf"}}
 
     monkeypatch.setattr(openalex, "get_work", fake_get_work)
-    monkeypatch.setattr(oa_download, "_request_slot", passthrough_slot)
+    monkeypatch.setattr(openaccess, "_request_slot", passthrough_slot)
     install_stream(monkeypatch, mock_stream_response(chunks=[body], content_type=content_type))
 
-    result = asyncio.run(oa_download.download_pdf(doi, force_refresh=True))
+    result = asyncio.run(openaccess.download_pdf(doi, force_refresh=True))
 
     dest = manual.resolve_target(doi)["pdf_path"]
     assert "error" in result

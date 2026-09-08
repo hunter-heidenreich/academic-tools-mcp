@@ -21,8 +21,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import unquote
 
-from . import cache, manual, papers
+from . import manual, papers
 from .providers import acl, arxiv, biorxiv
+from .store import cache, stems
 from .util import doinorm, textnorm
 
 # Enough to tell "variational dropout" from "dropout regularisation"; more is bloat.
@@ -161,7 +162,7 @@ _ARXIV_OLDSTYLE_STEM_RE = re.compile(
 
 
 def _filename_to_canonical(namespace: str, stem: str) -> str:
-    """Invert ``papers.safe_stem``: the cache key a stored filename came from.
+    """Invert ``stems.safe_stem``: the cache key a stored filename came from.
 
     One ``unquote``, and it must stay one — ``safe_stem`` writes a literal
     ``%`` as ``%25``, so a single pass is its exact inverse and a second would
@@ -671,7 +672,7 @@ def search(
         # bm25() is negative, most-relevant first. No floor: FTS5 returns only
         # rows that matched, so a low score is a weak term, not a non-match.
         score = -float(row["score"])
-        path = papers.markdown_path_for_stem(row["ns"], row["stem"])
+        path = stems.markdown_path_for_stem(row["ns"], row["stem"])
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

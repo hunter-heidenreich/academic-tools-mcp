@@ -17,8 +17,9 @@ from urllib.parse import quote, urlsplit
 from hypothesis import given
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _stems, cache_search, manual, papers
+from academic_tools_mcp import cache_search, manual
 from academic_tools_mcp.providers import acl
+from academic_tools_mcp.store import stems
 from academic_tools_mcp.util import doinorm
 
 # An Anthology ID is the DOI suffix, verbatim — `_strip_acl_prefix` hands back
@@ -118,10 +119,10 @@ def test_every_artifact_keys_on_the_canonical_doi(doi: str) -> None:
     place the three disagreed.
     """
     canonical = acl.canonical_key(doi)
-    stem = _stems.safe_stem(canonical)
+    stem = stems.safe_stem(canonical)
     assert acl.pdf_path(doi).stem == stem
-    assert papers.markdown_path(acl.NAMESPACE, canonical).stem == stem
-    assert _stems.sections_key(canonical) == stem
+    assert stems.markdown_path(acl.NAMESPACE, canonical).stem == stem
+    assert stems.sections_key(canonical) == stem
 
 
 @given(slashless_acl_dois)

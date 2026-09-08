@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from academic_tools_mcp import _pdf_download
+from academic_tools_mcp.download import streaming
 from academic_tools_mcp.net import stats
 
 from ._download_fakes import TIMEOUT as _TIMEOUT
@@ -29,20 +29,20 @@ from ._download_fakes import streaming_client as _streaming_client
 class TestResolveMaxPdfBytes:
     def test_default_returned_when_unset(self, monkeypatch):
         monkeypatch.delenv("MAX_PDF_BYTES", raising=False)
-        assert _pdf_download.resolve_max_pdf_bytes() == _pdf_download._DEFAULT_MAX_PDF_BYTES
+        assert streaming.resolve_max_pdf_bytes() == streaming._DEFAULT_MAX_PDF_BYTES
 
     @pytest.mark.parametrize("disabled", ["none", "off", "disabled", "0", "NONE"])
     def test_disabled_strings(self, monkeypatch, disabled):
         monkeypatch.setenv("MAX_PDF_BYTES", disabled)
-        assert _pdf_download.resolve_max_pdf_bytes() is None
+        assert streaming.resolve_max_pdf_bytes() is None
 
     def test_explicit_value(self, monkeypatch):
         monkeypatch.setenv("MAX_PDF_BYTES", "1048576")
-        assert _pdf_download.resolve_max_pdf_bytes() == 1_048_576
+        assert streaming.resolve_max_pdf_bytes() == 1_048_576
 
     def test_garbage_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("MAX_PDF_BYTES", "not-a-number")
-        assert _pdf_download.resolve_max_pdf_bytes() == _pdf_download._DEFAULT_MAX_PDF_BYTES
+        assert streaming.resolve_max_pdf_bytes() == streaming._DEFAULT_MAX_PDF_BYTES
 
     @pytest.mark.parametrize("negative", ["-1", "-200000000"])
     def test_a_negative_cap_does_not_disable_the_guard(self, monkeypatch, negative):
@@ -50,12 +50,12 @@ class TestResolveMaxPdfBytes:
         typo, and honouring it would silently remove the disk guard — the one
         thing this cap exists to provide. Falls back to the default instead."""
         monkeypatch.setenv("MAX_PDF_BYTES", negative)
-        assert _pdf_download.resolve_max_pdf_bytes() == _pdf_download._DEFAULT_MAX_PDF_BYTES
+        assert streaming.resolve_max_pdf_bytes() == streaming._DEFAULT_MAX_PDF_BYTES
 
     @pytest.mark.parametrize("raw", ["inf", "nan"])
     def test_non_finite_does_not_disable_the_guard(self, monkeypatch, raw):
         monkeypatch.setenv("MAX_PDF_BYTES", raw)
-        assert _pdf_download.resolve_max_pdf_bytes() == _pdf_download._DEFAULT_MAX_PDF_BYTES
+        assert streaming.resolve_max_pdf_bytes() == streaming._DEFAULT_MAX_PDF_BYTES
 
 
 class TestStreamToFile:
@@ -66,7 +66,7 @@ class TestStreamToFile:
         client = MagicMock()
         client.stream = MagicMock(return_value=_mock_stream_response(chunks=chunks)())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://example.com/x.pdf",
             dest,
@@ -90,7 +90,7 @@ class TestStreamToFile:
         client = MagicMock()
         client.stream = MagicMock(return_value=_mock_stream_response(status_code=404)())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://example.com/x.pdf",
             dest,
@@ -117,7 +117,7 @@ class TestStreamToFile:
         client = MagicMock()
         client.stream = MagicMock(return_value=_mock_stream_response(chunks=chunks)())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://example.com/x.pdf",
             dest,
@@ -146,7 +146,7 @@ class TestStreamToFile:
         client = MagicMock()
         client.stream = MagicMock(return_value=_mock_stream_response(chunks=chunks)())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://example.com/x.pdf",
             dest,
@@ -169,7 +169,7 @@ class TestStreamToFile:
         client = MagicMock()
         client.stream = MagicMock(return_value=_mock_stream_response(chunks=chunks)())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://example.com/x.pdf",
             dest,
@@ -219,7 +219,7 @@ class TestStreamToFile:
             return _FullDisk(real_open(*args, **kwargs))
 
         with mock.patch.object(tempfile, "NamedTemporaryFile", _fake):
-            result = await _pdf_download.stream_to_file(
+            result = await streaming.stream_to_file(
                 client,
                 "http://example.com/x.pdf",
                 dest,
@@ -232,7 +232,7 @@ class TestStreamToFile:
         assert "error" in result
         assert "arXiv" in result["error"]
         assert result["retryable"] is True
-        assert not _pdf_download.is_definitive_failure(result), (
+        assert not streaming.is_definitive_failure(result), (
             "a full disk must not be negative-cached against the paper"
         )
         assert not dest.exists()
@@ -252,7 +252,7 @@ class TestStreamToFile:
         client = MagicMock()
         client.stream = MagicMock(return_value=_mock_stream_response(status_code=404)())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://example.com/x.pdf",
             dest,
@@ -279,7 +279,7 @@ class TestStreamToFile:
 
         client.stream = MagicMock(return_value=boom())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://example.com/x.pdf",
             dest,
@@ -303,7 +303,7 @@ class TestStreamToFile:
         client = MagicMock()
         client.stream = MagicMock(return_value=_mock_stream_response(chunks=chunks)())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://example.com/x.pdf",
             dest,
@@ -333,12 +333,12 @@ async def test_a_streaming_4xx_returns_the_status_not_a_response_not_read(tmp_pa
     """
     client = _streaming_client(403, b"<html>Forbidden</html>")
     try:
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "https://publisher.example/paper.pdf",
             tmp_path / "out.pdf",
             slot_factory=_passthrough_slot,
-            namespace="oa_download",
+            namespace="openaccess",
             provider_label="OA download",
             require_pdf=True,
             timeout=_TIMEOUT,
@@ -355,12 +355,12 @@ async def test_a_streaming_4xx_returns_the_status_not_a_response_not_read(tmp_pa
 async def test_a_streaming_404_still_short_circuits_before_the_body_read(tmp_path):
     client = _streaming_client(404, b"<html>nope</html>")
     try:
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "https://publisher.example/paper.pdf",
             tmp_path / "out.pdf",
             slot_factory=_passthrough_slot,
-            namespace="oa_download",
+            namespace="openaccess",
             provider_label="OA download",
             not_found_message="Open-access PDF not found",
             timeout=_TIMEOUT,
@@ -376,12 +376,12 @@ async def test_a_streaming_success_is_never_buffered(tmp_path):
     """The fix must read only error bodies; a 200 PDF stays streamed."""
     client = _streaming_client(200, b"%PDF-1.4 real content", content_type="application/pdf")
     try:
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "https://publisher.example/paper.pdf",
             tmp_path / "out.pdf",
             slot_factory=_passthrough_slot,
-            namespace="oa_download",
+            namespace="openaccess",
             provider_label="OA download",
             require_pdf=True,
             timeout=_TIMEOUT,
@@ -425,7 +425,7 @@ class TestEmptyBodyRejected:
         client = MagicMock()
         client.stream = MagicMock(return_value=stream_cm())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "https://example.org/empty.pdf",
             dest,
@@ -447,7 +447,7 @@ class TestEmptyBodyRejected:
         client = MagicMock()
         client.stream = MagicMock(return_value=_mock_stream_response(chunks=[b"%PDF-1.7\nbody"])())
 
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "https://example.org/ok.pdf",
             dest,
@@ -464,39 +464,39 @@ class TestEmptyBodyRejected:
 
 class TestIsUsablePdf:
     def test_missing_file(self, tmp_path):
-        assert _pdf_download.is_usable_pdf(tmp_path / "nope.pdf") is False
+        assert streaming.is_usable_pdf(tmp_path / "nope.pdf") is False
 
     def test_zero_byte_file(self, tmp_path):
         p = tmp_path / "empty.pdf"
         p.write_bytes(b"")
-        assert _pdf_download.is_usable_pdf(p) is False
+        assert streaming.is_usable_pdf(p) is False
 
     def test_html_landing_page(self, tmp_path):
         p = tmp_path / "landing.pdf"
         p.write_bytes(b"<!DOCTYPE html><html>Paywall</html>")
-        assert _pdf_download.is_usable_pdf(p) is False
+        assert streaming.is_usable_pdf(p) is False
 
     def test_real_pdf_header(self, tmp_path):
         p = tmp_path / "real.pdf"
         p.write_bytes(b"%PDF-1.4\n...")
-        assert _pdf_download.is_usable_pdf(p) is True
+        assert streaming.is_usable_pdf(p) is True
 
     def test_directory_is_not_usable(self, tmp_path):
         d = tmp_path / "adir.pdf"
         d.mkdir()
-        assert _pdf_download.is_usable_pdf(d) is False
+        assert streaming.is_usable_pdf(d) is False
 
 
 class TestCachedHit:
     def test_returns_none_for_zero_byte(self, tmp_path):
         p = tmp_path / "empty.pdf"
         p.write_bytes(b"")
-        assert _pdf_download.cached_hit(p) is None
+        assert streaming.cached_hit(p) is None
 
     def test_returns_payload_for_real_pdf(self, tmp_path):
         p = tmp_path / "real.pdf"
         p.write_bytes(b"%PDF-1.4\nxyz")
-        hit = _pdf_download.cached_hit(p)
+        hit = streaming.cached_hit(p)
         assert hit == {"path": str(p), "size_bytes": 12, "cached": True}
 
     def test_an_unlink_between_the_check_and_the_stat_is_a_miss(self, tmp_path, monkeypatch):
@@ -517,7 +517,7 @@ class TestCachedHit:
             return real_stat(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "stat", vanishing_stat)
-        assert _pdf_download.cached_hit(p) is None
+        assert streaming.cached_hit(p) is None
 
 
 # ---------------------------------------------------------------------------
@@ -539,10 +539,10 @@ class TestIsDefinitiveFailure:
     """
 
     def test_an_explicit_non_retryable_error_counts(self):
-        assert _pdf_download.is_definitive_failure({"error": "gone", "retryable": False})
+        assert streaming.is_definitive_failure({"error": "gone", "retryable": False})
 
     def test_an_explicit_retryable_error_does_not(self):
-        assert not _pdf_download.is_definitive_failure({"error": "blip", "retryable": True})
+        assert not streaming.is_definitive_failure({"error": "blip", "retryable": True})
 
     @pytest.mark.parametrize(
         "exc",
@@ -567,9 +567,9 @@ class TestIsDefinitiveFailure:
         result = http.error_dict("Test", exc)
         assert result["retryable"] is True, (
             "every transient branch of error_dict must carry the flag; "
-            "oa_download and tools/graph branch on it"
+            "openaccess and tools/graph branch on it"
         )
-        assert not _pdf_download.is_definitive_failure(result)
+        assert not streaming.is_definitive_failure(result)
 
     def test_an_unclassified_4xx_must_not_count(self):
         """The case that makes the allowlist load-bearing.
@@ -587,23 +587,23 @@ class TestIsDefinitiveFailure:
             ),
         )
         assert "retryable" not in result
-        assert not _pdf_download.is_definitive_failure(result)
+        assert not streaming.is_definitive_failure(result)
 
     def test_a_size_cap_abort_does_not_count(self):
         # Non-retryable, but a config choice a cap bump fixes — not a fact
         # about the paper. Caching it would strand the caller behind a stale
         # miss until the TTL expired.
-        assert not _pdf_download.is_definitive_failure(
+        assert not streaming.is_definitive_failure(
             {"error": "too big", "retryable": False, "max_bytes": 100}
         )
 
     def test_a_success_does_not_count(self):
-        assert not _pdf_download.is_definitive_failure({"path": "/x", "cached": False})
+        assert not streaming.is_definitive_failure({"path": "/x", "cached": False})
 
     def test_a_404_from_stream_to_file_counts(self):
         # The shape stream_to_file actually emits, so the classifier and the
         # producer cannot drift apart on this one.
-        assert _pdf_download.is_definitive_failure(
+        assert streaming.is_definitive_failure(
             {"error": "arXiv: PDF not found at http://x", "retryable": False}
         )
 
@@ -619,10 +619,10 @@ class TestCachedDownload:
 
     @staticmethod
     def _call(dest, fetch, **overrides):
-        from academic_tools_mcp import _singleflight
+        from academic_tools_mcp.store import singleflight
 
         kwargs = {
-            "single_flight": _singleflight.SingleFlight(),
+            "single_flight": singleflight.SingleFlight(),
             "namespace": "testns",
             "entity": "downloads",
             "canonical": "10.1234/x",
@@ -631,7 +631,7 @@ class TestCachedDownload:
             "neg_ttl": 3600.0,
         }
         kwargs.update(overrides)
-        return _pdf_download.cached_download(**kwargs)
+        return streaming.cached_download(**kwargs)
 
     @pytest.mark.asyncio
     async def test_a_usable_cached_pdf_short_circuits(self, tmp_path):
@@ -670,9 +670,9 @@ class TestCachedDownload:
             await asyncio.sleep(0.02)
             return {"path": str(dest), "cached": False}
 
-        from academic_tools_mcp import _singleflight
+        from academic_tools_mcp.store import singleflight
 
-        sf = _singleflight.SingleFlight()
+        sf = singleflight.SingleFlight()
         await asyncio.gather(*(self._call(dest, fetch, single_flight=sf) for _ in range(4)))
 
         assert calls == 1
@@ -690,7 +690,7 @@ class TestCachedDownload:
         ``cached_hit`` — the same window the leader writes into.
         """
         dest = tmp_path / "p.pdf"
-        real_cached_hit = _pdf_download.cached_hit
+        real_cached_hit = streaming.cached_hit
         checks = {"n": 0}
 
         def leader_writes_between_the_checks(path):
@@ -700,7 +700,7 @@ class TestCachedDownload:
             _pdf(dest)  # ...and lands the file before we re-check in the slot
             return real_cached_hit(path)
 
-        monkeypatch.setattr(_pdf_download, "cached_hit", leader_writes_between_the_checks)
+        monkeypatch.setattr(streaming, "cached_hit", leader_writes_between_the_checks)
 
         async def fetch():
             raise AssertionError("the in-slot re-check must short-circuit before fetch")
@@ -716,7 +716,7 @@ class TestCachedDownload:
     ):
         """Same window, negative half: a leader that recorded a definitive
         failure while this caller waited must not be re-fetched."""
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         dest = tmp_path / "p.pdf"  # never created — cached_hit misses naturally
         checks = {"n": 0}
@@ -747,7 +747,7 @@ class TestCachedDownload:
         path must reach ``fetch`` even with a good file and a negative entry
         both present.
         """
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         dest = _pdf(tmp_path / "p.pdf", b"%PDF-1.4 stale")
         cache.put_negative("testns", "downloads", "10.1234/x", {"error": "gone"})
@@ -755,7 +755,7 @@ class TestCachedDownload:
         def must_not_be_consulted(path):
             raise AssertionError("force_refresh must not check the cached artifact")
 
-        monkeypatch.setattr(_pdf_download, "cached_hit", must_not_be_consulted)
+        monkeypatch.setattr(streaming, "cached_hit", must_not_be_consulted)
 
         calls = 0
 
@@ -813,7 +813,7 @@ class TestCachedDownload:
         negative entry while a perfectly good PDF is still on disk (
         ``stream_to_file`` only replaces dest on success). The next plain call
         must serve the file, not the stale error."""
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         dest = _pdf(tmp_path / "p.pdf")
         cache.put_negative("testns", "downloads", "10.1234/x", {"error": "gone"})
@@ -825,7 +825,7 @@ class TestCachedDownload:
 
     @pytest.mark.asyncio
     async def test_force_refresh_clears_the_negative_entry_and_refetches(self, tmp_path):
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         dest = tmp_path / "p.pdf"
         cache.put_negative("testns", "downloads", "10.1234/x", {"error": "gone"})
@@ -875,7 +875,7 @@ class TestCachedDownload:
         # tools/pipeline writes `cascaded_invalidated` into what it gets back.
         import asyncio
 
-        from academic_tools_mcp import _singleflight
+        from academic_tools_mcp.store import singleflight
 
         dest = tmp_path / "p.pdf"
 
@@ -883,7 +883,7 @@ class TestCachedDownload:
             await asyncio.sleep(0.01)
             return {"path": str(dest), "cached": False}
 
-        sf = _singleflight.SingleFlight()
+        sf = singleflight.SingleFlight()
         a, b = await asyncio.gather(
             self._call(dest, fetch, single_flight=sf),
             self._call(dest, fetch, single_flight=sf),

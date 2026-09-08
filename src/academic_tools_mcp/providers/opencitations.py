@@ -5,9 +5,9 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _singleflight, cache
 from ..net import clients, http
 from ..net.throttle import Throttle
+from ..store import cache, singleflight
 from ..util import doinorm, useragent
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
@@ -35,7 +35,7 @@ _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 0.334
 _MAX_PENDING = 5
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 # Incoming citations accrue continuously; a week bounds how stale a count gets.
 _POSITIVE_TTL_SECONDS = 7 * 86400.0

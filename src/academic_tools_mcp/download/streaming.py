@@ -1,7 +1,7 @@
 """Shared streaming PDF download helper.
 
 Backs all four ``download_pdf`` paths (arxiv, biorxiv, acl,
-oa_download). Slot acquisition stays per-provider — each has its own gap and
+openaccess). Slot acquisition stays per-provider — each has its own gap and
 concurrency caps — while streaming, size-capping, PDF sniffing and atomic
 rename are identical, so they live here.
 
@@ -20,9 +20,9 @@ from typing import Any
 
 import httpx
 
-from . import _singleflight, cache
-from .net import http, stats
-from .util import config
+from ..net import http, stats
+from ..store import cache, singleflight
+from ..util import config
 
 # Clears an image-heavy preprint; catches a 10 GB non-PDF.
 _DEFAULT_MAX_PDF_BYTES = 200_000_000
@@ -225,7 +225,7 @@ async def stream_to_file(
 
 async def cached_download(
     *,
-    single_flight: _singleflight.SingleFlight,
+    single_flight: singleflight.SingleFlight,
     namespace: str,
     entity: str,
     canonical: str,

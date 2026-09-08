@@ -8,9 +8,10 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _pdf_download, _singleflight, _stems, cache
+from ..download import streaming
 from ..net import clients, http
 from ..net.throttle import Throttle
+from ..store import cache, singleflight, stems
 from ..util import doinorm, useragent
 
 NAMESPACE = "biorxiv"
@@ -44,7 +45,7 @@ _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 0.5
 _MAX_PENDING = 5
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 # Short: bioRxiv DOIs are minted on upload, so a paper that 404'd this morning
 # may be visible within the hour. Definitive PDF-download failures share it —
@@ -330,7 +331,7 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
 def pdf_path(doi: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
-    return _stems.pdf_path(NAMESPACE, canonical_key(doi))
+    return stems.pdf_path(NAMESPACE, canonical_key(doi))
 
 
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -344,7 +345,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     callers for the same DOI share one download via single-flight.
     """
     canonical = canonical_key(doi)
-    dest = _stems.pdf_path(NAMESPACE, canonical)
+    dest = stems.pdf_path(NAMESPACE, canonical)
 
     async def _fetch() -> dict[str, Any]:
         # force_refresh is threaded through so a forced re-download doesn't
@@ -358,7 +359,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             # Definitive: the record exists but carries no PDF URL.
             return {"error": f"No PDF URL found for DOI: {doi}", "retryable": False}
 
-        return await _pdf_download.stream_to_file(
+        return await streaming.stream_to_file(
             _get_client(),
             pdf_url,
             dest,
@@ -372,7 +373,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     # Tuple-keyed so this slot is distinct from get_paper's (keyed on the bare
     # canonical id): _fetch calls get_paper, which would otherwise await this
     # very slot's future and deadlock.
-    return await _pdf_download.cached_download(
+    return await streaming.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,

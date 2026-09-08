@@ -16,9 +16,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from academic_tools_mcp import _pdf_download, cache, manual, oa_download, server
+from academic_tools_mcp import manual, server
+from academic_tools_mcp.download import openaccess, streaming
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
+from academic_tools_mcp.store import cache, stems
 
 from ._download_fakes import TIMEOUT as _TIMEOUT
 from ._download_fakes import install_stream as _install_stream
@@ -87,7 +89,7 @@ class TestBestPdfUrl:
     def test_a_wrong_shaped_subobject_is_skipped_not_a_crash(self, wrong):
         """These arrive from untyped JSON. A non-dict reaches ``.get`` as an
         ``AttributeError``, and nothing between here and the MCP tool catches
-        one — ``_pdf_download.cached_download`` does not wrap its ``fetch``."""
+        one — ``streaming.cached_download`` does not wrap its ``fetch``."""
         work = {
             "best_oa_location": wrong,
             "primary_location": wrong,
@@ -128,18 +130,18 @@ class TestMetadataPdfUrl:
         assert server._format_openalex_metadata(work, _DOI)["pdf_url"] is None
 
 
-# --- oa_download.download_pdf ----------------------------------------------
+# --- openaccess.download_pdf ----------------------------------------------
 
 
 class TestOaDownload:
     @pytest.mark.asyncio
     async def test_success_writes_pdf_to_manual_namespace(self, monkeypatch):
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         fresh = [b"%PDF-1.4 ", b"OA ", b"BODY"]
         _install_stream(monkeypatch, _mock_stream_response(chunks=fresh))
 
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
 
         dest = _oa_dest()
         assert result["cached"] is False
@@ -157,7 +159,7 @@ class TestOaDownload:
 
         monkeypatch.setattr(openalex, "get_work", boom)
 
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
         assert result["cached"] is True
         assert result["size_bytes"] == len(b"%PDF-1.4 cached")
 
@@ -167,7 +169,7 @@ class TestOaDownload:
             monkeypatch,
             {"open_access": {"is_oa": False, "oa_status": "closed"}},
         )
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
         assert "error" in result
         assert "no open-access pdf url" in result["error"].lower()
         assert "import_paper" in result["suggestion"]
@@ -180,7 +182,7 @@ class TestOaDownload:
         # Mirrors openalex.get_work's real 404 payload, not_found flag included
         # — that flag is what marks the miss definitive.
         _stub_get_work(monkeypatch, {"error": f"No work found for DOI: {_DOI}", "not_found": True})
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
         assert result["error"] == f"No work found for DOI: {_DOI}"
         # A definitive (non-retryable) OpenAlex miss keeps the import escape hatch.
         assert "import_paper" in result["suggestion"]
@@ -191,7 +193,7 @@ class TestOaDownload:
         # A retryable OpenAlex error (timeout / 5xx) is surfaced as-is: the
         # agent should retry, NOT be told to go fetch the PDF by hand.
         _stub_get_work(monkeypatch, {"error": "upstream timeout", "retryable": True})
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
         assert result["error"] == "upstream timeout"
         assert result["retryable"] is True
         assert "suggestion" not in result
@@ -203,7 +205,7 @@ class TestOaDownload:
             monkeypatch,
             {"open_access": {"is_oa": False, "oa_status": "closed"}},
         )
-        result1 = await oa_download.download_pdf(_DOI)
+        result1 = await openaccess.download_pdf(_DOI)
         assert "error" in result1
 
         # Second call must be served from the negative cache — no OpenAlex hit.
@@ -211,7 +213,7 @@ class TestOaDownload:
             raise AssertionError("network hit on negative-cache hit")
 
         monkeypatch.setattr(openalex, "get_work", boom)
-        result2 = await oa_download.download_pdf(_DOI)
+        result2 = await openaccess.download_pdf(_DOI)
         assert result2 == result1
         assert "_expires_at" not in result2
 
@@ -221,12 +223,12 @@ class TestOaDownload:
         # stream_to_file rejects it; the rejection must be negative-cached so
         # a retrying agent doesn't re-fetch-and-reject the page every call.
         _stub_get_work(monkeypatch, {"open_access": {"oa_url": "http://x/landing"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(
             monkeypatch,
             _mock_stream_response(chunks=[b"<html>paywall</html>"], content_type="text/html"),
         )
-        result1 = await oa_download.download_pdf(_DOI)
+        result1 = await openaccess.download_pdf(_DOI)
         assert "error" in result1
         assert not _oa_dest().exists()
 
@@ -237,7 +239,7 @@ class TestOaDownload:
 
         monkeypatch.setattr(openalex, "get_work", boom)
         monkeypatch.setattr(clients, "get_client", boom)
-        result2 = await oa_download.download_pdf(_DOI)
+        result2 = await openaccess.download_pdf(_DOI)
         assert result2 == result1
         assert "_expires_at" not in result2
 
@@ -247,7 +249,7 @@ class TestOaDownload:
         # size-cap abort must NOT be negative-cached: raising the cap should
         # let the next call succeed without force_refresh.
         monkeypatch.setenv("MAX_PDF_BYTES", "4")
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(
             monkeypatch,
             _mock_stream_response(chunks=[b"%PDF-1.4 way over the four-byte cap"]),
@@ -261,11 +263,11 @@ class TestOaDownload:
 
         monkeypatch.setattr(openalex, "get_work", counting_get_work)
 
-        result1 = await oa_download.download_pdf(_DOI)
+        result1 = await openaccess.download_pdf(_DOI)
         assert "max_bytes" in result1
 
         # Second call re-resolves OpenAlex rather than serving a negative hit.
-        result2 = await oa_download.download_pdf(_DOI)
+        result2 = await openaccess.download_pdf(_DOI)
         assert "max_bytes" in result2
         assert calls["n"] == 2
 
@@ -276,15 +278,15 @@ class TestOaDownload:
             monkeypatch,
             {"open_access": {"is_oa": False, "oa_status": "closed"}},
         )
-        first = await oa_download.download_pdf(_DOI)
+        first = await openaccess.download_pdf(_DOI)
         assert "error" in first
 
         # force_refresh must bypass (and clear) the negative entry: a now-OA
         # paper with a valid stream succeeds instead of returning the stale miss.
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(monkeypatch, _mock_stream_response(chunks=[b"%PDF-1.4 fresh"]))
-        result = await oa_download.download_pdf(_DOI, force_refresh=True)
+        result = await openaccess.download_pdf(_DOI, force_refresh=True)
         assert result["cached"] is False
         assert _oa_dest().read_bytes() == b"%PDF-1.4 fresh"
 
@@ -304,7 +306,7 @@ class TestOaDownload:
             return {"best_oa_location": {"pdf_url": "http://x/p.pdf"}}
 
         monkeypatch.setattr(openalex, "get_work", counting_get_work)
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
 
         class ExplodingClient:
             def stream(self, *_args, **_kwargs):
@@ -312,13 +314,13 @@ class TestOaDownload:
 
         monkeypatch.setattr(clients, "get_client", lambda *a, **kw: ExplodingClient())
 
-        first = await oa_download.download_pdf(_DOI)
+        first = await openaccess.download_pdf(_DOI)
         assert "error" in first
         assert "timed out" in first["error"]
 
         # The second call must re-resolve and re-attempt, not serve a cached
         # verdict that the paper has no open-access copy.
-        second = await oa_download.download_pdf(_DOI)
+        second = await openaccess.download_pdf(_DOI)
         assert "error" in second
         assert resolves == 2, "a transient failure was negative-cached"
 
@@ -336,8 +338,8 @@ class TestOaDownload:
 
         monkeypatch.setattr(openalex, "get_work", counting_get_work)
 
-        assert "error" in await oa_download.download_pdf(_DOI)
-        assert "error" in await oa_download.download_pdf(_DOI)
+        assert "error" in await openaccess.download_pdf(_DOI)
+        assert "error" in await openaccess.download_pdf(_DOI)
         assert resolves == 1, "a definitive miss should be served from the negative cache"
 
     @pytest.mark.asyncio
@@ -349,10 +351,10 @@ class TestOaDownload:
         dest.write_bytes(b"")
 
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(monkeypatch, _mock_stream_response(chunks=[b"%PDF-1.4 fresh"]))
 
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
         assert result["cached"] is False
         assert dest.read_bytes() == b"%PDF-1.4 fresh"
 
@@ -375,12 +377,12 @@ class TestOaDownload:
 
         monkeypatch.setattr(openalex, "get_work", counting_get_work)
 
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
         assert result["error"].startswith("OpenAlex HTTP 403")
         assert "suggestion" not in result, "an unknown verdict is not a dead end"
 
         # And it is not negative-cached, so the next call really re-resolves.
-        await oa_download.download_pdf(_DOI)
+        await openaccess.download_pdf(_DOI)
         assert resolves == 2
 
     @pytest.mark.asyncio
@@ -397,10 +399,10 @@ class TestOaDownload:
             yield
 
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "https://pub.example/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", recording_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", recording_slot)
         _install_stream(monkeypatch, _mock_stream_response(chunks=[b"%PDF-1.4 x"]))
 
-        await oa_download.download_pdf(_DOI)
+        await openaccess.download_pdf(_DOI)
         assert seen == ["https://pub.example/p.pdf"]
 
     @pytest.mark.asyncio
@@ -408,12 +410,12 @@ class TestOaDownload:
         """The real wrapper, not the passthrough every other test installs:
         `per_host=True` means the last-start map is keyed by netloc, so two
         publishers never pace each other."""
-        async with oa_download._request_slot("https://a.example/one.pdf"):
+        async with openaccess._request_slot("https://a.example/one.pdf"):
             pass
-        async with oa_download._request_slot("https://b.example:8443/two.pdf"):
+        async with openaccess._request_slot("https://b.example:8443/two.pdf"):
             pass
 
-        assert set(oa_download._throttle._last_start) == {"a.example", "b.example:8443"}
+        assert set(openaccess._throttle._last_start) == {"a.example", "b.example:8443"}
 
     @pytest.mark.asyncio
     async def test_force_refresh_preserves_the_cached_pdf_on_404(self, monkeypatch):
@@ -424,10 +426,10 @@ class TestOaDownload:
         dest.write_bytes(b"%PDF-1.4 OLD cached bytes")
 
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(monkeypatch, _mock_stream_response(status_code=404))
 
-        result = await oa_download.download_pdf(_DOI, force_refresh=True)
+        result = await openaccess.download_pdf(_DOI, force_refresh=True)
         assert result["retryable"] is False
         assert dest.read_bytes() == b"%PDF-1.4 OLD cached bytes"
         assert not list(dest.parent.glob("*.tmp")), "temp file leaked"
@@ -439,7 +441,7 @@ class TestOaDownload:
         dest.write_bytes(b"%PDF-1.4 OLD cached bytes")
 
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
 
         class ExplodingClient:
             def stream(self, *_args, **_kwargs):
@@ -447,7 +449,7 @@ class TestOaDownload:
 
         monkeypatch.setattr(clients, "get_client", lambda *a, **kw: ExplodingClient())
 
-        result = await oa_download.download_pdf(_DOI, force_refresh=True)
+        result = await openaccess.download_pdf(_DOI, force_refresh=True)
         assert result["retryable"] is True
         assert dest.read_bytes() == b"%PDF-1.4 OLD cached bytes"
         assert not list(dest.parent.glob("*.tmp")), "temp file leaked"
@@ -460,10 +462,10 @@ class TestOaDownload:
 
         monkeypatch.setenv("MAX_PDF_BYTES", "4")
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(monkeypatch, _mock_stream_response(chunks=[b"%PDF-1.4 far too long"]))
 
-        result = await oa_download.download_pdf(_DOI, force_refresh=True)
+        result = await openaccess.download_pdf(_DOI, force_refresh=True)
         assert result["max_bytes"] == 4
         assert "suggestion" not in result, "raise the cap, don't fetch it by hand"
         assert dest.read_bytes() == b"%PDF-1.4 OLD cached bytes"
@@ -479,10 +481,10 @@ class TestOaDownload:
         dest.write_bytes(b"%PDF-1.4 OLD cached bytes")
 
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(monkeypatch, _mock_stream_response(chunks=[b"%PDF-1.4 NEW"]))
 
-        result = await oa_download.download_pdf(_DOI, force_refresh=True)
+        result = await openaccess.download_pdf(_DOI, force_refresh=True)
         assert result["cached"] is False
         assert dest.read_bytes() == b"%PDF-1.4 NEW"
 
@@ -491,15 +493,15 @@ class TestOaDownload:
         # Not merely bypasses it: a later *plain* call must not be served the
         # stale verdict the refresh already disproved.
         _stub_get_work(monkeypatch, {"open_access": {"is_oa": False, "oa_status": "closed"}})
-        assert "error" in await oa_download.download_pdf(_DOI)
+        assert "error" in await openaccess.download_pdf(_DOI)
 
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://x/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(monkeypatch, _mock_stream_response(chunks=[b"%PDF-1.4 fresh"]))
-        await oa_download.download_pdf(_DOI, force_refresh=True)
+        await openaccess.download_pdf(_DOI, force_refresh=True)
 
         _oa_dest().unlink()  # force the plain call past the artifact short-circuit
-        plain = await oa_download.download_pdf(_DOI)
+        plain = await openaccess.download_pdf(_DOI)
         assert "error" not in plain, "the cleared negative entry came back"
 
     @pytest.mark.asyncio
@@ -508,7 +510,7 @@ class TestOaDownload:
         only advisory — a publisher serving an interstitial under
         ``application/pdf`` headers is the case the magic-byte sniff exists for."""
         _stub_get_work(monkeypatch, {"open_access": {"oa_url": "http://x/landing"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(
             monkeypatch,
             _mock_stream_response(
@@ -516,7 +518,7 @@ class TestOaDownload:
             ),
         )
 
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
         assert "%PDF-" in result["error"]
         assert result["retryable"] is False
         assert not _oa_dest().exists()
@@ -525,11 +527,11 @@ class TestOaDownload:
     @pytest.mark.asyncio
     async def test_a_publisher_404_names_the_url_and_is_negative_cached(self, monkeypatch):
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://pub.example/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(monkeypatch, _mock_stream_response(status_code=404))
 
-        first = await oa_download.download_pdf(_DOI)
-        # oa_download passes its own not_found_message; both halves are read by
+        first = await openaccess.download_pdf(_DOI)
+        # openaccess passes its own not_found_message; both halves are read by
         # the agent to tell "wrong URL" apart from "wrong paper".
         assert "http://pub.example/p.pdf" in first["error"]
         assert _DOI in first["error"]
@@ -541,7 +543,7 @@ class TestOaDownload:
 
         monkeypatch.setattr(openalex, "get_work", boom)
         monkeypatch.setattr(clients, "get_client", boom)
-        assert await oa_download.download_pdf(_DOI) == first
+        assert await openaccess.download_pdf(_DOI) == first
 
     @pytest.mark.asyncio
     async def test_an_empty_body_is_retryable_and_not_negative_cached(self, monkeypatch):
@@ -555,42 +557,42 @@ class TestOaDownload:
             return {"best_oa_location": {"pdf_url": "http://x/p.pdf"}}
 
         monkeypatch.setattr(openalex, "get_work", counting_get_work)
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         _install_stream(monkeypatch, _mock_stream_response(chunks=[]))
 
-        result = await oa_download.download_pdf(_DOI)
+        result = await openaccess.download_pdf(_DOI)
         assert result["retryable"] is True
         assert "empty body" in result["error"]
         assert "suggestion" not in result, "a blip is not hand-fetch work"
         assert not _oa_dest().exists()
 
-        await oa_download.download_pdf(_DOI)
+        await openaccess.download_pdf(_DOI)
         assert resolves == 2
 
     @pytest.mark.asyncio
     async def test_get_client_bakes_in_the_user_agent_and_pdf_timeout(self):
-        client = oa_download._get_client()
+        client = openaccess._get_client()
         assert client.headers["user-agent"].startswith("academic-tools-mcp/")
-        assert client.timeout.read == oa_download._PDF_TIMEOUT_SECONDS
+        assert client.timeout.read == openaccess._PDF_TIMEOUT_SECONDS
 
     @pytest.mark.asyncio
     async def test_the_pdf_timeout_reaches_the_request(self, monkeypatch):
         """``stream_to_file``'s ``timeout`` has no default so every provider
-        states one; this pins that oa_download's actually rides the request."""
+        states one; this pins that openaccess's actually rides the request."""
         requests: list[httpx.Request] = []
         client = _streaming_client(
             200, b"%PDF-1.4 body", content_type="application/pdf", requests=requests
         )
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://pub.example/p.pdf"}})
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
         try:
-            result = await oa_download.download_pdf(_DOI)
+            result = await openaccess.download_pdf(_DOI)
         finally:
             await client.aclose()
 
         assert result["cached"] is False
-        assert requests[0].extensions["timeout"]["read"] == oa_download._PDF_TIMEOUT_SECONDS
+        assert requests[0].extensions["timeout"]["read"] == openaccess._PDF_TIMEOUT_SECONDS
 
     @pytest.mark.asyncio
     async def test_concurrent_downloads_collapse_to_one_stream(self, monkeypatch):
@@ -623,10 +625,10 @@ class TestOaDownload:
             stream = staticmethod(make_stream)
 
         monkeypatch.setattr(openalex, "get_work", counting_get_work)
-        monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
         monkeypatch.setattr(clients, "get_client", lambda *a, **kw: GatedClient())
 
-        tasks = [asyncio.create_task(oa_download.download_pdf(_DOI)) for _ in range(5)]
+        tasks = [asyncio.create_task(openaccess.download_pdf(_DOI)) for _ in range(5)]
         await asyncio.sleep(0)
         gate.set()
         results = await asyncio.gather(*tasks)
@@ -656,12 +658,12 @@ class TestRequirePdfGuard:
                 chunks=[b"<html>paywall</html>"], content_type="text/html; charset=utf-8"
             )
         )
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://x/landing",
             dest,
             slot_factory=_passthrough_slot,
-            namespace="oa_download",
+            namespace="openaccess",
             provider_label="OA download",
             require_pdf=True,
             timeout=_TIMEOUT,
@@ -678,12 +680,12 @@ class TestRequirePdfGuard:
                 chunks=[b"not a pdf at all"], content_type="application/octet-stream"
             )
         )
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://x/x",
             dest,
             slot_factory=_passthrough_slot,
-            namespace="oa_download",
+            namespace="openaccess",
             provider_label="OA download",
             require_pdf=True,
             timeout=_TIMEOUT,
@@ -700,12 +702,12 @@ class TestRequirePdfGuard:
                 chunks=[b"%PDF-1.5 body"], content_type="application/octet-stream"
             )
         )
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://x/x",
             dest,
             slot_factory=_passthrough_slot,
-            namespace="oa_download",
+            namespace="openaccess",
             provider_label="OA download",
             require_pdf=True,
             timeout=_TIMEOUT,
@@ -719,12 +721,12 @@ class TestRequirePdfGuard:
         client = _stub_stream_client(
             _mock_stream_response(chunks=[b"%PDF-1.5 body"], content_type="")
         )
-        result = await _pdf_download.stream_to_file(
+        result = await streaming.stream_to_file(
             client,
             "http://x/x",
             dest,
             slot_factory=_passthrough_slot,
-            namespace="oa_download",
+            namespace="openaccess",
             provider_label="OA download",
             require_pdf=True,
             timeout=_TIMEOUT,
@@ -751,7 +753,7 @@ class TestServerDispatch:
             called["id"] = identifier
             return {"path": "/x.pdf", "size_bytes": 10, "cached": False}
 
-        monkeypatch.setattr(oa_download, "download_pdf", fake_oa_download)
+        monkeypatch.setattr(openaccess, "download_pdf", fake_oa_download)
         result = await server._download_pdf_by_provider(_DOI, allow_oa_url=True)
         assert called["id"] == _DOI
         assert result["cached"] is False
@@ -760,25 +762,24 @@ class TestServerDispatch:
     async def test_force_refresh_cascade_on_oa_path(self, monkeypatch):
         # A real OA re-download (cached=False) must drop the manual-namespace
         # markdown + section index, just like the native providers.
-        from academic_tools_mcp import papers
 
         target = manual.resolve_target(_DOI)
         ns, canonical = target["namespace"], target["canonical"]
-        md_path = papers.markdown_path(ns, canonical)
+        md_path = stems.markdown_path(ns, canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("stale markdown")
-        cache.put(ns, "sections", papers.sections_key(canonical), {"sections": []})
+        cache.put(ns, "sections", stems.sections_key(canonical), {"sections": []})
 
         async def fake_oa_download(identifier, *, force_refresh=False):
             return {"path": "/x.pdf", "size_bytes": 10, "cached": False}
 
-        monkeypatch.setattr(oa_download, "download_pdf", fake_oa_download)
+        monkeypatch.setattr(openaccess, "download_pdf", fake_oa_download)
 
         result = await server._download_pdf_by_provider(_DOI, force_refresh=True, allow_oa_url=True)
 
         assert result["cascaded_invalidated"] == ["markdown", "sections"]
         assert not md_path.exists()
-        assert cache.get(ns, "sections", papers.sections_key(canonical)) is None
+        assert cache.get(ns, "sections", stems.sections_key(canonical)) is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -788,15 +789,15 @@ class TestServerDispatch:
     )
     async def test_native_identifiers_never_reach_oa_download(self, identifier, monkeypatch):
         """``allow_oa_url=True`` is the generic-DOI escape hatch, not a
-        provider override. ``oa_download.download_pdf`` resolves its dest
+        provider override. ``openaccess.download_pdf`` resolves its dest
         through ``manual.resolve_target`` unconditionally, so a native id
         reaching it would write the PDF into that provider's namespace while
-        filing the negative verdict under ``oa_download``."""
+        filing the negative verdict under ``openaccess``."""
 
         def boom(*_a, **_k):  # pragma: no cover - must not be called
             raise AssertionError("a native identifier reached the OA path")
 
-        monkeypatch.setattr(oa_download, "download_pdf", boom)
+        monkeypatch.setattr(openaccess, "download_pdf", boom)
 
         async def fake_native(_id, *, force_refresh=False):
             return {"path": "/x.pdf", "size_bytes": 10, "cached": True}

@@ -29,8 +29,10 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache, manual, oa_download, papers, server
+from academic_tools_mcp import manual, papers, server
+from academic_tools_mcp.download import openaccess
 from academic_tools_mcp.providers import acl, arxiv, biorxiv
+from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.tools import pipeline
 
 from .test_cache_search_properties import identifiers
@@ -59,7 +61,7 @@ _conversion_modes = st.sampled_from(["full", "fast", "imported", None])
 
 
 def _seed_markdown(namespace: str, canonical: str, body: str) -> Path:
-    md_path = papers.markdown_path(namespace, canonical)
+    md_path = stems.markdown_path(namespace, canonical)
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(body, encoding="utf-8")
     return md_path
@@ -71,11 +73,11 @@ def _seed_index(namespace: str, canonical: str, markdown: str, mode: str | None)
     cache.put(
         namespace,
         "sections",
-        papers.sections_key(canonical),
+        stems.sections_key(canonical),
         {
             "sections": sections,
             "sections_detected": detected,
-            "markdown_checksum": papers.checksum_text(markdown),
+            "markdown_checksum": stems.checksum_text(markdown),
             "conversion_mode": mode,
         },
     )
@@ -88,7 +90,7 @@ def _serve_download(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) ->
     async def _download(identifier: str, *, force_refresh: bool = False) -> dict[str, Any]:
         return dict(payload)
 
-    for module in (arxiv, acl, biorxiv, oa_download):
+    for module in (arxiv, acl, biorxiv, openaccess):
         monkeypatch.setattr(module, "download_pdf", _download)
 
 
@@ -211,10 +213,10 @@ def test_the_cascade_fires_exactly_when_replaceable_bytes_landed(
 
     if should_cascade:
         assert not md_path.exists()
-        assert cache.get(ns, "sections", papers.sections_key(canonical)) is None
+        assert cache.get(ns, "sections", stems.sections_key(canonical)) is None
     else:
         assert md_path.read_text(encoding="utf-8") == body
-        assert cache.get(ns, "sections", papers.sections_key(canonical)) is not None
+        assert cache.get(ns, "sections", stems.sections_key(canonical)) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -402,5 +404,5 @@ def test_import_routes_on_the_lowercased_suffix(
         assert "Unsupported file extension" in result["error"]
         assert "suggestion" in result
         target = manual.resolve_target(identifier)
-        assert not papers.markdown_path(target["namespace"], target["canonical"]).exists()
+        assert not stems.markdown_path(target["namespace"], target["canonical"]).exists()
         assert not target["pdf_path"].exists()

@@ -1,6 +1,6 @@
 """Shared fakes for the PDF-download tests.
 
-Four test modules drive ``_pdf_download.stream_to_file`` — directly
+Four test modules drive ``streaming.stream_to_file`` — directly
 (``test_pdf_download``) or through a provider's ``download_pdf``
 (``test_oa_download``, ``test_force_refresh_pdf``, ``test_download_singleflight``).
 They used to carry near-copies of the same stubs, and the copies had drifted:

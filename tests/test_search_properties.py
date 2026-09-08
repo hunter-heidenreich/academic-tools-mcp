@@ -32,8 +32,9 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache_search, manual, papers, server
+from academic_tools_mcp import cache_search, manual, server
 from academic_tools_mcp.providers import arxiv, crossref, wikipedia
+from academic_tools_mcp.store import stems
 from academic_tools_mcp.tools import search
 
 from .test_cache_search_properties import identifiers
@@ -228,7 +229,7 @@ def test_every_spelling_of_one_paper_echoes_one_identifier(
     `_canonical_id` holds for the paper family and `doi` for the graph tools.
     """
     target = manual.resolve_target(identifier)
-    md_path = papers.markdown_path(target["namespace"], target["canonical"])
+    md_path = stems.markdown_path(target["namespace"], target["canonical"])
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text("# T\n\n## Intro\n\nvariational dropout.\n", encoding="utf-8")
 

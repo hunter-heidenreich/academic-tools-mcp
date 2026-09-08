@@ -14,7 +14,8 @@ Two failures made that chain unreliable on a real corpus:
 
 import pytest
 
-from academic_tools_mcp import cache, cache_search, papers
+from academic_tools_mcp import cache_search, papers
+from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.tools import pipeline as pipeline_tools
 from academic_tools_mcp.tools import search as search_tools
 
@@ -147,7 +148,7 @@ class TestHeadinglessDocumentsAreFlagged:
         # Re-parsing costs a file read and a regex pass, so the entry is now
         # treated as stale and the real answer computed.
         await pipeline_tools.get_paper_sections("dup")
-        key = papers.sections_key("dup")
+        key = stems.sections_key("dup")
         payload = cache.get("manual", "sections", key)
         payload.pop("sections_detected", None)
         cache.put("manual", "sections", key, payload)
@@ -170,7 +171,7 @@ class TestHeadinglessDocumentsAreFlagged:
         (md / "plain.md").write_text("Body text with no headings at all.\n", encoding="utf-8")
 
         await pipeline_tools.get_paper_sections("plain")
-        key = papers.sections_key("plain")
+        key = stems.sections_key("plain")
         payload = cache.get("manual", "sections", key)
         payload.pop("sections_detected", None)
         cache.put("manual", "sections", key, payload)

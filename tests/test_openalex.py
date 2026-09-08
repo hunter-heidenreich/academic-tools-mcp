@@ -15,7 +15,6 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from academic_tools_mcp import cache
 from academic_tools_mcp.net import clients, stats
 from academic_tools_mcp.providers import openalex
 from academic_tools_mcp.providers.openalex import (
@@ -24,6 +23,7 @@ from academic_tools_mcp.providers.openalex import (
     canonical_author_id,
     reconstruct_abstract,
 )
+from academic_tools_mcp.store import cache
 
 # ---------------------------------------------------------------------------
 # Fakes

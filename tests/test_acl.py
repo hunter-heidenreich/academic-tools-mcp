@@ -3,8 +3,9 @@ from urllib.parse import quote, urlsplit
 
 import pytest
 
-from academic_tools_mcp import _stems, manual, papers
+from academic_tools_mcp import manual
 from academic_tools_mcp.providers import acl
+from academic_tools_mcp.store import stems
 from academic_tools_mcp.util import doinorm
 
 # ---------------------------------------------------------------------------
@@ -159,7 +160,7 @@ class TestPdfPath:
         # P16-1160 — but that casing belongs to the URL, not the filename.
         path = acl.pdf_path("10.18653/v1/p16-1160")
         assert path.name == "10.18653_v1_p16-1160.pdf"
-        assert path == _stems.pdf_path(acl.NAMESPACE, acl.canonical_key("10.18653/v1/p16-1160"))
+        assert path == stems.pdf_path(acl.NAMESPACE, acl.canonical_key("10.18653/v1/p16-1160"))
 
     def test_case_variants_share_one_path(self):
         assert acl.pdf_path("10.18653/V1/P16-1160") == acl.pdf_path("10.18653/v1/p16-1160")
@@ -169,7 +170,7 @@ class TestPdfPath:
         # correct only by accident of walking markdown rather than pdfs.
         doi = "10.18653/v1/2023.acl-long.1"
         canonical = acl.canonical_key(doi)
-        assert acl.pdf_path(doi).stem == papers.markdown_path(acl.NAMESPACE, canonical).stem
+        assert acl.pdf_path(doi).stem == stems.markdown_path(acl.NAMESPACE, canonical).stem
 
     def test_non_acl_doi_raises(self):
         # Must not return a sentinel path (e.g. /dev/null) whose .exists() is
@@ -219,7 +220,8 @@ class TestDownloadPdfProvenance:
 
     @pytest.mark.asyncio
     async def test_fresh_and_cached_payloads_agree(self, tmp_path, monkeypatch):
-        from academic_tools_mcp import _pdf_download, cache
+        from academic_tools_mcp.download import streaming
+        from academic_tools_mcp.store import cache
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 
@@ -228,7 +230,7 @@ class TestDownloadPdfProvenance:
             dest.write_bytes(b"%PDF-1.4 acl")
             return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": False}
 
-        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
 
         fresh = await acl.download_pdf(self._DOI)
         cached = await acl.download_pdf(self._DOI)
@@ -244,9 +246,10 @@ class TestDownloadPdfProvenance:
     @pytest.mark.asyncio
     async def test_a_404_is_negative_cached(self, tmp_path, monkeypatch):
         """A missing camera-ready re-hit the CDN on every call: only
-        oa_download negative-cached its download failures, the three native
+        openaccess negative-cached its download failures, the three native
         providers cached nothing."""
-        from academic_tools_mcp import _pdf_download, cache
+        from academic_tools_mcp.download import streaming
+        from academic_tools_mcp.store import cache
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         calls = 0
@@ -256,7 +259,7 @@ class TestDownloadPdfProvenance:
             calls += 1
             return {"error": "PDF not found", "retryable": False}
 
-        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
 
         assert "error" in await acl.download_pdf(self._DOI)
         assert "error" in await acl.download_pdf(self._DOI)
@@ -264,14 +267,15 @@ class TestDownloadPdfProvenance:
 
     @pytest.mark.asyncio
     async def test_an_error_carries_no_provenance(self, tmp_path, monkeypatch):
-        from academic_tools_mcp import _pdf_download, cache
+        from academic_tools_mcp.download import streaming
+        from academic_tools_mcp.store import cache
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 
         async def fake_stream(client, url, dest, **kwargs):
             return {"error": "PDF not found", "retryable": False}
 
-        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
 
         result = await acl.download_pdf(self._DOI)
 
@@ -313,7 +317,7 @@ class TestCanonicalKey:
 
     def test_is_the_key_download_pdf_files_under(self):
         doi = "10.18653/v1/P16-1160"
-        assert acl.pdf_path(doi).stem == _stems.safe_stem(acl.canonical_key(doi))
+        assert acl.pdf_path(doi).stem == stems.safe_stem(acl.canonical_key(doi))
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +427,7 @@ class TestDownloadPdfNegativeCache:
 
     @staticmethod
     def _counting_stream(monkeypatch, result):
-        from academic_tools_mcp import _pdf_download
+        from academic_tools_mcp.download import streaming
 
         calls = []
 
@@ -434,7 +438,7 @@ class TestDownloadPdfNegativeCache:
                 dest.write_bytes(b"%PDF-1.4 acl")
             return dict(result)
 
-        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
         return calls
 
     @pytest.mark.asyncio
@@ -473,7 +477,7 @@ class TestDownloadPdfNegativeCache:
 
     @pytest.mark.asyncio
     async def test_the_negative_entry_is_keyed_on_the_canonical_doi(self, monkeypatch):
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         self._counting_stream(monkeypatch, {"error": "PDF not found", "retryable": False})
 
@@ -495,7 +499,7 @@ class TestDownloadPdfSingleFlight:
 
     @pytest.mark.asyncio
     async def test_concurrent_downloads_collapse_to_one_stream(self, monkeypatch):
-        from academic_tools_mcp import _pdf_download
+        from academic_tools_mcp.download import streaming
 
         started = 0
         release = asyncio.Event()
@@ -508,7 +512,7 @@ class TestDownloadPdfSingleFlight:
             dest.write_bytes(b"%PDF-1.4 acl")
             return {"path": str(dest), "size_bytes": 12, "cached": False}
 
-        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
 
         tasks = [asyncio.create_task(acl.download_pdf(self._DOI)) for _ in range(5)]
         await asyncio.sleep(0)
@@ -520,7 +524,7 @@ class TestDownloadPdfSingleFlight:
 
     @pytest.mark.asyncio
     async def test_followers_get_independent_copies(self, monkeypatch):
-        from academic_tools_mcp import _pdf_download
+        from academic_tools_mcp.download import streaming
 
         release = asyncio.Event()
 
@@ -530,7 +534,7 @@ class TestDownloadPdfSingleFlight:
             dest.write_bytes(b"%PDF-1.4 acl")
             return {"path": str(dest), "size_bytes": 12, "cached": False}
 
-        monkeypatch.setattr(_pdf_download, "stream_to_file", fake_stream)
+        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
 
         tasks = [asyncio.create_task(acl.download_pdf(self._DOI)) for _ in range(3)]
         await asyncio.sleep(0)
@@ -556,7 +560,7 @@ class TestMigrateLegacyPdfStems:
 
     @staticmethod
     def _pdf_dir():
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         d = cache.cache_dir(acl.NAMESPACE, "pdfs")
         d.mkdir(parents=True, exist_ok=True)

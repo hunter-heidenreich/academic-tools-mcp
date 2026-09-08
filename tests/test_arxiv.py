@@ -283,12 +283,12 @@ class TestGetPaperSingleFlight:
 
     @pytest.mark.asyncio
     async def test_concurrent_same_id_collapses_to_one_fetch(self, tmp_path, monkeypatch):
-        from academic_tools_mcp import _singleflight, cache
         from academic_tools_mcp.net import clients
+        from academic_tools_mcp.store import cache, singleflight
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
-        monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
+        monkeypatch.setattr(arxiv, "_single_flight", singleflight.SingleFlight())
 
         atom_xml = """<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -337,12 +337,12 @@ class TestGetPaperSingleFlight:
         # same bad ID must NOT hit the network. Without negative
         # caching, an agent that retries on error would re-fetch on
         # every attempt and burn through the throttle budget.
-        from academic_tools_mcp import _singleflight, cache
         from academic_tools_mcp.net import clients
+        from academic_tools_mcp.store import cache, singleflight
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
-        monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
+        monkeypatch.setattr(arxiv, "_single_flight", singleflight.SingleFlight())
 
         not_found_atom = """<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -398,12 +398,12 @@ class TestGetPaperSingleFlight:
         """force_refresh must invalidate both positive and negative
         entries before fetching, so an agent can re-pull a paper whose
         cached record might be stale (e.g. a new version uploaded)."""
-        from academic_tools_mcp import _singleflight, cache
         from academic_tools_mcp.net import clients
+        from academic_tools_mcp.store import cache, singleflight
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
-        monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
+        monkeypatch.setattr(arxiv, "_single_flight", singleflight.SingleFlight())
 
         atom_xml = """<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -463,12 +463,12 @@ class TestGetPaperSingleFlight:
         # Different canonical IDs must NOT share a single-flight slot.
         # Otherwise unrelated papers would serialise on each other,
         # which defeats the point.
-        from academic_tools_mcp import _singleflight, cache
         from academic_tools_mcp.net import clients
+        from academic_tools_mcp.store import cache, singleflight
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
-        monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
+        monkeypatch.setattr(arxiv, "_single_flight", singleflight.SingleFlight())
 
         get_calls = 0
 
@@ -526,11 +526,11 @@ def _reset_throttle(monkeypatch, tmp_path):
     tests; here we additionally zero the inter-start gap so a multi-request test
     doesn't wait out arxiv's 3 s pacing.
     """
-    from academic_tools_mcp import _singleflight, cache
+    from academic_tools_mcp.store import cache, singleflight
 
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(arxiv, "_single_flight", _singleflight.SingleFlight())
+    monkeypatch.setattr(arxiv, "_single_flight", singleflight.SingleFlight())
 
 
 def _stub_text_response(monkeypatch, text, *, status_code=200, raises=None):
@@ -583,7 +583,7 @@ class TestMalformedXml:
     async def test_malformed_xml_not_negative_cached(self, tmp_path, monkeypatch):
         # A parse failure is transient (garbled body), not "not found":
         # it must NOT be negative-cached, so a retry re-fetches.
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
         calls = _stub_text_response(monkeypatch, "<feed><entry></fe")
@@ -642,7 +642,7 @@ class TestHttpErrorCaching:
     async def test_http_404_negative_cached(self, tmp_path, monkeypatch):
         # A genuine HTTP 404 is definitive "not found" — negative-cache it
         # so a retrying agent doesn't re-hit the network every call.
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
         calls = _stub_text_response(
@@ -664,7 +664,7 @@ class TestHttpErrorCaching:
     async def test_transient_5xx_not_negative_cached(self, tmp_path, monkeypatch):
         # A 503 is transient — it must NOT be negative-cached, or a brief
         # outage would poison the cache for the whole negative TTL.
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
         _stub_text_response(monkeypatch, "", status_code=503, raises=_http_status_error(503))
@@ -684,7 +684,7 @@ class TestSearchOpportunisticCache:
         # search data, not skipped.
         import os
 
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
 
@@ -957,7 +957,7 @@ class TestSearchErrorEntry:
 
     @pytest.mark.asyncio
     async def test_the_error_entry_never_warms_the_cache(self, tmp_path, monkeypatch):
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
         _stub_text_response(monkeypatch, _feed(_ERROR_ENTRY))
@@ -1049,7 +1049,7 @@ class TestSearchWarmsBothKeys:
         Warming only the versioned key leaves every bare `get_paper` a miss —
         and the bare form is what an agent pastes.
         """
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
         _stub_text_response(monkeypatch, _feed(_search_entry("2301.00001v7", "Fresh")))
@@ -1064,7 +1064,7 @@ class TestSearchWarmsBothKeys:
     @pytest.mark.asyncio
     async def test_a_within_ttl_entry_is_never_clobbered(self, tmp_path, monkeypatch):
         """The probe is TTL-aware, not a presence test — but a live entry wins."""
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
         cache.put(arxiv.NAMESPACE, "papers", "2301.00001v7", {"title": "Live", "id": "kept"})
@@ -1078,7 +1078,7 @@ class TestSearchWarmsBothKeys:
 
     @pytest.mark.asyncio
     async def test_a_hit_whose_id_is_not_arxiv_shaped_is_skipped(self, tmp_path, monkeypatch):
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
         _stub_text_response(
@@ -1125,7 +1125,7 @@ class TestNotFoundShapes:
     async def test_each_shape_is_negative_cached_with_one_payload(
         self, tmp_path, monkeypatch, shape
     ):
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
         calls = _stub_text_response(monkeypatch, **self._shapes()[shape])
@@ -1136,7 +1136,7 @@ class TestNotFoundShapes:
             "error": "No paper found for arXiv ID: 2301.99999",
             "not_found": True,
         }, shape
-        # `not_found` is the flag oa_download and wikipedia read as
+        # `not_found` is the flag openaccess and wikipedia read as
         # "definitively absent"; a body snippet is not one.
         assert "404" not in result["error"]
 
@@ -1172,10 +1172,11 @@ class TestDownloadPdfMetadataBranches:
     async def test_a_paper_with_no_pdf_link_is_a_definitive_failure(self, tmp_path, monkeypatch):
         """How a withdrawn paper presents: an Atom entry carrying no pdf link.
 
-        ``retryable: False`` is load-bearing — ``_pdf_download.is_definitive_failure``
+        ``retryable: False`` is load-bearing — ``streaming.is_definitive_failure``
         reads exactly that key to decide whether to negative-cache.
         """
-        from academic_tools_mcp import _pdf_download, cache
+        from academic_tools_mcp.download import streaming
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
 
@@ -1188,7 +1189,7 @@ class TestDownloadPdfMetadataBranches:
 
         assert result["retryable"] is False
         assert "2301.00001" in result["error"]
-        assert _pdf_download.is_definitive_failure(result)
+        assert streaming.is_definitive_failure(result)
 
         canonical = arxiv.canonical_arxiv_id("2301.00001")
         assert cache.get_negative(arxiv.NAMESPACE, "downloads", canonical) is not None
@@ -1196,7 +1197,7 @@ class TestDownloadPdfMetadataBranches:
     @pytest.mark.asyncio
     async def test_a_metadata_error_is_returned_untouched(self, tmp_path, monkeypatch):
         """A transient metadata failure must not be recorded as a download failure."""
-        from academic_tools_mcp import cache
+        from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
 

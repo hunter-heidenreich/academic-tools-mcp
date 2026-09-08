@@ -7,9 +7,9 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _singleflight, cache
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import crossref
+from academic_tools_mcp.store import cache, singleflight
 from academic_tools_mcp.util import doinorm
 
 # ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ def _reset_crossref(monkeypatch, tmp_path=None):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(crossref, "_SEARCH_REQUEST_GAP", 0.0)
-    monkeypatch.setattr(crossref, "_single_flight", _singleflight.SingleFlight())
+    monkeypatch.setattr(crossref, "_single_flight", singleflight.SingleFlight())
 
 
 # Sentinel: a payload whose .json() raises, simulating a malformed/truncated body.

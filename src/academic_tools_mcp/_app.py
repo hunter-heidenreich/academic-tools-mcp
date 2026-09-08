@@ -14,9 +14,10 @@ from typing import Annotated, Any, Literal, TypeVar
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import cache, cache_search, manual, papers
+from . import cache_search, manual
 from .net import clients
 from .providers import acl
+from .store import cache, stems
 
 _T = TypeVar("_T")
 
@@ -39,7 +40,7 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[None]:
     sockets if the server is stopped while clients are idle.
     """
     cache.gc_orphan_tmp_files()
-    papers.migrate_legacy_stems()
+    stems.migrate_legacy_stems()
     manual.migrate_misrouted_arxiv()
     acl.migrate_legacy_pdf_stems()
     try:
@@ -200,7 +201,7 @@ async def read_markdown(
     the ``exists()`` check and the read.
     """
     target = manual.resolve_target(identifier)
-    md_path = papers.markdown_path(target["namespace"], target["canonical"])
+    md_path = stems.markdown_path(target["namespace"], target["canonical"])
 
     if not md_path.exists():
         return not_converted_error(identifier)

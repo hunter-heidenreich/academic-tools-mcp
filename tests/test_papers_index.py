@@ -9,7 +9,8 @@ from collections import OrderedDict
 
 import pytest
 
-from academic_tools_mcp import cache, papers
+from academic_tools_mcp import papers
+from academic_tools_mcp.store import cache, stems
 
 from ._checksums import markdown_checksum
 
@@ -130,7 +131,7 @@ class TestStoredChecksumDescribesTheStoredText:
 
     def test_checksum_comes_from_the_parsed_text_not_the_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "racy")
+        md_path = stems.markdown_path("test", "racy")
 
         ours = "## Ours\n\nour body\n"
         theirs = "## Theirs\n\ntheir body\n"
@@ -147,38 +148,38 @@ class TestStoredChecksumDescribesTheStoredText:
         monkeypatch.setattr(papers.index.atomic, "write_text", write_then_lose_the_race)
         stored = papers.store_markdown_and_index("test", "racy", md_path, ours, "full")
 
-        entry = cache.get("test", "sections", papers.sections_key("racy"))
+        entry = cache.get("test", "sections", stems.sections_key("racy"))
         assert [s["title"] for s in stored["sections"]] == ["Ours"]
         # The entry describes our text, so it must carry our checksum — not the
         # one on disk, which would make it match forever.
-        assert entry["markdown_checksum"] == papers.checksum_text(ours)
+        assert entry["markdown_checksum"] == stems.checksum_text(ours)
         assert entry["markdown_checksum"] != markdown_checksum(md_path)
 
     def test_checksum_text_agrees_with_the_file_the_writer_wrote(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "agree")
+        md_path = stems.markdown_path("test", "agree")
         # Non-ASCII and every newline shape: atomic.write_text pins newline=""
         # so the bytes on disk are exactly the UTF-8 encoding of the payload.
         # A payload carrying \r\n or a bare \r is what distinguishes that pin
         # from a writer that translates line endings on the way out.
         text = "## Gutiérrez\r\n\r\nline one\nline two\rline three\n"
         papers.store_markdown_and_index("test", "agree", md_path, text, "full")
-        assert papers.checksum_text(text) == markdown_checksum(md_path)
+        assert stems.checksum_text(text) == markdown_checksum(md_path)
 
     @pytest.mark.asyncio
     async def test_a_mismatched_entry_self_heals_on_the_next_read(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "heal")
+        md_path = stems.markdown_path("test", "heal")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Real\n\nreal body\n", encoding="utf-8")
         cache.put(
             "test",
             "sections",
-            papers.sections_key("heal"),
+            stems.sections_key("heal"),
             {
                 "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
                 "sections_detected": True,
-                "markdown_checksum": papers.checksum_text("## Other\n\nother\n"),
+                "markdown_checksum": stems.checksum_text("## Other\n\nother\n"),
                 "conversion_mode": "full",
             },
         )
@@ -192,7 +193,7 @@ class TestGetOrParseSectionsForceRefresh:
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "forced")
+        md_path = stems.markdown_path("test", "forced")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Real\n\nbody\n", encoding="utf-8")
 
@@ -201,11 +202,11 @@ class TestGetOrParseSectionsForceRefresh:
         cache.put(
             "test",
             "sections",
-            papers.sections_key("forced"),
+            stems.sections_key("forced"),
             {
                 "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
                 "sections_detected": True,
-                "markdown_checksum": papers.checksum_text("## Real\n\nbody\n"),
+                "markdown_checksum": stems.checksum_text("## Real\n\nbody\n"),
                 "conversion_mode": "full",
             },
         )
@@ -225,17 +226,17 @@ class TestDropDerived:
     @pytest.fixture
     def converted(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "dropme")
+        md_path = stems.markdown_path("test", "dropme")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## A\n\nbody\n", encoding="utf-8")
         cache.put(
             "test",
             "sections",
-            papers.sections_key("dropme"),
+            stems.sections_key("dropme"),
             {
                 "sections": [{"index": 0, "title": "A", "h3s": [], "approx_tokens": 1}],
                 "sections_detected": True,
-                "markdown_checksum": papers.checksum_text("## A\n\nbody\n"),
+                "markdown_checksum": stems.checksum_text("## A\n\nbody\n"),
                 "conversion_mode": "full",
             },
         )
@@ -244,12 +245,12 @@ class TestDropDerived:
     def test_drops_both_halves(self, converted):
         papers.drop_derived("test", "dropme")
         assert not converted.exists()
-        assert cache.get("test", "sections", papers.sections_key("dropme")) is None
+        assert cache.get("test", "sections", stems.sections_key("dropme")) is None
 
     def test_a_missing_markdown_is_not_an_error(self, converted):
         converted.unlink()
         papers.drop_derived("test", "dropme")
-        assert cache.get("test", "sections", papers.sections_key("dropme")) is None
+        assert cache.get("test", "sections", stems.sections_key("dropme")) is None
 
     def test_an_unlinkable_markdown_still_loses_its_index(self, converted, monkeypatch):
         """The index must be dropped even when the file survives.
@@ -270,7 +271,7 @@ class TestDropDerived:
         papers.drop_derived("test", "dropme")
 
         assert converted.exists(), "the fixture's premise: the file could not be removed"
-        assert cache.get("test", "sections", papers.sections_key("dropme")) is None
+        assert cache.get("test", "sections", stems.sections_key("dropme")) is None
 
 
 class TestReparseGates:
@@ -278,10 +279,10 @@ class TestReparseGates:
 
     def _converted(self, tmp_path, monkeypatch, body="## A\n\nbody\n"):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "gate")
+        md_path = stems.markdown_path("test", "gate")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(body, encoding="utf-8")
-        return md_path, papers.checksum_text(body)
+        return md_path, stems.checksum_text(body)
 
     @pytest.mark.asyncio
     async def test_an_entry_without_sections_is_reparsed(self, tmp_path, monkeypatch):
@@ -292,7 +293,7 @@ class TestReparseGates:
         cache.put(
             "test",
             "sections",
-            papers.sections_key("gate"),
+            stems.sections_key("gate"),
             {
                 "sections": None,
                 "sections_detected": True,
@@ -304,7 +305,7 @@ class TestReparseGates:
         payload = await papers.get_or_parse_sections("test", "gate")
 
         assert [s["title"] for s in payload["sections"]] == ["A"]
-        assert cache.get("test", "sections", papers.sections_key("gate"))["sections"]
+        assert cache.get("test", "sections", stems.sections_key("gate"))["sections"]
 
     @pytest.mark.asyncio
     async def test_a_first_parse_records_no_conversion_mode(self, tmp_path, monkeypatch):
@@ -317,7 +318,7 @@ class TestReparseGates:
         payload = await papers.get_or_parse_sections("test", "gate")
 
         assert payload["conversion_mode"] is None
-        assert cache.get("test", "sections", papers.sections_key("gate"))["conversion_mode"] is None
+        assert cache.get("test", "sections", stems.sections_key("gate"))["conversion_mode"] is None
 
     @pytest.mark.asyncio
     async def test_an_unconverted_paper_is_none(self, tmp_path, monkeypatch):
@@ -359,21 +360,21 @@ class TestForceRefreshPreservesProvenance:
         a claim a refresh must not be able to manufacture.
         """
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "prov")
+        md_path = stems.markdown_path("test", "prov")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         papers.store_markdown_and_index("test", "prov", md_path, "## A\n\nbody\n", "full")
 
         refreshed = await papers.get_or_parse_sections("test", "prov", force_refresh=True)
 
         assert refreshed["conversion_mode"] == "full"
-        entry = cache.get("test", "sections", papers.sections_key("prov"))
+        entry = cache.get("test", "sections", stems.sections_key("prov"))
         assert entry["conversion_mode"] == "full"
 
     @pytest.mark.asyncio
     async def test_a_refresh_still_reparses(self, tmp_path, monkeypatch):
         """Preserving the mode must not turn the refresh into a cache hit."""
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "prov2")
+        md_path = stems.markdown_path("test", "prov2")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         papers.store_markdown_and_index("test", "prov2", md_path, "## Stale\n\nbody\n", "fast")
         # Replace the markdown behind a matching-checksum entry's back is not
@@ -382,11 +383,11 @@ class TestForceRefreshPreservesProvenance:
         cache.put(
             "test",
             "sections",
-            papers.sections_key("prov2"),
+            stems.sections_key("prov2"),
             {
                 "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
                 "sections_detected": True,
-                "markdown_checksum": papers.checksum_text("## Real\n\nbody\n"),
+                "markdown_checksum": stems.checksum_text("## Real\n\nbody\n"),
                 "conversion_mode": "fast",
             },
         )

@@ -4,9 +4,9 @@ from typing import Any, NamedTuple
 import httpx
 import pytest
 
-from academic_tools_mcp import cache
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import biorxiv
+from academic_tools_mcp.store import cache
 
 # ---------------------------------------------------------------------------
 # DOI normalization

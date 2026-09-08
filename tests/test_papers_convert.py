@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import cache, papers
+from academic_tools_mcp import papers
 from academic_tools_mcp.papers import convert_pdf, store_markdown_and_index
 from academic_tools_mcp.papers.convert import (
     _DEFAULT_FAST_CONVERT_TIMEOUT,
@@ -22,6 +22,7 @@ from academic_tools_mcp.papers.convert import (
     _resolve_convert_timeout,
     _resolve_fast_convert_timeout,
 )
+from academic_tools_mcp.store import cache, stems
 
 from ._checksums import markdown_checksum
 from ._conversion_fakes import env, fake_proc, spawning
@@ -45,7 +46,7 @@ class TestConvertPdfCachePaths:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
 
     def _seed_markdown(self, namespace, canonical, body):
-        md_path = papers.markdown_path(namespace, canonical)
+        md_path = stems.markdown_path(namespace, canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(body)
         return md_path
@@ -60,7 +61,7 @@ class TestConvertPdfCachePaths:
         cache.put(
             ns,
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {
                 "sections": sections,
                 "markdown_checksum": markdown_checksum(md_path),
@@ -84,7 +85,7 @@ class TestConvertPdfCachePaths:
         assert titles == ["Intro", "Methods"]
 
         # And the sections cache is now populated for next time
-        refreshed = cache.get(ns, "sections", papers.sections_key(canonical))
+        refreshed = cache.get(ns, "sections", stems.sections_key(canonical))
         assert refreshed is not None
         assert refreshed["sections"] == result["sections"]
 
@@ -96,7 +97,7 @@ class TestConvertPdfCachePaths:
         cache.put(
             ns,
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {
                 "sections": [{"index": 0, "title": "Old", "h3s": [], "approx_tokens": 1}],
                 "markdown_checksum": "deadbeef",  # deliberately wrong
@@ -108,7 +109,7 @@ class TestConvertPdfCachePaths:
         # Re-parsed from current markdown, not the stale cache
         assert [s["title"] for s in result["sections"]] == ["Old"]
 
-        refreshed = cache.get(ns, "sections", papers.sections_key(canonical))
+        refreshed = cache.get(ns, "sections", stems.sections_key(canonical))
         assert refreshed["markdown_checksum"] != "deadbeef"
 
     @pytest.mark.asyncio
@@ -121,7 +122,7 @@ class TestConvertPdfCachePaths:
         cache.put(
             ns,
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {
                 "sections": [{"index": 0, "title": "Stale", "h3s": [], "approx_tokens": 1}],
                 "markdown_checksum": None,
@@ -131,7 +132,7 @@ class TestConvertPdfCachePaths:
         result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical)
         assert [s["title"] for s in result["sections"]] == ["Fresh"]
 
-        refreshed = cache.get(ns, "sections", papers.sections_key(canonical))
+        refreshed = cache.get(ns, "sections", stems.sections_key(canonical))
         assert refreshed["markdown_checksum"] == markdown_checksum(md_path)
 
     @pytest.mark.asyncio
@@ -151,7 +152,7 @@ class TestConvertPdfCachePaths:
         cache.put(
             ns,
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {
                 "sections": [{"index": 0, "title": "A", "h3s": [], "approx_tokens": 1}],
                 "markdown_checksum": markdown_checksum(md_path),
@@ -161,7 +162,7 @@ class TestConvertPdfCachePaths:
         result = await convert_pdf(Path("/nonexistent.pdf"), ns, canonical, force_refresh=True)
         assert "error" in result
         assert not md_path.exists(), "force_refresh should unlink the markdown"
-        assert cache.get(ns, "sections", papers.sections_key(canonical)) is None, (
+        assert cache.get(ns, "sections", stems.sections_key(canonical)) is None, (
             "force_refresh should invalidate the sections cache"
         )
 
@@ -768,9 +769,9 @@ class TestConvertPdfFastMode:
 
         # Markdown landed in the cache and the section index carries the
         # checksum plus the conversion_mode tag.
-        md_path = papers.markdown_path("test", "fast-1")
+        md_path = stems.markdown_path("test", "fast-1")
         assert md_path.exists()
-        cached = cache.get("test", "sections", papers.sections_key("fast-1"))
+        cached = cache.get("test", "sections", stems.sections_key("fast-1"))
         assert cached["conversion_mode"] == "fast"
         assert cached["markdown_checksum"] == markdown_checksum(md_path)
 
@@ -801,7 +802,7 @@ class TestConvertPdfFastMode:
         self, isolated_cache, real_pdf, monkeypatch
     ):
         # Seed the markdown cache, then assert the subprocess is never spawned.
-        md_path = papers.markdown_path("test", "fast-cached")
+        md_path = stems.markdown_path("test", "fast-cached")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Cached\n\nAlready converted.")
 
@@ -822,13 +823,13 @@ class TestConvertPdfFastMode:
         # it must NOT relabel a previously FULL-converted paper as degraded
         # "fast". Call _convert_fast directly to exercise exactly that branch.
         ns, canonical = "test", "fast-preserve-full"
-        md_path = papers.markdown_path(ns, canonical)
+        md_path = stems.markdown_path(ns, canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Intro\n\nFull-quality body.")
         cache.put(
             ns,
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {
                 "sections": papers.parse_sections(md_path.read_text()),
                 "markdown_checksum": markdown_checksum(md_path),
@@ -844,7 +845,7 @@ class TestConvertPdfFastMode:
         assert result["cached"] is True
         assert result["conversion_mode"] == "full"
         # And the recorded mode in the sections cache stays "full".
-        cached = cache.get(ns, "sections", papers.sections_key(canonical))
+        cached = cache.get(ns, "sections", stems.sections_key(canonical))
         assert cached["conversion_mode"] == "full"
 
     @pytest.mark.asyncio
@@ -879,7 +880,7 @@ class TestConvertPdfFastMode:
         assert "no text" in result["error"]
         assert result["conversion_mode"] == "fast"
         # Nothing should have been cached.
-        assert not papers.markdown_path("test", "fast-empty").exists()
+        assert not stems.markdown_path("test", "fast-empty").exists()
 
     @pytest.mark.asyncio
     async def test_fast_mode_spawn_failure_returns_error(
@@ -948,7 +949,7 @@ class TestFinalizeMarkdown:
 
     def _finalize(self, tmp_path, monkeypatch, raw):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        md_path = papers.markdown_path("test", "finalize")
+        md_path = stems.markdown_path("test", "finalize")
         papers.convert._finalize_markdown("test", "finalize", md_path, raw, "full")
         return md_path.read_text(encoding="utf-8")
 
@@ -1053,7 +1054,7 @@ class TestErrorShape:
     ):
         # The MCP boundary types this Literal, so only a direct library caller
         # reaches here — and a typo must not start a 20-minute full conversion.
-        md_path = papers.markdown_path("test", "bad-mode")
+        md_path = stems.markdown_path("test", "bad-mode")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## A\n\nbody\n", encoding="utf-8")
 
@@ -1148,7 +1149,7 @@ class TestFastModeOutputHandling:
         )
         result = await convert_pdf(real_pdf, "test", "formfeed", mode="fast")
         assert "error" not in result
-        text = papers.markdown_path("test", "formfeed").read_text(encoding="utf-8")
+        text = stems.markdown_path("test", "formfeed").read_text(encoding="utf-8")
         assert "\f" not in text
         assert "page one\n## B" in text
 
@@ -1165,7 +1166,7 @@ class TestFastModeOutputHandling:
         )
         result = await convert_pdf(real_pdf, "test", "fast-binary", mode="fast")
         assert "error" not in result, result
-        text = papers.markdown_path("test", "fast-binary").read_text(encoding="utf-8")
+        text = stems.markdown_path("test", "fast-binary").read_text(encoding="utf-8")
         assert "fe body" in text
 
     @pytest.mark.asyncio
@@ -1251,9 +1252,9 @@ class TestModeUpgrade:
 
         assert second["conversion_mode"] == "full"
         assert second["cached"] is False
-        entry = cache.get("test", "sections", papers.sections_key("upgrade"))
+        entry = cache.get("test", "sections", stems.sections_key("upgrade"))
         assert entry["conversion_mode"] == "full"
-        assert "structured body" in papers.markdown_path("test", "upgrade").read_text(
+        assert "structured body" in stems.markdown_path("test", "upgrade").read_text(
             encoding="utf-8"
         )
 
@@ -1305,7 +1306,7 @@ class TestExtractionDirFailures:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", spawning(fake_proc()))
 
         result = await convert_pdf(real_pdf, "test", "depth-tie")
-        text = papers.markdown_path("test", "depth-tie").read_text(encoding="utf-8")
+        text = stems.markdown_path("test", "depth-tie").read_text(encoding="utf-8")
         assert "error" not in result, result
         assert text.startswith("# Top"), (
             "the nested match won a tie the fallback would give the top"
@@ -1322,9 +1323,9 @@ class TestCachedAndFreshShapesAgree:
         The two envelopes are built by different functions — this is what makes
         that claim falsifiable rather than a comment.
         """
-        md_path = papers.markdown_path("test", "shape")
+        md_path = stems.markdown_path("test", "shape")
         fresh = store_markdown_and_index("test", "shape", md_path, "## A\n\nx\n", "full")
-        payload = cache.get("test", "sections", papers.sections_key("shape"))
+        payload = cache.get("test", "sections", stems.sections_key("shape"))
         cached = _cached_response(md_path, payload)
 
         assert set(cached) == set(fresh)

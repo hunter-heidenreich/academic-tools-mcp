@@ -1,6 +1,6 @@
 """The sections cache: read it, refresh it when the markdown drifted, drop it.
 
-One JSON entry per paper, keyed by :func:`_stems.sections_key`, checksummed
+One JSON entry per paper, keyed by :func:`stems.sections_key`, checksummed
 against the markdown it describes so a manual edit is picked up on the next
 read.
 
@@ -20,8 +20,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from .. import atomic, cache
-from .._stems import checksum_text, markdown_path, sections_key
+from ..store import atomic, cache
+from ..store.stems import checksum_text, markdown_path, sections_key
 from .sections import parse_sections_and_detect
 
 

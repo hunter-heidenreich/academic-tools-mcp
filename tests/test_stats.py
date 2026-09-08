@@ -18,8 +18,8 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 import academic_tools_mcp
-from academic_tools_mcp import _singleflight, cache
 from academic_tools_mcp.net import stats
+from academic_tools_mcp.store import cache, singleflight
 
 
 def _all_package_modules():
@@ -74,7 +74,7 @@ class TestCounters:
 
         async def lookup():
             return await cache.cached_lookup(
-                single_flight=_singleflight.SingleFlight(),
+                single_flight=singleflight.SingleFlight(),
                 namespace="openalex",
                 entity="works",
                 canonical="k2",
@@ -101,7 +101,7 @@ class TestCounters:
 
         for _ in range(3):
             await cache.cached_lookup(
-                single_flight=_singleflight.SingleFlight(),
+                single_flight=singleflight.SingleFlight(),
                 namespace="openalex",
                 entity="works",
                 canonical="gone",
@@ -128,7 +128,7 @@ class TestCounters:
             return {"x": 2}
 
         result = await cache.cached_lookup(
-            single_flight=_singleflight.SingleFlight(),
+            single_flight=singleflight.SingleFlight(),
             namespace="biorxiv",
             entity="papers",
             canonical="k",
@@ -196,12 +196,12 @@ class TestSnapshot:
         """One row per provider. Keying in-flight off anything but the
         throttle's own namespace splits a provider across two rows, and an
         operator reading the hit rate of a module sees half its story."""
-        from academic_tools_mcp import oa_download
+        from academic_tools_mcp.download import openaccess
 
-        stats.incr(oa_download.NAMESPACE, "cache_hits")
-        monkeypatch.setattr(oa_download._throttle, "pending", 2)
+        stats.incr(openaccess.NAMESPACE, "cache_hits")
+        monkeypatch.setattr(openaccess._throttle, "pending", 2)
 
-        row = stats.snapshot()["providers"][oa_download.NAMESPACE]
+        row = stats.snapshot()["providers"][openaccess.NAMESPACE]
         assert row == {"cache_hits": 1, "in_flight": 2}
 
     def test_reports_which_env_file_won(self, monkeypatch, tmp_path):

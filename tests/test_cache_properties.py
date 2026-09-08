@@ -27,7 +27,7 @@ import unicodedata
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache
+from academic_tools_mcp.store import cache
 
 # Cache payloads are decoded provider JSON: dicts at the top level (put()'s
 # signature), with arbitrary JSON below. NaN/Infinity are excluded — json.dumps

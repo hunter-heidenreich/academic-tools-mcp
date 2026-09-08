@@ -5,7 +5,7 @@ been violated by code that passed a hand-written suite:
 
 * A hit's ``canonical_id`` must chain back into the paper tools. That is a
   round-trip through two modules — ``manual.resolve_target`` picks the
-  namespace, ``papers.safe_stem`` writes the filename, ``_filename_to_canonical``
+  namespace, ``stems.safe_stem`` writes the filename, ``_filename_to_canonical``
   reads it back — and an identifier shape missing from any one of the three
   produces a hit that goes nowhere. Examples covered the shapes someone thought
   of; a versioned old-style arXiv id and a dotted archive were not among them.
@@ -22,7 +22,8 @@ import re
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import cache, cache_search, manual, papers
+from academic_tools_mcp import cache_search, manual
+from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.util import textnorm
 
 from .test_doi_properties import dois
@@ -138,7 +139,7 @@ def test_a_stored_paper_inverts_to_the_key_it_was_stored_under(identifier: str) 
     here rather than passing against a namespace it never reaches.
     """
     target = manual.resolve_target(identifier)
-    stem = papers.safe_stem(target["canonical"])
+    stem = stems.safe_stem(target["canonical"])
     assert cache_search._filename_to_canonical(target["namespace"], stem) == target["canonical"]
 
 

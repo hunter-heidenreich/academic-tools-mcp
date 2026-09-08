@@ -356,7 +356,7 @@ class TestPolicyIsClamped:
 # Per-host pacing (opt-in)
 # ---------------------------------------------------------------------------
 #
-# For a client whose URLs are not one API. `oa_download` resolves DOIs to
+# For a client whose URLs are not one API. `openaccess` resolves DOIs to
 # arbitrary publisher CDNs, and a reference walk through one journal lands many
 # of them on the same domain — which a single global timestamp either paces far
 # too loosely (gap 0) or paces every unrelated host for (one global gap).

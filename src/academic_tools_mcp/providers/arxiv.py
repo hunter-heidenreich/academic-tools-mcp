@@ -10,9 +10,10 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import _pdf_download, _singleflight, _stems, cache
+from ..download import streaming
 from ..net import clients, http
 from ..net.throttle import Throttle
+from ..store import cache, singleflight, stems
 from ..util import config, doinorm, useragent
 
 # Both are transient, not "not found" — .claude/rules/providers.md § arxiv.py.
@@ -41,7 +42,7 @@ _MAX_CONCURRENT = 1
 _MIN_REQUEST_GAP = 3.0
 _MAX_PENDING = 5
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 # Short: an arXiv id goes live mid-session, so a 404 at 9am should clear by 10am.
 _NEG_TTL_SECONDS = 3600.0
@@ -396,7 +397,7 @@ async def search_papers(
 def pdf_path(arxiv_id: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet)."""
     canonical = canonical_arxiv_id(arxiv_id)
-    return _stems.pdf_path(NAMESPACE, canonical)
+    return stems.pdf_path(NAMESPACE, canonical)
 
 
 async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -404,10 +405,10 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
 
     ``force_refresh=True`` re-downloads and atomically replaces the cached
     file, keeping the old one if the re-download fails. Streaming, the byte cap
-    and the atomic rename are ``_pdf_download.stream_to_file``'s.
+    and the atomic rename are ``streaming.stream_to_file``'s.
     """
     canonical = canonical_arxiv_id(arxiv_id)
-    dest = _stems.pdf_path(NAMESPACE, canonical)
+    dest = stems.pdf_path(NAMESPACE, canonical)
 
     async def _fetch() -> dict[str, Any]:
         # force_refresh threaded through: resolving the URL from a stale
@@ -429,7 +430,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
                 "retryable": False,
             }
 
-        return await _pdf_download.stream_to_file(
+        return await streaming.stream_to_file(
             _get_client(),
             pdf_url,
             dest,
@@ -441,7 +442,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
         )
 
     # Tuple-keyed to stay distinct from get_paper's slot, which _fetch awaits.
-    return await _pdf_download.cached_download(
+    return await streaming.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,

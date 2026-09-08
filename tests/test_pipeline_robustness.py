@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import cache, cache_search, papers
+from academic_tools_mcp import cache_search, papers
+from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.tools import search as search_tools
 
 
@@ -183,7 +184,7 @@ class TestFindInPaperReadHardening:
     @pytest.fixture
     def converted(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-        md = papers.markdown_path("manual", "paper-x")
+        md = stems.markdown_path("manual", "paper-x")
         md.parent.mkdir(parents=True, exist_ok=True)
         md.write_text("# T\n\nSchrödinger and naïve café résumé.\n", encoding="utf-8")
         return md

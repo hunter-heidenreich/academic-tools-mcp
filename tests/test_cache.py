@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from academic_tools_mcp import cache
+from academic_tools_mcp.store import cache
 
 
 def test_cache_dir_is_public_and_namespaced(tmp_path, monkeypatch):
@@ -544,10 +544,10 @@ def test_resolve_cache_root_honors_env(tmp_path, monkeypatch):
 def test_cached_lookup_serves_positive_hit_without_fetch(tmp_path, monkeypatch):
     import asyncio
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
     cache.put("openalex", "works", "10.1/x", {"id": "W1"})
-    sf = _singleflight.SingleFlight()
+    sf = singleflight.SingleFlight()
     calls = 0
 
     async def fetch():
@@ -572,10 +572,10 @@ def test_cached_lookup_serves_positive_hit_without_fetch(tmp_path, monkeypatch):
 def test_cached_lookup_serves_negative_hit_without_fetch(tmp_path, monkeypatch):
     import asyncio
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
     cache.put_negative("openalex", "works", "10.1/x", {"error": "404"})
-    sf = _singleflight.SingleFlight()
+    sf = singleflight.SingleFlight()
     calls = 0
 
     async def fetch():
@@ -600,11 +600,11 @@ def test_cached_lookup_serves_negative_hit_without_fetch(tmp_path, monkeypatch):
 def test_cached_lookup_force_refresh_invalidates_then_fetches(tmp_path, monkeypatch):
     import asyncio
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
     cache.put("openalex", "works", "10.1/x", {"id": "stale"})
     cache.put_negative("openalex", "works", "10.1/x", {"error": "old 404"})
-    sf = _singleflight.SingleFlight()
+    sf = singleflight.SingleFlight()
 
     async def fetch():
         return {"id": "fresh"}
@@ -628,9 +628,9 @@ def test_cached_lookup_force_refresh_invalidates_then_fetches(tmp_path, monkeypa
 def test_cached_lookup_coalesces_concurrent_callers(tmp_path, monkeypatch):
     import asyncio
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
-    sf = _singleflight.SingleFlight()
+    sf = singleflight.SingleFlight()
     calls = 0
 
     async def fetch():
@@ -669,9 +669,9 @@ def test_cached_lookup_returns_independent_copies(tmp_path, monkeypatch):
     """
     import asyncio
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
-    sf = _singleflight.SingleFlight()
+    sf = singleflight.SingleFlight()
 
     async def fetch():
         await asyncio.sleep(0.01)
@@ -708,9 +708,9 @@ def test_cached_lookup_uses_custom_single_flight_key(tmp_path, monkeypatch):
     """A tuple sf_key keeps distinct sub-fetches for one canonical id apart."""
     import asyncio
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
-    sf = _singleflight.SingleFlight()
+    sf = singleflight.SingleFlight()
     order = []
 
     async def make(kind):
@@ -744,7 +744,7 @@ def test_cached_lookup_refetches_once_the_positive_ttl_expires(tmp_path, monkeyp
     import asyncio
     import os
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
     cache.put("openalex", "works", "10.1/x", {"id": "stale"})
     path = tmp_path / "openalex" / "works" / f"{cache._cache_key('10.1/x')}.json"
@@ -761,7 +761,7 @@ def test_cached_lookup_refetches_once_the_positive_ttl_expires(tmp_path, monkeyp
 
     async def lookup(ttl):
         return await cache.cached_lookup(
-            single_flight=_singleflight.SingleFlight(),
+            single_flight=singleflight.SingleFlight(),
             namespace="openalex",
             entity="works",
             canonical="10.1/x",
@@ -783,9 +783,9 @@ def test_cached_lookup_propagates_fetch_failure_and_caches_nothing(tmp_path, mon
     is free so the next caller retries instead of inheriting the exception."""
     import asyncio
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
-    sf = _singleflight.SingleFlight()
+    sf = singleflight.SingleFlight()
     calls = 0
 
     async def fetch():
@@ -819,9 +819,9 @@ def test_cached_lookup_inner_recheck_spares_a_promoted_follower(tmp_path, monkey
     thing standing between that promotion and a duplicate upstream call."""
     import asyncio
 
-    from academic_tools_mcp import _singleflight
+    from academic_tools_mcp.store import singleflight
 
-    sf = _singleflight.SingleFlight()
+    sf = singleflight.SingleFlight()
     calls = 0
 
     async def run():

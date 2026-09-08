@@ -4,9 +4,9 @@ from typing import Any
 import httpx
 import pytest
 
-from academic_tools_mcp import cache
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import wikipedia
+from academic_tools_mcp.store import cache
 
 # ---------------------------------------------------------------------------
 # Transport fakes

@@ -8,9 +8,10 @@ from urllib.parse import quote, unquote
 
 import httpx
 
-from .. import _pdf_download, _singleflight, _stems, cache
+from ..download import streaming
 from ..net import clients, http
 from ..net.throttle import Throttle
+from ..store import cache, singleflight, stems
 from ..util import doinorm, useragent
 
 # Not "acl": this is the cache *directory* name, so renaming it needs a sweep.
@@ -36,7 +37,7 @@ _MAX_PENDING = 5
 _NEG_ENTITY = "downloads"
 _NEG_TTL_SECONDS = 24 * 60 * 60
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 _throttle = Throttle(
     namespace=NAMESPACE,
@@ -139,7 +140,7 @@ def pdf_path(doi: str) -> Path:
     """
     if not is_acl_doi(doi):
         raise ValueError(f"Not an ACL Anthology DOI: {doi}")
-    return _stems.pdf_path(NAMESPACE, canonical_key(doi))
+    return stems.pdf_path(NAMESPACE, canonical_key(doi))
 
 
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -156,11 +157,11 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
         return http.not_found(f"Not an ACL Anthology DOI: {doi}")
 
     canonical = canonical_key(doi)
-    dest = _stems.pdf_path(NAMESPACE, canonical)
+    dest = stems.pdf_path(NAMESPACE, canonical)
     url = pdf_url(aid)
 
     async def _fetch() -> dict[str, Any]:
-        return await _pdf_download.stream_to_file(
+        return await streaming.stream_to_file(
             _get_client(),
             url,
             dest,
@@ -173,7 +174,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
 
     # ``extra_fields`` puts the ACL provenance on a cached hit and a fresh
     # success alike, without this function restating either branch.
-    return await _pdf_download.cached_download(
+    return await streaming.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,
@@ -191,7 +192,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
 # ---------------------------------------------------------------------------
 
 # Derived, never spelled out, so it cannot drift from what ``pdf_path`` writes.
-_CANONICAL_STEM_PREFIX = _stems.safe_stem(ACL_DOI_PREFIX)
+_CANONICAL_STEM_PREFIX = stems.safe_stem(ACL_DOI_PREFIX)
 
 
 def migrate_legacy_pdf_stems() -> int:
@@ -199,13 +200,13 @@ def migrate_legacy_pdf_stems() -> int:
 
     Only ``pdfs/`` moves; markdown and sections were always canonical-keyed.
     Run at startup, so idempotent and best-effort like
-    ``papers.migrate_legacy_stems``: nothing here may raise out of the lifespan.
+    ``stems.migrate_legacy_stems``: nothing here may raise out of the lifespan.
     Returns the number of files moved.
     """
     moved = 0
     pdf_dir = cache.cache_dir(NAMESPACE, "pdfs")
     # Materialised: the loop renames files into the directory it walks.
-    for path in _stems.list_dir(pdf_dir):
+    for path in stems.list_dir(pdf_dir):
         # An in-flight ``.tmp`` still carries the destination's stem; renaming
         # it breaks the writer's ``os.replace``.
         if path.suffix != ".pdf" or path.stem.startswith(_CANONICAL_STEM_PREFIX):
@@ -213,7 +214,7 @@ def migrate_legacy_pdf_stems() -> int:
         if not path.is_file():
             continue
         target = pdf_dir / (
-            _stems.safe_stem(canonical_key(ACL_DOI_PREFIX + unquote(path.stem))) + ".pdf"
+            stems.safe_stem(canonical_key(ACL_DOI_PREFIX + unquote(path.stem))) + ".pdf"
         )
         if target.exists():
             # Already migrated (or a genuine collision) — leave both in place

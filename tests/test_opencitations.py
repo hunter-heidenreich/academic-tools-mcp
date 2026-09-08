@@ -15,9 +15,9 @@ from urllib.parse import unquote, urlsplit
 import httpx
 import pytest
 
-from academic_tools_mcp import cache
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import opencitations
+from academic_tools_mcp.store import cache
 
 # ---------------------------------------------------------------------------
 # Fakes

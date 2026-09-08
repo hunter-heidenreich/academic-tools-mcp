@@ -148,9 +148,9 @@ class TestErrorDict:
 class TestRetryableFlag:
     """``retryable: True`` is the machine-readable half of "Transient — retry."
 
-    ``oa_download._resolve_and_download`` and ``tools/graph._source_error``
+    ``openaccess._resolve_and_download`` and ``tools/graph._source_error``
     both branch on the key, not the prose. Without it a timeout is
-    indistinguishable from a permanent failure: oa_download tells the agent to
+    indistinguishable from a permanent failure: openaccess tells the agent to
     go fetch the PDF by hand, which is exactly wrong for a blip.
     """
 
@@ -190,7 +190,7 @@ class TestRetryableFlag:
     @pytest.mark.parametrize("status", [400, 401, 403, 404, 410])
     def test_other_4xx_is_left_unclassified(self, status):
         """Not ``retryable: False`` — that value is an explicit "definitive,
-        safe to negative-cache" signal (``_pdf_download.is_definitive_failure``
+        safe to negative-cache" signal (``streaming.is_definitive_failure``
         allowlists on it), and a paywalled 403 is not something we know that
         about."""
         assert "retryable" not in http.error_dict("Test", _build_status_error(status))

@@ -111,8 +111,8 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Runs before every test in the suite. Idempotent and cheap.
     """
-    from academic_tools_mcp import _singleflight
     from academic_tools_mcp.net import clients, stats
+    from academic_tools_mcp.store import singleflight
 
     # Wipe the per-provider client cache so any test that monkeypatches
     # httpx.AsyncClient sees a fresh build on first use. This drops the
@@ -149,7 +149,7 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.setattr(
                 module,
                 "_single_flight",
-                _singleflight.SingleFlight(),
+                singleflight.SingleFlight(),
                 raising=False,
             )
 
@@ -168,7 +168,7 @@ def _isolate_cache_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     ``cache_search`` reads ``cache.CACHE_ROOT`` at call time rather than
     caching it, so patching the one attribute covers the search index too.
     """
-    from academic_tools_mcp import cache
+    from academic_tools_mcp.store import cache
 
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 
@@ -258,7 +258,7 @@ def isolated_cache(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     conversion suites want ``tmp_path`` itself free for the PDF and the
     extraction dir.
     """
-    from academic_tools_mcp import cache
+    from academic_tools_mcp.store import cache
 
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     return tmp_path

@@ -17,8 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import cache, papers, server
+from academic_tools_mcp import papers, server
 from academic_tools_mcp.providers import openalex
+from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.tools import paper
 
 # ---------------------------------------------------------------------------
@@ -44,13 +45,13 @@ class TestDownloadPdfCascade:
 
         # Place a fake markdown + sections cache for the canonical id
         canonical = "2301.00001"
-        md_path = papers.markdown_path("arxiv", canonical)
+        md_path = stems.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Stale\n\nold markdown content\n")
         cache.put(
             "arxiv",
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {"sections": [{"index": 0, "title": "Stale"}], "markdown_checksum": "x"},
         )
         assert md_path.exists()
@@ -63,12 +64,12 @@ class TestDownloadPdfCascade:
             assert result.get("cached") is False
             assert result.get("cascaded_invalidated") == ["markdown", "sections"]
             assert not md_path.exists(), "Markdown should have been deleted"
-            assert cache.get("arxiv", "sections", papers.sections_key(canonical)) is None, (
+            assert cache.get("arxiv", "sections", stems.sections_key(canonical)) is None, (
                 "Sections cache should have been invalidated"
             )
         finally:
             md_path.unlink(missing_ok=True)
-            cache.invalidate("arxiv", "sections", papers.sections_key(canonical))
+            cache.invalidate("arxiv", "sections", stems.sections_key(canonical))
 
     @pytest.mark.asyncio
     async def test_no_cascade_on_cache_hit(self, tmp_path: Path, monkeypatch):
@@ -85,7 +86,7 @@ class TestDownloadPdfCascade:
         monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
 
         canonical = "2301.00002"
-        md_path = papers.markdown_path("arxiv", canonical)
+        md_path = stems.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Fresh\n\nstill valid\n")
 
@@ -118,13 +119,13 @@ class TestDownloadPdfCascade:
 
         doi = "10.18653/v1/P16-1160"
         canonical = acl.canonical_key(doi)
-        md_path = papers.markdown_path(acl.NAMESPACE, canonical)
+        md_path = stems.markdown_path(acl.NAMESPACE, canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Stale\n")
         cache.put(
             acl.NAMESPACE,
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {"sections": [], "markdown_checksum": "x"},
         )
 
@@ -133,7 +134,7 @@ class TestDownloadPdfCascade:
         assert seen == {"doi": doi, "force_refresh": True}
         assert result.get("cascaded_invalidated") == ["markdown", "sections"]
         assert not md_path.exists()
-        assert cache.get(acl.NAMESPACE, "sections", papers.sections_key(canonical)) is None
+        assert cache.get(acl.NAMESPACE, "sections", stems.sections_key(canonical)) is None
 
     @pytest.mark.asyncio
     async def test_fresh_bytes_cascade_without_force_refresh(self, monkeypatch):
@@ -151,13 +152,13 @@ class TestDownloadPdfCascade:
         monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
 
         canonical = "2301.00003"
-        md_path = papers.markdown_path("arxiv", canonical)
+        md_path = stems.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Stale\n")
         cache.put(
             "arxiv",
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {"sections": [], "markdown_checksum": "x", "conversion_mode": "full"},
         )
 
@@ -181,13 +182,13 @@ class TestDownloadPdfCascade:
         monkeypatch.setattr(server.arxiv, "download_pdf", fake_download)
 
         canonical = "2301.00004"
-        md_path = papers.markdown_path("arxiv", canonical)
+        md_path = stems.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Hand written\n")
         cache.put(
             "arxiv",
             "sections",
-            papers.sections_key(canonical),
+            stems.sections_key(canonical),
             {"sections": [], "markdown_checksum": "x", "conversion_mode": "imported"},
         )
 
@@ -471,7 +472,7 @@ class TestFindInPaperTool:
         # this is the more interesting code path).
         identifier = "2301.55555"
         canonical = server.arxiv.canonical_arxiv_id(identifier)
-        md_path = papers.markdown_path("arxiv", canonical)
+        md_path = stems.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(_FIND_DOC)
 
@@ -497,7 +498,7 @@ class TestFindInPaperTool:
     async def test_normalize_matches_accented_text(self):
         identifier = "2301.55556"
         canonical = server.arxiv.canonical_arxiv_id(identifier)
-        md_path = papers.markdown_path("arxiv", canonical)
+        md_path = stems.markdown_path("arxiv", canonical)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(_FIND_DOC_ACCENTS)
 

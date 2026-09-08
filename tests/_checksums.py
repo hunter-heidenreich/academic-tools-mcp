@@ -1,6 +1,6 @@
 """The on-disk half of the sections-index checksum invariant.
 
-``_stems.checksum_text`` is what every writer stamps into the index; this is
+``stems.checksum_text`` is what every writer stamps into the index; this is
 what the bytes on disk actually hash to. Only the suites need both, so the
 oracle lives here — a production path that reaches for it is the bug
 ``.claude/rules/pipeline.md`` § Checksums describes.

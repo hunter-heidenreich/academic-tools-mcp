@@ -3,7 +3,7 @@
 All three PDF providers used to ``dest.unlink()``
 the cached PDF *before* the re-download was attempted, so any failed refetch
 (404, transport error, MAX_PDF_BYTES abort) destroyed the only copy. The fix
-drops the up-front unlink and lets ``_pdf_download.stream_to_file``'s atomic
+drops the up-front unlink and lets ``streaming.stream_to_file``'s atomic
 ``os.replace`` overwrite the file only once the new bytes are in hand.
 
 These tests exercise each provider's ``download_pdf`` end-to-end with a stubbed
@@ -19,8 +19,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from academic_tools_mcp import _stems
 from academic_tools_mcp.providers import acl, arxiv, biorxiv
+from academic_tools_mcp.store import stems
 
 from ._download_fakes import install_stream as _install_stream
 from ._download_fakes import mock_stream_response as _mock_stream_response
@@ -50,7 +50,7 @@ _ACL_DOI = "10.18653/v1/P16-1160"
 
 def _arxiv_dest() -> Path:
     canonical = arxiv.canonical_arxiv_id(_ARXIV_ID)
-    return _stems.pdf_path(arxiv.NAMESPACE, canonical)
+    return stems.pdf_path(arxiv.NAMESPACE, canonical)
 
 
 def _biorxiv_dest() -> Path:
@@ -59,7 +59,7 @@ def _biorxiv_dest() -> Path:
 
 def _acl_dest() -> Path:
     canonical = acl.canonical_key(_ACL_DOI)
-    return _stems.pdf_path(acl.NAMESPACE, canonical)
+    return stems.pdf_path(acl.NAMESPACE, canonical)
 
 
 def _setup_provider(name: str, monkeypatch) -> tuple[Path, callable]:

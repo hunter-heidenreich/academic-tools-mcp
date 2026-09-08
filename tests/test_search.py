@@ -6,8 +6,9 @@ error contract, and ``find_in_paper``.
 
 import pytest
 
-from academic_tools_mcp import cache, manual, papers, server
+from academic_tools_mcp import manual, server
 from academic_tools_mcp.providers import arxiv, crossref
+from academic_tools_mcp.store import cache, stems
 
 # ---------------------------------------------------------------------------
 # Slim search hits: author_count lets the agent decide whether to paginate
@@ -485,7 +486,7 @@ class TestFindInPaper:
         # Seed a converted-markdown file at the path find_in_paper resolves
         # to, then assert it locates the query and returns positioned hits.
         target = manual.resolve_target("2301.00001")
-        md_path = papers.markdown_path(target["namespace"], target["canonical"])
+        md_path = stems.markdown_path(target["namespace"], target["canonical"])
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# Title\n\n## Introduction\n\nWe study variational dropout here.\n")
 
@@ -501,7 +502,7 @@ class TestFindInPaper:
         # Both flags were exercised only against papers.find_in_markdown, so
         # the kwarg wiring through the tool was unverified.
         target = manual.resolve_target("2301.00002")
-        md_path = papers.markdown_path(target["namespace"], target["canonical"])
+        md_path = stems.markdown_path(target["namespace"], target["canonical"])
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# T\n\n## Intro\n\nA subset of the Set of sets.\n")
 
@@ -522,7 +523,7 @@ class TestFindInPaper:
         `_canonical_id` on the paper family, `doi` on the graph tools.
         """
         target = manual.resolve_target("2301.00003v2")
-        md_path = papers.markdown_path(target["namespace"], target["canonical"])
+        md_path = stems.markdown_path(target["namespace"], target["canonical"])
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# T\n\n## Intro\n\ndropout.\n")
 
@@ -533,7 +534,7 @@ class TestFindInPaper:
     @pytest.mark.asyncio
     async def test_truncated_is_true_when_more_matches_exist(self, isolated_cache):
         target = manual.resolve_target("2301.00004")
-        md_path = papers.markdown_path(target["namespace"], target["canonical"])
+        md_path = stems.markdown_path(target["namespace"], target["canonical"])
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("# T\n\n## Intro\n\ndropout dropout dropout.\n")
 

@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from academic_tools_mcp import atomic, cache
+from academic_tools_mcp.store import atomic, cache
 
 
 def test_write_text_roundtrips_utf8(tmp_path):

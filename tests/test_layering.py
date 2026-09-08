@@ -27,14 +27,22 @@ ROOT = pathlib.Path(academic_tools_mcp.__file__).parent
 # to the package; a bare package name (``providers``) covers every module in it.
 _LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     # The lowest layer is defined by a property, not a theme: these import
-    # nothing from the package. Most of them are destined for a `util/`
-    # package; `_fast_extract` is a `python -m` subprocess target and stays flat.
+    # nothing from the package. `_fast_extract` is a `python -m` subprocess
+    # target with no importers, so it stays flat rather than joining `util/`.
     ("leaf", frozenset({"util", "_fast_extract"})),
     ("net", frozenset({"net"})),
-    ("store", frozenset({"atomic", "_singleflight", "cache", "_stems"})),
-    ("download", frozenset({"_pdf_download"})),
+    ("store", frozenset({"store"})),
+    # `download/` groups by job, not by layer, and these two really are at
+    # different heights: `streaming` is the transport every provider uses,
+    # while `openaccess` decides *which* URL may be fetched and so consumes
+    # `openalex` and `manual`. Listed per module rather than pretending the
+    # directory is one rank.
+    ("download", frozenset({"download", "download.streaming"})),
     ("providers", frozenset({"providers"})),
-    ("content", frozenset({"papers", "manual", "cache_search", "bibtex", "oa_download"})),
+    (
+        "content",
+        frozenset({"papers", "manual", "cache_search", "bibtex", "download.openaccess"}),
+    ),
     ("app", frozenset({"_app"})),
     ("tools", frozenset({"tools"})),
     ("entry", frozenset({"server"})),
@@ -46,7 +54,7 @@ _LAYER_NAME = {rank: label for rank, (label, _) in enumerate(_LAYERS)}
 # Only these may import httpx. The four content/provider entries need it for a
 # ``_get_client() -> httpx.AsyncClient`` annotation; nobody above them does.
 _MAY_IMPORT_HTTPX = frozenset(
-    {"net.clients", "net.http", "net.throttle", "_pdf_download", "oa_download"}
+    {"net.clients", "net.http", "net.throttle", "download.streaming", "download.openaccess"}
 )
 
 
@@ -153,7 +161,7 @@ def test_discovery_found_the_package():
     # Guards the scan itself: a walk that silently found nothing would make
     # every parametrized check below vacuously pass.
     assert len(_MODULES) > 30
-    assert {"server", "_app", "cache", "providers.arxiv", "tools.paper"} <= set(_MODULES)
+    assert {"server", "_app", "store.cache", "providers.arxiv", "tools.paper"} <= set(_MODULES)
     assert _GRAPH["server"], "server.py imports the whole tool surface"
 
 
@@ -220,11 +228,11 @@ def test_httpx_stays_in_the_http_layer(name):
 
 
 def test_no_provider_imports_the_conversion_pipeline():
-    # This is the edge `_stems` exists to keep open: three providers name a PDF
+    # This is the edge `stems` exists to keep open: three providers name a PDF
     # without importing the converter. A provider reaching `papers` re-closes it.
     for name in sorted(n for n in _MODULES if n.startswith("providers.")):
         offenders = {t for t in _GRAPH[name] if t == "papers" or t.startswith("papers.")}
-        assert not offenders, f"{name} imports {offenders}; use _stems for artifact naming"
+        assert not offenders, f"{name} imports {offenders}; use stems for artifact naming"
 
 
 def test_app_never_imports_tools():

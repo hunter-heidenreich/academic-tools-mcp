@@ -41,6 +41,7 @@ class SingleFlight:
     """
 
     def __init__(self) -> None:
+        """Start with no call in flight."""
         self._inflight: dict[Hashable, asyncio.Future[Any]] = {}
 
     async def do(self, key: Hashable, factory: Callable[[], Awaitable[_T]]) -> _T:

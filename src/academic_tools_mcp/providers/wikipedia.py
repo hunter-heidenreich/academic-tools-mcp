@@ -9,9 +9,9 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _singleflight, cache
 from ..net import clients, http
 from ..net.throttle import Throttle
+from ..store import cache, singleflight
 from ..util import config, useragent
 
 NAMESPACE = "wikipedia"
@@ -39,7 +39,7 @@ _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 1.0
 _MAX_PENDING = 5
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 # Articles are edited continuously; a month bounds how stale a summary gets.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0

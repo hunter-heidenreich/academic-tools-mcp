@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, TypedDict
 from urllib.parse import unquote
 
-from . import _pdf_download, _stems, atomic, cache, papers
+from . import papers
+from .download import streaming
 from .net import stats
 from .providers import acl, arxiv, biorxiv
+from .store import atomic, cache, stems
 from .util import doinorm
 
 NAMESPACE = "manual"
@@ -118,18 +120,18 @@ def migrate_misrouted_arxiv() -> int:
     ``arxiv%3A2301.00001`` where only ``2301.00001`` is ever looked up.
 
     Run once at startup, idempotent and best-effort like
-    ``papers.migrate_legacy_stems``. Returns the number of files moved.
+    ``stems.migrate_legacy_stems``. Returns the number of files moved.
     """
     moved = 0
     for entity in ("pdfs", "markdown"):
         target_dir = cache.cache_dir(arxiv.NAMESPACE, entity)
         # Shared listing: materialised, and never raises out of the lifespan.
-        for path in _stems.list_dir(cache.cache_dir(NAMESPACE, entity)):
+        for path in stems.list_dir(cache.cache_dir(NAMESPACE, entity)):
             if not _refile_misrouted_arxiv(path, target_dir):
                 continue
             moved += 1
             if entity == "markdown":
-                cache.invalidate(NAMESPACE, "sections", _stems.sections_key_for_stem(path.stem))
+                cache.invalidate(NAMESPACE, "sections", stems.sections_key_for_stem(path.stem))
     return moved
 
 
@@ -146,7 +148,7 @@ def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> bool:
     if recovered is None:
         return False
 
-    target = target_dir / (papers.safe_stem(recovered) + path.suffix)
+    target = target_dir / (stems.safe_stem(recovered) + path.suffix)
     if target.exists():
         return False
 
@@ -196,7 +198,7 @@ def _manual_pdf_path(canonical: str) -> Path:
     Folds its argument first, like every provider's ``pdf_path``, so a raw
     spelling can't build a path the cache never writes.
     """
-    return _stems.pdf_path(NAMESPACE, doinorm.canonical(canonical))
+    return stems.pdf_path(NAMESPACE, doinorm.canonical(canonical))
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +260,7 @@ def import_local_pdf(
     if err := _source_error(source, file_path):
         return err
 
-    # Not _pdf_download.is_usable_pdf: an unopenable source earns its own error.
+    # Not streaming.is_usable_pdf: an unopenable source earns its own error.
     try:
         with source.open("rb") as f:
             header = f.read(5)
@@ -282,7 +284,7 @@ def import_local_pdf(
     existed = dest.exists()
     if not force_refresh:
         # cached_hit owns the stat, and the race it absorbs (pdf-download.md).
-        hit = _pdf_download.cached_hit(dest)
+        hit = streaming.cached_hit(dest)
         if hit is not None:
             return {"identifier": canonical, "namespace": namespace, **hit}
 
@@ -340,7 +342,7 @@ def import_markdown(
     target = resolve_target(identifier)
     namespace = target["namespace"]
     canonical = target["canonical"]
-    md_path = papers.markdown_path(namespace, canonical)
+    md_path = stems.markdown_path(namespace, canonical)
 
     if not force_refresh and md_path.exists():
         return _cached_markdown(md_path, namespace, canonical, identifier)

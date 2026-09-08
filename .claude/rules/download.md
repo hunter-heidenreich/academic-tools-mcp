@@ -1,14 +1,13 @@
 ---
 paths:
-  - "src/academic_tools_mcp/_pdf_download.py"
-  - "src/academic_tools_mcp/oa_download.py"
+  - "src/academic_tools_mcp/download/*.py"
 ---
 
 # PDF download and the cached-download protocol
 
-## _pdf_download.py
+## download/streaming.py
 
-Shared streaming-download helper behind all four `download_pdf` implementations (`providers/arxiv`, `providers/biorxiv`, `providers/acl`, `oa_download`). Slot acquisition is per-provider policy; streaming, size-capping, PDF sniffing and atomic rename are identical and live here. `stream_to_file`'s `timeout` has no default for the same reason — every provider names its own `_PDF_TIMEOUT_SECONDS`, so a new one has to state a policy rather than inherit a silent 60s.
+Shared streaming-download helper behind all four `download_pdf` implementations (`providers/arxiv`, `providers/biorxiv`, `providers/acl`, `openaccess`). Slot acquisition is per-provider policy; streaming, size-capping, PDF sniffing and atomic rename are identical and live here. `stream_to_file`'s `timeout` has no default for the same reason — every provider names its own `_PDF_TIMEOUT_SECONDS`, so a new one has to state a policy rather than inherit a silent 60s.
 
 - **Gate every cached-PDF check on `is_usable_pdf` / `cached_hit`, never `Path.exists()`** — a 0-byte file or an HTML landing page saved under `.pdf` must count as a miss. New call sites included: `manual.import_local_pdf` and `tools/pipeline.convert_paper` both gate on them, so `papers.convert_pdf`'s bare `.exists()` is only ever reached behind that gate. Don't add a second ungated path, and don't hand-roll the check-then-`stat` pair — **`cached_hit` owns the `stat`**, so a file unlinked between the usability check and the size read is a miss the caller re-downloads rather than an `OSError` out of an MCP tool.
 - **Every new terminal branch in `stream_to_file` must carry an explicit `retryable` verdict**, or `is_definitive_failure` silently treats it as transient. Today: 404 and `require_pdf` rejections → `retryable: False`; a cap abort adds `max_bytes`; a 0-byte 200 → `retryable: True`, deliberately kept out of the negative cache as a blip rather than a fact about the paper (the `%PDF-` sniff can't catch it — with no chunks the loop body never runs).
@@ -19,7 +18,7 @@ Shared streaming-download helper behind all four `download_pdf` implementations 
 
 ### `cached_download` — the shared cached-download protocol
 
-The file-on-disk sibling of `cache.cached_lookup` (`.claude/rules/cache.md`): same force_refresh → check → single-flight → in-slot re-check → `fetch` skeleton. Where the two differ, the difference is deliberate — don't "align" them.
+The file-on-disk sibling of `cache.cached_lookup` (`.claude/rules/store.md`): same force_refresh → check → single-flight → in-slot re-check → `fetch` skeleton. Where the two differ, the difference is deliberate — don't "align" them.
 
 - **The in-slot re-check is skipped under `force_refresh`.** `cached_lookup` re-checks unconditionally; here that would make a refresh a no-op whenever a usable PDF is already on disk — exactly the case `force_refresh` exists to fix. Concurrent forced callers still coalesce onto one fetch (same `sf_key`, so single-flight collapses them); what the skip buys is that the one fetch actually re-streams instead of returning the file it was asked to replace.
 - **The protocol writes the negative entry, not `fetch`.** Opposite of `cached_lookup`, where the closure owns its own caching. A `fetch` here returns a plain result dict and never touches `cache`; `is_definitive_failure` decides.
@@ -33,7 +32,7 @@ arxiv/biorxiv pass a **tuple** `sf_key` (`("pdf", canonical)`) because their `fe
 
 **`extra_fields`** merges constant provenance into every *successful* payload, cached and fresh alike, so a decorating provider (ACL's `anthology_id` / `pdf_url`) cannot have its two branches disagree. Errors are returned undecorated. Each caller gets a deep copy — followers share the leader's object and `tools/pipeline` writes `cascaded_invalidated` into what it receives.
 
-## oa_download.py
+## download/openaccess.py
 
 **Trust boundary: the URL comes from `openalex.best_pdf_url` or nowhere** (`best_oa_location.pdf_url` → `primary_location.pdf_url` → `open_access.oa_url`). Do not add a parameter that accepts a URL, do not widen resolution to a search or a redirect chase, and keep `require_pdf=True` on the `stream_to_file` call — this is the only caller that passes it, because it is the only path whose URL can be a publisher landing page.
 

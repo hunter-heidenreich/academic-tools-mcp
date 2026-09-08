@@ -22,8 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import cache, manual, papers, server
+from academic_tools_mcp import manual, papers, server
 from academic_tools_mcp.providers import acl
+from academic_tools_mcp.store import cache, stems
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def _reset_section_locks(monkeypatch):
 
 def _seed_markdown(namespace, canonical, body):
     """Write markdown straight into the cache path (no subprocess)."""
-    md_path = papers.markdown_path(namespace, canonical)
+    md_path = stems.markdown_path(namespace, canonical)
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(body, encoding="utf-8")
     return md_path
@@ -496,11 +497,11 @@ def _seed_index(namespace, canonical, markdown, mode):
     cache.put(
         namespace,
         "sections",
-        papers.sections_key(canonical),
+        stems.sections_key(canonical),
         {
             "sections": sections,
             "sections_detected": detected,
-            "markdown_checksum": papers.checksum_text(markdown),
+            "markdown_checksum": stems.checksum_text(markdown),
             "conversion_mode": mode,
         },
     )
@@ -546,9 +547,9 @@ class TestGetPaperSectionsTool:
         # Rewrite the markdown *and* re-stamp the stale checksum, so only an
         # actual drop can produce the new title.
         _seed_markdown(ns, canonical, "## B\n\nbody\n")
-        entry = cache.get(ns, "sections", papers.sections_key(canonical))
-        entry["markdown_checksum"] = papers.checksum_text("## B\n\nbody\n")
-        cache.put(ns, "sections", papers.sections_key(canonical), entry)
+        entry = cache.get(ns, "sections", stems.sections_key(canonical))
+        entry["markdown_checksum"] = stems.checksum_text("## B\n\nbody\n")
+        cache.put(ns, "sections", stems.sections_key(canonical), entry)
 
         stale = await server.get_paper_sections(ident)
         assert stale["sections"][0]["title"] == "A"

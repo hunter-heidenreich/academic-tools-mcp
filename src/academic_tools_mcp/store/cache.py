@@ -9,9 +9,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from . import _singleflight, atomic
-from .net import stats
-from .util import config
+from ..net import stats
+from ..util import config
+from . import atomic, singleflight
 
 
 def _resolve_cache_root() -> Path:
@@ -242,7 +242,7 @@ def invalidate(namespace: str, entity: str, identifier: str) -> None:
 
 async def cached_lookup(
     *,
-    single_flight: "_singleflight.SingleFlight",
+    single_flight: "singleflight.SingleFlight",
     namespace: str,
     entity: str,
     canonical: str,
@@ -303,7 +303,7 @@ def gc_orphan_tmp_files(*, max_age_seconds: float = _ORPHAN_TMP_AGE_SECONDS) -> 
     """Sweep ``.cache/`` for stale ``*.tmp`` files left behind by killed writers.
 
     Covers all three writers that land under the cache root — ``atomic.write_text``,
-    ``atomic.copy``, and ``_pdf_download.stream_to_file``, whose orphans are whole
+    ``atomic.copy``, and ``streaming.stream_to_file``, whose orphans are whole
     PDFs. A stranded temp is harmless (no read path looks at one) but nothing else
     removes it, so the FastMCP lifespan calls this and each restart clears the
     previous run's.

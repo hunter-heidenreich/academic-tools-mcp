@@ -10,7 +10,7 @@ Three invariants stronger than any example set:
   spellings whose legacy ``manual`` key happened to equal the arXiv one — the
   ``arXiv:`` prefix, which the manual key kept and the arXiv key drops, is the
   counterexample an example suite missed.
-* ``_stems.pdf_path`` output reaches a ``bash -c`` command line, so its safety
+* ``stems.pdf_path`` output reaches a ``bash -c`` command line, so its safety
   claim has to hold for arbitrary text, not for the identifiers someone thought
   of.
 
@@ -22,7 +22,8 @@ file makes with ``from .test_doi_properties import dois``.
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _stems, cache, cache_search, manual, papers
+from academic_tools_mcp import cache_search, manual
+from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.util import doinorm
 
 from .test_cache_search_properties import (
@@ -83,7 +84,7 @@ def test_the_router_and_the_stem_inversion_share_one_grammar(identifier: str) ->
     canonical = manual.resolve_target(identifier)["canonical"]
 
     assert arxiv._OLD_ID_RE.match(canonical)
-    assert cache_search._ARXIV_OLDSTYLE_STEM_RE.match(papers.safe_stem(canonical))
+    assert cache_search._ARXIV_OLDSTYLE_STEM_RE.match(stems.safe_stem(canonical))
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +106,7 @@ def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatc
     monkeypatch.setattr(cache, "CACHE_ROOT", root)
 
     legacy_key = doinorm.canonical(spelling)
-    legacy = papers.markdown_path(manual.NAMESPACE, legacy_key)
+    legacy = stems.markdown_path(manual.NAMESPACE, legacy_key)
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("# Body", encoding="utf-8")
 
@@ -113,7 +114,7 @@ def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatc
 
     target = manual.resolve_target(spelling)
     assert target["namespace"] == "arxiv"
-    assert papers.markdown_path(target["namespace"], target["canonical"]).exists()
+    assert stems.markdown_path(target["namespace"], target["canonical"]).exists()
     assert not legacy.exists()
 
 
@@ -124,7 +125,7 @@ def test_the_sweep_is_idempotent(tmp_path_factory, monkeypatch, spelling):
     root = tmp_path_factory.mktemp("cache")
     monkeypatch.setattr(cache, "CACHE_ROOT", root)
 
-    legacy = papers.markdown_path(manual.NAMESPACE, doinorm.canonical(spelling))
+    legacy = stems.markdown_path(manual.NAMESPACE, doinorm.canonical(spelling))
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("# Body", encoding="utf-8")
 
@@ -148,8 +149,8 @@ def test_a_pdf_filename_is_filesystem_and_shell_safe(canonical: str) -> None:
     stem the path builder never produces. ``~`` is the character that broke
     that agreement.
     """
-    name = _stems.pdf_path(manual.NAMESPACE, canonical).name
+    name = stems.pdf_path(manual.NAMESPACE, canonical).name
 
     assert name.endswith(".pdf")
-    assert _stems._MIGRATED_STEM_RE.match(name.removesuffix(".pdf"))
+    assert stems._MIGRATED_STEM_RE.match(name.removesuffix(".pdf"))
     assert "/" not in name

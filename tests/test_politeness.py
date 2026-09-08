@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 import academic_tools_mcp
-from academic_tools_mcp import oa_download
+from academic_tools_mcp.download import openaccess
 from academic_tools_mcp.net import http
 from academic_tools_mcp.providers import crossref, opencitations
 
@@ -48,7 +48,7 @@ def test_every_client_module_was_discovered():
     # Guards the scan itself: if it silently found nothing, every
     # parametrized politeness check below would vacuously pass.
     names = [name for name, _ in _ALL_CLIENTS]
-    assert "oa_download" in names
+    assert "openaccess" in names
     assert {
         "acl",
         "arxiv",
@@ -330,8 +330,8 @@ class TestStatsAccuracy:
         # a hit registered one — making the reported hit rate wrong.
         import asyncio
 
-        from academic_tools_mcp import _singleflight, cache
         from academic_tools_mcp.net import stats
+        from academic_tools_mcp.store import cache, singleflight
 
         stats.reset()
 
@@ -340,7 +340,7 @@ class TestStatsAccuracy:
 
         asyncio.run(
             cache.cached_lookup(
-                single_flight=_singleflight.SingleFlight(),
+                single_flight=singleflight.SingleFlight(),
                 namespace="probe",
                 entity="things",
                 canonical="k",
@@ -356,8 +356,8 @@ class TestStatsAccuracy:
     def test_count_false_suppresses_the_hit_counter(self, tmp_path):
         """A warming probe reads to decide whether to overwrite; it is not a
         lookup being served, so it must not show up as one."""
-        from academic_tools_mcp import cache
         from academic_tools_mcp.net import stats
+        from academic_tools_mcp.store import cache
 
         stats.reset()
         cache.put("probe", "things", "present", {"a": 1})
@@ -381,15 +381,15 @@ class TestOaDownloadPacesPerPublisher:
     """
 
     def test_paces_per_host_at_no_worse_than_one_per_second(self):
-        assert oa_download._throttle.per_host is True
-        assert oa_download._MIN_REQUEST_GAP >= 1.0
+        assert openaccess._throttle.per_host is True
+        assert openaccess._MIN_REQUEST_GAP >= 1.0
 
     def test_concurrency_stays_global(self):
         # max_concurrent bounds *our* egress — sockets, fds, and simultaneous
         # in-flight streams (stream_to_file holds the slot for the whole
         # download). Making it per-host would let a 20-publisher walk open 40
         # parallel streams, however polite that is to each publisher.
-        assert oa_download._MAX_CONCURRENT <= 4
+        assert openaccess._MAX_CONCURRENT <= 4
 
     def test_opencitations_honours_its_documented_rate(self):
         # OpenCitations documents 180 requests/minute = 3/sec. The gap is the
@@ -405,7 +405,7 @@ class TestOaDownloadPacesPerPublisher:
 
     @pytest.mark.parametrize(
         ("name", "module"),
-        [(n, m) for n, m in _ALL_CLIENTS if n != "oa_download"],
+        [(n, m) for n, m in _ALL_CLIENTS if n != "openaccess"],
     )
     def test_api_providers_stay_globally_paced(self, name, module):
         # per_host is for a client whose URLs are not one API. Each of these

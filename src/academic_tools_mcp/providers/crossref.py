@@ -7,9 +7,9 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _singleflight, cache
 from ..net import clients, http
 from ..net.throttle import Throttle
+from ..store import cache, singleflight
 from ..util import config, doinorm, useragent
 
 CROSSREF_BASE_URL = "https://api.crossref.org"
@@ -56,7 +56,7 @@ def _resolve_policy() -> tuple[int, float, float]:
 
 _MAX_CONCURRENT, _MIN_REQUEST_GAP, _SEARCH_REQUEST_GAP = _resolve_policy()
 
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 # Same span as OpenAlex works: a reference list grows as publishers re-deposit.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0

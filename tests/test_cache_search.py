@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import cache, cache_search, manual, papers, server
+from academic_tools_mcp import cache_search, manual, papers, server
+from academic_tools_mcp.store import cache, stems
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -370,13 +371,13 @@ class TestFilenameToCanonical:
     def test_percent_escapes_are_decoded(self):
         # safe_stem percent-encodes anything outside [A-Za-z0-9.-]; the
         # inversion must decode it or the id doesn't round-trip.
-        stem = papers.safe_stem("10.1002/(sici)1097-0258")
+        stem = stems.safe_stem("10.1002/(sici)1097-0258")
         assert cache_search._filename_to_canonical("manual", stem) == "10.1002/(sici)1097-0258"
 
     def test_a_literal_percent_is_not_read_as_an_escape(self):
         # safe_stem writes a literal "%" as "%25", so one unquote is its exact
         # inverse and can't manufacture an escape that was never there.
-        stem = papers.safe_stem("10.1234/a%2fb")
+        stem = stems.safe_stem("10.1234/a%2fb")
         assert cache_search._filename_to_canonical("manual", stem) == "10.1234/a%2fb"
 
     def test_arxiv_old_style_keeps_its_version(self):
@@ -418,7 +419,7 @@ class TestFilenameToCanonical:
         test over a dead branch.
         """
         target = manual.resolve_target(identifier)
-        stem = papers.safe_stem(target["canonical"])
+        stem = stems.safe_stem(target["canonical"])
         assert (
             cache_search._filename_to_canonical(target["namespace"], stem) == (target["canonical"])
         )
@@ -434,7 +435,7 @@ class TestFilenameToCanonical:
             ("manual", "10.1038/s41586-021-03819-2"),
             ("manual", "my-imported-paper"),
         ):
-            assert cache_search._filename_to_canonical(ns, papers.safe_stem(canonical)) == canonical
+            assert cache_search._filename_to_canonical(ns, stems.safe_stem(canonical)) == canonical
 
 
 # ---------------------------------------------------------------------------

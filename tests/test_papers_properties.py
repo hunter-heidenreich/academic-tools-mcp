@@ -36,7 +36,8 @@ from unittest import mock
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _stems, cache, papers
+from academic_tools_mcp import papers
+from academic_tools_mcp.store import cache, stems
 
 from .test_cache_search_properties import identifiers
 
@@ -69,7 +70,7 @@ def test_safe_stem_is_injective(left: str, right: str) -> None:
     """
     assume(left != right)
     assume(left.replace("/", "_") != right.replace("/", "_"))
-    assert _stems.safe_stem(left) != _stems.safe_stem(right)
+    assert stems.safe_stem(left) != stems.safe_stem(right)
 
 
 @given(st.text(min_size=0, max_size=40))
@@ -82,9 +83,9 @@ def test_safe_stem_output_is_never_seen_as_legacy(canonical: str) -> None:
     passes the whole RFC 3986 unreserved set, which is easy to under-count when
     the gate is spelled by hand.
     """
-    stem = _stems.safe_stem(canonical)
-    assert _stems._MIGRATED_STEM_RE.match(stem)
-    assert not _stems._needs_stem_migration(stem)
+    stem = stems.safe_stem(canonical)
+    assert stems._MIGRATED_STEM_RE.match(stem)
+    assert not stems._needs_stem_migration(stem)
 
 
 @given(st.text(min_size=0, max_size=40))
@@ -95,9 +96,9 @@ def test_safe_stem_is_not_idempotent_on_its_own_output(canonical: str) -> None:
     ``safe_stem(stem)`` to ``stem`` would rename every already-correct name
     forever. This is the premise the gate above discharges.
     """
-    stem = _stems.safe_stem(canonical)
+    stem = stems.safe_stem(canonical)
     assume("%" in stem)
-    assert _stems.safe_stem(stem) != stem
+    assert stems.safe_stem(stem) != stem
 
 
 @given(st.text(min_size=0, max_size=60))
@@ -110,11 +111,11 @@ def test_a_stem_is_always_one_component_inside_its_cache_dir(canonical: str) -> 
     every derived path, since a traversal that reached only one of them would
     still let two papers land on one file.
     """
-    assert os.sep not in _stems.safe_stem(canonical)
+    assert os.sep not in stems.safe_stem(canonical)
 
     for path, expected_dir in (
-        (_stems.pdf_path("ns", canonical), cache.cache_dir("ns", "pdfs")),
-        (_stems.markdown_path("ns", canonical), cache.cache_dir("ns", "markdown")),
+        (stems.pdf_path("ns", canonical), cache.cache_dir("ns", "pdfs")),
+        (stems.markdown_path("ns", canonical), cache.cache_dir("ns", "markdown")),
     ):
         # The bare stem may be "." or ".."; the suffix every builder appends
         # makes the filename ("..pdf") an ordinary component regardless, so the
@@ -131,10 +132,10 @@ def test_every_derived_path_agrees_on_the_stem(identifier: str) -> None:
     Three builders over one sanitizer: if they could disagree, a paper would
     convert under one name and be read under another.
     """
-    stem = _stems.safe_stem(identifier)
-    assert _stems.pdf_path("ns", identifier).name == stem + ".pdf"
-    assert _stems.markdown_path("ns", identifier).name == stem + ".md"
-    assert _stems.sections_key(identifier) == stem
+    stem = stems.safe_stem(identifier)
+    assert stems.pdf_path("ns", identifier).name == stem + ".pdf"
+    assert stems.markdown_path("ns", identifier).name == stem + ".md"
+    assert stems.sections_key(identifier) == stem
 
 
 # ---------------------------------------------------------------------------
@@ -178,11 +179,11 @@ def test_the_sweep_is_idempotent_and_never_merges_two_papers(
     assume(written)
 
     before = len(list(d.iterdir()))
-    papers.migrate_legacy_stems()
+    stems.migrate_legacy_stems()
     assert len(list(d.iterdir())) == before, "the sweep lost or merged a paper"
-    assert papers.migrate_legacy_stems() == 0, "a second run still had work to do"
+    assert stems.migrate_legacy_stems() == 0, "a second run still had work to do"
     for path in d.iterdir():
-        assert not _stems._needs_stem_migration(path.stem)
+        assert not stems._needs_stem_migration(path.stem)
 
 
 # ---------------------------------------------------------------------------
@@ -291,17 +292,17 @@ def test_a_written_entry_is_read_back_without_reparsing(tmp_path_factory, markdo
     """
     root = tmp_path_factory.mktemp("cache")
     with mock.patch.object(cache, "CACHE_ROOT", root):
-        md_path = papers.markdown_path("test", "roundtrip")
+        md_path = stems.markdown_path("test", "roundtrip")
         written = papers.store_markdown_and_index("test", "roundtrip", md_path, markdown, "full")
 
-        entry = cache.get("test", "sections", papers.sections_key("roundtrip"))
+        entry = cache.get("test", "sections", stems.sections_key("roundtrip"))
         assert set(entry) == {
             "sections",
             "sections_detected",
             "markdown_checksum",
             "conversion_mode",
         }
-        assert entry["markdown_checksum"] == papers.checksum_text(markdown)
+        assert entry["markdown_checksum"] == stems.checksum_text(markdown)
 
         # The reader must serve that entry as-is: a re-parse here would mean the
         # writer's checksum never matches the file it just wrote.

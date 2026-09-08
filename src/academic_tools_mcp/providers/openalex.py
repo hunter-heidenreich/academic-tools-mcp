@@ -7,9 +7,9 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _singleflight, cache
 from ..net import clients, http, stats
 from ..net.throttle import Throttle
+from ..store import cache, singleflight
 from ..util import config, doinorm, useragent
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
@@ -45,7 +45,7 @@ _MAX_PENDING = 5
 # Coalesces concurrent calls for the same DOI / author ID so the
 # unified-paper tools (metadata, authors, abstract, bibtex) plus the
 # OpenAlex-only tools don't all fire in parallel for one paper.
-_single_flight = _singleflight.SingleFlight()
+_single_flight = singleflight.SingleFlight()
 
 # Positive cache TTL. OpenAlex works grow citation counts and gain
 # authors / topics over time; 30 days is long enough to amortise

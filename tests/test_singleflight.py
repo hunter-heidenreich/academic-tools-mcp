@@ -27,8 +27,8 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _singleflight
-from academic_tools_mcp._singleflight import SingleFlight
+from academic_tools_mcp.store import singleflight
+from academic_tools_mcp.store.singleflight import SingleFlight
 
 
 async def _drain(rounds: int = 5) -> None:
@@ -430,7 +430,7 @@ class TestLeaderCancellationDoesNotCancelFollowers:
         fallback deterministically; at the shipped value it takes that many
         cancelled leaders in a row, which no ordinary workload produces.
         """
-        monkeypatch.setattr(_singleflight, "_MAX_FOLLOW_ATTEMPTS", 1)
+        monkeypatch.setattr(singleflight, "_MAX_FOLLOW_ATTEMPTS", 1)
         sf = SingleFlight()
         started = asyncio.Event()
         running_unslotted = asyncio.Event()

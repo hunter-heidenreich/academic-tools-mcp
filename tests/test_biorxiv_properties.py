@@ -19,8 +19,9 @@ Four invariants, each with a concrete failure the module has to be safe from:
 from hypothesis import given
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _stems, cache_search, manual, papers
+from academic_tools_mcp import cache_search, manual
 from academic_tools_mcp.providers import biorxiv
+from academic_tools_mcp.store import stems
 from academic_tools_mcp.util import doinorm
 
 from .test_doi_properties import dois
@@ -129,10 +130,10 @@ def test_every_artifact_keys_on_the_canonical_doi(doi: str) -> None:
     three, and what `cache_search` inverts.
     """
     canonical = biorxiv.canonical_key(doi)
-    stem = _stems.safe_stem(canonical)
+    stem = stems.safe_stem(canonical)
     assert biorxiv.pdf_path(doi).stem == stem
-    assert papers.markdown_path(biorxiv.NAMESPACE, canonical).stem == stem
-    assert _stems.sections_key(canonical) == stem
+    assert stems.markdown_path(biorxiv.NAMESPACE, canonical).stem == stem
+    assert stems.sections_key(canonical) == stem
 
 
 @given(biorxiv_dois)
