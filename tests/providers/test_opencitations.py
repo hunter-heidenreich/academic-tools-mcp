@@ -480,7 +480,7 @@ class TestCacheKeying:
     @pytest.mark.parametrize(("fetch", "kind", "field"), _DIRECTIONS)
     @pytest.mark.asyncio
     async def test_every_caller_gets_an_independent_copy(self, monkeypatch, fetch, kind, field):
-        # tools/graph.py's `_enrich_error` mutates the provider's result in
+        # tools/graph.py's `enrich_error` mutates the provider's result in
         # place; this deep copy is what keeps that from reaching the cache.
         _stub_json_responses(monkeypatch, [_record(field, "10.5555/other")])
 

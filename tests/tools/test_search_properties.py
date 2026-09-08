@@ -138,7 +138,7 @@ def test_author_count_counts_the_rows_first_author_was_chosen_from(authors: Any)
     Counting the raw value instead would report a bare string's *characters*
     as authors, sending an agent to paginate a list that does not exist.
     """
-    rows = search._dict_list(authors)
+    rows = search.dict_list(authors)
     name = search._crossref_first_author(rows)
 
     if isinstance(authors, list):
@@ -207,7 +207,7 @@ def test_every_search_error_carries_a_suggestion_that_matches_its_verdict(
     if payload.get("retryable") is False:
         assert "Rewrite the query" in result["suggestion"]
     elif "suggestion" in payload:
-        # _enrich_error fills a gap; it never argues with the provider.
+        # enrich_error fills a gap; it never argues with the provider.
         assert result["suggestion"] == payload["suggestion"]
 
 

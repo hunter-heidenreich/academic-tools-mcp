@@ -9,7 +9,7 @@ from ..app import (
     PAGE,
     PAGE_SIZE,
     REF_SOURCE,
-    _enrich_error,
+    enrich_error,
     mcp,
     page_bounds,
 )
@@ -283,7 +283,7 @@ async def get_paper_references(
     if source == "crossref":
         work = await crossref.get_work(doi, force_refresh=force_refresh)
         if "error" in work:
-            return _enrich_error(
+            return enrich_error(
                 work,
                 "Check the DOI format or use search_crossref_by_title to find the correct DOI.",
             )
@@ -292,7 +292,7 @@ async def get_paper_references(
     if source == "opencitations":
         data = await opencitations.get_references(doi, force_refresh=force_refresh)
         if "error" in data:
-            return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
+            return enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
         return _opencitations_page(data, doi, page, page_size, kind="references")
 
     # source == "auto": resolve the source on page 1 only. Pages 2..N must
@@ -388,7 +388,7 @@ async def get_paper_citations_count(
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
-        return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
+        return enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
     return {"doi": doi, "count": data.get("count", 0)}
 
 
@@ -432,6 +432,6 @@ async def get_paper_citations(
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
-        return _enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
+        return enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
 
     return _opencitations_page(data, doi, page, page_size, kind="citations")

@@ -8,17 +8,17 @@ from pydantic import Field
 
 from .. import manual, papers
 from ..app import (
-    _SECTION_HARNESS_CAP,
     ALLOW_OA_URL,
     CONVERT_FORCE_REFRESH,
     CONVERT_MODE,
     IMPORT_FORCE_REFRESH,
     PAPER_ID,
     PDF_FORCE_REFRESH,
+    SECTION_HARNESS_CAP,
     SECTION_MAX_CHARS,
     SECTION_OFFSET,
     SECTIONS_FORCE_REFRESH,
-    _enrich_error,
+    enrich_error,
     mcp,
     not_converted_error,
     pdf_not_cached_error,
@@ -81,7 +81,7 @@ async def _download_pdf_by_provider(
 
     if "error" in result:
         # http supplies a retry verdict, never advice; agents branch on `suggestion`.
-        return _enrich_error(
+        return enrich_error(
             result,
             "Wait and retry — the provider is temporarily unavailable."
             if result.get("retryable") is True
@@ -205,7 +205,7 @@ async def convert_paper(
         mode=mode,
     )
     if "error" in result:
-        return _strip_internal_paths(_enrich_error(result, _convert_suggestion(result, mode)))
+        return _strip_internal_paths(enrich_error(result, _convert_suggestion(result, mode)))
     return _strip_internal_paths(result)
 
 
@@ -264,7 +264,7 @@ async def get_paper_sections(
     return response
 
 
-@mcp.tool(meta={"anthropic/maxResultSizeChars": _SECTION_HARNESS_CAP})
+@mcp.tool(meta={"anthropic/maxResultSizeChars": SECTION_HARNESS_CAP})
 async def get_paper_section(
     identifier: PAPER_ID,
     section: Annotated[

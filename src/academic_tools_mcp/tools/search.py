@@ -8,24 +8,24 @@ from pydantic import Field
 
 from .. import corpus, papers
 from ..app import (
-    _CACHE_SEARCH_NAMESPACE,
-    _CACHE_SEARCH_TOP_K,
-    _FIND_MAX_RESULTS,
+    CACHE_SEARCH_NAMESPACE,
+    CACHE_SEARCH_TOP_K,
+    FIND_MAX_RESULTS,
     FORCE_REFRESH,
     PAPER_ID,
-    _crossref_date,
-    _dict_list,
-    _enrich_error,
-    _first,
+    crossref_date,
+    dict_list,
+    enrich_error,
     mcp,
     read_markdown,
+    unwrap_first,
 )
 from ..providers import arxiv, crossref, wikipedia
 
 
 def _first_author_name(paper: dict[str, Any]) -> str | None:
     """The first arXiv author's name, or None when the entry lists none."""
-    authors = _dict_list(paper.get("authors"))
+    authors = dict_list(paper.get("authors"))
     return authors[0].get("name") if authors else None
 
 
@@ -92,7 +92,7 @@ async def search_arxiv(
     if "error" in result:
         # A malformed query is `retryable: False`; advising a wait would send
         # the agent back at a call that cannot succeed.
-        return _enrich_error(
+        return enrich_error(
             result,
             "Rewrite the query — arXiv rejected this one. Check the field "
             "prefixes (ti:/au:/abs:/cat:) and the AND/OR/ANDNOT operators."
@@ -105,10 +105,10 @@ async def search_arxiv(
             "arxiv_id": arxiv.id_from_entry(p),
             "title": p.get("title"),
             "first_author": _first_author_name(p),
-            "author_count": len(_dict_list(p.get("authors"))),
+            "author_count": len(dict_list(p.get("authors"))),
             "published_year": _published_year(p),
         }
-        for p in _dict_list(result.get("entries"))
+        for p in dict_list(result.get("entries"))
     ]
     return {
         "total_results": result.get("total_results") or 0,
@@ -151,21 +151,21 @@ async def search_crossref_by_title(
     """
     response = await crossref.search_works(title, year=year, rows=max_results)
     if "error" in response:
-        return _enrich_error(
+        return enrich_error(
             response, "Try a more specific title or use search_arxiv if it's a preprint."
         )
 
     results = []
     for item in response.get("items", []):
         # Rows arrive untyped; count the list the name was picked from.
-        authors = _dict_list(item.get("author"))
+        authors = dict_list(item.get("author"))
         results.append(
             {
                 "doi": item.get("DOI"),
-                "title": _first(item.get("title")),
+                "title": unwrap_first(item.get("title")),
                 "first_author": _crossref_first_author(authors),
                 "author_count": len(authors),
-                "year": _crossref_date(item)[0],
+                "year": crossref_date(item)[0],
             }
         )
 
@@ -191,7 +191,7 @@ async def find_in_paper(
             min_length=1,
         ),
     ],
-    max_results: _FIND_MAX_RESULTS = 20,
+    max_results: FIND_MAX_RESULTS = 20,
     case_sensitive: Annotated[
         bool,
         Field(
@@ -303,8 +303,8 @@ async def search_cached_papers(
             ),
         ),
     ],
-    top_k: _CACHE_SEARCH_TOP_K = 10,
-    namespace: _CACHE_SEARCH_NAMESPACE = None,
+    top_k: CACHE_SEARCH_TOP_K = 10,
+    namespace: CACHE_SEARCH_NAMESPACE = None,
     normalize: Annotated[
         bool,
         Field(
@@ -425,7 +425,7 @@ async def search_wikipedia(
     """
     response = await wikipedia.search(query, limit=limit)
     if "error" in response:
-        return _enrich_error(
+        return enrich_error(
             response, "Wikipedia is temporarily unavailable; retry in a few seconds."
         )
     results = response.get("results", [])
@@ -454,7 +454,7 @@ async def get_wikipedia_summary(
     """
     result = await wikipedia.get_summary(title, force_refresh=force_refresh)
     if "error" in result:
-        return _enrich_error(
+        return enrich_error(
             result,
             "Try search_wikipedia to find the correct title, or retry if "
             "Wikipedia is temporarily unavailable.",

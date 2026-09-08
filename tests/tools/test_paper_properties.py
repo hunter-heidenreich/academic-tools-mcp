@@ -215,7 +215,7 @@ def test_any_openalex_work_pages_without_raising(work: dict[str, Any], page_size
     """
     out = paper._format_openalex_authors(work, 0, page_size)
 
-    assert out["author_count"] == len(paper._dict_list(work.get("authorships")))
+    assert out["author_count"] == len(paper.dict_list(work.get("authorships")))
     assert len(out["authors"]) <= page_size
     assert all(isinstance(a, dict) for a in out["authors"])
     assert all(isinstance(n, str) and n for n in out["page_institutions"])

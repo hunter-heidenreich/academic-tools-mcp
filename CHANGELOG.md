@@ -143,6 +143,14 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **The server's `instructions` no longer contradict `download_pdf` and
+  `convert_paper`.** The connect-time preamble told agents flatly that a PDF
+  outside arXiv/bioRxiv/ACL must be fetched by hand, which stopped being the
+  whole rule when `allow_oa_url` shipped, and it described the PDF pipeline as
+  if `convert_paper` had a single backend — `mode="fast"` went unmentioned. An
+  agent that took the preamble as a rule had no reason to look for either
+  parameter. Both are now named there, matching `README.md` and the parameter
+  descriptions. ([#107])
 - **`.cache/` and `.env` are found by name, not by counting directories.**
   Both were resolved with `Path(__file__).parents[n]`, which silently changes
   meaning when the module holding it moves. Now both go through
@@ -2634,3 +2642,4 @@ grouped by milestone rather than per commit.
 [#104]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/104
 [#105]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/105
 [#106]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/106
+[#107]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/107

@@ -2,8 +2,10 @@
 
 Imports the shared `mcp` instance and the four tool-group modules (importing them
 runs their `@mcp.tool` decorators, registering the tools), then re-exports the
-tool callables plus the providers and helpers that tests / callers reach via
-`server.<name>`. The optional operator-only debug tool is registered at the end.
+tool callables and the provider modules that tests / callers reach via
+`server.<name>`. Invariant: nothing else -- a tool module's internals stay in
+their own module, so `server.<name>` never becomes a second import name for a
+private helper. The optional operator-only debug tool is registered at the end.
 """
 
 from typing import Any
@@ -18,8 +20,6 @@ from .tools.graph import (
     get_paper_references_count,
 )
 from .tools.paper import (
-    _format_crossref_metadata,
-    _format_openalex_metadata,
     get_author,
     get_paper_abstract,
     get_paper_authors,
@@ -28,7 +28,6 @@ from .tools.paper import (
     get_papers_metadata,
 )
 from .tools.pipeline import (
-    _download_pdf_by_provider,
     convert_paper,
     download_pdf,
     get_paper_section,
@@ -47,9 +46,6 @@ from .util import config
 
 __all__ = [
     "_DEBUG_TOOLS_ENABLED",
-    "_download_pdf_by_provider",
-    "_format_crossref_metadata",
-    "_format_openalex_metadata",
     "arxiv",
     "biorxiv",
     "convert_paper",
