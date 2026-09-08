@@ -51,7 +51,7 @@ _json_values = st.recursive(
 _payloads = st.dictionaries(st.text(max_size=6), _json_values, max_size=6)
 
 # The domain the MCP boundary admits: SECTION_MAX_CHARS is `ge=1`, capped at
-# _SECTION_HARNESS_CAP; SECTION_OFFSET is `ge=0`. Sampling outside it would
+# SECTION_HARNESS_CAP; SECTION_OFFSET is `ge=0`. Sampling outside it would
 # test branches an agent cannot reach.
 _max_chars = st.integers(min_value=1, max_value=200)
 
@@ -240,7 +240,7 @@ def test_every_download_error_carries_a_suggestion(
 
     assert "suggestion" in result
     if "suggestion" in payload:
-        # _enrich_error fills a gap; it never argues with the provider.
+        # enrich_error fills a gap; it never argues with the provider.
         assert result["suggestion"] == payload["suggestion"]
 
 

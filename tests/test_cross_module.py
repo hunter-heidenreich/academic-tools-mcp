@@ -21,7 +21,7 @@ import pytest
 from academic_tools_mcp import papers, server
 from academic_tools_mcp.providers import openalex
 from academic_tools_mcp.store import cache, stems
-from academic_tools_mcp.tools import paper
+from academic_tools_mcp.tools import paper, pipeline
 
 # ---------------------------------------------------------------------------
 # Cascade: re-downloading a PDF should drop cached markdown + sections
@@ -58,7 +58,7 @@ class TestDownloadPdfCascade:
         assert md_path.exists()
 
         try:
-            result = await server._download_pdf_by_provider("2301.00001", force_refresh=True)
+            result = await pipeline._download_pdf_by_provider("2301.00001", force_refresh=True)
 
             # The cascade must have happened
             assert "error" not in result
@@ -92,7 +92,7 @@ class TestDownloadPdfCascade:
         md_path.write_text("# Fresh\n\nstill valid\n")
 
         try:
-            result = await server._download_pdf_by_provider("2301.00002", force_refresh=True)
+            result = await pipeline._download_pdf_by_provider("2301.00002", force_refresh=True)
             assert result.get("cached") is True
             assert "cascaded_invalidated" not in result
             assert md_path.exists(), "Cached-hit must NOT delete markdown"
@@ -130,7 +130,7 @@ class TestDownloadPdfCascade:
             {"sections": [], "markdown_checksum": "x"},
         )
 
-        result = await server._download_pdf_by_provider(doi, force_refresh=True)
+        result = await pipeline._download_pdf_by_provider(doi, force_refresh=True)
 
         assert seen == {"doi": doi, "force_refresh": True}
         assert result.get("cascaded_invalidated") == ["markdown", "sections"]
@@ -163,7 +163,7 @@ class TestDownloadPdfCascade:
             {"sections": [], "markdown_checksum": "x", "conversion_mode": "full"},
         )
 
-        result = await server._download_pdf_by_provider("2301.00003", force_refresh=False)
+        result = await pipeline._download_pdf_by_provider("2301.00003", force_refresh=False)
 
         assert result["cascaded_invalidated"] == ["markdown", "sections"]
         assert not md_path.exists()
@@ -193,11 +193,11 @@ class TestDownloadPdfCascade:
             {"sections": [], "markdown_checksum": "x", "conversion_mode": "imported"},
         )
 
-        result = await server._download_pdf_by_provider("2301.00004", force_refresh=False)
+        result = await pipeline._download_pdf_by_provider("2301.00004", force_refresh=False)
         assert "cascaded_invalidated" not in result
         assert md_path.read_text() == "# Hand written\n"
 
-        forced = await server._download_pdf_by_provider("2301.00004", force_refresh=True)
+        forced = await pipeline._download_pdf_by_provider("2301.00004", force_refresh=True)
         assert forced["cascaded_invalidated"] == ["markdown", "sections"]
         assert not md_path.exists()
 

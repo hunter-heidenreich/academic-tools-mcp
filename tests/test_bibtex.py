@@ -739,6 +739,25 @@ class TestNullAndMissingFields:
         assert bib.startswith("@phdthesis{unknown2022test,")
         assert "school=" not in bib
 
+    def test_dissertation_survives_a_null_authorship_element(self):
+        """A null *element* of the list, not a null list — the shape
+        `_author_display_name`'s `authorship or {}` guard exists for."""
+        bib = generate_bibtex(_work(type="dissertation", authorships=[None]))
+        assert bib.startswith("@phdthesis{unknown2022test,")
+        assert "school=" not in bib
+
+    def test_dissertation_survives_a_null_institution_element(self):
+        bib = generate_bibtex(
+            _work(
+                type="dissertation",
+                authorships=[
+                    {"author": {"display_name": "Jane Doe"}, "institutions": [None]},
+                    {"author": {"display_name": "J S"}, "institutions": [{"display_name": "MIT"}]},
+                ],
+            )
+        )
+        assert "school={MIT}" in bib
+
     def test_dissertation_skips_institutions_without_a_name(self):
         bib = generate_bibtex(
             _work(

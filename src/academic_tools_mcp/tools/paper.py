@@ -14,13 +14,13 @@ from ..app import (
     FOLLOW_PUBLISHED,
     FORCE_REFRESH,
     PAPER_ID,
-    _as_dict,
-    _crossref_date,
-    _dict_list,
-    _enrich_error,
-    _first,
+    as_dict,
+    crossref_date,
+    dict_list,
+    enrich_error,
     mcp,
     page_bounds,
+    unwrap_first,
 )
 from ..bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
 from ..providers import arxiv, biorxiv, crossref, openalex
@@ -140,9 +140,9 @@ def _format_biorxiv_metadata(
 
 
 def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
-    primary_location = _as_dict(work.get("primary_location"))
-    source_obj = _as_dict(primary_location.get("source"))
-    oa = _as_dict(work.get("open_access"))
+    primary_location = as_dict(work.get("primary_location"))
+    source_obj = as_dict(primary_location.get("source"))
+    oa = as_dict(work.get("open_access"))
     return {
         "_source": "openalex",
         "_canonical_id": canonical_id,
@@ -176,17 +176,17 @@ def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) ->
     Mirrors ``_format_openalex_metadata``'s key set; Crossref carries no
     open-access data, so those fields are always null.
     """
-    year, date = _crossref_date(work)
+    year, date = crossref_date(work)
     return {
         "_source": "crossref",
         "_canonical_id": canonical_id,
-        "title": _first(work.get("title")),
+        "title": unwrap_first(work.get("title")),
         "doi": work.get("DOI"),
         "publication_year": year,
         "publication_date": date,
         "type": work.get("type"),
         "language": work.get("language"),
-        "venue": _first(work.get("container-title")),
+        "venue": unwrap_first(work.get("container-title")),
         "is_oa": None,
         "oa_status": None,
         "oa_url": None,
@@ -272,7 +272,7 @@ async def get_paper_metadata(
             return _format_crossref_metadata(cr, crossref.canonical_doi(identifier))
 
     if "error" in obj:
-        return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
+        return enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
     return _format_metadata_by_source(source, obj, canonical_id)
 
 
@@ -323,7 +323,7 @@ async def get_papers_metadata(
         if "error" in obj:
             results[slot] = {
                 "_input": ident,
-                **_enrich_error(obj, _METADATA_HINT_BY_SOURCE[source]),
+                **enrich_error(obj, _METADATA_HINT_BY_SOURCE[source]),
             }
             return
         formatted = _format_metadata_by_source(source, obj, canonical)
@@ -355,7 +355,7 @@ async def get_papers_metadata(
                 err = work or {"error": f"No work found for DOI: {ident}"}
                 results[slot] = {
                     "_input": ident,
-                    **_enrich_error(dict(err), _OPENALEX_METADATA_HINT),
+                    **enrich_error(dict(err), _OPENALEX_METADATA_HINT),
                 }
                 continue
             formatted = _format_openalex_metadata(work, canonical)
@@ -381,14 +381,14 @@ def _format_openalex_authors(work: dict[str, Any], start: int, end: int) -> dict
     Returns the inner ``{author_count, authors, page_institutions,
     page_institution_count}``; the caller adds the shared envelope.
     """
-    all_authorships = _dict_list(work.get("authorships"))
+    all_authorships = dict_list(work.get("authorships"))
     page_authors: list[dict[str, Any]] = []
     page_institutions: list[str] = []
     for a in all_authorships[start:end]:
-        author_info = _as_dict(a.get("author"))
+        author_info = as_dict(a.get("author"))
         inst_names = [
             name
-            for inst in _dict_list(a.get("institutions"))
+            for inst in dict_list(a.get("institutions"))
             if isinstance(name := inst.get("display_name"), str) and name
         ]
         for name in inst_names:
@@ -443,7 +443,7 @@ async def get_paper_authors(
     if source is None:
         return obj  # unknown-identifier error
     if "error" in obj:
-        return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
+        return enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
 
     start, end = page_bounds(page, page_size)
 
@@ -492,7 +492,7 @@ async def get_paper_abstract(
     if source is None:
         return obj  # unknown-identifier error
     if "error" in obj:
-        return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
+        return enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
 
     if source == "arxiv":
         abstract = obj.get("summary")
@@ -530,7 +530,7 @@ async def get_paper_bibtex(
     if source is None:
         return obj  # unknown-identifier error
     if "error" in obj:
-        return _enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
+        return enrich_error(obj, _METADATA_HINT_BY_SOURCE[source])
 
     if source == "arxiv":
         bibtex = generate_arxiv_bibtex(obj)
@@ -564,23 +564,23 @@ async def get_author(
     """
     author = await openalex.get_author(author_id, force_refresh=force_refresh)
     if "error" in author:
-        return _enrich_error(
+        return enrich_error(
             author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL."
         )
 
-    stats = _as_dict(author.get("summary_stats"))
+    stats = as_dict(author.get("summary_stats"))
     current_institutions = [
         name
-        for inst in _dict_list(author.get("last_known_institutions"))
+        for inst in dict_list(author.get("last_known_institutions"))
         if isinstance(name := inst.get("display_name"), str) and name
     ]
     top_topics = [
         {"name": t.get("display_name"), "count": t.get("count")}
-        for t in _dict_list(author.get("topics"))[:5]
+        for t in dict_list(author.get("topics"))[:5]
     ]
     affiliations = []
-    for aff in _dict_list(author.get("affiliations")):
-        inst = _as_dict(aff.get("institution"))
+    for aff in dict_list(author.get("affiliations")):
+        inst = as_dict(aff.get("institution"))
         raw_years = aff.get("years")
         years = raw_years if isinstance(raw_years, list) else []
         affiliations.append(

@@ -25,7 +25,7 @@ Rationale — sleep outside the lock, who counts ``http_calls``, when
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -105,7 +105,7 @@ class Throttle:
         self._lock = asyncio.Lock()
 
     @contextlib.asynccontextmanager
-    async def slot(self, url: str, *, count_request: bool = True) -> AsyncIterator[None]:
+    async def slot(self, url: str, *, count_request: bool = True) -> AsyncGenerator[None]:
         """Acquire the rate-limit slot for the lifetime of the with-block.
 
         Raises ``LocalBackpressureError`` past ``max_pending`` callers, so a

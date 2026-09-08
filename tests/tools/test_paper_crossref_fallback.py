@@ -12,6 +12,7 @@ import pytest
 
 from academic_tools_mcp import server
 from academic_tools_mcp.providers import crossref, openalex
+from academic_tools_mcp.tools import paper
 
 
 # A canonical OpenAlex 404 error dict, as get_work now produces it.
@@ -130,7 +131,7 @@ class TestFormatCrossrefMetadata:
     """Field-mapping unit tests for the Crossref → unified-shape formatter."""
 
     def test_maps_list_fields_and_date(self):
-        result = server._format_crossref_metadata(_CROSSREF_WORK, "10.1162/tacl_a_99999")
+        result = paper._format_crossref_metadata(_CROSSREF_WORK, "10.1162/tacl_a_99999")
         assert result["_source"] == "crossref"
         assert result["_canonical_id"] == "10.1162/tacl_a_99999"
         assert result["title"] == "A Brand New Paper Not Yet In OpenAlex"
@@ -142,30 +143,30 @@ class TestFormatCrossrefMetadata:
 
     def test_full_date_parts_yield_iso_day(self):
         work = {"title": ["X"], "issued": {"date-parts": [[2025, 3, 7]]}}
-        result = server._format_crossref_metadata(work, "10.1/x")
+        result = paper._format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2025
         assert result["publication_date"] == "2025-03-07"
 
     def test_year_only_date_parts(self):
         work = {"title": ["X"], "issued": {"date-parts": [[2019]]}}
-        result = server._format_crossref_metadata(work, "10.1/x")
+        result = paper._format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2019
         assert result["publication_date"] == "2019"
 
     def test_falls_back_to_published_online_when_issued_missing(self):
         work = {"title": ["X"], "published-online": {"date-parts": [[2022, 11]]}}
-        result = server._format_crossref_metadata(work, "10.1/x")
+        result = paper._format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2022
         assert result["publication_date"] == "2022-11"
 
     def test_missing_dates_are_none(self):
         work = {"title": ["X"]}
-        result = server._format_crossref_metadata(work, "10.1/x")
+        result = paper._format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] is None
         assert result["publication_date"] is None
 
     def test_oa_fields_always_null(self):
-        result = server._format_crossref_metadata(_CROSSREF_WORK, "10.1/x")
+        result = paper._format_crossref_metadata(_CROSSREF_WORK, "10.1/x")
         assert result["is_oa"] is None
         assert result["oa_status"] is None
         assert result["oa_url"] is None
@@ -173,7 +174,7 @@ class TestFormatCrossrefMetadata:
 
     def test_empty_title_list_is_none(self):
         work = {"title": [], "container-title": []}
-        result = server._format_crossref_metadata(work, "10.1/x")
+        result = paper._format_crossref_metadata(work, "10.1/x")
         assert result["title"] is None
         assert result["venue"] is None
 
@@ -182,7 +183,7 @@ class TestFormatCrossrefMetadata:
         # published-*). The date walk must include it, or a non-arXiv/bioRxiv
         # preprint DOI reached via fallback_crossref returns year=None.
         work = {"title": ["A Preprint"], "posted": {"date-parts": [[2025, 11, 3]]}}
-        result = server._format_crossref_metadata(work, "10.1/x")
+        result = paper._format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2025
         assert result["publication_date"] == "2025-11-03"
 
@@ -194,57 +195,57 @@ class TestFormatCrossrefMetadata:
             "issued": {"date-parts": [[2024, 6]]},
             "posted": {"date-parts": [[2023, 1]]},
         }
-        result = server._format_crossref_metadata(work, "10.1/x")
+        result = paper._format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2024
         assert result["publication_date"] == "2024-06"
 
 
 class TestFirstHelper:
-    """Unit coverage for the shared app._first list-unwrap helper."""
+    """Unit coverage for the shared app.unwrap_first list-unwrap helper."""
 
     def test_unwraps_list(self):
-        from academic_tools_mcp.app import _first
+        from academic_tools_mcp.app import unwrap_first
 
-        assert _first(["a", "b"]) == "a"
+        assert unwrap_first(["a", "b"]) == "a"
 
     def test_empty_list_is_none(self):
-        from academic_tools_mcp.app import _first
+        from academic_tools_mcp.app import unwrap_first
 
-        assert _first([]) is None
+        assert unwrap_first([]) is None
 
     def test_passes_through_scalar(self):
-        from academic_tools_mcp.app import _first
+        from academic_tools_mcp.app import unwrap_first
 
-        assert _first("plain") == "plain"
-        assert _first(None) is None
+        assert unwrap_first("plain") == "plain"
+        assert unwrap_first(None) is None
 
 
 class TestCrossrefDateHelper:
-    """Unit coverage for the shared app._crossref_date helper (used by both
+    """Unit coverage for the shared app.crossref_date helper (used by both
     paper.py metadata formatting and search.py year extraction, so the two
     can't drift on whether `posted` counts)."""
 
     def test_reads_posted(self):
-        from academic_tools_mcp.app import _crossref_date
+        from academic_tools_mcp.app import crossref_date
 
-        assert _crossref_date({"posted": {"date-parts": [[2025, 11, 3]]}}) == (
+        assert crossref_date({"posted": {"date-parts": [[2025, 11, 3]]}}) == (
             2025,
             "2025-11-03",
         )
 
     def test_issued_wins_over_posted(self):
-        from academic_tools_mcp.app import _crossref_date
+        from academic_tools_mcp.app import crossref_date
 
         work = {"issued": {"date-parts": [[2024]]}, "posted": {"date-parts": [[2023]]}}
-        assert _crossref_date(work) == (2024, "2024")
+        assert crossref_date(work) == (2024, "2024")
 
     def test_guards_malformed_date_parts(self):
-        from academic_tools_mcp.app import _crossref_date
+        from academic_tools_mcp.app import crossref_date
 
-        assert _crossref_date({"issued": {"date-parts": None}}) == (None, None)
-        assert _crossref_date({"issued": {"date-parts": []}}) == (None, None)
-        assert _crossref_date({"issued": {"date-parts": [[None]]}}) == (None, None)
-        assert _crossref_date({}) == (None, None)
+        assert crossref_date({"issued": {"date-parts": None}}) == (None, None)
+        assert crossref_date({"issued": {"date-parts": []}}) == (None, None)
+        assert crossref_date({"issued": {"date-parts": [[None]]}}) == (None, None)
+        assert crossref_date({}) == (None, None)
 
 
 class TestFallbackHonoursForceRefresh:

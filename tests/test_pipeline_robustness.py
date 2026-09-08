@@ -34,7 +34,7 @@ class TestConverterTemplateErrors:
     )
     def test_full_builder_raises_named_error(self, monkeypatch, template, tmp_path):
         monkeypatch.setenv("PDF_CONVERTER", template)
-        with pytest.raises(papers.ConverterTemplateError) as exc:
+        with pytest.raises(papers.convert.ConverterTemplateError) as exc:
             papers.convert._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
         assert "PDF_CONVERTER" in str(exc.value)
 
@@ -44,13 +44,13 @@ class TestConverterTemplateErrors:
     )
     def test_fast_builder_raises_named_error(self, monkeypatch, template, tmp_path):
         monkeypatch.setenv("PDF_FAST_CONVERTER", template)
-        with pytest.raises(papers.ConverterTemplateError) as exc:
+        with pytest.raises(papers.convert.ConverterTemplateError) as exc:
             papers.convert._build_fast_converter_command(tmp_path / "x.pdf")
         assert "PDF_FAST_CONVERTER" in str(exc.value)
 
     def test_error_names_the_valid_placeholders(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PDF_CONVERTER", "mytool {wrong}")
-        with pytest.raises(papers.ConverterTemplateError) as exc:
+        with pytest.raises(papers.convert.ConverterTemplateError) as exc:
             papers.convert._build_converter_command(tmp_path / "x.pdf", tmp_path / "out")
         assert "{input}" in str(exc.value) and "{output_dir}" in str(exc.value)
 

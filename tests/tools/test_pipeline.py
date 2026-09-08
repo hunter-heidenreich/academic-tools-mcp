@@ -287,7 +287,7 @@ class TestDownloadPdfTool:
 
     @pytest.mark.asyncio
     async def test_a_providers_own_suggestion_is_not_overwritten(self, isolated_cache, monkeypatch):
-        """`_enrich_error` fills a gap; it never argues with the provider."""
+        """`enrich_error` fills a gap; it never argues with the provider."""
         download, _ = _fake_download(
             error="Open-access PDF not found", retryable=False, suggestion="Ask the publisher."
         )

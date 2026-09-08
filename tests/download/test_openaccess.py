@@ -16,11 +16,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-from academic_tools_mcp import manual, server
+from academic_tools_mcp import manual
 from academic_tools_mcp.download import openaccess, streaming
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 from academic_tools_mcp.store import cache, stems
+from academic_tools_mcp.tools import paper, pipeline
 from tests.helpers.download_fakes import TIMEOUT as _TIMEOUT
 from tests.helpers.download_fakes import install_stream as _install_stream
 from tests.helpers.download_fakes import mock_stream_response as _mock_stream_response
@@ -120,13 +121,13 @@ class TestMetadataPdfUrl:
             "best_oa_location": {"pdf_url": "http://x/best.pdf"},
             "open_access": {"is_oa": True, "oa_status": "gold", "oa_url": "http://x/l"},
         }
-        out = server._format_openalex_metadata(work, _DOI)
+        out = paper._format_openalex_metadata(work, _DOI)
         assert out["pdf_url"] == "http://x/best.pdf"
         assert out["oa_url"] == "http://x/l"  # existing field preserved
 
     def test_pdf_url_none_for_closed_access(self):
         work = {"title": "T", "open_access": {"is_oa": False}}
-        assert server._format_openalex_metadata(work, _DOI)["pdf_url"] is None
+        assert paper._format_openalex_metadata(work, _DOI)["pdf_url"] is None
 
 
 # --- openaccess.download_pdf ----------------------------------------------
@@ -740,7 +741,7 @@ class TestRequirePdfGuard:
 class TestServerDispatch:
     @pytest.mark.asyncio
     async def test_refusal_when_not_opted_in(self):
-        result = await server._download_pdf_by_provider(_DOI, allow_oa_url=False)
+        result = await pipeline._download_pdf_by_provider(_DOI, allow_oa_url=False)
         assert "Cannot auto-download" in result["error"]
         assert "allow_oa_url=True" in result["suggestion"]
 
@@ -753,7 +754,7 @@ class TestServerDispatch:
             return {"path": "/x.pdf", "size_bytes": 10, "cached": False}
 
         monkeypatch.setattr(openaccess, "download_pdf", fake_oa_download)
-        result = await server._download_pdf_by_provider(_DOI, allow_oa_url=True)
+        result = await pipeline._download_pdf_by_provider(_DOI, allow_oa_url=True)
         assert called["id"] == _DOI
         assert result["cached"] is False
 
@@ -774,7 +775,9 @@ class TestServerDispatch:
 
         monkeypatch.setattr(openaccess, "download_pdf", fake_oa_download)
 
-        result = await server._download_pdf_by_provider(_DOI, force_refresh=True, allow_oa_url=True)
+        result = await pipeline._download_pdf_by_provider(
+            _DOI, force_refresh=True, allow_oa_url=True
+        )
 
         assert result["cascaded_invalidated"] == ["markdown", "sections"]
         assert not md_path.exists()
@@ -804,5 +807,5 @@ class TestServerDispatch:
         for mod in (arxiv, biorxiv, acl):
             monkeypatch.setattr(mod, "download_pdf", fake_native)
 
-        result = await server._download_pdf_by_provider(identifier, allow_oa_url=True)
+        result = await pipeline._download_pdf_by_provider(identifier, allow_oa_url=True)
         assert result["cached"] is True

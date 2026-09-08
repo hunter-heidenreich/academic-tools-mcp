@@ -1682,3 +1682,90 @@ class TestStopwordsStayOutOfTheMatchExpression:
         monkeypatch.setattr(corpus, "_refresh_index", _boom)
         assert corpus.search("the") == []
         assert not called
+
+
+class TestBm25StatisticsStayHonest:
+    """FTS5 cannot decrement a contentless table's corpus statistics on DELETE,
+    so a replaced or removed document inflates the N and average length
+    ``bm25()`` divides by. Unbounded, that stops rare terms out-ranking common
+    ones — the index returns different papers for the same query and files.
+    """
+
+    @staticmethod
+    def _seed_corpus(root, n=60):
+        """`rare` in four papers, `neural` in a third of them."""
+        for i in range(n):
+            body = ("neural network " * 20) if i % 3 == 0 else ("protein folding " * 20)
+            if i in (1, 2, 4, 5):
+                body += " rare"
+            _seed_markdown(root, "arxiv", f"2301.{i:05d}", f"# Paper {i}\n\n{body} unique{i}\n")
+
+    @staticmethod
+    def _churn_counter(root):
+        con = sqlite3.connect(root / "__search_index__" / "index.db")
+        con.row_factory = sqlite3.Row
+        try:
+            row = con.execute("SELECT value FROM meta WHERE key = 'stat_churn'").fetchone()
+            return int(row["value"]) if row else 0
+        finally:
+            con.close()
+
+    def test_forced_refresh_scores_are_reproducible(self, isolated_cache):
+        self._seed_corpus(isolated_cache)
+        first = corpus.search("neural rare", top_k=5, force_refresh=True)
+        for _ in range(10):
+            corpus.search("neural rare", top_k=5, force_refresh=True)
+        assert corpus.search("neural rare", top_k=5, force_refresh=True) == first
+
+    def test_forced_refresh_keeps_a_rare_term_out_ranking_a_common_one(self, isolated_cache):
+        self._seed_corpus(isolated_cache)
+        expected = [h["canonical_id"] for h in corpus.search("neural rare", top_k=4)]
+        assert expected == ["2301.00001", "2301.00002", "2301.00004", "2301.00005"]
+        for _ in range(20):
+            corpus.search("warm", force_refresh=True)
+        after = [h["canonical_id"] for h in corpus.search("neural rare", top_k=4)]
+        assert after == expected
+
+    def test_a_forced_refresh_leaves_the_counter_clear(self, isolated_cache):
+        self._seed_corpus(isolated_cache, n=5)
+        corpus.search("neural", force_refresh=True)
+        assert self._churn_counter(isolated_cache) == 0
+
+    def test_replacing_documents_accumulates_churn_then_resets(self, isolated_cache):
+        self._seed_corpus(isolated_cache, n=5)
+        corpus.search("neural")
+        assert self._churn_counter(isolated_cache) == 0
+
+        path = isolated_cache / "arxiv" / "markdown" / "2301.00000.md"
+        for i in range(4):
+            path.write_text(f"# Paper 0\n\nneural network revision {i}\n")
+            os.utime(path, (1000 + i, 1000 + i))
+            corpus.search("neural")
+        # Four replacements against five recorded files: under the threshold.
+        assert self._churn_counter(isolated_cache) == 4
+
+        path.write_text("# Paper 0\n\nneural network revision final\n")
+        os.utime(path, (2000, 2000))
+        corpus.search("neural")
+        assert self._churn_counter(isolated_cache) == 5
+
+        # The threshold is read before the walk, from what previous refreshes
+        # recorded, so the reset lands on the next search rather than this one.
+        corpus.search("neural")
+        assert self._churn_counter(isolated_cache) == 0
+
+    def test_a_removed_paper_counts_as_churn(self, isolated_cache):
+        self._seed_corpus(isolated_cache, n=5)
+        corpus.search("neural")
+        (isolated_cache / "arxiv" / "markdown" / "2301.00001.md").unlink()
+        corpus.search("neural")
+        assert self._churn_counter(isolated_cache) == 1
+
+    def test_an_unreadable_counter_forces_a_reset_rather_than_trusting_it(self, isolated_cache):
+        self._seed_corpus(isolated_cache, n=5)
+        corpus.search("neural")
+        con = sqlite3.connect(isolated_cache / "__search_index__" / "index.db")
+        with con:
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('stat_churn', 'not-a-number')")
+        con.close()
+        assert corpus.search("neural", top_k=3)

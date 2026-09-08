@@ -22,7 +22,7 @@ three submodules; each submodule is the home of its symbols and the place to
 read about them.
 """
 
-from .convert import ConverterTemplateError, convert_pdf
+from .convert import convert_pdf
 from .index import (
     drop_derived,
     get_or_parse_sections,
@@ -43,7 +43,6 @@ from .sections import (
 )
 
 __all__ = [
-    "ConverterTemplateError",
     "Section",
     "convert_pdf",
     "drop_derived",
