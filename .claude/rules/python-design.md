@@ -11,6 +11,27 @@ Style (formatting, import order, line length, typing hygiene) is enforced by too
 
 These are the contracts a linter can't check. Each is falsifiable — open the cited exemplar and match it.
 
+## Module names and where a file lives
+
+Two rules, and both are machine-checked by `tests/test_layering.py` — so unlike the rest of this file, violating them fails CI rather than review.
+
+- **No module carries a leading underscore.** Not a style preference: the package has no public surface to be private *from*. `__init__.py` re-exports nothing, there is no `py.typed`, and the only published name in the distribution is the console script `academic_tools_mcp.server:mcp.run`. Marking a subset of an already-private package "extra private" tells a reader nothing, and the prefix that exists today encodes only *when a file was written*, which is invisible to anyone reading it. Symbol-level underscores are unaffected and still mean what `.claude/rules/cache.md` says they mean.
+- **A module is named for the one thing it owns**, as a lowercase noun with no separator (`http`, `throttle`, `cache`, `stems`, `doi`, `bibtex`). Join two words only when the single noun would be ambiguous *inside its own directory* — `fast_extract`, `textnorm`. The directory supplies the qualifier, so a module never repeats its package's name.
+
+**A module's name is independent of its cache `NAMESPACE`.** The namespace is an on-disk directory under `.cache/` and a rename must never move it: `providers/acl.py` still declares `NAMESPACE = "acl_anthology"`, and that directory is live.
+
+## Layer order
+
+`_LAYERS` in `tests/test_layering.py` is the authority; this is the reading of it. Lowest first, and **a module may import from its own layer or any lower one, never a higher one**:
+
+`leaf` (imports nothing from the package) → `net` → `store` → `download` → `providers` → `content` → `app` → `tools` → `entry`.
+
+Three consequences worth stating separately, each with its own named test:
+
+- **The lowest layer is defined by a property, not a theme** — its members import nothing intra-package. That is what stops it becoming a junk drawer: membership is checkable.
+- **`_app` never imports `tools`**, and no `tools/*` module imports another. A helper two tool modules need moves *down* into `_app`, never sideways.
+- **A type-only import is not a layer edge.** `_stats` annotates a `Throttle` under `if TYPE_CHECKING:` while `_throttle` imports `_stats` for real; that is a legitimate pair, not a cycle, and the scanner prunes `TYPE_CHECKING` blocks accordingly.
+
 ## Layering — tools never reach past their layer
 
 - **`httpx` lives in the shared layer and the HTTP clients, nowhere else.** Only `_clients.py` / `_http.py` / `_throttle.py` / `_pdf_download.py`, `providers/*.py` (two providers don't need to) and `oa_download.py` may import it — the last four for their `_get_client() -> httpx.AsyncClient` annotation. A tool, pipeline or content module that does is a layering violation: `tools/pipeline.py` drives the whole download → convert → sections pipeline through `oa_download` and the providers with no `import httpx`.
@@ -61,4 +82,4 @@ Four conventions keep those docs from rotting:
 - **Cite symbols, never line numbers.** `manual.resolve_metadata_source()` stays correct across every edit; `manual.py:74` is wrong the next time anyone adds an import.
 - **Don't transcribe constants.** Name the constant and explain the policy — `_BATCH_CHUNK_SIZE`, not `50` — and let the reader grep the value. A copied number goes stale silently while the prose around it stays true.
 - **Don't transcribe history.** State the invariant the code holds *now* and what breaks if you violate it — not what the code used to be. `CHANGELOG.md` and `git log -S "<phrase>"` are the homes for "why it changed"; these rules files may carry a one-clause warning where it stops a specific regression, because they are read *before* an edit, when a warning can still act. Past-tense prose outlives the code it describes and then misleads. Rewrite `# X used to happen, which broke Y` as `# Invariant: Y`. Test docstrings are exempt — a regression test's purpose *is* the regression.
-- **Don't cite tests in these rules files.** Name the invariant precisely enough to grep for; a `::TestClass::test_method` node ID is a symbol that churns faster than the code it guards, and a citation nobody re-verifies is worse than none — this layer has already shipped one pointing at a class that does not exist. Where a *code* comment or docstring cites a test, mutate the guarded line and watch it fail before you commit.
+- **Don't cite tests in these rules files.** Name the invariant precisely enough to grep for; a `::TestClass::test_method` node ID is a symbol that churns faster than the code it guards, and a citation nobody re-verifies is worse than none — this layer has already shipped one pointing at a class that does not exist. Where a *code* comment or docstring cites a test, mutate the guarded line and watch it fail before you commit. **One exception, and it is narrow**: where a test *is* the authority for a rule rather than evidence for it — `tests/test_layering.py`'s `_LAYERS` is the layer order, there is no other copy — name the file and the constant, never a node ID. A rule that fails CI has to say where to edit it.
