@@ -19,12 +19,14 @@ def _resolve_cache_root() -> Path:
 
     Honours the ``CACHE_DIR`` env var (so an installed wheel, where the
     project tree isn't writable, can point the cache somewhere sensible);
-    otherwise defaults to ``.cache`` next to the project.
+    otherwise defaults to ``.cache`` next to the project. The root itself is
+    ``config.project_root()`` — one home, because ``config`` resolves its own
+    ``.env`` against the same directory and the two sit at different depths.
     """
     configured = config.get("CACHE_DIR")
     if configured:
         return Path(configured).expanduser()
-    return Path(__file__).resolve().parent.parent.parent / ".cache"
+    return config.project_root() / ".cache"
 
 
 # Bound at import, so CACHE_DIR must be set before it. No size bound: the only

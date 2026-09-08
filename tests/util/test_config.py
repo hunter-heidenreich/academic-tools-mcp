@@ -15,10 +15,13 @@ from pathlib import Path
 
 import pytest
 
+import academic_tools_mcp
 from academic_tools_mcp.util import config
 from tests.conftest import _EMPTY_ENV_FILE
 
-_PROJECT_ROOT_ENV = Path(config.__file__).resolve().parent.parent.parent / ".env"
+# Derived from where the *package* is installed, not from config.py's own
+# depth — the counting spelling is exactly the bug `project_root()` fixes.
+_PROJECT_ROOT_ENV = Path(academic_tools_mcp.__file__).resolve().parent.parent.parent / ".env"
 
 
 @contextlib.contextmanager
@@ -335,3 +338,30 @@ class TestNumber:
         assert self._num() == 1
         monkeypatch.setenv("ATM_TEST_NUM", "2")
         assert self._num() == 2
+
+
+class TestProjectRoot:
+    """``project_root()`` is resolved by name, not by counting parents.
+
+    It anchors both the source-checkout ``.env`` candidate here and
+    ``store.cache``'s default ``.cache/``, and those two modules sit at
+    different depths — so a ``parents[n]`` spelling is correct for at most one
+    of them, and wrong silently: a ``.env`` that stops being read, a
+    ``.cache/`` that orphans everything already in it.
+    """
+
+    def test_it_holds_the_src_directory(self):
+        root = config.project_root()
+        assert (root / "src").is_dir(), f"{root} does not look like the project root"
+        assert root.name != "src"
+
+    def test_the_package_lives_under_that_src(self):
+        import academic_tools_mcp
+
+        package_dir = Path(academic_tools_mcp.__file__).resolve().parent
+        assert config.project_root() == package_dir.parent.parent
+
+    def test_it_does_not_depend_on_the_working_directory(self, tmp_path, monkeypatch):
+        before = config.project_root()
+        monkeypatch.chdir(tmp_path)
+        assert config.project_root() == before

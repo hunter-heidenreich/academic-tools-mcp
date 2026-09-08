@@ -1,9 +1,43 @@
 import contextlib
 import json
+from pathlib import Path
 
 import pytest
 
 from academic_tools_mcp.store import cache
+
+
+class TestCacheRootResolution:
+    """Where ``.cache/`` lands, pinned against the *package* rather than
+    against this module's own depth.
+
+    The conftest fixture redirects ``cache.CACHE_ROOT`` to ``tmp_path`` for
+    every other test in the suite, so nothing else exercises the real
+    resolution — which is how a move of ``cache.py`` one directory deeper
+    silently relocated the root to ``src/.cache`` and orphaned every artifact
+    already cached. The expectation below is derived from where the package
+    is installed, so it stays correct if ``cache.py`` moves again.
+    """
+
+    @staticmethod
+    def _expected_root():
+        import academic_tools_mcp
+
+        package_dir = Path(academic_tools_mcp.__file__).resolve().parent
+        return package_dir.parent.parent / ".cache"
+
+    def test_default_root_is_beside_the_project_not_inside_src(self, monkeypatch):
+        monkeypatch.delenv("CACHE_DIR", raising=False)
+        assert cache._resolve_cache_root() == self._expected_root()
+
+    def test_resolution_does_not_depend_on_the_working_directory(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CACHE_DIR", raising=False)
+        monkeypatch.chdir(tmp_path)
+        assert cache._resolve_cache_root() == self._expected_root()
+
+    def test_cache_dir_env_var_still_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CACHE_DIR", str(tmp_path / "elsewhere"))
+        assert cache._resolve_cache_root() == tmp_path / "elsewhere"
 
 
 def test_cache_dir_is_public_and_namespaced(tmp_path, monkeypatch):

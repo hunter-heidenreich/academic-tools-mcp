@@ -111,6 +111,24 @@ def _expand(value: str) -> Path:
     return Path(value).expanduser()
 
 
+def project_root() -> Path:
+    """The directory holding ``src/``, found by name rather than by counting.
+
+    One home, because two callers need it and they are at different depths:
+    this module's source-checkout ``.env`` candidate and ``store.cache``'s
+    default ``.cache/``. ``parents[n]`` is a hidden dependency on where in the
+    package the *caller* sits, so moving either module one directory down
+    silently relocates the thing it resolves — a ``.env`` that stops being
+    read, or a ``.cache/`` that orphans every artifact already in it.
+    """
+    package = __name__.split(".", 1)[0]
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if parent.name == package:
+            return parent.parent.parent  # <package>/ -> src/ -> project root
+    raise RuntimeError(f"{here} is not inside a directory named {package!r}")
+
+
 def _xdg_config_home() -> Path:
     xdg = get("XDG_CONFIG_HOME")
     return _expand(xdg) if xdg else Path.home() / ".config"
@@ -124,8 +142,8 @@ def _candidate_env_paths() -> list[Path]:
         builders = [lambda: _expand(explicit)]
     else:
         builders = [
-            # Source checkout: src/academic_tools_mcp/config.py -> project root.
-            lambda: Path(__file__).resolve().parent.parent.parent / ".env",
+            # Source checkout: the directory holding src/.
+            lambda: project_root() / ".env",
             lambda: Path.cwd() / ".env",
             lambda: _xdg_config_home() / "academic-tools-mcp" / ".env",
         ]

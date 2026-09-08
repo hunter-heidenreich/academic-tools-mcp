@@ -20,6 +20,19 @@ Two rules, and both are machine-checked by `tests/test_layering.py` — so unlik
 
 **A module's name is independent of its cache `NAMESPACE`.** The namespace is an on-disk directory under `.cache/` and a rename must never move it: `providers/acl.py` still declares `NAMESPACE = "acl_anthology"`, and that directory is live.
 
+## A module never computes anything from its own depth
+
+**`Path(__file__).parents[n]` and `__name__.rsplit('.', 1)` are the bug a file move cannot fail loudly on.** Both encode *where the module currently sits* into a value about something else, so relocating the file silently changes the answer — no import error, no test failure unless a test pins the real value. This class has bitten four times in one refactor:
+
+- `store/cache.py` resolved `.cache/` with `parent.parent.parent`, so moving it one directory down pointed the cache at `src/.cache` and orphaned every artifact already in it.
+- `util/config.py` resolved the source-checkout `.env` the same way; it kept working only because the *next* candidate is `Path.cwd() / ".env"` and the repo root is the usual cwd.
+- `net/stats.py` derived the package prefix its `sys.modules` scan filters on from `__name__.rsplit('.', 1)[0]`, which stopped being the package root and narrowed `throttles()` to `net.*` — dropping every provider from the reset seam and the in-flight sample.
+- Test modules had the counting spelling baked into their *expectations*, so they agreed with the broken code.
+
+**Resolve by name.** `config.project_root()` walks up to the directory named for the top-level package and is the single home for it — `store.cache` imports it rather than keeping a second copy, because the two sit at different depths and a `parents[n]` is correct for at most one of them. Derive a package prefix with `__name__.split('.', 1)[0]`, which is the root at any depth.
+
+**And pin the real value in a test.** `tests/conftest.py` redirects `cache.CACHE_ROOT` to `tmp_path` for the whole suite, so nothing else exercises the real resolution; `TestCacheRootResolution` and `TestProjectRoot` are what make the move fail loudly. A test that computes its expectation the same way the code does is not a test.
+
 ## Layer order
 
 `_LAYERS` in `tests/test_layering.py` is the authority; this is the reading of it. Lowest first, and **a module may import from its own layer or any lower one, never a higher one**:

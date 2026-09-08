@@ -135,6 +135,15 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`.cache/` and `.env` are found by name, not by counting directories.**
+  Both were resolved with `Path(__file__).parents[n]`, which silently changes
+  meaning when the module holding it moves. Now both go through
+  `config.project_root()`, which walks up to the package directory and is
+  correct at any depth; `net.stats` derives its module-scan prefix the same
+  way. Only reachable on the unreleased layout change above, but the failure
+  mode is worth naming: a cache root pointed one directory off orphans every
+  artifact already in it, without an error. ([#106])
+
 - **A non-dict Crossref author row crashed `search_crossref_by_title`.**
   `search_works` filters `items` to dicts and stops there; the upstream
   `message` arrives verbatim, so an `author` row that is a bare string reached
