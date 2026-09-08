@@ -10,18 +10,10 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from .. import (
-    _clients,
-    _doi,
-    _http,
-    _pdf_download,
-    _singleflight,
-    _stems,
-    _useragent,
-    cache,
-    config,
-)
-from .._throttle import Throttle
+from .. import _pdf_download, _singleflight, _stems, cache
+from ..net import clients, http
+from ..net.throttle import Throttle
+from ..util import config, doinorm, useragent
 
 # Both are transient, not "not found" — .claude/rules/providers.md § arxiv.py.
 _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
@@ -29,7 +21,7 @@ _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable arXiv response — it speaks XML, not JSON."""
-    return _http.parse_error_dict(LABEL, detail="could not be parsed as XML")
+    return http.parse_error_dict(LABEL, detail="could not be parsed as XML")
 
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
@@ -70,12 +62,12 @@ _POSITIVE_TTL_SECONDS = 14 * 86400.0
 
 def _build_headers() -> dict[str, str]:
     """Descriptive User-Agent, mailto or not: arXiv's edge throttles generic ones harder."""
-    return _useragent.headers(config.get("ARXIV_MAILTO"))
+    return useragent.headers(config.get("ARXIV_MAILTO"))
 
 
 def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``."""
-    return _clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
+    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
+    return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
 _throttle = Throttle(
@@ -104,7 +96,7 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 # ID normalization
 # ---------------------------------------------------------------------------
 
-# As permissive as ``_doi._DOI_URL_RE``, and for the same reason: a spelling
+# As permissive as ``doinorm._DOI_URL_RE``, and for the same reason: a spelling
 # this misses is one ``manual`` files the same paper under a second time.
 _ARXIV_URL_RE = re.compile(
     r"(?:https?://)?(?:www\.|export\.)?arxiv\.org/(?:abs|pdf)/([^?#]+?)(?:\.pdf)?/?(?:[?#].*)?$",
@@ -144,7 +136,7 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
       - an ``abs``/``pdf`` URL, either scheme (or none), optional ``www.`` /
         ``export.`` host label, optional ``.pdf`` extension and trailing slash
       - arXiv's DataCite DOI, ``10.48550/arXiv.2301.00001``, in any spelling
-        ``_doi.normalize`` accepts
+        ``doinorm.normalize`` accepts
 
     Case is preserved (``canonical_arxiv_id`` owns the fold) and an
     unrecognised string comes back stripped but untouched. **Idempotent for
@@ -161,7 +153,7 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
     # Via the shared normalizer, so the ``doi.org`` and ``doi:`` spellings
     # collapse too. Only an arXiv-shaped tail: an unrelated DataCite record
     # must survive, and a nested spelling must stay idempotent.
-    if (m := _ARXIV_DOI_RE.match(_doi.normalize(arxiv_id))) and _is_arxiv_shape(m.group(1)):
+    if (m := _ARXIV_DOI_RE.match(doinorm.normalize(arxiv_id))) and _is_arxiv_shape(m.group(1)):
         return m.group(1)
 
     return arxiv_id
@@ -292,7 +284,7 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
     async def _fetch() -> dict[str, Any]:
         def _not_found() -> dict[str, Any]:
             """Definitive absence — arXiv spells it three ways, all cached here."""
-            err = _http.not_found(f"No paper found for arXiv ID: {arxiv_id}")
+            err = http.not_found(f"No paper found for arXiv ID: {arxiv_id}")
             cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
             return err
 
@@ -314,8 +306,8 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
         # both say nothing about whether the paper exists.
         except _PARSE_ERRORS:
             return _parse_error_dict()
-        except _http.HTTPX_ERRORS as e:
-            return _http.error_dict(LABEL, e)
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
 
         entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
@@ -364,8 +356,8 @@ async def search_papers(
         root = _safe_fromstring(response.text)
     except _PARSE_ERRORS:
         return _parse_error_dict()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict(LABEL, e)
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(LABEL, e)
 
     entries = root.findall(f"{{{_ATOM_NS}}}entry")
 

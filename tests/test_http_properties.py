@@ -1,4 +1,4 @@
-"""Property-based tests for the retry/backoff arithmetic in ``_http``.
+"""Property-based tests for the retry/backoff arithmetic in ``http``.
 
 Two invariants here are stronger than any example, and both are stated as
 prose in the module docstrings today:
@@ -27,7 +27,7 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _http
+from academic_tools_mcp.net import http
 
 # Header values must be latin-1 encodable and free of control characters, or
 # httpx rejects them before _retry_after_seconds ever sees the string.
@@ -70,7 +70,7 @@ def test_parsed_retry_after_is_none_or_a_usable_sleep(value):
     A NaN sleeps forever, an infinity raises, and a negative one is not an
     instruction to wait — each must read as "no advice" instead.
     """
-    result = _http._retry_after_seconds(_response_with(value))
+    result = http._retry_after_seconds(_response_with(value))
     if result is None:
         return
     assert isinstance(result, float)
@@ -87,11 +87,11 @@ def test_the_agent_facing_hint_never_exceeds_the_ceiling(value):
         request=httpx.Request("GET", "https://x"),
         response=_response_with(value),
     )
-    result = _http.error_dict("Test", exc)
+    result = http.error_dict("Test", exc)
     if "retry_after_seconds" not in result:
         return
     hint = result["retry_after_seconds"]
-    assert 0 < hint <= _http._MAX_RETRY_AFTER_SECONDS
+    assert 0 < hint <= http._MAX_RETRY_AFTER_SECONDS
 
 
 class _AlwaysRetryable:
@@ -128,11 +128,11 @@ def test_every_sleep_sits_between_the_backoff_floor_and_the_ceiling(
     async def fake_sleep(seconds):
         slept.append(seconds)
 
-    monkeypatch.setattr(_http.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(http.asyncio, "sleep", fake_sleep)
 
     client = _AlwaysRetryable(retry_after)
     asyncio.run(
-        _http.get_with_retry(client, "u", max_attempts=max_attempts, backoff_seconds=backoff)
+        http.get_with_retry(client, "u", max_attempts=max_attempts, backoff_seconds=backoff)
     )
 
     # One sleep per failed-but-not-final attempt; the last failure is returned.
@@ -140,8 +140,8 @@ def test_every_sleep_sits_between_the_backoff_floor_and_the_ceiling(
     assert len(slept) == max_attempts - 1
     for value in slept:
         assert math.isfinite(value)
-        assert value <= _http._MAX_RETRY_AFTER_SECONDS
-        assert value >= min(backoff, _http._MAX_RETRY_AFTER_SECONDS)
+        assert value <= http._MAX_RETRY_AFTER_SECONDS
+        assert value >= min(backoff, http._MAX_RETRY_AFTER_SECONDS)
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=25)
@@ -156,18 +156,18 @@ def test_backoff_is_non_decreasing_across_attempts(monkeypatch, backoff, max_att
     cooldown instead of all landing inside the same throttled window; a
     shrinking gap would defeat it.
     """
-    assume(backoff * 2 ** (max_attempts - 2) <= _http._MAX_RETRY_AFTER_SECONDS)
+    assume(backoff * 2 ** (max_attempts - 2) <= http._MAX_RETRY_AFTER_SECONDS)
     slept: list[float] = []
 
     async def fake_sleep(seconds):
         slept.append(seconds)
 
-    monkeypatch.setattr(_http.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(http.asyncio, "sleep", fake_sleep)
 
     # No Retry-After, so the backoff term alone drives the sleep.
     client = _AlwaysRetryable(None)
     asyncio.run(
-        _http.get_with_retry(client, "u", max_attempts=max_attempts, backoff_seconds=backoff)
+        http.get_with_retry(client, "u", max_attempts=max_attempts, backoff_seconds=backoff)
     )
 
     assert slept == sorted(slept)

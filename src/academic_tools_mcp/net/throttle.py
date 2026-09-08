@@ -1,7 +1,7 @@
 """Shared per-provider HTTP throttle.
 
 The single home for outbound pacing (mirroring ``_singleflight.py`` /
-``_http.py`` / ``cache.py``). Each provider holds one configured ``Throttle``
+``http.py`` / ``cache.py``). Each provider holds one configured ``Throttle``
 and exposes thin ``_throttled_get`` / ``_request_slot`` wrappers over it: the
 *mechanism* is shared, the policy is passed at construction.
 
@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import _http, _stats
+from . import http, stats
 
 # A bound on a pathological walk, far above the tens of publisher domains one
 # session actually sees — not a tuning knob.
@@ -53,6 +53,7 @@ class Throttle:
         retry_attempts: int = 2,
         per_host: bool = False,
     ) -> None:
+        """Build a throttle for one provider from its published rate policy."""
         self.namespace = namespace
         self.label = label
         # Clamped, not trusted: a typo'd policy constant fails silently —
@@ -114,8 +115,8 @@ class Throttle:
         ``get_with_retry`` count the attempts it actually makes.
         """
         if self.pending >= self.max_pending:
-            _stats.incr(self.namespace, "backpressure_refusals")
-            raise _http.LocalBackpressureError(
+            stats.incr(self.namespace, "backpressure_refusals")
+            raise http.LocalBackpressureError(
                 self.label, self.pending, self.max_pending, self.min_gap_seconds
             )
         self.pending += 1
@@ -134,9 +135,9 @@ class Throttle:
                     self._prune(now)
                 if wait_seconds:
                     await asyncio.sleep(wait_seconds)
-                _stats.log_request(self.namespace, url, wait_seconds)
+                stats.log_request(self.namespace, url, wait_seconds)
                 if count_request:
-                    _stats.incr(self.namespace, "http_calls")
+                    stats.incr(self.namespace, "http_calls")
                 yield
         finally:
             self.pending -= 1
@@ -148,7 +149,7 @@ class Throttle:
         the documented rate.
         """
         async with self.slot(url, count_request=False):
-            return await _http.get_with_retry(
+            return await http.get_with_retry(
                 client,
                 url,
                 max_attempts=self.retry_attempts,

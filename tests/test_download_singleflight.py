@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from academic_tools_mcp import _clients
+from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import arxiv, biorxiv
 
 from ._download_fakes import passthrough_slot as _passthrough_slot
@@ -47,7 +47,7 @@ def _setup(mod, identifier: str, monkeypatch) -> None:
             return {"links": [{"title": "pdf", "href": "http://example.com/x.pdf"}]}
     else:
 
-        async def fake_get_paper(_doi, **_kw):
+        async def fake_get_paper(dois, **_kw):
             return {"pdf_url": "http://example.com/x.pdf"}
 
     monkeypatch.setattr(mod, "get_paper", fake_get_paper)
@@ -90,7 +90,7 @@ async def test_concurrent_downloads_collapse_to_one_stream(mod, identifier, monk
         def stream(self, *args, **kwargs):
             return make_stream(*args, **kwargs)
 
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
 
     tasks = [asyncio.create_task(mod.download_pdf(identifier)) for _ in range(5)]
     for _ in range(5):  # let all five register on the same in-flight slot
@@ -124,7 +124,7 @@ async def test_download_slot_does_not_deadlock_on_get_paper(mod, identifier, mon
             return {"links": [{"title": "pdf", "href": "http://example.com/x.pdf"}]}
     else:
 
-        async def stub_get(_doi, **_kw):
+        async def stub_get(dois, **_kw):
             return {"pdf_url": "http://example.com/x.pdf"}
 
     # Wrap the metadata fetch in the provider's *real* single-flight, mirroring
@@ -153,7 +153,7 @@ async def test_download_slot_does_not_deadlock_on_get_paper(mod, identifier, mon
         def stream(self, *a, **kw):
             return stream_cm(*a, **kw)
 
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
 
     result = await asyncio.wait_for(mod.download_pdf(identifier), timeout=2.0)
 

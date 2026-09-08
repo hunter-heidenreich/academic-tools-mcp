@@ -4,7 +4,8 @@ from typing import Any, NamedTuple
 import httpx
 import pytest
 
-from academic_tools_mcp import _clients, cache
+from academic_tools_mcp import cache
+from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import biorxiv
 
 # ---------------------------------------------------------------------------
@@ -390,7 +391,7 @@ class TestParsePaper:
 # ---------------------------------------------------------------------------
 #
 # The rate-limiter gap, concurrency cap, and burst-cap backpressure are no
-# longer per-provider code — they live in ``_throttle.Throttle`` and are
+# longer per-provider code — they live in ``throttle.Throttle`` and are
 # covered once in tests/test_throttle.py.
 
 
@@ -467,7 +468,7 @@ def _stub_json_responses(monkeypatch, *payloads):
     """Serve ``payloads`` from successive GETs over a real MockTransport.
 
     A genuine transport rather than a hand-rolled stub: ``status_code`` and
-    ``raise_for_status`` are real, so ``_http.HTTPX_ERRORS`` is reachable and
+    ``raise_for_status`` are real, so ``http.HTTPX_ERRORS`` is reachable and
     the request URL is assertable. bioRxiv may issue two GETs per ``get_paper``
     (bioRxiv then the medRxiv fallback). A payload may be ``_BAD_JSON``, a
     ``_Resp`` carrying a status code, or an ``httpx`` exception to raise.
@@ -488,7 +489,7 @@ def _stub_json_responses(monkeypatch, *payloads):
         return httpx.Response(status, headers={"content-type": "application/json"}, content=body)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
     return requests
 
 
@@ -791,7 +792,7 @@ class TestNotFoundNeedsBothServers:
 
 
 class TestHttpErrors:
-    """The `_http.HTTPX_ERRORS` branch: transient, and never negative-cached.
+    """The `http.HTTPX_ERRORS` branch: transient, and never negative-cached.
 
     An unknown DOI is a 200 with an empty collection here, so a real HTTP
     status is a server problem rather than an answer about the paper.
@@ -849,7 +850,7 @@ class TestRequestPath:
 
     @pytest.mark.asyncio
     async def test_a_reserved_character_cannot_split_the_path(self, monkeypatch):
-        # `_doi.normalize` keeps a literal `#`/`?` in a bare DOI. Unquoted, the
+        # `doinorm.normalize` keeps a literal `#`/`?` in a bare DOI. Unquoted, the
         # first truncates the request at the fragment and the second turns the
         # rest of the path into a query string — either way we ask about a
         # different record than the caller named.

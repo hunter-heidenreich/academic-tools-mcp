@@ -17,7 +17,8 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from academic_tools_mcp import _pdf_download, _stats
+from academic_tools_mcp import _pdf_download
+from academic_tools_mcp.net import stats
 
 from ._download_fakes import TIMEOUT as _TIMEOUT
 from ._download_fakes import mock_stream_response as _mock_stream_response
@@ -240,7 +241,7 @@ class TestStreamToFile:
         # Counted under the cache namespace, not the "arXiv" label: a disk
         # failure has to land in the row already holding this provider's cache
         # counters, or an operator diagnosing a full disk sees two half-rows.
-        counters = _stats.snapshot()["providers"]["arxiv"]
+        counters = stats.snapshot()["providers"]["arxiv"]
         assert counters["cache_write_failures"] == 1, counters
 
     @pytest.mark.asyncio
@@ -530,7 +531,7 @@ class TestCachedHit:
 class TestIsDefinitiveFailure:
     """An allowlist, not a denylist — and the difference is a live bug class.
 
-    ``_http.error_dict`` marks every *transient* branch ``retryable: True``,
+    ``http.error_dict`` marks every *transient* branch ``retryable: True``,
     but its "other 4xx" branch carries no ``retryable`` key at all: a 403 from
     a paywall is not something we know is permanent and paper-intrinsic. Under
     a denylist ("anything not marked retryable") that unknown is classified as
@@ -561,9 +562,9 @@ class TestIsDefinitiveFailure:
         ],
     )
     def test_transient_errors_are_flagged_retryable_and_must_not_count(self, exc):
-        from academic_tools_mcp import _http
+        from academic_tools_mcp.net import http
 
-        result = _http.error_dict("Test", exc)
+        result = http.error_dict("Test", exc)
         assert result["retryable"] is True, (
             "every transient branch of error_dict must carry the flag; "
             "oa_download and tools/graph branch on it"
@@ -576,10 +577,10 @@ class TestIsDefinitiveFailure:
         A 403 gets no ``retryable`` key either way — we don't know whether the
         paywall is permanent. A denylist would negative-cache it for the TTL.
         """
-        from academic_tools_mcp import _http
+        from academic_tools_mcp.net import http
 
         request = httpx.Request("GET", "http://x")
-        result = _http.error_dict(
+        result = http.error_dict(
             "Test",
             httpx.HTTPStatusError(
                 "x", request=request, response=httpx.Response(403, request=request)

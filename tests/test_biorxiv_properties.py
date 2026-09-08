@@ -2,7 +2,7 @@
 
 Four invariants, each with a concrete failure the module has to be safe from:
 
-* one paper, one cache key — `_doi` is single-homed for this reason, and
+* one paper, one cache key — `doinorm` is single-homed for this reason, and
   biorxiv layers two rules of its own on top (a content URL, and the version
   suffix), so the rule has to be restated here;
 * a spelling the shape test misses is not merely unfetchable — `manual` files
@@ -19,13 +19,14 @@ Four invariants, each with a concrete failure the module has to be safe from:
 from hypothesis import given
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, _stems, cache_search, manual, papers
+from academic_tools_mcp import _stems, cache_search, manual, papers
 from academic_tools_mcp.providers import biorxiv
+from academic_tools_mcp.util import doinorm
 
 from .test_doi_properties import dois
 
 # bioRxiv's own suffix grammar: a submission date and a number, plus the legacy
-# bare-number form. Freeform `_doi` suffixes are deliberately *not* used here —
+# bare-number form. Freeform `dois` suffixes are deliberately *not* used here —
 # one ending in `v3` or `.full` is a rendering tail by this module's rule, so it
 # is not a distinct identifier and can't stand in for one.
 biorxiv_suffixes = st.one_of(
@@ -97,7 +98,7 @@ def test_normalization_is_idempotent(identifier: str) -> None:
     """A second pass is a no-op, for any input at all.
 
     `manual.resolve_target` composes the two — it calls `canonical_key` on
-    `_doi.normalize`'s output — so a spelling that moves twice keys separately
+    `doinorm.normalize`'s output — so a spelling that moves twice keys separately
     from its own output.
     """
     once = biorxiv._normalize_doi(identifier)
@@ -116,7 +117,7 @@ def test_a_foreign_doi_is_never_rewritten(doi: str) -> None:
     """
     if doi.startswith(biorxiv.DOI_PREFIX):
         return
-    assert biorxiv._normalize_doi(doi) == _doi.normalize(doi)
+    assert biorxiv._normalize_doi(doi) == doinorm.normalize(doi)
     assert biorxiv.is_biorxiv_doi(doi) is False
 
 

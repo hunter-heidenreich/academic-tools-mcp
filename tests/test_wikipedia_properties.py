@@ -54,7 +54,7 @@ _SUMMARY_PATH_PREFIX = "/api/rest_v1/page/summary/"
 
 @given(title=_titles)
 def test_canonicalizing_twice_changes_nothing(title: str) -> None:
-    """Idempotence, as `_doi.canonical` holds it. A canonical form that keeps
+    """Idempotence, as `doinorm.canonical` holds it. A canonical form that keeps
     moving keys the same article twice — once under the pasted spelling and
     once under whatever the second pass produced."""
     once = wikipedia.canonical_title(title)

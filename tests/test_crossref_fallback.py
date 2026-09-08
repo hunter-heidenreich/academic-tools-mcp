@@ -90,7 +90,7 @@ class TestCrossrefFallbackOn404:
         called = False
 
         async def fake_openalex(doi, **kwargs):
-            # Shape of a transient error from _http.error_dict — no not_found.
+            # Shape of a transient error from http.error_dict — no not_found.
             return {"error": "OpenAlex server error (HTTP 503). Transient — retry."}
 
         async def fake_crossref(doi, **kwargs):

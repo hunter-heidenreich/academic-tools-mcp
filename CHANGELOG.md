@@ -35,6 +35,14 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **Module layout follows the layering.** The shared HTTP modules moved into
+  `net/` (`http`, `throttle`, `clients`, `stats`) and the leaf helpers into
+  `util/` (`config`, `doinorm`, `textnorm`, `useragent`); module names no
+  longer carry a leading underscore. `_doi` is `util/doinorm` — `doi` is this
+  codebase's most common parameter name, and a module of that name is shadowed
+  at every call site. Internal only: no tool, response shape, environment
+  variable or `.cache/` namespace changes. ([#106])
+
 - **`download_pdf` now drops stale markdown whenever it actually downloads,
   not just on `force_refresh=True`.** A PDF that was evicted or pruned and then
   re-fetched left the previous markdown in place, and the next `convert_paper`
@@ -2597,3 +2605,4 @@ grouped by milestone rather than per commit.
 [#103]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/103
 [#104]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/104
 [#105]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/105
+[#106]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/106

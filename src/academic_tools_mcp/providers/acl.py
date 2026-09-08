@@ -8,8 +8,10 @@ from urllib.parse import quote, unquote
 
 import httpx
 
-from .. import _clients, _doi, _http, _pdf_download, _singleflight, _stems, _useragent, cache
-from .._throttle import Throttle
+from .. import _pdf_download, _singleflight, _stems, cache
+from ..net import clients, http
+from ..net.throttle import Throttle
+from ..util import doinorm, useragent
 
 # Not "acl": this is the cache *directory* name, so renaming it needs a sweep.
 NAMESPACE = "acl_anthology"
@@ -46,10 +48,8 @@ _throttle = Throttle(
 
 
 def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``."""
-    return _clients.get_client(
-        NAMESPACE, headers=_useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS
-    )
+    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
+    return clients.get_client(NAMESPACE, headers=useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS)
 
 
 def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
@@ -80,12 +80,12 @@ def _strip_acl_prefix(bare: str) -> str | None:
 
 def is_acl_doi(doi: str) -> bool:
     """Check if a DOI belongs to the ACL Anthology."""
-    return _strip_acl_prefix(_doi.normalize(doi)) is not None
+    return _strip_acl_prefix(doinorm.normalize(doi)) is not None
 
 
 def canonical_key(doi: str) -> str:
     """Return a canonical cache key from an ACL DOI."""
-    return _doi.canonical(doi)
+    return doinorm.canonical(doi)
 
 
 # Pre-2020 IDs: <LETTER><2-digit-year>-<digits>, e.g. P16-1160, W04-1013.
@@ -111,7 +111,7 @@ def doi_to_anthology_id(doi: str) -> str | None:
     DOI is not an ACL one. Invariant: the ID addresses the CDN and names nothing
     on disk — every cached artifact keys on ``canonical_key``.
     """
-    suffix = _strip_acl_prefix(_doi.normalize(doi))
+    suffix = _strip_acl_prefix(doinorm.normalize(doi))
     if suffix is None:
         return None
     return _normalize_anthology_id(suffix)
@@ -153,7 +153,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
     aid = doi_to_anthology_id(doi)
     if aid is None:
         # Definitive: unflagged, every classifier downstream reads it as unknown.
-        return _http.not_found(f"Not an ACL Anthology DOI: {doi}")
+        return http.not_found(f"Not an ACL Anthology DOI: {doi}")
 
     canonical = canonical_key(doi)
     dest = _stems.pdf_path(NAMESPACE, canonical)

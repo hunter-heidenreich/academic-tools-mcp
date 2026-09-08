@@ -5,8 +5,10 @@ from urllib.parse import quote
 
 import httpx
 
-from .. import _clients, _doi, _http, _singleflight, _useragent, cache
-from .._throttle import Throttle
+from .. import _singleflight, cache
+from ..net import clients, http
+from ..net.throttle import Throttle
+from ..util import doinorm, useragent
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
@@ -14,17 +16,17 @@ NAMESPACE = "opencitations"
 # Agent-facing provider name; every site that names us reads it (providers.md).
 LABEL = "OpenCitations"
 
-_PARSE_ERRORS = _http.JSON_PARSE_ERRORS
+_PARSE_ERRORS = http.JSON_PARSE_ERRORS
 
 
 def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``_clients.get_client``."""
-    return _clients.get_client(NAMESPACE, headers=_useragent.headers(), timeout=30.0)
+    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
+    return clients.get_client(NAMESPACE, headers=useragent.headers(), timeout=30.0)
 
 
 def _parse_error_dict() -> dict[str, Any]:
     """Fresh structured error for an unparseable OpenCitations response."""
-    return _http.parse_error_dict(LABEL)
+    return http.parse_error_dict(LABEL)
 
 
 # 180 req/min documented. Concurrency of 2 so a graph traversal's references
@@ -55,7 +57,7 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 
 def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
-    return _doi.canonical(doi)
+    return doinorm.canonical(doi)
 
 
 def _parse_ids(raw: Any) -> dict[str, str]:
@@ -114,7 +116,7 @@ async def _fetch_direction(
     not_found_error = f"No {kind} found on OpenCitations for DOI: {doi}"
 
     async def _fetch() -> dict[str, Any]:
-        bare_doi = _doi.normalize(doi)
+        bare_doi = doinorm.normalize(doi)
         # safe="/" keeps the "doi:" prefix and the DOI's own slash literal.
         url = f"{OPENCITATIONS_BASE_URL}/{kind}/doi:{quote(bare_doi, safe='/')}"
 
@@ -122,8 +124,8 @@ async def _fetch_direction(
         # after encoding, and the `doi:` prefix hides an empty identifier from
         # `addresses_a_record`. Both shorten the path to a live endpoint whose
         # answer would cache under this DOI's key.
-        if not bare_doi or not _http.addresses_a_record(url):
-            return _http.not_found(not_found_error)
+        if not bare_doi or not http.addresses_a_record(url):
+            return http.not_found(not_found_error)
 
         try:
             response = await _throttled_get(url)
@@ -131,7 +133,7 @@ async def _fetch_direction(
             if response.status_code == 404:
                 # Rare — an unknown DOI answers 200 with [] (see below) — but
                 # the only branch here that can carry `not_found: True`.
-                err = _http.not_found(not_found_error)
+                err = http.not_found(not_found_error)
                 cache.put_negative(NAMESPACE, kind, canonical, err)
                 return err
 
@@ -140,8 +142,8 @@ async def _fetch_direction(
         except _PARSE_ERRORS:
             # Transient, so uncached: a retry re-fetches.
             return _parse_error_dict()
-        except _http.HTTPX_ERRORS as e:
-            return _http.error_dict(LABEL, e)
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
 
         data = _edges_of(records, kind=kind, id_field=id_field)
         if data is None:

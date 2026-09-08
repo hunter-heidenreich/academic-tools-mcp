@@ -958,13 +958,13 @@ class TestSourceErrorForwarding:
 
     def test_the_allowlist_covers_every_key_http_can_emit(self):
         """`_source_error` projects an allowlist, so a classification key added
-        to `_http` is dropped from every multi-source response — silently, since
+        to `http` is dropped from every multi-source response — silently, since
         an absent key looks exactly like an inapplicable one. Nothing else
         couples the two, so this is the coupling.
         """
         import httpx
 
-        from academic_tools_mcp import _http
+        from academic_tools_mcp.net import http
         from academic_tools_mcp.tools import graph
 
         request = httpx.Request("GET", "https://example.test/works/10.1/x")
@@ -977,29 +977,29 @@ class TestSourceErrorForwarding:
             )
 
         produced = [
-            _http.not_found("gone"),
-            _http.parse_error_dict("Crossref"),
-            _http.error_dict(
-                "Crossref", _http.LocalBackpressureError("Crossref", pending=5, max_pending=5)
+            http.not_found("gone"),
+            http.parse_error_dict("Crossref"),
+            http.error_dict(
+                "Crossref", http.LocalBackpressureError("Crossref", pending=5, max_pending=5)
             ),
-            _http.error_dict(
+            http.error_dict(
                 "Crossref",
-                _http.LocalBackpressureError(
+                http.LocalBackpressureError(
                     "Crossref", pending=5, max_pending=5, min_gap_seconds=3.0
                 ),
             ),
-            _http.error_dict("Crossref", status_error(429, {"Retry-After": "7"})),
-            _http.error_dict("Crossref", status_error(503)),
-            _http.error_dict("Crossref", status_error(418)),
-            _http.error_dict("Crossref", httpx.TimeoutException("slow", request=request)),
-            _http.error_dict("Crossref", httpx.RequestError("dns", request=request)),
+            http.error_dict("Crossref", status_error(429, {"Retry-After": "7"})),
+            http.error_dict("Crossref", status_error(503)),
+            http.error_dict("Crossref", status_error(418)),
+            http.error_dict("Crossref", httpx.TimeoutException("slow", request=request)),
+            http.error_dict("Crossref", httpx.RequestError("dns", request=request)),
         ]
 
         emitted = {key for err in produced for key in err}
         unforwarded = emitted - set(graph._FORWARDED_ERROR_KEYS)
 
         assert not unforwarded, (
-            f"_http can emit {sorted(unforwarded)}, which _source_error would drop — "
+            f"http can emit {sorted(unforwarded)}, which _source_error would drop — "
             "add them to _FORWARDED_ERROR_KEYS or decide deliberately not to forward them"
         )
         # And each forwarded key survives the projection intact.

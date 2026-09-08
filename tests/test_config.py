@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import config
+from academic_tools_mcp.util import config
 from tests.conftest import _EMPTY_ENV_FILE
 
 _PROJECT_ROOT_ENV = Path(config.__file__).resolve().parent.parent.parent / ".env"

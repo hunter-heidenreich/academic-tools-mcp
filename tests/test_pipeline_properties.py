@@ -229,7 +229,7 @@ def test_every_download_error_carries_a_suggestion(
 ) -> None:
     """Whatever the transport layer produced, the agent gets a next step.
 
-    `_http`'s vocabulary is a retry verdict, not advice, and the providers add
+    `http`'s vocabulary is a retry verdict, not advice, and the providers add
     none — so a withdrawn paper, a 503 and a size-cap abort all arrived as a
     dead end. The tool layer is the only place that knows `import_paper` exists.
     """

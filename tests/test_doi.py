@@ -8,7 +8,7 @@ rejected rather than accidentally unhandled.
 
 import pytest
 
-from academic_tools_mcp import _doi
+from academic_tools_mcp.util import doinorm
 
 
 class TestNormalizeAccepted:
@@ -37,14 +37,14 @@ class TestNormalizeAccepted:
         ],
     )
     def test_collapses_to_bare_form(self, raw):
-        assert _doi.normalize(raw) == "10.1234/example"
+        assert doinorm.normalize(raw) == "10.1234/example"
 
     def test_case_of_the_suffix_is_preserved(self):
         # `normalize` feeds the *request*; only `canonical` lowercases.
-        assert _doi.normalize("https://doi.org/10.1234/Example") == "10.1234/Example"
+        assert doinorm.normalize("https://doi.org/10.1234/Example") == "10.1234/Example"
 
     def test_suffix_may_contain_slashes(self):
-        assert _doi.normalize("https://doi.org/10.18653/v1/2023.acl-long.1") == (
+        assert doinorm.normalize("https://doi.org/10.18653/v1/2023.acl-long.1") == (
             "10.18653/v1/2023.acl-long.1"
         )
 
@@ -69,13 +69,13 @@ class TestNormalizeRejected:
         ],
     )
     def test_passes_through_and_is_not_a_doi(self, raw):
-        assert _doi.normalize(raw) == raw.strip()
-        assert _doi.looks_like_doi(raw) is False
+        assert doinorm.normalize(raw) == raw.strip()
+        assert doinorm.looks_like_doi(raw) is False
 
     def test_trailing_sentence_period_is_kept(self):
         # A '.' is legal in a DOI suffix, so it cannot be stripped on
         # suspicion; the caller pasted it and the caller owns it.
-        assert _doi.normalize("https://doi.org/10.1234/example.") == "10.1234/example."
+        assert doinorm.normalize("https://doi.org/10.1234/example.") == "10.1234/example."
 
 
 class TestBareDoiIsVerbatim:
@@ -88,35 +88,35 @@ class TestBareDoiIsVerbatim:
     """
 
     def test_bare_query_is_part_of_the_doi(self):
-        assert _doi.normalize("10.1234/example?utm=1") == "10.1234/example?utm=1"
+        assert doinorm.normalize("10.1234/example?utm=1") == "10.1234/example?utm=1"
 
     def test_bare_fragment_is_part_of_the_doi(self):
-        assert _doi.normalize("10.1234/ex#frag") == "10.1234/ex#frag"
+        assert doinorm.normalize("10.1234/ex#frag") == "10.1234/ex#frag"
 
     def test_url_query_is_discarded(self):
-        assert _doi.normalize("https://doi.org/10.1234/example?utm=1") == "10.1234/example"
+        assert doinorm.normalize("https://doi.org/10.1234/example?utm=1") == "10.1234/example"
 
     def test_percent_encoded_url_suffix_survives(self):
         # The escape hatch for a DOI that really does contain '#'.
-        assert _doi.normalize("https://doi.org/10.1234/ex%23frag") == "10.1234/ex%23frag"
+        assert doinorm.normalize("https://doi.org/10.1234/ex%23frag") == "10.1234/ex%23frag"
 
 
 class TestRegistrantBoundary:
     """`10.` + four-or-more digits. Exactly at the boundary must pass."""
 
     def test_three_digit_registrant_is_not_a_doi(self):
-        assert _doi.looks_like_doi("10.123/x") is False
-        assert _doi.normalize("https://doi.org/10.123/x") == "https://doi.org/10.123/x"
+        assert doinorm.looks_like_doi("10.123/x") is False
+        assert doinorm.normalize("https://doi.org/10.123/x") == "https://doi.org/10.123/x"
 
     def test_four_digit_registrant_is_a_doi(self):
-        assert _doi.looks_like_doi("10.1234/x") is True
-        assert _doi.normalize("https://doi.org/10.1234/x") == "10.1234/x"
+        assert doinorm.looks_like_doi("10.1234/x") is True
+        assert doinorm.normalize("https://doi.org/10.1234/x") == "10.1234/x"
 
     def test_long_registrant_is_a_doi(self):
-        assert _doi.looks_like_doi("10.48550/arXiv.2301.00001") is True
+        assert doinorm.looks_like_doi("10.48550/arXiv.2301.00001") is True
 
     def test_non_numeric_registrant_is_not_a_doi(self):
-        assert _doi.looks_like_doi("10.abcd/x") is False
+        assert doinorm.looks_like_doi("10.abcd/x") is False
 
 
 class TestLooksLikeDoi:
@@ -135,19 +135,19 @@ class TestLooksLikeDoi:
         ],
     )
     def test_negative(self, raw):
-        assert _doi.looks_like_doi(raw) is False
+        assert doinorm.looks_like_doi(raw) is False
 
     def test_empty_string_normalizes_to_empty(self):
-        assert _doi.normalize("") == ""
-        assert _doi.canonical("") == ""
+        assert doinorm.normalize("") == ""
+        assert doinorm.canonical("") == ""
 
 
 class TestCanonical:
     def test_lowercases(self):
-        assert _doi.canonical("10.1234/ABC") == "10.1234/abc"
+        assert doinorm.canonical("10.1234/ABC") == "10.1234/abc"
 
     def test_lowercases_through_every_wrapper_form(self):
-        assert _doi.canonical("DOI:https://DX.DOI.ORG/10.1234/ABC") == "10.1234/abc"
+        assert doinorm.canonical("DOI:https://DX.DOI.ORG/10.1234/ABC") == "10.1234/abc"
 
 
 class TestIdempotence:
@@ -165,13 +165,13 @@ class TestIdempotence:
         ],
     )
     def test_normalize_is_idempotent(self, raw):
-        once = _doi.normalize(raw)
-        assert _doi.normalize(once) == once
+        once = doinorm.normalize(raw)
+        assert doinorm.normalize(once) == once
 
     def test_repeated_prefix_is_fully_stripped(self):
         # A single-pass strip would leave "doi:10.1234/x", which then fails the
         # DOI regex and keys separately from its own output.
-        assert _doi.normalize("doi:DOI: 10.1234/x") == "10.1234/x"
+        assert doinorm.normalize("doi:DOI: 10.1234/x") == "10.1234/x"
 
 
 # ---------------------------------------------------------------------------
@@ -179,10 +179,10 @@ class TestIdempotence:
 # ---------------------------------------------------------------------------
 
 # `openalex`, `crossref`, `opencitations` and `acl` each expose a *public*
-# canonicalizer that is pure delegation to `_doi.canonical` — the indirection
-# exists so the tool layer imports a provider symbol, not `_doi` directly
+# canonicalizer that is pure delegation to `doinorm.canonical` — the indirection
+# exists so the tool layer imports a provider symbol, not `dois` directly
 # (`tools/paper.py` and `manual._ROUTES` both do). What matters is that they
-# *delegate*; re-deriving `_doi`'s behaviour once per provider says nothing
+# *delegate*; re-deriving `dois`'s behaviour once per provider says nothing
 # extra and rots into four copies of the same expectations.
 #
 # There is deliberately no `_normalize_doi` half to this: the private wrappers
@@ -190,7 +190,7 @@ class TestIdempotence:
 # to them. `acl`'s Anthology-prefix policy lives in `_strip_acl_prefix`, not in
 # a normalizer. `biorxiv` is the one provider that keeps a `_normalize_doi`,
 # because it layers a content URL and a version-stripping rule on top of
-# `_doi.normalize` — equality is not its contract, and
+# `doinorm.normalize` — equality is not its contract, and
 # `test_biorxiv_properties.py` states what is.
 #
 # (module, the name that provider gives its cache-key wrapper). The two
@@ -227,7 +227,7 @@ def provider(request):
 @pytest.mark.parametrize("raw", _SPELLINGS)
 def test_provider_canonical_delegates_to_doi(provider, raw):
     _module, canonical = provider
-    assert canonical(raw) == _doi.canonical(raw)
+    assert canonical(raw) == doinorm.canonical(raw)
 
 
 def test_delegation_anchors_on_a_real_value(provider):

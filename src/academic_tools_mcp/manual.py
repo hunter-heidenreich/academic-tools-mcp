@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, TypedDict
 from urllib.parse import unquote
 
-from . import _doi, _pdf_download, _stats, _stems, atomic, cache, papers
+from . import _pdf_download, _stems, atomic, cache, papers
+from .net import stats
 from .providers import acl, arxiv, biorxiv
+from .util import doinorm
 
 NAMESPACE = "manual"
 
@@ -63,7 +65,7 @@ def resolve_target(identifier: str) -> Target:
     An identifier no provider claims falls back to the ``manual`` namespace,
     keyed by its bare DOI or, for a freeform label, by the label itself.
     """
-    normalized = _doi.normalize(identifier)
+    normalized = doinorm.normalize(identifier)
 
     for route in _ROUTES:
         if route.claims(normalized):
@@ -74,7 +76,7 @@ def resolve_target(identifier: str) -> Target:
                 pdf_path=route.pdf_path(canonical),
             )
 
-    canonical = _doi.canonical(normalized)
+    canonical = doinorm.canonical(normalized)
     return Target(
         namespace=NAMESPACE,
         canonical=canonical,
@@ -105,7 +107,7 @@ def resolve_metadata_source(identifier: str) -> MetadataSource | None:
     if source := _METADATA_SOURCE_BY_NAMESPACE.get(target["namespace"]):
         return source
 
-    return "openalex" if _doi.looks_like_doi(target["canonical"]) else None
+    return "openalex" if doinorm.looks_like_doi(target["canonical"]) else None
 
 
 def migrate_misrouted_arxiv() -> int:
@@ -194,7 +196,7 @@ def _manual_pdf_path(canonical: str) -> Path:
     Folds its argument first, like every provider's ``pdf_path``, so a raw
     spelling can't build a path the cache never writes.
     """
-    return _stems.pdf_path(NAMESPACE, _doi.canonical(canonical))
+    return _stems.pdf_path(NAMESPACE, doinorm.canonical(canonical))
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +209,7 @@ def _identifier_error(identifier: str) -> dict[str, Any] | None:
 
     The empty key stems to ``""``, so every blank import shares one entry.
     """
-    if not _doi.normalize(identifier):
+    if not doinorm.normalize(identifier):
         return {
             "error": (
                 f"Blank identifier: {identifier!r}. Pass the paper's DOI, arXiv ID, "
@@ -292,7 +294,7 @@ def import_local_pdf(
         size_bytes = dest.stat().st_size
     except OSError as e:
         # cache.put's counter, so one row shows an operator any failed write.
-        _stats.incr(namespace, "cache_write_failures")
+        stats.incr(namespace, "cache_write_failures")
         return {"error": f"Could not copy {file_path} into the cache: {e}"}
 
     result: dict[str, Any] = {

@@ -78,7 +78,7 @@ def _setup_provider(name: str, monkeypatch) -> tuple[Path, callable]:
     elif name == "biorxiv":
         mod, identifier, dest = biorxiv, _BIORXIV_DOI, _biorxiv_dest()
 
-        async def fake_get_paper(_doi, **_kw):
+        async def fake_get_paper(dois, **_kw):
             return {"pdf_url": "http://example.com/x.pdf"}
 
         monkeypatch.setattr(biorxiv, "get_paper", fake_get_paper)

@@ -91,7 +91,7 @@ convention = "google"
 "tests/**" = ["ANN", "B011", "D", "S"]
 # Both write to stderr on purpose: stdout is the JSON-RPC channel.
 "src/academic_tools_mcp/_fast_extract.py" = ["T201"]
-"src/academic_tools_mcp/_stats.py" = ["T201"]
+"src/academic_tools_mcp/net/stats.py" = ["T201"]
 
 [tool.mypy]
 python_version = "3.11"

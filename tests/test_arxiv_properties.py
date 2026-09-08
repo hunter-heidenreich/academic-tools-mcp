@@ -64,7 +64,7 @@ def _spellings(ident: str) -> list[str]:
         # The prefix must be stripped *before* the URL handling, or this nested
         # form (which occurs in pasted citations) keys separately.
         f"arXiv:https://www.arxiv.org/abs/{ident}",
-        # arXiv's DataCite DOI, in each spelling `_doi.normalize` accepts.
+        # arXiv's DataCite DOI, in each spelling `doinorm.normalize` accepts.
         f"{arxiv.ARXIV_DOI_PREFIX}{ident}",
         f"10.48550/arxiv.{ident}",
         f"https://doi.org/{arxiv.ARXIV_DOI_PREFIX}{ident}",

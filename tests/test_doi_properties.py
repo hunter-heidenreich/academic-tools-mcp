@@ -1,6 +1,6 @@
 """Property-based tests for the shared DOI normalization.
 
-The invariant these pin is the reason `_doi` is single-homed: every spelling
+The invariant these pin is the reason `doinorm` is single-homed: every spelling
 of one DOI that a publisher, reference manager or agent might emit has to
 collapse to the *same* cache key. Examples cover the spellings someone thought
 of; hypothesis covers the suffixes nobody did.
@@ -9,7 +9,8 @@ of; hypothesis covers the suffixes nobody did.
 from hypothesis import given
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, manual
+from academic_tools_mcp import manual
+from academic_tools_mcp.util import doinorm
 
 # Registrant codes are `10.` followed by four or more digits; the suffix is
 # near-freeform but may not contain whitespace. `?`/`#` are excluded because
@@ -37,7 +38,7 @@ dois = st.builds(
 @given(dois)
 def test_every_accepted_spelling_yields_one_key(doi: str) -> None:
     """All the input forms `normalize` documents collapse to one canonical key."""
-    key = _doi.canonical(doi)
+    key = doinorm.canonical(doi)
     for spelling in (
         f"  {doi}  ",
         f"doi:{doi}",
@@ -55,23 +56,23 @@ def test_every_accepted_spelling_yields_one_key(doi: str) -> None:
         f"doi:https://doi.org/{doi}",
         f"doi: https://dx.doi.org/{doi}",
     ):
-        assert _doi.canonical(spelling) == key, spelling
+        assert doinorm.canonical(spelling) == key, spelling
 
 
 @given(dois)
 def test_canonical_is_idempotent_and_lowercase(doi: str) -> None:
     """A key fed back through `canonical` is unchanged — cache keys are stable."""
-    key = _doi.canonical(doi)
+    key = doinorm.canonical(doi)
     assert key == key.lower()
-    assert _doi.canonical(key) == key
+    assert doinorm.canonical(key) == key
 
 
 @given(dois)
 def test_doi_shape_survives_every_spelling(doi: str) -> None:
     """`looks_like_doi` agrees across spellings, so dispatch can't disagree with caching."""
-    assert _doi.looks_like_doi(doi)
-    assert _doi.looks_like_doi(f"https://doi.org/{doi}")
-    assert _doi.looks_like_doi(f"doi: {doi}")
+    assert doinorm.looks_like_doi(doi)
+    assert doinorm.looks_like_doi(f"https://doi.org/{doi}")
+    assert doinorm.looks_like_doi(f"doi: {doi}")
 
 
 # `dois` may generate any registrant, including the ones a provider owns:
@@ -99,12 +100,12 @@ def test_normalize_is_idempotent_for_any_input(text: str) -> None:
     Without this, a form that survives one pass but not two (a repeated `doi:`
     prefix) keys separately from its own normalized output.
     """
-    once = _doi.normalize(text)
-    assert _doi.normalize(once) == once
+    once = doinorm.normalize(text)
+    assert doinorm.normalize(once) == once
 
 
 @given(dois)
 def test_canonical_matches_normalize_lowercased(doi: str) -> None:
     """`canonical` is exactly `normalize` + `lower` — no second normalization policy."""
     for spelling in (doi, f"https://doi.org/{doi}", f"doi:{doi}", f"  {doi}  "):
-        assert _doi.canonical(spelling) == _doi.normalize(spelling).lower()
+        assert doinorm.canonical(spelling) == doinorm.normalize(spelling).lower()

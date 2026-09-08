@@ -1,7 +1,7 @@
 """Per-provider counters and optional request logging.
 
 In-process metrics for an operator: no dependencies, no endpoint, no
-persistence. ``snapshot()`` names every counter; ``grep _stats.incr`` finds
+persistence. ``snapshot()`` names every counter; ``grep stats.incr`` finds
 who moves them. Not an MCP tool — agents must not branch on operational data.
 
 Two invariants callers must hold:
@@ -17,14 +17,17 @@ from collections import defaultdict
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
-from . import config
+from ..util import config
 
 if TYPE_CHECKING:
-    from ._throttle import Throttle
+    from .throttle import Throttle
 
 _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
-_PACKAGE_PREFIX = f"{__name__.rsplit('.', 1)[0]}."
+# The package root, not this module's parent: `throttles()` scans every
+# imported module in the package, and deriving the prefix from the parent
+# would silently narrow the scan to `net.*` and miss every provider.
+_PACKAGE_PREFIX = f"{__name__.split('.', 1)[0]}."
 
 
 def incr(provider: str, metric: str) -> None:
@@ -52,7 +55,7 @@ def log_request(provider: str, url: str, wait_seconds: float) -> None:
     )
 
 
-_THROTTLE_MODULE = f"{_PACKAGE_PREFIX}_throttle"
+_THROTTLE_MODULE = f"{_PACKAGE_PREFIX}net.throttle"
 
 
 def _is_throttle(value: object) -> bool:
@@ -67,7 +70,7 @@ def throttles() -> Iterator["Throttle"]:
     """Yield every ``Throttle`` instance held by an already-imported package module.
 
     Scanned, never imported: sampling a provider must not load it. Every
-    attribute qualifies, not just one named ``_throttle``, so a module that
+    attribute qualifies, not just one named ``throttle``, so a module that
     grows a second throttle cannot drop out of the reset seam or the in-flight
     sample — deduped by identity, since one instance may be re-exported.
     """

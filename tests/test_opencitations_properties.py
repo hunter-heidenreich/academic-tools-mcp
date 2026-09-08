@@ -20,8 +20,9 @@ from urllib.parse import unquote, urlsplit
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, cache
+from academic_tools_mcp import cache
 from academic_tools_mcp.providers import opencitations
+from academic_tools_mcp.util import doinorm
 
 from .test_doi_properties import generic_dois
 from .test_opencitations import _stub_json_responses, _stub_no_network
@@ -100,7 +101,7 @@ def test_the_requested_path_round_trips_to_the_bare_doi(monkeypatch, doi, direct
     tail = path.removeprefix(f"/index/v2/{kind}/doi:")
     assert "#" not in tail
     assert "?" not in tail
-    assert unquote(tail) == _doi.normalize(doi)
+    assert unquote(tail) == doinorm.normalize(doi)
 
 
 @_SETTINGS
@@ -192,7 +193,7 @@ def test_a_path_shortening_identifier_never_reaches_the_network(
     kind, _field = direction
     _stub_no_network(monkeypatch)  # any outbound request fails the test
 
-    bare = _doi.normalize(doi)
+    bare = doinorm.normalize(doi)
     segments = f"/index/v2/{kind}/doi:{bare}".split("/")
     shortens = not bare or bare.endswith("/") or any(s in (".", "..") for s in segments)
     if not shortens:

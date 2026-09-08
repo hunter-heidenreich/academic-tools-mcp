@@ -18,17 +18,18 @@ import httpx
 import pytest
 
 import academic_tools_mcp
-from academic_tools_mcp import _http, oa_download
+from academic_tools_mcp import oa_download
+from academic_tools_mcp.net import http
 from academic_tools_mcp.providers import crossref, opencitations
 
 
 def _discover_clients():
     """Every module holding a pooled outbound client, found by import scan.
 
-    Deliberately not a hand-maintained list, for the reason ``_stats.throttles``
+    Deliberately not a hand-maintained list, for the reason ``stats.throttles``
     is not one: a new provider is covered the moment it exists, with no second
     roster to keep in sync. A module qualifies by holding both a ``_get_client``
-    and a ``_throttle`` -- the pair every outbound client has.
+    and a ``throttle`` -- the pair every outbound client has.
     """
     found = []
     for info in pkgutil.walk_packages(
@@ -201,11 +202,11 @@ class TestRetryAfterHttpDate:
     """
 
     def test_numeric_form(self):
-        assert _http._retry_after_seconds(_response_with_retry_after("120")) == 120.0
+        assert http._retry_after_seconds(_response_with_retry_after("120")) == 120.0
 
     def test_http_date_form(self):
         when = datetime.now(UTC) + timedelta(seconds=120)
-        got = _http._retry_after_seconds(
+        got = http._retry_after_seconds(
             _response_with_retry_after(format_datetime(when, usegmt=True))
         )
         assert got is not None
@@ -214,7 +215,7 @@ class TestRetryAfterHttpDate:
     def test_http_date_in_the_past_is_ignored(self):
         when = datetime.now(UTC) - timedelta(seconds=60)
         assert (
-            _http._retry_after_seconds(
+            http._retry_after_seconds(
                 _response_with_retry_after(format_datetime(when, usegmt=True))
             )
             is None
@@ -225,20 +226,20 @@ class TestRetryAfterHttpDate:
         # UTC offset — hours, in either direction.
         when = datetime.now(UTC) + timedelta(seconds=300)
         raw = when.strftime("%a, %d %b %Y %H:%M:%S")
-        got = _http._retry_after_seconds(_response_with_retry_after(raw))
+        got = http._retry_after_seconds(_response_with_retry_after(raw))
         assert got is not None
         assert 280 < got <= 301
 
     @pytest.mark.parametrize("value", ["inf", "nan", "-inf"])
     def test_non_finite_values_are_rejected(self, value):
-        assert _http._retry_after_seconds(_response_with_retry_after(value)) is None
+        assert http._retry_after_seconds(_response_with_retry_after(value)) is None
 
     @pytest.mark.parametrize("value", ["0", "-5", "garbage", "", None])
     def test_unusable_values_fall_back_to_our_own_backoff(self, value):
-        assert _http._retry_after_seconds(_response_with_retry_after(value)) is None
+        assert http._retry_after_seconds(_response_with_retry_after(value)) is None
 
     def test_whitespace_is_tolerated(self):
-        assert _http._retry_after_seconds(_response_with_retry_after("  90  ")) == 90.0
+        assert http._retry_after_seconds(_response_with_retry_after("  90  ")) == 90.0
 
 
 class TestRetryAfterSurfacedToAgent:
@@ -251,8 +252,8 @@ class TestRetryAfterSurfacedToAgent:
             request=httpx.Request("GET", "https://x"),
             response=_response_with_retry_after("86400"),
         )
-        result = _http.error_dict("Crossref", exc)
-        assert result["retry_after_seconds"] == _http._MAX_RETRY_AFTER_SECONDS
+        result = http.error_dict("Crossref", exc)
+        assert result["retry_after_seconds"] == http._MAX_RETRY_AFTER_SECONDS
 
     def test_reasonable_value_passes_through(self):
         exc = httpx.HTTPStatusError(
@@ -260,7 +261,7 @@ class TestRetryAfterSurfacedToAgent:
             request=httpx.Request("GET", "https://x"),
             response=_response_with_retry_after("30"),
         )
-        assert _http.error_dict("Crossref", exc)["retry_after_seconds"] == 30.0
+        assert http.error_dict("Crossref", exc)["retry_after_seconds"] == 30.0
 
     def test_http_date_now_reaches_the_agent(self):
         when = datetime.now(UTC) + timedelta(seconds=45)
@@ -270,11 +271,11 @@ class TestRetryAfterSurfacedToAgent:
             response=_response_with_retry_after(format_datetime(when, usegmt=True)),
         )
         # Previously omitted entirely: the agent got no hint at all.
-        assert "retry_after_seconds" in _http.error_dict("Crossref", exc)
+        assert "retry_after_seconds" in http.error_dict("Crossref", exc)
 
 
 class TestStatsAccuracy:
-    """``_stats`` is what an operator reads to audit outbound volume and cache
+    """``stats`` is what an operator reads to audit outbound volume and cache
     effectiveness, so both counters being wrong mattered.
     """
 
@@ -283,10 +284,10 @@ class TestStatsAccuracy:
         # http_calls was incremented once per throttle slot, but a slot issues
         # up to retry_attempts real requests (3 for arXiv) — under-reporting
         # actual outbound volume by up to 3x.
-        from academic_tools_mcp import _stats
-        from academic_tools_mcp._throttle import Throttle
+        from academic_tools_mcp.net import stats
+        from academic_tools_mcp.net.throttle import Throttle
 
-        _stats.reset()
+        stats.reset()
         throttle = Throttle(
             namespace="probe",
             label="Probe",
@@ -303,25 +304,25 @@ class TestStatsAccuracy:
                 attempts += 1
                 return httpx.Response(503, request=httpx.Request("GET", url))
 
-        monkeypatch.setattr(_http.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(http.asyncio, "sleep", _noop_sleep)
         await throttle.get(StubClient(), "https://example.org/x")
 
         assert attempts == 3
-        assert _stats.snapshot()["providers"]["probe"]["http_calls"] == 3
+        assert stats.snapshot()["providers"]["probe"]["http_calls"] == 3
 
     @pytest.mark.asyncio
     async def test_streaming_download_still_counts_one_call(self, monkeypatch):
         # PDF downloads hold the slot directly and never reach get_with_retry,
         # so moving the counter must not drop them entirely.
-        from academic_tools_mcp import _stats
-        from academic_tools_mcp._throttle import Throttle
+        from academic_tools_mcp.net import stats
+        from academic_tools_mcp.net.throttle import Throttle
 
-        _stats.reset()
+        stats.reset()
         throttle = Throttle(namespace="probe", label="Probe", max_concurrent=1, min_gap_seconds=0.0)
         async with throttle.slot("https://example.org/x.pdf"):
             pass
 
-        assert _stats.snapshot()["providers"]["probe"]["http_calls"] == 1
+        assert stats.snapshot()["providers"]["probe"]["http_calls"] == 1
 
     def test_a_single_miss_is_counted_once(self, tmp_path):
         # cached_lookup checks the cache twice (outer, then again inside the
@@ -329,9 +330,10 @@ class TestStatsAccuracy:
         # a hit registered one — making the reported hit rate wrong.
         import asyncio
 
-        from academic_tools_mcp import _singleflight, _stats, cache
+        from academic_tools_mcp import _singleflight, cache
+        from academic_tools_mcp.net import stats
 
-        _stats.reset()
+        stats.reset()
 
         async def fetch():
             return {"ok": True}
@@ -347,21 +349,22 @@ class TestStatsAccuracy:
             )
         )
 
-        counters = _stats.snapshot()["providers"]["probe"]
+        counters = stats.snapshot()["providers"]["probe"]
         assert counters["cache_misses"] == 1, counters
         assert counters.get("cache_hits", 0) == 0
 
     def test_count_false_suppresses_the_hit_counter(self, tmp_path):
         """A warming probe reads to decide whether to overwrite; it is not a
         lookup being served, so it must not show up as one."""
-        from academic_tools_mcp import _stats, cache
+        from academic_tools_mcp import cache
+        from academic_tools_mcp.net import stats
 
-        _stats.reset()
+        stats.reset()
         cache.put("probe", "things", "present", {"a": 1})
         cache.get("probe", "things", "present", count=False)
         cache.get("probe", "things", "absent", count=False)
 
-        assert _stats.snapshot()["providers"].get("probe", {}) == {}
+        assert stats.snapshot()["providers"].get("probe", {}) == {}
 
 
 async def _noop_sleep(_seconds):

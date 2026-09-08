@@ -3,7 +3,6 @@
 import asyncio
 from typing import Any
 
-from .. import _doi, _http
 from .._app import (
     DOI,
     FORCE_REFRESH,
@@ -14,7 +13,9 @@ from .._app import (
     mcp,
     page_bounds,
 )
+from ..net import http
 from ..providers import crossref, opencitations
+from ..util import doinorm
 
 # Auto source-selection bias. Crossref entries carry structured
 # bibliographic metadata (author/title/year/journal/DOI); OpenCitations
@@ -45,10 +46,10 @@ def _reject_non_doi(doi: str) -> dict[str, Any] | None:
     cache entry keyed to an identifier that could never have resolved. Uses the
     same predicate as the metadata dispatcher, so the two agree on what a DOI is.
     """
-    if _doi.looks_like_doi(doi):
+    if doinorm.looks_like_doi(doi):
         return None
     return {
-        **_http.not_found(f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only."),
+        **http.not_found(f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only."),
         "suggestion": (
             "Pass a DOI (e.g. 10.1038/nature12373), in bare, doi: or "
             "https://doi.org/ form. For an arXiv paper, call get_paper_metadata "
@@ -139,7 +140,7 @@ async def get_paper_references_count(
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
-    doi = _doi.canonical(doi)
+    doi = doinorm.canonical(doi)
 
     cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
@@ -272,7 +273,7 @@ async def get_paper_references(
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
-    doi = _doi.canonical(doi)
+    doi = doinorm.canonical(doi)
 
     if source == "crossref":
         work = await crossref.get_work(doi, force_refresh=force_refresh)
@@ -378,7 +379,7 @@ async def get_paper_citations_count(
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
-    doi = _doi.canonical(doi)
+    doi = doinorm.canonical(doi)
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
@@ -419,7 +420,7 @@ async def get_paper_citations(
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
-    doi = _doi.canonical(doi)
+    doi = doinorm.canonical(doi)
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:

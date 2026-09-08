@@ -3,7 +3,7 @@
 Three invariants are stronger than any example can state, and each one has a
 concrete failure the module has to be safe from:
 
-* one paper, one cache key — the reason `_doi` is single-homed, restated for the
+* one paper, one cache key — the reason `doinorm` is single-homed, restated for the
   provider that layers a prefix on top of it;
 * the PDF, the markdown and the section index all key on that same string, so
   `cache_search` can invert an ACL filename back to the identifier the router
@@ -17,11 +17,12 @@ from urllib.parse import quote, urlsplit
 from hypothesis import given
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, _stems, cache_search, manual, papers
+from academic_tools_mcp import _stems, cache_search, manual, papers
 from academic_tools_mcp.providers import acl
+from academic_tools_mcp.util import doinorm
 
 # An Anthology ID is the DOI suffix, verbatim — `_strip_acl_prefix` hands back
-# whatever followed the prefix. So the alphabet is `_doi`'s suffix alphabet
+# whatever followed the prefix. So the alphabet is `dois`'s suffix alphabet
 # (`?`/`#` excluded for the reason `test_doi_properties` gives: the bare and URL
 # spellings deliberately diverge on them), not the shapes ACL actually mints.
 _SUFFIX_ALPHABET = st.characters(
@@ -78,7 +79,7 @@ def test_every_spelling_yields_one_key_and_one_anthology_id(doi: str) -> None:
 @given(acl_dois)
 def test_canonical_key_is_the_shared_one(doi: str) -> None:
     """No second normalization policy: ACL layers a prefix, not a key rule."""
-    assert acl.canonical_key(doi) == _doi.canonical(doi)
+    assert acl.canonical_key(doi) == doinorm.canonical(doi)
 
 
 @given(st.text(max_size=60))

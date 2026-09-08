@@ -141,7 +141,7 @@ class TestUserAgent:
             captured["kwargs"] = kwargs
             return object()
 
-        monkeypatch.setattr(arxiv._clients, "get_client", fake_get_client)
+        monkeypatch.setattr(arxiv.clients, "get_client", fake_get_client)
         arxiv._get_client()
 
         assert captured["name"] == arxiv.NAMESPACE
@@ -269,7 +269,7 @@ class TestParseEntry:
 # ---------------------------------------------------------------------------
 #
 # The rate-limiter gap, concurrency cap, and burst-cap backpressure are no
-# longer per-provider code — they live in ``_throttle.Throttle`` and are
+# longer per-provider code — they live in ``throttle.Throttle`` and are
 # covered once in tests/test_throttle.py.
 
 
@@ -283,7 +283,8 @@ class TestGetPaperSingleFlight:
 
     @pytest.mark.asyncio
     async def test_concurrent_same_id_collapses_to_one_fetch(self, tmp_path, monkeypatch):
-        from academic_tools_mcp import _clients, _singleflight, cache
+        from academic_tools_mcp import _singleflight, cache
+        from academic_tools_mcp.net import clients
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
@@ -319,7 +320,7 @@ class TestGetPaperSingleFlight:
                 await asyncio.sleep(0)
                 return StubResponse()
 
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
 
         results = await asyncio.gather(*[arxiv.get_paper("2301.00001") for _ in range(5)])
 
@@ -336,7 +337,8 @@ class TestGetPaperSingleFlight:
         # same bad ID must NOT hit the network. Without negative
         # caching, an agent that retries on error would re-fetch on
         # every attempt and burn through the throttle budget.
-        from academic_tools_mcp import _clients, _singleflight, cache
+        from academic_tools_mcp import _singleflight, cache
+        from academic_tools_mcp.net import clients
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
@@ -368,7 +370,7 @@ class TestGetPaperSingleFlight:
                 get_calls += 1
                 return StubResponse()
 
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
 
         # First call: hits the network, gets the not-found, caches it.
         result1 = await arxiv.get_paper("bogus-id")
@@ -396,7 +398,8 @@ class TestGetPaperSingleFlight:
         """force_refresh must invalidate both positive and negative
         entries before fetching, so an agent can re-pull a paper whose
         cached record might be stale (e.g. a new version uploaded)."""
-        from academic_tools_mcp import _clients, _singleflight, cache
+        from academic_tools_mcp import _singleflight, cache
+        from academic_tools_mcp.net import clients
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
@@ -429,7 +432,7 @@ class TestGetPaperSingleFlight:
                 get_calls += 1
                 return StubResponse()
 
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
 
         # Warm the cache.
         await arxiv.get_paper("2301.00001")
@@ -460,7 +463,8 @@ class TestGetPaperSingleFlight:
         # Different canonical IDs must NOT share a single-flight slot.
         # Otherwise unrelated papers would serialise on each other,
         # which defeats the point.
-        from academic_tools_mcp import _clients, _singleflight, cache
+        from academic_tools_mcp import _singleflight, cache
+        from academic_tools_mcp.net import clients
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
@@ -497,7 +501,7 @@ class TestGetPaperSingleFlight:
                     },
                 )()
 
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
 
         results = await asyncio.gather(
             arxiv.get_paper("2301.00001"),
@@ -517,7 +521,7 @@ class TestGetPaperSingleFlight:
 def _reset_throttle(monkeypatch, tmp_path):
     """Point the cache at tmp_path and disable the throttle gap (no real sleeps).
 
-    The conftest autouse fixture already resets each provider's ``_throttle``
+    The conftest autouse fixture already resets each provider's ``throttle``
     (pending / last-start map / lock / sem) and ``_single_flight`` between
     tests; here we additionally zero the inter-start gap so a multi-request test
     doesn't wait out arxiv's 3 s pacing.
@@ -532,7 +536,7 @@ def _reset_throttle(monkeypatch, tmp_path):
 def _stub_text_response(monkeypatch, text, *, status_code=200, raises=None):
     """Install a stub client returning ``text`` with a configurable
     ``raise_for_status``. Returns a 1-element list whose [0] counts GETs."""
-    from academic_tools_mcp import _clients
+    from academic_tools_mcp.net import clients
 
     calls = [0]
 
@@ -551,7 +555,7 @@ def _stub_text_response(monkeypatch, text, *, status_code=200, raises=None):
             calls[0] += 1
             return StubResponse()
 
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
     return calls
 
 
@@ -739,7 +743,7 @@ class TestVersionedIdentity:
 
     def _install(self, monkeypatch):
         """Serve a version-specific feed based on the requested id."""
-        from academic_tools_mcp import _clients
+        from academic_tools_mcp.net import clients
 
         requested: list[str] = []
         outer = self
@@ -760,7 +764,7 @@ class TestVersionedIdentity:
                 title = "Version Two Title" if version == "v2" else "Version One Title"
                 return StubResponse(outer._feed(version, title))
 
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
         monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
         return requested
 
@@ -814,7 +818,7 @@ class TestArxivPrefixNormalization:
             ("arXiv: 2301.00001", "2301.00001"),
             ("  arXiv:2301.00001v2  ", "2301.00001v2"),
             ("arXiv:hep-th/9901001", "hep-th/9901001"),
-            # Prefix stripped before the URL handling, as `_doi.normalize`
+            # Prefix stripped before the URL handling, as `doinorm.normalize`
             # does for `doi:` — both nested forms occur in the wild.
             ("arXiv:https://arxiv.org/abs/2301.00001", "2301.00001"),
             ("arXiv:arXiv:2301.00001", "2301.00001"),
@@ -876,7 +880,7 @@ _ERROR_ENTRY = (
 
 def _stub_capturing_client(monkeypatch, text):
     """Install a stub client returning ``text`` and recording each GET's params."""
-    from academic_tools_mcp import _clients
+    from academic_tools_mcp.net import clients
 
     seen: list[dict] = []
 
@@ -894,7 +898,7 @@ def _stub_capturing_client(monkeypatch, text):
             seen.append(kwargs.get("params") or {})
             return StubResponse()
 
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
     return seen
 
 
@@ -1098,7 +1102,7 @@ class TestNotFoundShapes:
 
     Regression: the 404 branch classified from the raised ``HTTPStatusError``,
     so what landed in the negative cache for the full TTL was
-    ``_http.error_dict``'s fallthrough — ``arXiv HTTP 404: <body snippet>`` —
+    ``http.error_dict``'s fallthrough — ``arXiv HTTP 404: <body snippet>`` —
     where the other two branches cached a clean message.
     """
 
@@ -1148,7 +1152,7 @@ class TestNotFoundShapes:
 
         A stub whose ``raise_for_status`` is a no-op still yields the clean
         not-found payload — which it could not if the branch lived in
-        ``except _http.HTTPX_ERRORS``.
+        ``except http.HTTPX_ERRORS``.
         """
         _reset_throttle(monkeypatch, tmp_path)
         _stub_text_response(

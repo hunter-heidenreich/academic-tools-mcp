@@ -9,7 +9,9 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from . import _singleflight, _stats, atomic, config
+from . import _singleflight, atomic
+from .net import stats
+from .util import config
 
 
 def _resolve_cache_root() -> Path:
@@ -57,7 +59,7 @@ def cache_dir(namespace: str, entity: str) -> Path:
 def _cache_key(identifier: str) -> str:
     """Hash an arbitrary identifier into a safe, exact filename.
 
-    Exact, never normalizing: canonicalize before calling (``_doi.canonical``).
+    Exact, never normalizing: canonicalize before calling (``doinorm.canonical``).
     Hashing also keeps case-variant identifiers apart on a case-insensitive
     filesystem, so macOS and Linux agree on what is one entry.
     """
@@ -117,7 +119,7 @@ def _write_entry(namespace: str, path: Path, entry: dict[str, Any]) -> bool:
         atomic.write_text(path, payload)
     except OSError:
         # ENOSPC, EROFS, EACCES, EDQUOT, a name too long...
-        _stats.incr(namespace, "cache_write_failures")
+        stats.incr(namespace, "cache_write_failures")
         return False
     return True
 
@@ -143,7 +145,7 @@ def get(
     """
     data = _read_entry(_entry_path(namespace, entity, identifier), max_age_seconds=max_age_seconds)
     if count and data is not None:
-        _stats.incr(namespace, "cache_hits")
+        stats.incr(namespace, "cache_hits")
     return data
 
 
@@ -203,7 +205,7 @@ def get_negative(namespace: str, entity: str, identifier: str) -> dict[str, Any]
     if not isinstance(expires_at, (int, float)) or expires_at < time.time():
         _unlink_quietly(path)
         return None
-    _stats.incr(namespace, "negative_hits")
+    stats.incr(namespace, "negative_hits")
     # Only our own key: caller keys like _canonical_id must round-trip.
     entry.pop("_expires_at", None)
     return entry
@@ -290,7 +292,7 @@ async def cached_lookup(
         hit = short_circuit()
         if hit is not None:
             return hit
-        _stats.incr(namespace, "cache_misses")
+        stats.incr(namespace, "cache_misses")
         return await fetch()
 
     result = await single_flight.do(sf_key if sf_key is not None else canonical, _runner)

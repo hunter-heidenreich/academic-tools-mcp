@@ -1,4 +1,4 @@
-"""Counter, discovery and DEBUG_REQUESTS tests for ``_stats``.
+"""Counter, discovery and DEBUG_REQUESTS tests for ``stats``.
 
 Wired into cache, the PDF write path and the per-provider throttles; these
 tests confirm the counters move when the underlying paths fire, that the
@@ -18,7 +18,8 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 import academic_tools_mcp
-from academic_tools_mcp import _singleflight, _stats, cache
+from academic_tools_mcp import _singleflight, cache
+from academic_tools_mcp.net import stats
 
 
 def _all_package_modules():
@@ -46,14 +47,14 @@ def _module_throttles() -> dict[str, Any]:
 class TestCounters:
     def test_a_serve_from_cache_counts_a_hit(self):
         assert cache.get("openalex", "works", "k1") is None
-        snap = _stats.snapshot()["providers"].get("openalex", {})
+        snap = stats.snapshot()["providers"].get("openalex", {})
         assert snap.get("cache_misses", 0) == 0, (
             "a bare read that finds nothing went nowhere — it is not a miss"
         )
 
         cache.put("openalex", "works", "k1", {"title": "X"})
         assert cache.get("openalex", "works", "k1") is not None
-        snap = _stats.snapshot()["providers"]["openalex"]
+        snap = stats.snapshot()["providers"]["openalex"]
         assert snap["cache_hits"] == 1
         assert snap.get("cache_misses", 0) == 0
 
@@ -85,7 +86,7 @@ class TestCounters:
         await lookup()
 
         assert calls == 1
-        snap = _stats.snapshot()["providers"]["openalex"]
+        snap = stats.snapshot()["providers"]["openalex"]
         assert snap["cache_misses"] == 1, snap
         assert snap["cache_hits"] == 1, snap
 
@@ -108,7 +109,7 @@ class TestCounters:
                 fetch=fetch,
             )
 
-        snap = _stats.snapshot()["providers"]["openalex"]
+        snap = stats.snapshot()["providers"]["openalex"]
         assert snap["negative_hits"] == 3, snap
         assert snap.get("cache_misses", 0) == 0, snap
 
@@ -135,24 +136,24 @@ class TestCounters:
             fetch=fetch,
         )
         assert result == {"x": 2}
-        assert _stats.snapshot()["providers"]["biorxiv"]["cache_misses"] == 1
+        assert stats.snapshot()["providers"]["biorxiv"]["cache_misses"] == 1
 
     def test_negative_hit_counter(self):
         cache.put_negative("arxiv", "papers", "bogus", {"error": "404"})
         assert cache.get_negative("arxiv", "papers", "bogus") == {"error": "404"}
-        assert _stats.snapshot()["providers"]["arxiv"]["negative_hits"] == 1
+        assert stats.snapshot()["providers"]["arxiv"]["negative_hits"] == 1
 
     def test_reset_clears_counters(self):
         cache.put("openalex", "works", "k", {"x": 1})
         cache.get("openalex", "works", "k")
-        assert _stats.snapshot()["providers"]["openalex"]["cache_hits"] == 1
+        assert stats.snapshot()["providers"]["openalex"]["cache_hits"] == 1
 
-        _stats.reset()
+        stats.reset()
 
         # An `or` over two ways of passing would make this test unfailable:
         # the row may survive (in_flight is recomputed from live module state)
         # but the counter itself must be gone, not merely absent-by-default.
-        row = _stats.snapshot()["providers"].get("openalex", {})
+        row = stats.snapshot()["providers"].get("openalex", {})
         assert "cache_hits" not in row, row
 
     @given(
@@ -167,12 +168,12 @@ class TestCounters:
     def test_every_increment_is_reflected_exactly_once(self, events):
         """The counter for each (provider, metric) is the number of ``incr``
         calls for it — no double counting, no cross-key leakage."""
-        _stats.reset()
+        stats.reset()
         for provider, metric in events:
-            _stats.incr(provider, metric)
+            stats.incr(provider, metric)
 
         expected = Counter(events)
-        providers = _stats.snapshot()["providers"]
+        providers = stats.snapshot()["providers"]
         for (provider, metric), count in expected.items():
             assert providers[provider][metric] == count
         for provider, row in providers.items():
@@ -185,11 +186,11 @@ class TestCounters:
 class TestSnapshot:
     def test_includes_in_flight_from_the_live_throttle(self, monkeypatch):
         """In-flight pending counts come from each provider module's shared
-        ``_throttle.pending`` count, not from the cumulative counters."""
+        ``throttle.pending`` count, not from the cumulative counters."""
         from academic_tools_mcp.providers import arxiv
 
         monkeypatch.setattr(arxiv._throttle, "pending", 3)
-        assert _stats.snapshot()["providers"]["arxiv"]["in_flight"] == 3
+        assert stats.snapshot()["providers"]["arxiv"]["in_flight"] == 3
 
     def test_in_flight_lands_in_the_row_holding_that_providers_counters(self, monkeypatch):
         """One row per provider. Keying in-flight off anything but the
@@ -197,10 +198,10 @@ class TestSnapshot:
         operator reading the hit rate of a module sees half its story."""
         from academic_tools_mcp import oa_download
 
-        _stats.incr(oa_download.NAMESPACE, "cache_hits")
+        stats.incr(oa_download.NAMESPACE, "cache_hits")
         monkeypatch.setattr(oa_download._throttle, "pending", 2)
 
-        row = _stats.snapshot()["providers"][oa_download.NAMESPACE]
+        row = stats.snapshot()["providers"][oa_download.NAMESPACE]
         assert row == {"cache_hits": 1, "in_flight": 2}
 
     def test_reports_which_env_file_won(self, monkeypatch, tmp_path):
@@ -212,28 +213,28 @@ class TestSnapshot:
         string: a ``Path`` is not JSON-serialisable, and this rides the MCP
         boundary.
         """
-        from academic_tools_mcp import config
+        from academic_tools_mcp.util import config
 
         monkeypatch.setattr(config, "ENV_FILE", tmp_path / "chosen.env")
-        assert _stats.snapshot()["env_file"] == str(tmp_path / "chosen.env")
+        assert stats.snapshot()["env_file"] == str(tmp_path / "chosen.env")
 
     def test_env_file_is_null_when_no_file_was_found(self, monkeypatch):
-        from academic_tools_mcp import config
+        from academic_tools_mcp.util import config
 
         monkeypatch.setattr(config, "ENV_FILE", None)
-        assert _stats.snapshot()["env_file"] is None
+        assert stats.snapshot()["env_file"] is None
 
     def test_rows_are_copies(self):
         """The snapshot is a report, not a handle: an operator printing it,
         or a caller stripping a key before logging, must not edit the live
         counters."""
-        _stats.incr("probe", "http_calls")
+        stats.incr("probe", "http_calls")
 
-        snap = _stats.snapshot()
+        snap = stats.snapshot()
         snap["providers"]["probe"]["http_calls"] = 999
         snap["providers"]["injected"] = {"http_calls": 1}
 
-        providers = _stats.snapshot()["providers"]
+        providers = stats.snapshot()["providers"]
         assert providers["probe"]["http_calls"] == 1
         assert "injected" not in providers
 
@@ -245,7 +246,7 @@ class TestSnapshot:
         importlib.import_module(name)
         monkeypatch.delitem(sys.modules, name)
 
-        providers = _stats.snapshot()["providers"]
+        providers = stats.snapshot()["providers"]
 
         assert name not in sys.modules, "snapshot() imported a module to sample it"
         assert "wikipedia" not in providers
@@ -261,11 +262,9 @@ class TestThrottleDiscovery:
         expected = _module_throttles()
         assert expected, "no throttled modules found — the scan is broken"
 
-        found = {t.namespace for t in _stats.throttles()}
+        found = {t.namespace for t in stats.throttles()}
         for module_name, throttle in expected.items():
-            assert throttle.namespace in found, (
-                f"{module_name} is not sampled by _stats.throttles()"
-            )
+            assert throttle.namespace in found, f"{module_name} is not sampled by stats.throttles()"
 
     def test_throttle_namespace_matches_the_modules_cache_namespace(self):
         """The invariant the snapshot's keying rests on: a throttle filed under
@@ -293,13 +292,13 @@ class TestThrottleDiscovery:
         assert checked >= 8, f"only {checked} providers checked — discovery regressed"
 
     def test_a_second_throttle_on_a_module_is_discovered(self, monkeypatch):
-        """Discovery matches the type, not the attribute name ``_throttle``.
+        """Discovery matches the type, not the attribute name ``throttle``.
 
         A module that paces one endpoint apart from the rest (crossref's search
         gate is the standing candidate) would otherwise hold a throttle that no
         test ever resets and no snapshot ever samples.
         """
-        from academic_tools_mcp._throttle import Throttle
+        from academic_tools_mcp.net.throttle import Throttle
         from academic_tools_mcp.providers import wikipedia
 
         second = Throttle(
@@ -310,12 +309,12 @@ class TestThrottleDiscovery:
         )
         monkeypatch.setattr(wikipedia, "_search_throttle", second, raising=False)
 
-        assert any(t is second for t in _stats.throttles())
+        assert any(t is second for t in stats.throttles())
 
     def test_in_flight_sums_every_throttle_in_the_namespace(self, monkeypatch):
         """Two throttles, one row: assigning instead of summing would report
         whichever the scan reached last and hide the other's traffic."""
-        from academic_tools_mcp._throttle import Throttle
+        from academic_tools_mcp.net.throttle import Throttle
         from academic_tools_mcp.providers import wikipedia
 
         second = Throttle(
@@ -328,12 +327,12 @@ class TestThrottleDiscovery:
         monkeypatch.setattr(wikipedia, "_search_throttle", second, raising=False)
         monkeypatch.setattr(wikipedia._throttle, "pending", 3)
 
-        assert _stats.snapshot()["providers"][wikipedia.NAMESPACE]["in_flight"] == 5
+        assert stats.snapshot()["providers"][wikipedia.NAMESPACE]["in_flight"] == 5
 
     def test_yields_each_instance_once(self):
         """Deduped by identity: a throttle re-exported into a second module
         would otherwise be reset twice and counted twice."""
-        namespaces = [id(t) for t in _stats.throttles()]
+        namespaces = [id(t) for t in stats.throttles()]
         assert len(namespaces) == len(set(namespaces))
 
     def test_a_module_level_mock_is_not_mistaken_for_a_throttle(self, monkeypatch):
@@ -346,7 +345,7 @@ class TestThrottleDiscovery:
 
         monkeypatch.setattr(wikipedia, "_probe_client", MagicMock(), raising=False)
 
-        providers = _stats.snapshot()["providers"]
+        providers = stats.snapshot()["providers"]
 
         assert all(isinstance(name, str) for name in providers)
         assert all(isinstance(row.get("in_flight", 0), int) for row in providers.values())
@@ -370,15 +369,15 @@ class TestDebugRequests:
     )
     def test_flag_parsing(self, monkeypatch, flag, expected):
         monkeypatch.setenv("DEBUG_REQUESTS", flag)
-        assert _stats.debug_requests_enabled() is expected
+        assert stats.debug_requests_enabled() is expected
 
     def test_unset_is_off(self, monkeypatch):
         monkeypatch.delenv("DEBUG_REQUESTS", raising=False)
-        assert _stats.debug_requests_enabled() is False
+        assert stats.debug_requests_enabled() is False
 
     def test_log_request_writes_to_stderr_when_enabled(self, monkeypatch, capsys):
         monkeypatch.setenv("DEBUG_REQUESTS", "1")
-        _stats.log_request("arxiv", "https://example/q", 0.123)
+        stats.log_request("arxiv", "https://example/q", 0.123)
         captured = capsys.readouterr()
         # MCP servers speak JSON-RPC on stdout; logs must go to stderr only.
         assert captured.out == ""
@@ -388,7 +387,7 @@ class TestDebugRequests:
 
     def test_log_request_silent_when_disabled(self, monkeypatch, capsys):
         monkeypatch.delenv("DEBUG_REQUESTS", raising=False)
-        _stats.log_request("arxiv", "https://example/q", 0.123)
+        stats.log_request("arxiv", "https://example/q", 0.123)
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err == ""

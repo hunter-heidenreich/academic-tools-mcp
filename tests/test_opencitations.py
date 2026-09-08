@@ -1,9 +1,9 @@
 """Unit tests for ``providers/opencitations.py``.
 
 The transport seam is a real ``httpx.MockTransport`` patched over
-``_clients.get_client`` (as ``test_openalex.py`` and ``test_biorxiv.py`` do)
+``clients.get_client`` (as ``test_openalex.py`` and ``test_biorxiv.py`` do)
 rather than a stub over the client: ``status_code``, ``raise_for_status`` and
-``.json()`` are then genuine, so ``_http.HTTPX_ERRORS`` is reachable and the
+``.json()`` are then genuine, so ``http.HTTPX_ERRORS`` is reachable and the
 throttle and retry the provider actually uses stay in the path.
 """
 
@@ -15,7 +15,8 @@ from urllib.parse import unquote, urlsplit
 import httpx
 import pytest
 
-from academic_tools_mcp import _clients, cache
+from academic_tools_mcp import cache
+from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import opencitations
 
 # ---------------------------------------------------------------------------
@@ -83,7 +84,7 @@ def _stub_json_responses(monkeypatch, *payloads, slow=False):
         return respond(request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(slow_respond if slow else respond))
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
     return requests
 
 
@@ -95,7 +96,7 @@ def _stub_no_network(monkeypatch):
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
 
 
 def _record(id_field, other_doi, **overrides):

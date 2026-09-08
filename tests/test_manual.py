@@ -182,7 +182,7 @@ class TestImportLocalPdf:
         """A full disk during the copy owes the same contract as a failed
         ``cache.put``: an error dict rather than a raised OSError, and a
         ``cache_write_failures`` tick so the operator can see the disk."""
-        from academic_tools_mcp import _stats
+        from academic_tools_mcp.net import stats
 
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake content")
@@ -196,7 +196,7 @@ class TestImportLocalPdf:
 
         assert "error" in result
         assert "Could not copy" in result["error"]
-        counters = _stats.snapshot()["providers"]["manual"]
+        counters = stats.snapshot()["providers"]["manual"]
         assert counters["cache_write_failures"] == 1, counters
 
     def test_cached_on_second_import(self, tmp_path):
@@ -1148,7 +1148,7 @@ class TestMigrateMisroutedArxiv:
         """The index is namespaced, so the entry left behind is unreachable."""
         from academic_tools_mcp import cache, papers
 
-        # The legacy manual key: `_doi.normalize` strips `doi:`, not `arXiv:`.
+        # The legacy manual key: `doinorm.normalize` strips `doi:`, not `arXiv:`.
         canonical = "arxiv:2301.00001"
         md_path = papers.markdown_path("manual", canonical)
         papers.store_markdown_and_index("manual", canonical, md_path, "# T", "imported")

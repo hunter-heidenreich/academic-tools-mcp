@@ -22,7 +22,8 @@ file makes with ``from .test_doi_properties import dois``.
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, _stems, cache, cache_search, manual, papers
+from academic_tools_mcp import _stems, cache, cache_search, manual, papers
+from academic_tools_mcp.util import doinorm
 
 from .test_cache_search_properties import (
     arxiv_doi_ids,
@@ -95,7 +96,7 @@ def test_the_router_and_the_stem_inversion_share_one_grammar(identifier: str) ->
 def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatch, spelling):
     """Every spelling's legacy ``manual`` file becomes readable under ``arxiv``.
 
-    The legacy key is what the pre-fix router produced: ``_doi.canonical``,
+    The legacy key is what the pre-fix router produced: ``doinorm.canonical``,
     which strips ``doi:`` but not ``arXiv:``. A sweep that reuses the source
     filename leaves the prefixed spellings in the arXiv namespace under a stem
     that namespace never builds — moved, but still unreachable.
@@ -103,7 +104,7 @@ def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatc
     root = tmp_path_factory.mktemp("cache")
     monkeypatch.setattr(cache, "CACHE_ROOT", root)
 
-    legacy_key = _doi.canonical(spelling)
+    legacy_key = doinorm.canonical(spelling)
     legacy = papers.markdown_path(manual.NAMESPACE, legacy_key)
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("# Body", encoding="utf-8")
@@ -123,7 +124,7 @@ def test_the_sweep_is_idempotent(tmp_path_factory, monkeypatch, spelling):
     root = tmp_path_factory.mktemp("cache")
     monkeypatch.setattr(cache, "CACHE_ROOT", root)
 
-    legacy = papers.markdown_path(manual.NAMESPACE, _doi.canonical(spelling))
+    legacy = papers.markdown_path(manual.NAMESPACE, doinorm.canonical(spelling))
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("# Body", encoding="utf-8")
 

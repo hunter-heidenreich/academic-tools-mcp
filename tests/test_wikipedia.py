@@ -4,7 +4,8 @@ from typing import Any
 import httpx
 import pytest
 
-from academic_tools_mcp import _clients, cache
+from academic_tools_mcp import cache
+from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import wikipedia
 
 # ---------------------------------------------------------------------------
@@ -39,7 +40,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, *payloads: Any) -> list[httpx.Request
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
     return requests
 
 
@@ -51,7 +52,7 @@ def _stub_no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
 
 
 _SUMMARY_PAYLOAD = {

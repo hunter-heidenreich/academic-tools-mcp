@@ -22,7 +22,8 @@ import re
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _textnorm, cache, cache_search, manual, papers
+from academic_tools_mcp import cache, cache_search, manual, papers
+from academic_tools_mcp.util import textnorm
 
 from .test_doi_properties import dois
 
@@ -212,7 +213,7 @@ def test_snippet_offset_lands_on_the_match_not_beside_it(
     """`char_offset` slices the ORIGINAL markdown back to the matched term.
 
     The transforms are not length-preserving, so this holds only if every hit
-    is mapped through `_textnorm`'s index map — including on the default
+    is mapped through `textnorm`'s index map — including on the default
     `normalize=False` path, where a raw `str.lower()` looks harmless.
     """
     term = "zqxwidget"
@@ -220,7 +221,7 @@ def test_snippet_offset_lands_on_the_match_not_beside_it(
     snippet, offset = cache_search._extract_snippet(markdown, {term}, normalize=normalize)
     assert offset is not None
     recovered = markdown[offset : offset + len(term)]
-    assert (_textnorm.fold(recovered) if normalize else recovered).lower() == term
+    assert (textnorm.fold(recovered) if normalize else recovered).lower() == term
     assert term in snippet
 
 
@@ -366,7 +367,7 @@ def test_normalizing_is_folding_then_tokenizing(text: str) -> None:
     normalization policy here would let them diverge.
     """
     assert cache_search._content_tokens(text, normalize=True) == cache_search._content_tokens(
-        _textnorm.fold(text)
+        textnorm.fold(text)
     )
 
 

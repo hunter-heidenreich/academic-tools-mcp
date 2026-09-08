@@ -3,8 +3,9 @@ from urllib.parse import quote, urlsplit
 
 import pytest
 
-from academic_tools_mcp import _doi, _stems, manual, papers
+from academic_tools_mcp import _stems, manual, papers
 from academic_tools_mcp.providers import acl
+from academic_tools_mcp.util import doinorm
 
 # ---------------------------------------------------------------------------
 # DOI detection
@@ -293,8 +294,10 @@ class TestCanonicalKey:
 
     def test_delegates_to_the_shared_normalizer(self):
         # ACL layers no URL form of its own, so a second definition here would
-        # be `_doi.canonical` respelled — and free to drift from it.
-        assert acl.canonical_key("10.18653/V1/P16-1160") == _doi.canonical("10.18653/V1/P16-1160")
+        # be `doinorm.canonical` respelled — and free to drift from it.
+        assert acl.canonical_key("10.18653/V1/P16-1160") == doinorm.canonical(
+            "10.18653/V1/P16-1160"
+        )
 
     def test_folds_case(self):
         assert acl.canonical_key("10.18653/V1/P16-1160") == "10.18653/v1/p16-1160"
@@ -388,7 +391,7 @@ class TestOldFormatBoundaries:
 class TestPdfUrlEncoding:
     """The id is percent-encoded, so the URL names exactly the resource it claims.
 
-    A DOI suffix reaches here untouched — `_doi.normalize` keeps a literal `?`
+    A DOI suffix reaches here untouched — `doinorm.normalize` keeps a literal `?`
     or `#` in a bare DOI deliberately — so an unencoded interpolation would
     request one resource while the response reported another as `pdf_url`.
     """

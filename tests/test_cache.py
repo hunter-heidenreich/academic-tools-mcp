@@ -245,14 +245,14 @@ def test_warm_never_clobbers_a_within_ttl_entry(tmp_path, monkeypatch):
 
 def test_warm_does_not_move_the_hit_counter(tmp_path, monkeypatch):
     """The probe is not a lookup being served — `count=False`."""
-    from academic_tools_mcp import _stats
+    from academic_tools_mcp.net import stats
 
     cache.put("crossref", "works", "10.1/x", {"title": "Live"})
-    before = _stats.snapshot()["providers"].get("crossref", {}).get("cache_hits", 0)
+    before = stats.snapshot()["providers"].get("crossref", {}).get("cache_hits", 0)
 
     cache.warm("crossref", "works", "10.1/x", {"title": "From search"}, max_age_seconds=3600)
 
-    after = _stats.snapshot()["providers"].get("crossref", {}).get("cache_hits", 0)
+    after = stats.snapshot()["providers"].get("crossref", {}).get("cache_hits", 0)
     assert after == before
 
 

@@ -26,9 +26,10 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, server
+from academic_tools_mcp import server
 from academic_tools_mcp.providers import arxiv, biorxiv, openalex
 from academic_tools_mcp.tools import paper
+from academic_tools_mcp.util import doinorm
 
 from .test_arxiv_properties import bare_arxiv_ids
 from .test_biorxiv_properties import biorxiv_dois
@@ -303,7 +304,7 @@ def test_every_spelling_of_one_doi_echoes_one_canonical_id(
     re-normalizing whatever the user typed, so all four tools must agree — and
     the batch must still give each spelling its own slot under the one id."""
     _serve(monkeypatch)
-    canonical = _doi.canonical(doi)
+    canonical = doinorm.canonical(doi)
     spellings = [doi, f"doi:{doi}", f"DOI: {doi}", f"https://doi.org/{doi}", f"  {doi}  "]
 
     for spelling in spellings:

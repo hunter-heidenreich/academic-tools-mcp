@@ -79,7 +79,7 @@ async def _download_pdf_by_provider(
         }
 
     if "error" in result:
-        # _http supplies a retry verdict, never advice; agents branch on `suggestion`.
+        # http supplies a retry verdict, never advice; agents branch on `suggestion`.
         return _enrich_error(
             result,
             "Wait and retry — the provider is temporarily unavailable."

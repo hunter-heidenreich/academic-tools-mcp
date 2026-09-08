@@ -119,7 +119,7 @@ def test_cache_key_is_deterministic(namespace: str, entity: str, identifier: str
 # regime is *near-misses*: pairs a lossy key function would fold together. Case
 # folding, whitespace trimming and Unicode normalization are the plausible
 # slips, and each is a real distinction upstream — arXiv IDs are case-sensitive,
-# and `_doi.canonical` is where deliberate folding belongs, not here.
+# and `doinorm.canonical` is where deliberate folding belongs, not here.
 _VARIANTS = (
     str.swapcase,
     str.lower,

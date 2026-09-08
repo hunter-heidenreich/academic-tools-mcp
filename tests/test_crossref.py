@@ -7,8 +7,10 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _clients, _doi, _singleflight, cache
+from academic_tools_mcp import _singleflight, cache
+from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import crossref
+from academic_tools_mcp.util import doinorm
 
 # ---------------------------------------------------------------------------
 # Shared transport fakes
@@ -77,7 +79,7 @@ def _stub_json_responses(monkeypatch, *payloads, status_code=200, status_codes=N
                 code = status_codes[idx] if idx < len(status_codes) else status_codes[-1]
             return StubResponse(payload, code)
 
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
     return recorder
 
 
@@ -89,7 +91,7 @@ def _stub_transport_error(monkeypatch, exc):
         async def get(self, url, **kwargs):
             raise exc
 
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
 
 
 def _work_response(doi="10.1234/x"):
@@ -271,7 +273,7 @@ class TestSearchWorksShapeGuards:
     @pytest.mark.parametrize("doi", [True, 5, ["10.1/a"], {"v": "10.1/a"}])
     @pytest.mark.asyncio
     async def test_a_non_string_doi_is_skipped_not_fatal(self, monkeypatch, tmp_path, doi):
-        """Truthiness isn't enough: a non-string DOI reaches _doi.normalize and
+        """Truthiness isn't enough: a non-string DOI reaches doinorm.normalize and
         raises AttributeError, caught by neither except clause."""
         _reset_crossref(monkeypatch, tmp_path)
         good = {"DOI": "10.1234/A", "title": ["A"]}
@@ -338,7 +340,7 @@ class TestGetClientWiring:
             captured.update(kwargs)
             return object()
 
-        monkeypatch.setattr(_clients, "get_client", fake_get_client)
+        monkeypatch.setattr(clients, "get_client", fake_get_client)
 
         crossref._get_client()
 
@@ -861,7 +863,7 @@ def test_the_requested_path_round_trips_to_the_bare_doi(monkeypatch, doi):
     result = asyncio.run(crossref.get_work(doi, force_refresh=True))
 
     if not recorder.urls:
-        # `_http.addresses_a_record` refused before the request was spent — an
+        # `http.addresses_a_record` refused before the request was spent — an
         # encoded path that no longer names a record (a trailing `/` leaves the
         # /works *collection*). Nothing round-trips, and that is the outcome
         # this guard exists to produce. Mirrors the OpenCitations twin.
@@ -874,4 +876,4 @@ def test_the_requested_path_round_trips_to_the_bare_doi(monkeypatch, doi):
     tail = url[len(prefix) :]
     assert "#" not in tail
     assert "?" not in tail
-    assert unquote(tail) == _doi.normalize(doi)
+    assert unquote(tail) == doinorm.normalize(doi)

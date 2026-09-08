@@ -1,7 +1,7 @@
 """Property-based tests for the gated open-access download path.
 
 Three invariants that examples had been standing in for. The first is the
-`_doi` collapse property applied to this path's *artifact*: every spelling of
+`dois` collapse property applied to this path's *artifact*: every spelling of
 one DOI must land on one PDF and one negative-cache verdict, or the same paper
 downloads twice and a "no OA copy" verdict is recorded against a key nobody
 looks up. The second and third pin the trust boundary — `best_pdf_url` may only
@@ -91,7 +91,7 @@ def test_a_non_pdf_body_never_reaches_disk(monkeypatch, body: bytes, content_typ
     be in its Content-Type."""
     doi = "10.1234/prop"
 
-    async def fake_get_work(_doi, **_kw):
+    async def fake_get_work(dois, **_kw):
         return {"best_oa_location": {"pdf_url": "https://pub.example/p.pdf"}}
 
     monkeypatch.setattr(openalex, "get_work", fake_get_work)

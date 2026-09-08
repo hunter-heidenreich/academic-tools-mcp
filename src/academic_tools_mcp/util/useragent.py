@@ -40,7 +40,7 @@ def normalize_mailto(mailto: str | None) -> str | None:
     """Scrub an operator-supplied contact, or ``None`` if nothing survives.
 
     Invariant: scrub before stripping the prefix, in a loop, as
-    ``_doi.normalize`` does — scrubbing can reveal a prefix (``mail(to:x``).
+    ``doinorm.normalize`` does — scrubbing can reveal a prefix (``mail(to:x``).
     """
     if not mailto:
         return None

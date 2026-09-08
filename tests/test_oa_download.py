@@ -16,14 +16,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from academic_tools_mcp import (
-    _clients,
-    _pdf_download,
-    cache,
-    manual,
-    oa_download,
-    server,
-)
+from academic_tools_mcp import _pdf_download, cache, manual, oa_download, server
+from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 
 from ._download_fakes import TIMEOUT as _TIMEOUT
@@ -43,7 +37,7 @@ def _oa_dest() -> Path:
 
 
 def _stub_get_work(monkeypatch, work: dict) -> None:
-    async def fake_get_work(_doi, **_kw):
+    async def fake_get_work(dois, **_kw):
         return work
 
     monkeypatch.setattr(openalex, "get_work", fake_get_work)
@@ -242,7 +236,7 @@ class TestOaDownload:
             raise AssertionError("network hit on negative-cache hit")
 
         monkeypatch.setattr(openalex, "get_work", boom)
-        monkeypatch.setattr(_clients, "get_client", boom)
+        monkeypatch.setattr(clients, "get_client", boom)
         result2 = await oa_download.download_pdf(_DOI)
         assert result2 == result1
         assert "_expires_at" not in result2
@@ -261,7 +255,7 @@ class TestOaDownload:
 
         calls = {"n": 0}
 
-        async def counting_get_work(_doi, **_kw):
+        async def counting_get_work(dois, **_kw):
             calls["n"] += 1
             return {"best_oa_location": {"pdf_url": "http://x/p.pdf"}}
 
@@ -298,7 +292,7 @@ class TestOaDownload:
     async def test_a_transport_error_is_not_negative_cached(self, monkeypatch):
         """A timeout is not a fact about the paper. It was cached for 24h
         anyway: the predicate asked ``retryable is not True``, and
-        ``_http.error_dict`` sets ``retryable`` on backpressure alone — so a
+        ``http.error_dict`` sets ``retryable`` on backpressure alone — so a
         timeout, a connection error, a 5xx and a 429 all arrived with no
         ``retryable`` key and were classified permanent. The predicate is now
         an allowlist (``retryable is False``)."""
@@ -316,7 +310,7 @@ class TestOaDownload:
             def stream(self, *_args, **_kwargs):
                 raise httpx.ReadTimeout("boom")
 
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: ExplodingClient())
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: ExplodingClient())
 
         first = await oa_download.download_pdf(_DOI)
         assert "error" in first
@@ -366,7 +360,7 @@ class TestOaDownload:
     async def test_an_unclassified_openalex_4xx_has_no_import_suggestion(self, monkeypatch):
         """Regression: an OpenAlex 403 used to be read as a definitive miss.
 
-        ``_http.error_dict`` leaves every non-retryable 4xx *unflagged* — no
+        ``http.error_dict`` leaves every non-retryable 4xx *unflagged* — no
         ``retryable`` key at all — so a denylist (``retryable is not True``)
         classified a 403, a 451 and the defensive fallback as dead ends and
         told the agent to go fetch the PDF by hand. The classifier is an
@@ -374,7 +368,7 @@ class TestOaDownload:
         """
         resolves = 0
 
-        async def counting_get_work(_doi, **_kw):
+        async def counting_get_work(dois, **_kw):
             nonlocal resolves
             resolves += 1
             return {"error": "OpenAlex HTTP 403: <html>Forbidden</html>"}
@@ -451,7 +445,7 @@ class TestOaDownload:
             def stream(self, *_args, **_kwargs):
                 raise httpx.ConnectError("boom")
 
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: ExplodingClient())
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: ExplodingClient())
 
         result = await oa_download.download_pdf(_DOI, force_refresh=True)
         assert result["retryable"] is True
@@ -546,7 +540,7 @@ class TestOaDownload:
             raise AssertionError("network hit on negative-cache hit")
 
         monkeypatch.setattr(openalex, "get_work", boom)
-        monkeypatch.setattr(_clients, "get_client", boom)
+        monkeypatch.setattr(clients, "get_client", boom)
         assert await oa_download.download_pdf(_DOI) == first
 
     @pytest.mark.asyncio
@@ -555,7 +549,7 @@ class TestOaDownload:
         %PDF- sniff cannot catch it because the loop body never runs."""
         resolves = 0
 
-        async def counting_get_work(_doi, **_kw):
+        async def counting_get_work(dois, **_kw):
             nonlocal resolves
             resolves += 1
             return {"best_oa_location": {"pdf_url": "http://x/p.pdf"}}
@@ -589,7 +583,7 @@ class TestOaDownload:
         )
         _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": "http://pub.example/p.pdf"}})
         monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
         try:
             result = await oa_download.download_pdf(_DOI)
         finally:
@@ -606,7 +600,7 @@ class TestOaDownload:
         streams = 0
         gate = asyncio.Event()
 
-        async def counting_get_work(_doi, **_kw):
+        async def counting_get_work(dois, **_kw):
             nonlocal resolves
             resolves += 1
             return {"best_oa_location": {"pdf_url": "http://x/p.pdf"}}
@@ -630,7 +624,7 @@ class TestOaDownload:
 
         monkeypatch.setattr(openalex, "get_work", counting_get_work)
         monkeypatch.setattr(oa_download, "_request_slot", _passthrough_slot)
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: GatedClient())
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: GatedClient())
 
         tasks = [asyncio.create_task(oa_download.download_pdf(_DOI)) for _ in range(5)]
         await asyncio.sleep(0)

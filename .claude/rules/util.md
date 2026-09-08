@@ -1,18 +1,15 @@
 ---
 paths:
-  - "src/academic_tools_mcp/_doi.py"
-  - "src/academic_tools_mcp/_useragent.py"
-  - "src/academic_tools_mcp/_textnorm.py"
-  - "src/academic_tools_mcp/config.py"
+  - "src/academic_tools_mcp/util/*.py"
 ---
 
 # Shared utilities
 
-## _doi.py
+## util/doinorm.py
 
-The single home for DOI normalization: `normalize` (bare form), `canonical` (cache-key form), `looks_like_doi` (shape test). Inbound normalization routes through it — `manual._normalize_identifier` and `manual.resolve_metadata_source`, plus each DOI provider's **public** canonicalizer: `canonical_doi` in `openalex` / `crossref` / `opencitations`, `canonical_key` in `biorxiv` / `acl`. Four of the five are pure delegation and are pinned as such by one parametrized test; `biorxiv` is the one that layers a URL shape *on top of* `_doi.normalize` (`_normalize_doi` applies `_BIORXIV_URL_RE` after calling it), never instead of it. ACL's prefix policy lives in `_strip_acl_prefix`, not in a normalizer — don't re-derive `canonical` there.
+The single home for DOI normalization: `normalize` (bare form), `canonical` (cache-key form), `looks_like_doi` (shape test). Inbound normalization routes through it — `manual._normalize_identifier` and `manual.resolve_metadata_source`, plus each DOI provider's **public** canonicalizer: `canonical_doi` in `openalex` / `crossref` / `opencitations`, `canonical_key` in `biorxiv` / `acl`. Four of the five are pure delegation and are pinned as such by one parametrized test; `biorxiv` is the one that layers a URL shape *on top of* `doinorm.normalize` (`_normalize_doi` applies `_BIORXIV_URL_RE` after calling it), never instead of it. ACL's prefix policy lives in `_strip_acl_prefix`, not in a normalizer — don't re-derive `canonical` there.
 
-**The indirection is for the *public* name only.** It exists so the tool layer imports a provider symbol rather than `_doi` directly, and `tools/paper` and `manual._ROUTES` are why. It never applied to a *private* `_normalize_doi` alias, which is why only `biorxiv` still has one: the other four were `return _doi.normalize(doi)` with a single caller each, and calling `_doi.normalize` at that call site is more explicit about the single home, not less. Don't reintroduce them. The tool layer calls the wrappers for *normalization*; the one direct `_doi` import above the providers is `tools/graph`, which needs the shape predicate and has no provider wrapper to borrow it from.
+**The indirection is for the *public* name only.** It exists so the tool layer imports a provider symbol rather than `doinorm` directly, and `tools/paper` and `manual._ROUTES` are why. It never applied to a *private* `_normalize_doi` alias, which is why only `biorxiv` still has one: the other four were `return doinorm.normalize(doi)` with a single caller each, and calling `doinorm.normalize` at that call site is more explicit about the single home, not less. Don't reintroduce them. The tool layer calls the wrappers for *normalization*; the one direct `doinorm` import above the providers is `tools/graph`, which needs the shape predicate and has no provider wrapper to borrow it from.
 
 **Invariant: the `doi:` prefix is stripped before the URL handling, in a loop, and whitespace re-stripped after.** `"doi:https://doi.org/10.x/y"` and a pasted `"doi: 10.1234/x"` both occur in the wild; a copy that gets the order wrong lands one paper under several cache keys, some of which build malformed upstream URLs. The loop is what makes `normalize` **idempotent for every input** — a single pass leaves `"doi:doi:10.x/y"` keying separately from its own output.
 
@@ -24,7 +21,7 @@ The single home for DOI normalization: `normalize` (bare form), `canonical` (cac
 
 **The graph tools reject a non-DOI before any request.** `tools/graph._reject_non_doi` gates all four Crossref/OpenCitations tools on `looks_like_doi` — the same predicate the metadata dispatcher routes on. Forwarding an arXiv ID buys a 404 and then negative-caches a key that could never have resolved.
 
-## _useragent.py
+## util/useragent.py
 
 The single home for the outbound `User-Agent`: `build(mailto)`, `headers(mailto)`, `normalize_mailto(mailto)`, `package_version()`.
 
@@ -32,11 +29,11 @@ The single home for the outbound `User-Agent`: `build(mailto)`, `headers(mailto)
 
 **The contact address is scrubbed to printable ASCII minus parens, and no caller may skip that.** It is the one operator-supplied string interpolated into a header: a CRLF injects a header and only fails at send time as a `RequestError`, so every request degrades to a misleading "network error" dict; a non-ASCII character raises `UnicodeEncodeError` *inside* `httpx` at client construction, which is not in `HTTPX_ERRORS` and so crashes uncaught. `config.get` strips too, but `normalize_mailto` also takes contacts from callers, so it may not lean on that.
 
-**Invariant: `normalize_mailto` scrubs before stripping the `mailto:` prefix, and the strip is a loop** — the ordering `_doi.normalize` holds for `doi:`, for the same reason. Scrubbing can *reveal* a prefix (`mail(to:x` → `mailto:x`), so the other order is not idempotent. A contact that normalizes to empty is dropped entirely rather than emitting a bare `mailto:`.
+**Invariant: `normalize_mailto` scrubs before stripping the `mailto:` prefix, and the strip is a loop** — the ordering `doinorm.normalize` holds for `doi:`, for the same reason. Scrubbing can *reveal* a prefix (`mail(to:x` → `mailto:x`), so the other order is not idempotent. A contact that normalizes to empty is dropped entirely rather than emitting a bare `mailto:`.
 
-**Every client module builds its headers through `headers()`; none respells the `{"User-Agent": ...}` dict.** Politeness coverage in `tests/test_politeness.py` discovers those modules by import scan — a module holding both `_get_client` and `_throttle` — for the reason `_stats.throttles` scans rather than reading a roster: a new provider is guarded the moment it exists.
+**Every client module builds its headers through `headers()`; none respells the `{"User-Agent": ...}` dict.** Politeness coverage in `tests/test_politeness.py` discovers those modules by import scan — a module holding both `_get_client` and `throttle` — for the reason `stats.throttles` scans rather than reading a roster: a new provider is guarded the moment it exists.
 
-## _textnorm.py
+## util/textnorm.py
 
 Diacritic folding for search: `papers.find_in_markdown`, `papers._match_section_title` and `cache_search` (both halves), `bibtex` key generation (`fold` only).
 
@@ -48,14 +45,14 @@ Diacritic folding for search: `papers.find_in_markdown`, `papers._match_section_
 
 **The per-character loop is skipped for runs of ASCII** — NFKD is the identity there, no ASCII char is combining, and ASCII lowercasing is one-to-one, so the run maps to itself index-for-index. Worth ~4x on a paper-sized document, which these run over per section and per search winner.
 
-## config.py
+## util/config.py
 
 `get(key)` is the accessor for every runtime setting, `flag(key)` the accessor for the boolean ones, `number(key, default, cast=, on_nonpositive=)` for the ones an operator can turn off — the roster, defaults and semantics live in `README.md` § Configuration. Config never arrives as a tool parameter.
 
-- **`flag` is the single home for env-var truthiness** (`_TRUE_VALUES`, case-insensitive). A call site that spells its own `in ("1", "true", …)` is how one flag comes to accept `yes` and another not to; both current callers (`server._DEBUG_TOOLS_ENABLED`, `_stats.debug_requests_enabled`) route through it.
+- **`flag` is the single home for env-var truthiness** (`_TRUE_VALUES`, case-insensitive). A call site that spells its own `in ("1", "true", …)` is how one flag comes to accept `yes` and another not to; both current callers (`server._DEBUG_TOOLS_ENABLED`, `stats.debug_requests_enabled`) route through it.
 - **`number` is the single home for the *disable* vocabulary** (`_DISABLE_VALUES`), for the same reason — two modules spelling their own `{"none", "off", …}` is how one came to accept `disabled` and the other a bare `-1`. The remaining divergence is `on_nonpositive`, and it is deliberate on both sides: `"default"` for `MAX_PDF_BYTES` (a negative cap is a typo, and honouring it drops the disk guard), `"disable"` for the two `PDF_*_TIMEOUT`s (a non-positive timeout is a second disable idiom). Pass it explicitly; a new caller that wants a third policy needs a reason, not a default. A non-finite *float* (`nan`, `inf`) falls back to the default — `nan` compares false against every bound, so it reaches the caller as a limit nothing satisfies. **The guard is `isinstance(value, float)`, not a bare `math.isfinite`**: an `int` is finite by construction, and `math.isfinite(10**400)` raises `OverflowError` converting to a float, which would turn an absurd-but-harmless `MAX_PDF_BYTES` into a crash on every download.
 - **`get` strips surrounding whitespace and reads the empty result as unset**, so a caller never re-strips. Whitespace *inside* a value survives — converter templates and paths need it. **Invariant: `flag` and `number` route through `get` rather than `os.environ`**, so the three accessors cannot disagree about what "set" means. A padded `CROSSREF_MAILTO` reaching `in_polite_pool` as truthy while `normalize_mailto` dropped it is what that buys.
 - **Where a setting is read decides whether an operator needs a restart.** `get` re-reads `os.environ` on every call, so a read at the point of use (`_pdf_download.resolve_max_pdf_bytes`, the `*_MAILTO` header builders) picks up an exported change immediately, while a value captured at import (`server._DEBUG_TOOLS_ENABLED`, crossref's `_resolve_policy()` constants) is fixed for the process. Default to reading at the point of use; capture at import only when you want the startup snapshot.
 - **A blank setting is not a set one.** A present-but-blank or whitespace-only `CROSSREF_MAILTO=` behaves exactly like omitting the line. Not cosmetic: it drops Crossref to the public tier, lowering concurrency *and* both request rates — see `.claude/rules/providers.md` § Crossref.
-- **The `.env` *file* is resolved once at import**, first existing candidate wins (the order is in the module docstring; `ENV_FILE` records the winner and `_stats.snapshot` reports it). A project-root-only rule would point inside the virtualenv from `site-packages` and silently disable every env var for an installed wheel. **`ACADEMIC_TOOLS_ENV_FILE` is authoritative** — set means it is the only candidate, so a typo'd path is "no `.env`" rather than a silent fallback to a different operator's config. Editing the file needs a restart. **Real environment variables always win** regardless — `load_dotenv` runs without `override`.
+- **The `.env` *file* is resolved once at import**, first existing candidate wins (the order is in the module docstring; `ENV_FILE` records the winner and `stats.snapshot` reports it). A project-root-only rule would point inside the virtualenv from `site-packages` and silently disable every env var for an installed wheel. **`ACADEMIC_TOOLS_ENV_FILE` is authoritative** — set means it is the only candidate, so a typo'd path is "no `.env`" rather than a silent fallback to a different operator's config. Editing the file needs a restart. **Real environment variables always win** regardless — `load_dotenv` runs without `override`.
 - **No candidate may abort the import.** `Path.cwd()` raises on a deleted working directory, `expanduser()` on an unresolvable home, `is_file()` on a directory we can't traverse, and `load_dotenv` raises `UnicodeDecodeError` — not an `OSError` — on a `.env` that isn't UTF-8. Each is skipped so the next candidate is still tried. `OSError` alone does not cover them: a `UnicodeDecodeError` escaping `_load_env` kills the console script before it starts.

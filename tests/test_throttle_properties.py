@@ -1,4 +1,4 @@
-"""Property-based tests for the pacing arithmetic in ``_throttle``.
+"""Property-based tests for the pacing arithmetic in ``throttle``.
 
 Three invariants the module states as prose, held over generated inputs:
 
@@ -27,8 +27,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _http, _throttle
-from academic_tools_mcp._throttle import _MAX_TRACKED_HOSTS, Throttle
+from academic_tools_mcp.net import http, throttle
+from academic_tools_mcp.net.throttle import _MAX_TRACKED_HOSTS, Throttle
 
 _REAL_SLEEP = asyncio.sleep
 
@@ -56,15 +56,15 @@ class _FakeClock:
 
 @contextlib.contextmanager
 def _fake_clock():
-    """Swap ``_throttle``'s own ``time`` / ``asyncio`` bindings for a fake clock.
+    """Swap ``throttle``'s own ``time`` / ``asyncio`` bindings for a fake clock.
 
     Scoped to the module's globals rather than patching ``asyncio.sleep``
     process-wide, which would also silence the test harness's own waits.
     """
     clock = _FakeClock()
-    real_time, real_asyncio = _throttle.time, _throttle.asyncio
-    _throttle.time = SimpleNamespace(monotonic=clock.monotonic)
-    _throttle.asyncio = SimpleNamespace(
+    real_time, real_asyncio = throttle.time, throttle.asyncio
+    throttle.time = SimpleNamespace(monotonic=clock.monotonic)
+    throttle.asyncio = SimpleNamespace(
         sleep=clock.sleep,
         Semaphore=asyncio.Semaphore,
         Lock=asyncio.Lock,
@@ -72,7 +72,7 @@ def _fake_clock():
     try:
         yield clock
     finally:
-        _throttle.time, _throttle.asyncio = real_time, real_asyncio
+        throttle.time, throttle.asyncio = real_time, real_asyncio
 
 
 @settings(max_examples=50)
@@ -144,7 +144,7 @@ def test_admission_limits_hold_for_any_arrival_pattern(callers, max_concurrent, 
     assert peak_in_flight <= max_concurrent
     assert peak_pending <= max_pending
     for error in errors:
-        assert isinstance(error, _http.LocalBackpressureError)
+        assert isinstance(error, http.LocalBackpressureError)
 
 
 @settings(max_examples=50)
@@ -201,5 +201,5 @@ async def test_fake_clock_is_restored():
     """The patch is scoped: a leak would freeze every later test's pacing."""
     with _fake_clock():
         pass
-    assert _throttle.time.monotonic() > 0
-    assert _throttle.asyncio is asyncio
+    assert throttle.time.monotonic() > 0
+    assert throttle.asyncio is asyncio

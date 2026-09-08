@@ -29,8 +29,8 @@ _LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     # The lowest layer is defined by a property, not a theme: these import
     # nothing from the package. Most of them are destined for a `util/`
     # package; `_fast_extract` is a `python -m` subprocess target and stays flat.
-    ("leaf", frozenset({"config", "_doi", "_textnorm", "_useragent", "_fast_extract"})),
-    ("net", frozenset({"_stats", "_http", "_throttle", "_clients"})),
+    ("leaf", frozenset({"util", "_fast_extract"})),
+    ("net", frozenset({"net"})),
     ("store", frozenset({"atomic", "_singleflight", "cache", "_stems"})),
     ("download", frozenset({"_pdf_download"})),
     ("providers", frozenset({"providers"})),
@@ -45,7 +45,9 @@ _LAYER_NAME = {rank: label for rank, (label, _) in enumerate(_LAYERS)}
 
 # Only these may import httpx. The four content/provider entries need it for a
 # ``_get_client() -> httpx.AsyncClient`` annotation; nobody above them does.
-_MAY_IMPORT_HTTPX = frozenset({"_clients", "_http", "_throttle", "_pdf_download", "oa_download"})
+_MAY_IMPORT_HTTPX = frozenset(
+    {"net.clients", "net.http", "net.throttle", "_pdf_download", "oa_download"}
+)
 
 
 def _modules() -> dict[str, pathlib.Path]:
@@ -108,8 +110,8 @@ def _runtime_nodes(tree: ast.AST):
     """Every node except those under an ``if TYPE_CHECKING:`` block.
 
     A type-only import is not a runtime edge, so it cannot create an import
-    cycle and must not be reported as one: ``_stats`` annotates a ``Throttle``
-    it never imports at runtime, and ``_throttle`` imports ``_stats`` for real.
+    cycle and must not be reported as one: ``stats`` annotates a ``Throttle``
+    it never imports at runtime, and ``throttle`` imports ``stats`` for real.
     """
     for node in ast.iter_child_nodes(tree):
         if _is_type_checking(node):
@@ -176,7 +178,9 @@ def test_module_imports_only_its_own_layer_or_lower(name):
 def test_the_lowest_layer_imports_nothing_from_the_package():
     # This is what keeps `util` from becoming a junk drawer: membership is a
     # checkable property, not a judgement call.
-    for name in sorted(_LAYERS[0][1]):
+    lowest = sorted(n for n in _MODULES if _rank(n) == 0)
+    assert len(lowest) >= 4, "the lowest layer went empty — the check would be vacuous"
+    for name in lowest:
         assert not _GRAPH[name], f"{name} is in the lowest layer but imports {_GRAPH[name]}"
 
 

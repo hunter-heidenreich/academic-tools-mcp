@@ -11,18 +11,18 @@ Usage. The client is the provider's pooled singleton and the GET goes through
 its throttle — never a bare ``httpx.AsyncClient``, which would bypass pooling,
 rate limiting, retry and stats (see ``.claude/rules/http.md``)::
 
-    from . import _http
+    from . import http
 
     try:
         response = await _throttled_get(_get_client(), url, params=params)
         if response.status_code == 404:
-            return _http.not_found("No paper found for ...")
+            return http.not_found("No paper found for ...")
         response.raise_for_status()
         # ... parse and return success
     except _PARSE_ERRORS:
         return _parse_error_dict()
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict("OpenAlex", e)
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict("OpenAlex", e)
 """
 
 import asyncio
@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from . import _stats
+from . import stats
 
 
 class LocalBackpressureError(Exception):
@@ -56,6 +56,7 @@ class LocalBackpressureError(Exception):
         max_pending: int,
         min_gap_seconds: float = 0.0,
     ) -> None:
+        """Record who was refused and how deep the queue was when it happened."""
         self.provider = provider
         self.pending = pending
         self.max_pending = max_pending
@@ -269,7 +270,7 @@ async def get_with_retry(
     forms.
 
     The final attempt returns its response or re-raises. ``max_attempts=2`` is
-    1 original + 1 retry, set per provider by ``_throttle.Throttle``.
+    1 original + 1 retry, set per provider by ``throttle.Throttle``.
 
     GET-only: every cached lookup in this codebase is a GET.
     """
@@ -283,14 +284,14 @@ async def get_with_retry(
         if provider is not None:
             # Per outbound request, not per throttle slot: one slot issues up
             # to max_attempts of them, and this is the politeness-audit number.
-            _stats.incr(provider, "http_calls")
+            stats.incr(provider, "http_calls")
         try:
             response = await client.get(url, **kwargs)
         except httpx.RequestError:  # includes TimeoutException
             if attempt >= max_attempts:
                 raise
             if provider is not None:
-                _stats.incr(provider, "http_retries")
+                stats.incr(provider, "http_retries")
             await asyncio.sleep(effective_backoff)
             continue
 
@@ -300,7 +301,7 @@ async def get_with_retry(
             return response
 
         if provider is not None:
-            _stats.incr(provider, "http_retries")
+            stats.incr(provider, "http_retries")
         retry_after = _retry_after_seconds(response) or 0.0
         sleep_for = min(max(retry_after, effective_backoff), _MAX_RETRY_AFTER_SECONDS)
         await asyncio.sleep(sleep_for)

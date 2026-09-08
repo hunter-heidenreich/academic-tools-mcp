@@ -305,18 +305,22 @@ server.py            thin entry: re-exports mcp + tools, registers the
   │                  oa_download.py    gated open-access fetch for generic DOIs
   │                  _fast_extract.py  bundled pymupdf text extractor
   │
+  ├── net/           the outbound network edge
+  │                  http.py       retry honouring Retry-After, structured errors
+  │                  throttle.py   burst cap → concurrency cap → inter-start gap
+  │                  clients.py    per-provider pooled httpx.AsyncClient
+  │                  stats.py      per-provider counters, DEBUG_REQUESTS logging
+  │
+  ├── util/          leaf helpers — every module here imports nothing else
+  │                  config.py     .env + environment resolution
+  │                  doinorm.py    DOI normalization — one home, every caller
+  │                  textnorm.py   diacritic folding + maps back to original offsets
+  │                  useragent.py  the outbound User-Agent — one home, every client
+  │
   └── Shared infrastructure (every API client routes through these)
-        _http.py          retry honouring Retry-After, structured errors
-        _throttle.py      burst cap → concurrency cap → inter-start gap
-        _clients.py       per-provider pooled httpx.AsyncClient
         _singleflight.py  concurrent same-key callers coalesce to one fetch
         cache.py          atomic file cache, per-provider TTLs, negative cache
-        _doi.py           DOI normalization — one home, every caller
-        _useragent.py     the outbound User-Agent — one home, every client
-        _stats.py         per-provider counters, DEBUG_REQUESTS logging
-        _textnorm.py      diacritic folding + maps back to original offsets
         _stems.py         cache artifact naming — one sanitizer, every path
-        config.py         .env + environment resolution
 ```
 
 **Key design decisions:**

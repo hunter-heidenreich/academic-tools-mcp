@@ -22,8 +22,8 @@ from typing import Any
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi
 from academic_tools_mcp.tools import graph
+from academic_tools_mcp.util import doinorm
 
 from .test_doi_properties import dois
 
@@ -248,7 +248,7 @@ def test_every_spelling_of_one_doi_echoes_one_value(doi: str) -> None:
     # respelling of the same DOI. U+00B5 MICRO SIGN uppercases to GREEK CAPITAL
     # MU, which lowercases to a *different* codepoint — that asymmetry is
     # Python's Unicode tables, not something the DOI layer can or should undo.
-    canonical = _doi.canonical(doi)
+    canonical = doinorm.canonical(doi)
     for spelling in (
         doi,
         f"doi:{doi}",
@@ -257,5 +257,5 @@ def test_every_spelling_of_one_doi_echoes_one_value(doi: str) -> None:
         f"http://dx.doi.org/{doi}",
         f"  {doi}  ",
     ):
-        assert _doi.canonical(spelling) == canonical
+        assert doinorm.canonical(spelling) == canonical
         assert graph._reject_non_doi(spelling) is None

@@ -77,9 +77,9 @@ def install_stream(monkeypatch, stream_cm_or_obj) -> None:
         def stream(self, *_args, **_kwargs):
             return stream_cm_or_obj() if callable(stream_cm_or_obj) else stream_cm_or_obj
 
-    from academic_tools_mcp import _clients
+    from academic_tools_mcp.net import clients
 
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: StubClient())
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
 
 
 class UnreadStream(httpx.AsyncByteStream):

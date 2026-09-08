@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from academic_tools_mcp import _stats, atomic, cache, papers
+from academic_tools_mcp import atomic, cache, papers
+from academic_tools_mcp.net import stats
 
 
 class TestCacheWriteFailureIsAbsorbed:
@@ -39,9 +40,9 @@ class TestCacheWriteFailureIsAbsorbed:
         assert cache.get("arxiv", "papers", "2301.00001") == {"title": "T"}
 
     def test_failure_is_counted_for_the_operator(self, full_disk):
-        _stats.reset()
+        stats.reset()
         cache.put("arxiv", "papers", "2301.00001", {"title": "T"})
-        counters = _stats.snapshot()["providers"]["arxiv"]
+        counters = stats.snapshot()["providers"]["arxiv"]
         assert counters["cache_write_failures"] == 1
 
     @pytest.mark.asyncio

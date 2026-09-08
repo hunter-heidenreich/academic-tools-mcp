@@ -14,7 +14,8 @@ from typing import Annotated, Any, Literal, TypeVar
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import _clients, cache, cache_search, manual, papers
+from . import cache, cache_search, manual, papers
+from .net import clients
 from .providers import acl
 
 _T = TypeVar("_T")
@@ -44,7 +45,7 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await _clients.aclose_all()
+        await clients.aclose_all()
 
 
 mcp = FastMCP(

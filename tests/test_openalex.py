@@ -1,9 +1,9 @@
 """Unit tests for ``providers/openalex.py``.
 
 The transport seam is a real ``httpx.MockTransport`` patched over
-``_clients.get_client`` (as ``test_biorxiv.py`` does) rather than a stub over
+``clients.get_client`` (as ``test_biorxiv.py`` does) rather than a stub over
 ``_throttled_get``: ``status_code``, ``raise_for_status`` and ``.json()`` are
-then genuine, so ``_http.HTTPX_ERRORS`` is reachable and the throttle and retry
+then genuine, so ``http.HTTPX_ERRORS`` is reachable and the throttle and retry
 the provider actually uses stay in the path.
 """
 
@@ -15,7 +15,8 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from academic_tools_mcp import _clients, _stats, cache
+from academic_tools_mcp import cache
+from academic_tools_mcp.net import clients, stats
 from academic_tools_mcp.providers import openalex
 from academic_tools_mcp.providers.openalex import (
     _canonical_from_response_doi,
@@ -80,7 +81,7 @@ def _stub_json_responses(monkeypatch, *payloads, slow=False):
         return respond(request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(slow_respond if slow else respond))
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
     return requests
 
 
@@ -92,7 +93,7 @@ def _stub_no_network(monkeypatch):
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
 
 
 def _stub_filter_echo(monkeypatch, *, known=None):
@@ -113,7 +114,7 @@ def _stub_filter_echo(monkeypatch, *, known=None):
         return httpx.Response(200, json=body)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
     return requests
 
 
@@ -163,7 +164,7 @@ class TestNormalizeAuthorId:
         ],
     )
     def test_url_family_collapses_to_the_bare_id(self, spelling):
-        """The latitude ``_doi._DOI_URL_RE`` and ``arxiv._ARXIV_URL_RE`` carry,
+        """The latitude ``doinorm._DOI_URL_RE`` and ``arxiv._ARXIV_URL_RE`` carry,
         for the same reason: these are the forms pasted citations hold."""
         assert _normalize_author_id(spelling) == "A5023888391"
 
@@ -224,7 +225,7 @@ class TestCanonicalFromResponseDoi:
         assert _canonical_from_response_doi("10.1234/FOO") == "10.1234/foo"
 
     def test_strips_unconditionally_not_only_doi_shaped_tails(self):
-        """``_doi.canonical`` strips only a DOI-shaped path, so an unrecognised
+        """``doinorm.canonical`` strips only a DOI-shaped path, so an unrecognised
         registrant would survive as a URL and miss the key we asked for."""
         assert _canonical_from_response_doi("https://doi.org/weird/thing") == "weird/thing"
 
@@ -394,7 +395,7 @@ class TestGetWork:
 
     @pytest.mark.asyncio
     async def test_other_4xx_is_unflagged_and_uncached(self, monkeypatch):
-        """`_http.error_dict` leaves a non-retryable 4xx unflagged rather than
+        """`http.error_dict` leaves a non-retryable 4xx unflagged rather than
         ``retryable: False``; it must still not negative-cache."""
         _stub_json_responses(monkeypatch, _Resp(403, {"message": "nope"}))
 
@@ -690,13 +691,13 @@ class TestGetWorksBatch:
     async def test_books_one_cache_miss_per_upstream_doi(self, monkeypatch):
         """``_fetch_chunk`` bypasses ``cached_lookup``, so it books its own —
         and a warm DOI must not be counted as one."""
-        _stats.reset()
+        stats.reset()
         cache.put("openalex", "works", "10.1/warm", {"id": "W0"})
         _stub_filter_echo(monkeypatch)
 
         await openalex.get_works_batch(["10.1/warm", "10.1/a", "10.2/b"])
 
-        row = _stats.snapshot()["providers"]["openalex"]
+        row = stats.snapshot()["providers"]["openalex"]
         assert row["cache_misses"] == 2
         assert row["cache_hits"] == 1
 
@@ -763,7 +764,7 @@ class TestGetWorksBatchUnsafeDois:
             return httpx.Response(200, json=_work_response(unsafe))
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
 
         result = await openalex.get_works_batch(["10.1234/normal", unsafe])
 
@@ -803,7 +804,7 @@ class TestGetWorksBatchUnsafeDois:
             return httpx.Response(200, json={"id": f"W-{unquote(doi)}", "doi": unquote(doi)})
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        monkeypatch.setattr(_clients, "get_client", lambda *a, **kw: client)
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
 
         dois = ["10.1/a|1", "10.1/safe1", "10.1/b,2", "10.1/safe2"]
         out = await openalex.get_works_batch(dois)
@@ -934,7 +935,7 @@ class TestBatchErrorDictsAreNotAliased:
     Nothing was visibly broken — the sole consumer happens to shallow-copy
     before mutating — but that copy was load-bearing without saying so, and
     ``get_works_batch`` is public. It also contradicted
-    ``_http.parse_error_dict``'s documented "a new dict each call".
+    ``http.parse_error_dict``'s documented "a new dict each call".
     """
 
     @pytest.mark.asyncio

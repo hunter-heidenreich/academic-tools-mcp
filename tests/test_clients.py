@@ -14,7 +14,7 @@ import time
 import httpx
 import pytest
 
-from academic_tools_mcp import _clients
+from academic_tools_mcp.net import clients
 
 
 @pytest.fixture
@@ -56,8 +56,8 @@ class TestGetClient:
     """The lazy-singleton contract: one client per name, configured once."""
 
     def test_same_name_returns_the_same_object(self, spy_client):
-        first = _clients.get_client("alpha")
-        second = _clients.get_client("alpha")
+        first = clients.get_client("alpha")
+        second = clients.get_client("alpha")
 
         assert first is second
         # Pooling is the entire point: a second build would mean a second
@@ -65,19 +65,19 @@ class TestGetClient:
         assert len(spy_client) == 1
 
     def test_distinct_names_get_distinct_clients(self, spy_client):
-        alpha = _clients.get_client("alpha")
-        beta = _clients.get_client("beta")
+        alpha = clients.get_client("alpha")
+        beta = clients.get_client("beta")
 
         assert alpha is not beta
         assert len(spy_client) == 2
-        assert _clients._POOL.keys() == {"alpha", "beta"}
+        assert clients._POOL.keys() == {"alpha", "beta"}
 
     def test_repeat_call_ignores_construction_kwargs(self, spy_client):
         """A later call with different headers/timeout is a no-op, not an
         override — providers configure their client in exactly one place, and
         this is the footgun that makes that safe to rely on."""
-        first = _clients.get_client("alpha", headers={"User-Agent": "first"}, timeout=1.0)
-        second = _clients.get_client("alpha", headers={"User-Agent": "second"}, timeout=99.0)
+        first = clients.get_client("alpha", headers={"User-Agent": "first"}, timeout=1.0)
+        second = clients.get_client("alpha", headers={"User-Agent": "second"}, timeout=99.0)
 
         assert second is first
         assert len(spy_client) == 1
@@ -85,9 +85,9 @@ class TestGetClient:
         assert spy_client[0]["timeout"] == 1.0
 
     def test_bakes_in_the_shared_pool_config(self, spy_client):
-        _clients.get_client("alpha")
+        clients.get_client("alpha")
 
-        assert spy_client[0]["limits"] is _clients._DEFAULT_LIMITS
+        assert spy_client[0]["limits"] is clients._DEFAULT_LIMITS
         # Redirects are on for every provider: arXiv and publisher PDF hosts
         # both bounce the first request. No caller passes this, so nothing else
         # would catch the default flipping.
@@ -99,20 +99,20 @@ class TestGetClient:
         """The only test that drives a real ``httpx.AsyncClient`` through both
         halves — every other one duck-types ``aclose``, so a signature drift in
         httpx would otherwise sail past the suite."""
-        client = _clients.get_client("roundtrip")
+        client = clients.get_client("roundtrip")
         assert isinstance(client, httpx.AsyncClient)
         assert not client.is_closed
 
-        await _clients.aclose_all()
+        await clients.aclose_all()
         assert client.is_closed
 
         # The registry was drained, so the next caller gets a usable client
         # rather than the closed one.
-        rebuilt = _clients.get_client("roundtrip")
+        rebuilt = clients.get_client("roundtrip")
         assert rebuilt is not client
         assert not rebuilt.is_closed
 
-        await _clients.aclose_all()
+        await clients.aclose_all()
 
 
 class TestAcloseAll:
@@ -126,11 +126,11 @@ class TestAcloseAll:
         object."""
         a = _StubClient()
         b = _StubClient()
-        monkeypatch.setattr(_clients, "_POOL", {"a": a, "b": b})
+        monkeypatch.setattr(clients, "_POOL", {"a": a, "b": b})
 
-        await _clients.aclose_all()
+        await clients.aclose_all()
 
-        assert _clients._POOL == {}
+        assert clients._POOL == {}
         assert a.closed and b.closed
 
     @pytest.mark.asyncio
@@ -138,18 +138,18 @@ class TestAcloseAll:
         """A wedged socket on one provider must not block shutdown on the
         others: the hung aclose hits the bound and the second client still
         closes."""
-        monkeypatch.setattr(_clients, "_ACLOSE_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(clients, "_ACLOSE_TIMEOUT_SECONDS", 0.05)
 
         hung = _StubClient(behaviour="hang")
         healthy = _StubClient()
-        monkeypatch.setattr(_clients, "_POOL", {"hung": hung, "ok": healthy})
+        monkeypatch.setattr(clients, "_POOL", {"hung": hung, "ok": healthy})
 
         # If the bound were ignored this would hang for an hour; the watchdog
         # makes a regression fail fast instead of stalling the suite.
-        await asyncio.wait_for(_clients.aclose_all(), timeout=2.0)
+        await asyncio.wait_for(clients.aclose_all(), timeout=2.0)
 
         assert healthy.closed, "healthy provider must still close"
-        assert _clients._POOL == {}
+        assert clients._POOL == {}
 
     @pytest.mark.asyncio
     async def test_a_slow_but_healthy_close_is_allowed_to_finish(self, monkeypatch):
@@ -157,7 +157,7 @@ class TestAcloseAll:
         completes inside it must not be cancelled. Every other healthy stub
         closes instantly, so nothing else here would catch the cancel loop
         firing before the wait, or the comparison being inverted."""
-        monkeypatch.setattr(_clients, "_ACLOSE_TIMEOUT_SECONDS", 1.0)
+        monkeypatch.setattr(clients, "_ACLOSE_TIMEOUT_SECONDS", 1.0)
 
         class SlowClient:
             def __init__(self):
@@ -168,9 +168,9 @@ class TestAcloseAll:
                 self.closed = True
 
         slow = SlowClient()
-        monkeypatch.setattr(_clients, "_POOL", {"slow": slow})
+        monkeypatch.setattr(clients, "_POOL", {"slow": slow})
 
-        await _clients.aclose_all()
+        await clients.aclose_all()
 
         assert slow.closed, "a close well inside the bound was cut short"
 
@@ -190,32 +190,32 @@ class TestAcloseAll:
                 closed.append(self.name)
 
         monkeypatch.setattr(
-            _clients,
+            clients,
             "_POOL",
             {"bad": Boom(), "good1": Fine("good1"), "good2": Fine("good2")},
         )
 
-        await _clients.aclose_all()
+        await clients.aclose_all()
 
         assert sorted(closed) == ["good1", "good2"]
-        assert _clients._POOL == {}
+        assert clients._POOL == {}
 
     @pytest.mark.asyncio
     async def test_is_idempotent_and_safe_when_empty(self, monkeypatch):
-        monkeypatch.setattr(_clients, "_POOL", {})
+        monkeypatch.setattr(clients, "_POOL", {})
 
-        await _clients.aclose_all()
-        await _clients.aclose_all()
+        await clients.aclose_all()
+        await clients.aclose_all()
 
-        assert _clients._POOL == {}
+        assert clients._POOL == {}
 
     @pytest.mark.asyncio
     async def test_cancellation_is_not_swallowed(self, monkeypatch):
         # CancelledError is a BaseException, so the per-client `except Exception`
         # does not catch it. A cancelled shutdown must not report success.
-        monkeypatch.setattr(_clients, "_POOL", {"p": _StubClient(behaviour="hang")})
+        monkeypatch.setattr(clients, "_POOL", {"p": _StubClient(behaviour="hang")})
 
-        task = asyncio.create_task(_clients.aclose_all())
+        task = asyncio.create_task(clients.aclose_all())
         await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -226,21 +226,21 @@ class TestAcloseAll:
         """Regression: closes were issued one at a time, each with its own 5s
         timeout, so eight wedged sockets took up to 40s — exactly the
         lifespan-pinning the timeout exists to prevent."""
-        monkeypatch.setattr(_clients, "_ACLOSE_TIMEOUT_SECONDS", 0.15)
+        monkeypatch.setattr(clients, "_ACLOSE_TIMEOUT_SECONDS", 0.15)
         monkeypatch.setattr(
-            _clients,
+            clients,
             "_POOL",
             {f"p{i}": _StubClient(behaviour="hang") for i in range(6)},
         )
 
         start = time.monotonic()
-        await _clients.aclose_all()
+        await clients.aclose_all()
         elapsed = time.monotonic() - start
 
         # Serial would be ~0.9s; concurrent is ~0.15s. Assert well below the
         # serial figure rather than pinning an exact duration.
         assert elapsed < 0.5, f"closes did not overlap ({elapsed:.2f}s)"
-        assert _clients._POOL == {}
+        assert clients._POOL == {}
 
     @pytest.mark.asyncio
     async def test_bound_holds_against_a_close_that_outlives_cancellation(self, monkeypatch):
@@ -249,7 +249,7 @@ class TestAcloseAll:
         awaiting past cancellation blocked shutdown for as long as it liked.
         """
         linger = 0.5
-        monkeypatch.setattr(_clients, "_ACLOSE_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr(clients, "_ACLOSE_TIMEOUT_SECONDS", 0.05)
 
         class LingeringClient:
             """A transport whose teardown keeps awaiting after cancellation is
@@ -262,10 +262,10 @@ class TestAcloseAll:
                     await asyncio.sleep(linger)
                     raise
 
-        monkeypatch.setattr(_clients, "_POOL", {"lingering": LingeringClient()})
+        monkeypatch.setattr(clients, "_POOL", {"lingering": LingeringClient()})
 
         start = time.monotonic()
-        await _clients.aclose_all()
+        await clients.aclose_all()
         elapsed = time.monotonic() - start
 
         assert elapsed < 0.3, f"shutdown waited on the lingering close ({elapsed:.2f}s)"

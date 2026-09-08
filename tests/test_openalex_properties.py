@@ -19,8 +19,9 @@ from urllib.parse import unquote, urlsplit
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp import _doi, cache
+from academic_tools_mcp import cache
 from academic_tools_mcp.providers import openalex
+from academic_tools_mcp.util import doinorm
 
 from .test_doi_properties import generic_dois
 from .test_openalex import _BAD_JSON, _stub_json_responses, _work_response
@@ -101,7 +102,7 @@ def test_the_requested_work_path_round_trips_to_the_bare_doi(monkeypatch, doi: s
     tail = path.removeprefix("/works/doi:")
     assert "#" not in tail
     assert "?" not in tail
-    assert unquote(tail) == _doi.normalize(doi)
+    assert unquote(tail) == doinorm.normalize(doi)
 
 
 @_SETTINGS

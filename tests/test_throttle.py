@@ -2,7 +2,7 @@
 
 The per-provider gating (burst cap -> concurrency semaphore -> inter-start
 gap-lock -> stats) used to be copy-pasted into every provider module. It now
-lives once in ``academic_tools_mcp._throttle.Throttle`` and each provider holds
+lives once in ``academic_tools_mcp.net.throttle.Throttle`` and each provider holds
 a configured instance. These tests exercise the class directly so the behaviour
 is verified in one place instead of five near-identical per-provider copies.
 """
@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from academic_tools_mcp import _http, _stats
-from academic_tools_mcp._throttle import _MAX_TRACKED_HOSTS, Throttle
+from academic_tools_mcp.net import http, stats
+from academic_tools_mcp.net.throttle import _MAX_TRACKED_HOSTS, Throttle
 
 
 def _make(**overrides) -> Throttle:
@@ -191,7 +191,7 @@ async def test_admits_max_pending_callers_and_refuses_the_next():
     queued = asyncio.create_task(hold())
     await _until(lambda: t.pending == 2)
 
-    with pytest.raises(_http.LocalBackpressureError):
+    with pytest.raises(http.LocalBackpressureError):
         async with t.slot("http://example.com"):
             pass
 
@@ -207,7 +207,7 @@ async def test_burst_cap_raises_and_counts():
     t = _make(max_pending=5)
     t.pending = 5  # simulate 5 already queued
 
-    with pytest.raises(_http.LocalBackpressureError) as excinfo:
+    with pytest.raises(http.LocalBackpressureError) as excinfo:
         async with t.slot("http://example.com"):
             pass
 
@@ -216,7 +216,7 @@ async def test_burst_cap_raises_and_counts():
     assert excinfo.value.provider == "TestProvider"
     # The refusal is not itself a request, and must not leave a phantom caller.
     assert t.pending == 5
-    snap = _stats.snapshot()["providers"]
+    snap = stats.snapshot()["providers"]
     assert snap.get("testprovider", {}).get("http_calls", 0) == 0
     assert snap.get("testprovider", {}).get("backpressure_refusals") == 1
 
@@ -227,7 +227,7 @@ async def test_slot_counts_http_calls():
     t = _make()
     async with t.slot("http://example.com"):
         pass
-    snap = _stats.snapshot()["providers"]
+    snap = stats.snapshot()["providers"]
     assert snap.get("testprovider", {}).get("http_calls") == 1
 
 
@@ -241,7 +241,7 @@ async def test_slot_can_suppress_the_http_call_count():
     t = _make()
     async with t.slot("http://example.com", count_request=False):
         pass
-    snap = _stats.snapshot()["providers"]
+    snap = stats.snapshot()["providers"]
     assert snap.get("testprovider", {}).get("http_calls", 0) == 0
 
 
@@ -284,7 +284,7 @@ async def test_reset_zeroes_state_and_rebuilds_primitives():
 
 @pytest.mark.asyncio
 async def test_get_fires_request_inside_slot():
-    """get() runs _http.get_with_retry inside the slot and returns the response."""
+    """get() runs http.get_with_retry inside the slot and returns the response."""
     t = _make()
     resp = MagicMock()
     resp.status_code = 200
@@ -295,7 +295,7 @@ async def test_get_fires_request_inside_slot():
 
     assert out is resp
     client.get.assert_awaited_once()
-    snap = _stats.snapshot()["providers"]
+    snap = stats.snapshot()["providers"]
     assert snap.get("testprovider", {}).get("http_calls") == 1
 
 
@@ -309,7 +309,7 @@ async def test_get_threads_retry_attempts_into_get_with_retry(monkeypatch):
         captured.update(kwargs)
         return MagicMock(status_code=200)
 
-    monkeypatch.setattr(_http, "get_with_retry", fake_get_with_retry)
+    monkeypatch.setattr(http, "get_with_retry", fake_get_with_retry)
 
     await t.get(MagicMock(), "http://example.com")
 

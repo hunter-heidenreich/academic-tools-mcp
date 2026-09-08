@@ -20,7 +20,9 @@ from typing import Any
 
 import httpx
 
-from . import _http, _singleflight, _stats, cache, config
+from . import _singleflight, cache
+from .net import http, stats
+from .util import config
 
 # Clears an image-heavy preprint; catches a 10 GB non-PDF.
 _DEFAULT_MAX_PDF_BYTES = 200_000_000
@@ -206,11 +208,11 @@ async def stream_to_file(
         os.replace(tmp_path, dest)
         tmp_path = None
         return {"path": str(dest), "size_bytes": written, "cached": False}
-    except _http.HTTPX_ERRORS as e:
-        return _http.error_dict(provider_label, e)
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(provider_label, e)
     except OSError as e:
         # Retryable, so a full disk is never recorded against the paper.
-        _stats.incr(namespace, "cache_write_failures")
+        stats.incr(namespace, "cache_write_failures")
         return {
             "error": f"{provider_label}: could not write the PDF to {dest}: {e}",
             "retryable": True,

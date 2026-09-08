@@ -38,7 +38,7 @@ Adding a new API provider or a new OpenAlex entity: use the `add-provider` skill
 - **Tool responses are intentionally small.** Each tool fetches the full cached object and returns only the relevant slice — an LLM agent should not receive the full OpenAlex response.
 - **Single shared cache across tools.** All tools for a given DOI or arXiv ID share one cached response: multiple tool calls = one API hit, and concurrent same-key callers coalesce via single-flight to one outbound fetch. Per-provider TTLs are tabulated in `README.md` § Caching; `force_refresh=True` drops both cache halves and re-fetches.
 - **Manual import routes by provider namespace.** `import_paper` stores under the identifier's provider namespace, so a later `download_pdf(identifier)` hits the cached PDF instead of re-downloading.
-- **Operational stats are not agent-facing.** `_stats.py` counters exist for the operator; `get_server_stats` registers only under `ENABLE_DEBUG_TOOLS=1`, off by default, so an agent can't see or branch on cache/throttle state.
+- **Operational stats are not agent-facing.** `net/stats.py` counters exist for the operator; `get_server_stats` registers only under `ENABLE_DEBUG_TOOLS=1`, off by default, so an agent can't see or branch on cache/throttle state.
 
 ## Upstream metadata caveats
 

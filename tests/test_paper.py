@@ -172,7 +172,7 @@ class TestFollowPublished:
             }
 
         async def fake_openalex_get_work(doi, **kwargs):
-            # Shape of a transient error from _http — retryable, no not_found.
+            # Shape of a transient error from http — retryable, no not_found.
             return {
                 "error": "OpenAlex server error (HTTP 503). Transient — retry.",
                 "retryable": True,
@@ -524,7 +524,7 @@ class TestMetadataHintsCentralized:
 
 class TestPublishedLookupRetryVerdict:
     """`published_lookup_retryable` is a claim that retrying the chain might
-    work. `_http`'s vocabulary is three-state — transient carries
+    work. `http`'s vocabulary is three-state — transient carries
     `retryable: True`, a definitive miss carries `not_found: True`, and any
     other 4xx carries neither, deliberately ("unknown != definitive"). Reading
     the tag off the *absence* of `not_found` collapses three states into two
@@ -551,10 +551,10 @@ class TestPublishedLookupRetryVerdict:
     async def test_an_unclassified_4xx_is_not_reported_as_retryable(self, monkeypatch):
         import httpx
 
-        from academic_tools_mcp import _http
+        from academic_tools_mcp.net import http
 
         request = httpx.Request("GET", "https://api.openalex.org/works/doi:10.1038/x")
-        err = _http.error_dict(
+        err = http.error_dict(
             "OpenAlex",
             httpx.HTTPStatusError(
                 "boom",
@@ -582,15 +582,15 @@ class TestPublishedLookupRetryVerdict:
 
     @pytest.mark.asyncio
     async def test_the_verdict_is_total_over_every_error_http_can_build(self, monkeypatch):
-        """The coupling between `_http`'s constructors and this one branch.
+        """The coupling between `http`'s constructors and this one branch.
 
         Nothing else links them, so a new classification key — or a change to
         which errors carry `retryable` — would silently re-flavour the tag.
-        The tag must appear for exactly the errors `_http` calls retryable.
+        The tag must appear for exactly the errors `http` calls retryable.
         """
         import httpx
 
-        from academic_tools_mcp import _http
+        from academic_tools_mcp.net import http
 
         request = httpx.Request("GET", "https://api.openalex.org/works/doi:10.1038/x")
 
@@ -602,17 +602,17 @@ class TestPublishedLookupRetryVerdict:
             )
 
         produced = [
-            _http.not_found("gone"),
-            _http.parse_error_dict("OpenAlex"),
-            _http.error_dict(
-                "OpenAlex", _http.LocalBackpressureError("OpenAlex", pending=5, max_pending=5)
+            http.not_found("gone"),
+            http.parse_error_dict("OpenAlex"),
+            http.error_dict(
+                "OpenAlex", http.LocalBackpressureError("OpenAlex", pending=5, max_pending=5)
             ),
-            _http.error_dict("OpenAlex", status_error(429, {"Retry-After": "7"})),
-            _http.error_dict("OpenAlex", status_error(503)),
-            _http.error_dict("OpenAlex", status_error(418)),
-            _http.error_dict("OpenAlex", status_error(403)),
-            _http.error_dict("OpenAlex", httpx.TimeoutException("slow", request=request)),
-            _http.error_dict("OpenAlex", httpx.RequestError("dns", request=request)),
+            http.error_dict("OpenAlex", status_error(429, {"Retry-After": "7"})),
+            http.error_dict("OpenAlex", status_error(503)),
+            http.error_dict("OpenAlex", status_error(418)),
+            http.error_dict("OpenAlex", status_error(403)),
+            http.error_dict("OpenAlex", httpx.TimeoutException("slow", request=request)),
+            http.error_dict("OpenAlex", httpx.RequestError("dns", request=request)),
         ]
 
         for err in produced:

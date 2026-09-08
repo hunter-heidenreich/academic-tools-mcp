@@ -21,8 +21,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import unquote
 
-from . import _doi, _textnorm, cache, manual, papers
+from . import cache, manual, papers
 from .providers import acl, arxiv, biorxiv
+from .util import doinorm, textnorm
 
 # Enough to tell "variational dropout" from "dropout regularisation"; more is bloat.
 _SNIPPET_CHARS = 200
@@ -59,7 +60,7 @@ def _content_tokens(text: str, *, normalize: bool = False) -> set[str]:
     word. ``normalize=True`` NFKD-folds first, so "café" and "cafe" agree.
     """
     if normalize:
-        text = _textnorm.fold(text)
+        text = textnorm.fold(text)
     return {
         tok for tok in _TOKEN_RE.findall(text.lower()) if tok not in _STOPWORDS and len(tok) > 1
     }
@@ -99,7 +100,7 @@ def _extract_snippet(
     if query_terms:
         # Not a raw str.lower(): 'İ' lowercases to two chars, so an unmapped
         # m.start() drifts past the match.
-        lowered, index_map = _textnorm.lower_with_map(markdown, fold=normalize)
+        lowered, index_map = textnorm.lower_with_map(markdown, fold=normalize)
         # Longest first — \b settles "attention" against "attentions" on its own,
         # but not a split on the hyphen or dot _content_tokens keeps intact.
         alternation = "|".join(re.escape(t) for t in sorted(query_terms, key=len, reverse=True))
@@ -149,7 +150,7 @@ _NAMESPACE_DOI_PREFIXES = {
 }
 
 # manual holds publisher DOIs, not the freeform labels its name suggests.
-_MANUAL_DOI_STEM_RE = re.compile(rf"^({_doi.REGISTRANT_PATTERN})_")
+_MANUAL_DOI_STEM_RE = re.compile(rf"^({doinorm.REGISTRANT_PATTERN})_")
 
 # "archive[.subject]_NNNNNNN[vN]"; new-style ids start with a digit and pass
 # through. Same grammar the router matches on, from the same source, so a stem
@@ -582,7 +583,7 @@ def _snippet_terms(query: str, *, normalize: bool) -> set[str]:
     ASCII-only pattern mangles ("Gutiérrez" into "guti"/"rrez").
     """
     return _content_tokens(query, normalize=normalize) | {
-        (_textnorm.fold(word) if normalize else word).lower() for word in _query_words(query)
+        (textnorm.fold(word) if normalize else word).lower() for word in _query_words(query)
     }
 
 

@@ -28,8 +28,8 @@ import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from .. import config
 from .._stems import markdown_path, safe_stem
+from ..util import config
 from .index import (
     _reparse_sections_locked,
     drop_derived,

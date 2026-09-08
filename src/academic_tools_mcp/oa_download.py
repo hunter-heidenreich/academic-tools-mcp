@@ -12,9 +12,11 @@ from typing import Any
 
 import httpx
 
-from . import _clients, _pdf_download, _singleflight, _useragent, manual
-from ._throttle import Throttle
+from . import _pdf_download, _singleflight, manual
+from .net import clients
+from .net.throttle import Throttle
 from .providers import openalex
+from .util import useragent
 
 NAMESPACE = "oa_download"
 
@@ -25,14 +27,12 @@ LABEL = "OA download"
 def _get_client() -> httpx.AsyncClient:
     """Return the pooled AsyncClient for open-access download calls.
 
-    Configured here only: ``_clients.get_client`` ignores kwargs on every later
+    Configured here only: ``clients.get_client`` ignores kwargs on every later
     call for this namespace, so the UA and ``_PDF_TIMEOUT_SECONDS`` are set here
     or not at all. This client only ever downloads, so unlike arxiv/biorxiv it
     needs no per-call timeout override.
     """
-    return _clients.get_client(
-        NAMESPACE, headers=_useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS
-    )
+    return clients.get_client(NAMESPACE, headers=useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS)
 
 
 # The slot is held for the whole stream: 2 concurrent downloads, not 2 requests.
