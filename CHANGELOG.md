@@ -143,6 +143,12 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`get_paper_bibtex` no longer crashes on a dissertation with a null
+  authorship.** The `@phdthesis` school lookup was the one place in
+  `bibtex.py` that read an `authorships` / `institutions` element without an
+  `or {}` guard, so a null element raised `AttributeError` straight out of the
+  tool, past the `{error, suggestion?}` contract. Every sibling path already
+  survived the same input. ([#107])
 - **The server's `instructions` no longer contradict `download_pdf` and
   `convert_paper`.** The connect-time preamble told agents flatly that a PDF
   outside arXiv/bioRxiv/ACL must be fetched by hand, which stopped being the

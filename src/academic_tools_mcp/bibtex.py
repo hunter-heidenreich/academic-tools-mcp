@@ -329,12 +329,14 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     elif entry_type in ("inproceedings", "incollection") and venue_name:
         fields.append(("booktitle", f"{{{_escape_bibtex(venue_name)}}}"))
     elif entry_type == "phdthesis":
+        # `or {}` at both levels, as `_author_display_name` does: a null element
+        # of either list is a shape OpenAlex's verbatim tree can carry.
         school = next(
             (
                 name
                 for a in authorships
-                for inst in (a.get("institutions") or [])
-                if (name := inst.get("display_name"))
+                for inst in ((a or {}).get("institutions") or [])
+                if (name := (inst or {}).get("display_name"))
             ),
             "",
         )
