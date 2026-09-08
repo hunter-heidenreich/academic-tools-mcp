@@ -108,9 +108,13 @@ def _fold_translit(s: str) -> str:
     return fold(s.translate(_TRANSLIT))
 
 
+# Everything a citation key may not contain. The hottest of this file's regexes.
+_NON_KEY_RE = re.compile(r"[^a-z0-9]")
+
+
 def _key_token(s: str) -> str:
     """Fold, lowercase and strip to ``[a-z0-9]`` — the only citation-key gate."""
-    return re.sub(r"[^a-z0-9]", "", _fold_translit(s).lower())
+    return _NON_KEY_RE.sub("", _fold_translit(s).lower())
 
 
 def _surname_is_cased(parts: list[str]) -> bool:
@@ -128,6 +132,22 @@ def _is_particle(token: str, *, cased: bool) -> bool:
     return token.lower() in _PARTICLES or (cased and token[:1].islower())
 
 
+def _surname_start(parts: list[str]) -> int:
+    """Index where the surname begins, particle run included.
+
+    The one home for the rule: a citation key and an ``author`` field that
+    spelled this walk separately could disagree about one name in one entry.
+    Callers handle ``len(parts) <= 1`` themselves, so ``parts[-1]`` is safe.
+    """
+    cased = _surname_is_cased(parts)
+    start = len(parts) - 1
+    for i in range(len(parts) - 2, -1, -1):
+        if not _is_particle(parts[i], cased=cased):
+            break
+        start = i
+    return start
+
+
 def _extract_last_name(display_name: str) -> str:
     """Extract a key-safe last name from an author display name.
 
@@ -137,17 +157,7 @@ def _extract_last_name(display_name: str) -> str:
     parts = display_name.strip().split()
     if len(parts) <= 1:
         return (_key_token(parts[0]) if parts else "") or "unknown"
-
-    # Walk backwards from the end to collect last name + particles
-    cased = _surname_is_cased(parts)
-    last_parts = [parts[-1]]
-    for part in reversed(parts[:-1]):
-        if _is_particle(part, cased=cased):
-            last_parts.append(part)
-        else:
-            break
-    last_parts.reverse()
-    return _key_token("".join(last_parts)) or "unknown"
+    return _key_token("".join(parts[_surname_start(parts) :])) or "unknown"
 
 
 def _first_key_word(title: str) -> str:
@@ -207,14 +217,7 @@ def _format_one_name(display_name: str) -> str:
     if len(parts) <= 1:
         # Empty when escaping consumed the whole name (a display name of "{").
         return name
-    # Find where the last name starts (including particles)
-    cased = _surname_is_cased(parts)
-    last_start = len(parts) - 1
-    for i in range(len(parts) - 2, -1, -1):
-        if _is_particle(parts[i], cased=cased):
-            last_start = i
-        else:
-            break
+    last_start = _surname_start(parts)
     first = " ".join(parts[:last_start])
     last = " ".join(parts[last_start:])
     return f"{last}, {first}" if first else last
@@ -236,9 +239,12 @@ def _format_flat_authors_bibtex(authors: list[dict[str, Any]]) -> str:
     return _format_names(authors, lambda a: (a or {}).get("name") or "")
 
 
-# `str.translate` is one pass, so the braces `\textbackslash{}` emits are never
-# re-escaped — the trap that chained `str.replace` falls into.
-_BIBTEX_ESCAPES = {
+# `str.translate` is one pass and never rescans its output, so the braces
+# `\textbackslash{}` emits survive the `{`/`}` deletions in the same table —
+# the trap a strip-then-escape sequence falls into.
+_BIBTEX_ESCAPES: dict[str, str | None] = {
+    "{": None,
+    "}": None,
     "\\": r"\textbackslash{}",
     "&": r"\&",
     "%": r"\%",
@@ -250,7 +256,7 @@ _BIBTEX_ESCAPES = {
 }
 _BIBTEX_TABLE = str.maketrans(_BIBTEX_ESCAPES)
 
-# Same set, but a DOI keeps its braces (escaped, not stripped): it has to stay
+# Same set, but a DOI keeps its braces (escaped, not dropped): it has to stay
 # resolvable rather than read as prose.
 _DOI_ESCAPES = _BIBTEX_ESCAPES | {"{": r"\{", "}": r"\}"}
 _DOI_TABLE = str.maketrans(_DOI_ESCAPES)
@@ -263,10 +269,10 @@ _URL_TABLE = str.maketrans({ch: f"%{ord(ch):02X}" for ch in "%#\\{}^_&$~ "})
 def _escape_bibtex(s: str) -> str:
     """Neutralize LaTeX specials so ``s`` is safe as a literal field value.
 
-    Plain text: braces are stripped rather than kept for case-protection, and
+    Plain text: braces are dropped rather than kept for case-protection, and
     whitespace runs collapse (Atom feeds wrap a title across lines).
     """
-    return " ".join(s.split()).replace("{", "").replace("}", "").translate(_BIBTEX_TABLE)
+    return " ".join(s.split()).translate(_BIBTEX_TABLE)
 
 
 def _escape_doi(s: str) -> str:
