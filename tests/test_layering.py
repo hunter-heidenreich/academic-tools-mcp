@@ -6,7 +6,9 @@ README's architecture diagram. Prose does not fail CI, so a back-edge added in
 good faith survives review.
 
 This module discovers the import graph by AST (never by importing, so it is
-immune to import side effects) and asserts the order directly. When a module
+immune to import side effects) and asserts the order directly. It also owns
+the module-naming rule, for the same reason: a convention nothing checks is
+a convention that drifts back into chronology. When a module
 moves between layers, ``_LAYERS`` is the one place to edit -- and a module that
 is not listed there fails ``test_every_module_is_classified`` rather than
 silently escaping every check below.
@@ -163,6 +165,21 @@ def test_discovery_found_the_package():
     assert len(_MODULES) > 30
     assert {"server", "app", "store.cache", "providers.arxiv", "tools.paper"} <= set(_MODULES)
     assert _GRAPH["server"], "server.py imports the whole tool surface"
+
+
+def test_no_module_name_starts_with_an_underscore():
+    """The naming rule, enforced rather than asked for.
+
+    Nothing in this package is importable-public -- no re-exports, no
+    ``py.typed``, one console script -- so a leading underscore on a *module*
+    marks a subset of an already-private package as extra private, which tells
+    a reader nothing. The prefix this repo carried encoded only *when* a file
+    was written. Symbol-level underscores are untouched by this.
+    """
+    offenders = sorted(
+        name for name in _MODULES if any(part.startswith("_") for part in name.split("."))
+    )
+    assert not offenders, f"module names carry no leading underscore: {offenders}"
 
 
 def test_every_module_is_classified():
