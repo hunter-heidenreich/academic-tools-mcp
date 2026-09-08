@@ -1,14 +1,8 @@
 """BM25 keyword search over the converted-markdown cache.
 
-The PDF pipeline (download_pdf → convert_paper) lands every paper's markdown
-under ``.cache/<namespace>/markdown/<canonical>.md``. This ranks that corpus
-against a query with SQLite FTS5 and re-reads only the winners, to extract a
-title, a snippet centred on the densest cluster of query terms, and the
-section index an agent chains into ``get_paper_section``.
-
-Design rationale — the contentless index, the two tokenizer tables, the
-``(mtime_ns, size)`` refresh and the invariants each of them holds — is in
-``.claude/rules/corpus.md``, which loads whenever this file is opened.
+Ranks ``.cache/<namespace>/markdown/*.md`` with SQLite FTS5 and re-reads only
+the winners, for a title, a snippet and the section an agent chains into
+``get_paper_section``. Design rationale is in ``.claude/rules/corpus.md``.
 """
 
 import contextlib
@@ -47,9 +41,7 @@ if then than so such
 """
 _STOPWORDS = frozenset(_STOPWORD_TEXT.split())
 
-# ---------------------------------------------------------------------------
-# Titles and snippets — what a hit shows
-# ---------------------------------------------------------------------------
+# --- Titles and snippets — what a hit shows ---
 
 
 def _content_tokens(text: str, *, normalize: bool = False) -> set[str]:
@@ -68,15 +60,11 @@ def _content_tokens(text: str, *, normalize: bool = False) -> set[str]:
 
 
 def _extract_title(markdown: str) -> str | None:
-    """Return the first H1 or H2 in the document, or ``None``.
+    """The document's first H1 or H2, or ``None``.
 
-    Delegated, never a local scan: which levels count as title-level is
-    ``papers``' policy, and a copy here drifts the moment that changes.
-
-    This is the paper's *title*, not a section the index opens on — a title-page
-    H1 with no body under it is dropped from the section index but is still the
-    right thing to name the hit. ``section_at_offset`` is what resolves the
-    section, and the two answer different questions.
+    Delegated, never a local scan — title level is ``papers``' policy. Answers
+    a different question from ``section_at_offset``: the paper's name, not the
+    section a hit landed in.
     """
     return papers.first_section_heading(markdown)
 
@@ -87,13 +75,11 @@ def _extract_snippet(
     *,
     normalize: bool = False,
 ) -> tuple[str, int | None]:
-    """Return ``(snippet, char_offset)`` for the best matching position.
+    """``(snippet, char_offset)`` for the best matching window.
 
-    "Best matching" = the position with the most distinct query terms in the
-    surrounding window, so "variational dropout" cooccurrence beats a lone
-    "dropout". With nothing to centre on, returns the document head and a
+    Best = most distinct query terms nearby, so "variational dropout" beats a
+    lone "dropout". Nothing to centre on returns the document head and a
     ``None`` offset — the caller must not attribute a section to that.
-
     ``char_offset`` indexes the ORIGINAL markdown under either normalisation.
     """
     half = _SNIPPET_CHARS // 2
@@ -137,14 +123,10 @@ def _extract_snippet(
     return re.sub(r"\s+", " ", snippet.strip()), best_offset
 
 
-# ---------------------------------------------------------------------------
-# Filename → identifier inversion per namespace
-# ---------------------------------------------------------------------------
+# --- Filename → identifier inversion per namespace ---
 
 # A DOI suffix may legitimately contain "_", so only a slash a known prefix
-# introduced is decidable. These namespaces have exactly one such prefix, and
-# each provider is the one that spells it — same reason the arXiv grammar below
-# comes from `arxiv` rather than being respelled here.
+# introduced is decidable. Prefixes come from the providers, never respelled.
 _NAMESPACE_DOI_PREFIXES = {
     biorxiv.NAMESPACE: biorxiv.DOI_PREFIX,
     acl.NAMESPACE: acl.ACL_DOI_PREFIX,
@@ -154,8 +136,7 @@ _NAMESPACE_DOI_PREFIXES = {
 _MANUAL_DOI_STEM_RE = re.compile(rf"^({doinorm.REGISTRANT_PATTERN})_")
 
 # "archive[.subject]_NNNNNNN[vN]"; new-style ids start with a digit and pass
-# through. Same grammar the router matches on, from the same source, so a stem
-# this inverts can never be one `manual` refuses to send here.
+# through. Built from `arxiv`'s patterns, so this and the router cannot drift.
 _ARXIV_OLDSTYLE_STEM_RE = re.compile(
     rf"^({arxiv.OLD_ARCHIVE_PATTERN})_({arxiv.OLD_NUMBER_PATTERN})$"
 )
@@ -184,9 +165,7 @@ def _restore_slashes(namespace: str, stem: str) -> str:
     return stem
 
 
-# ---------------------------------------------------------------------------
-# The corpus on disk
-# ---------------------------------------------------------------------------
+# --- The corpus on disk ---
 
 
 class _ScannedFile(NamedTuple):
@@ -204,14 +183,11 @@ class _ScannedFile(NamedTuple):
 
 
 def _scan_markdown() -> list[_ScannedFile]:
-    """Every cached markdown file on disk.
+    """Every cached markdown file on disk, carrying ``os.scandir``'s stat.
 
-    ``os.scandir`` carries the stat the refresh needs, so it isn't fetched
-    twice. Order is not guaranteed — the refresh keys on ``(namespace, stem)``.
-
-    **Must stay unfiltered.** ``_refresh_index`` prunes every indexed row this
-    walk did not return, so a namespace filter would delete every other
-    namespace's postings.
+    Order is not guaranteed. **Must stay unfiltered:** ``_prune_missing``
+    deletes every indexed row this walk did not return, so a namespace filter
+    would wipe the others.
     """
     out: list[_ScannedFile] = []
     try:
@@ -248,9 +224,7 @@ def _scan_markdown() -> list[_ScannedFile]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Persistent incremental index
-# ---------------------------------------------------------------------------
+# --- Persistent incremental index ---
 
 _INDEX_DIRNAME = "__search_index__"
 
@@ -261,8 +235,7 @@ _SCHEMA_VERSION = 3
 _UNREADABLE_MTIME = -1
 
 # Every reason a document can be recorded as unusable. Exported because
-# `tools/search.py` owes the agent one explanation per reason, and a reason
-# added here without one there degrades silently to a generic residual.
+# `tools/search.py` owes the agent one explanation per reason.
 NO_INDEXABLE_TOKENS = "no_indexable_tokens"
 UNREADABLE = "unreadable"
 UNINDEXABLE_REASONS = frozenset({NO_INDEXABLE_TOKENS, UNREADABLE})
@@ -421,11 +394,8 @@ def _index_document(con: sqlite3.Connection, rowid: int, text: str) -> str | Non
     return None
 
 
-# FTS5 cannot decrement a contentless table's corpus statistics on DELETE — it
-# has no stored content to subtract — so every replaced or removed document
-# inflates the N and average length that `bm25()` divides by. Left alone, rare
-# terms stop out-ranking common ones. Reset once churn matches the corpus size:
-# amortised O(1) per change, drift bounded to roughly a factor of two.
+# DELETE cannot decrement a contentless table's corpus statistics, so every
+# replaced document inflates what `bm25()` divides by. Reset once churn == corpus.
 _CHURN_KEY = "stat_churn"
 
 
@@ -539,9 +509,8 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                 for row in con.execute("SELECT rowid, ns, stem, mtime_ns, size FROM files")
             }
             seen: set[tuple[str, str]] = set()
-            # Both paths re-index every file, so the reset costs nothing extra.
-            # The counter is what previous refreshes recorded, so a threshold
-            # crossing resets on the next search — one refresh of slack, not drift.
+            # Both paths re-index every file, so the reset is free. The counter is
+            # from previous refreshes, so a crossing resets on the next search.
             reset = force_refresh or (known and _churn(con) >= len(known))
 
             with con:
@@ -563,18 +532,11 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
 
 
 def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[dict[str, Any]]:
-    """Papers present on disk that the index could not use.
+    """Papers on disk the index could not use — silently invisible otherwise.
 
-    Each record is ``{namespace, stem, canonical_id, reason}``, where
-    ``reason`` is one of :data:`UNINDEXABLE_REASONS`. Such papers
-    are invisible to ``search`` correctly but *silently*, which is what this
-    fixes. ``canonical_id`` is inverted the same way a hit's is, so the two
-    readers of the ``files`` table name a paper identically and the id can be
-    handed straight back to the paper tools; the raw ``stem`` cannot.
-
-    ``refresh=False`` is a contract, not an optimisation: it is how
-    ``search_cached_papers`` reads the state the ``search`` it just ran left
-    behind, instead of walking the corpus a second time.
+    Records are ``{namespace, stem, canonical_id, reason}``, ``reason`` one of
+    :data:`UNINDEXABLE_REASONS`. ``refresh=False`` is a contract, not an
+    optimisation: it reads what the ``search`` just run left behind.
     """
     if refresh:
         _refresh_index()
@@ -599,9 +561,7 @@ def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[d
     ]
 
 
-# ---------------------------------------------------------------------------
-# Query and ranking
-# ---------------------------------------------------------------------------
+# --- Query and ranking ---
 
 # ``unicode61``'s separators, so the query splits the way the corpus did — and
 # sqlite3 cannot bind a string containing a NUL at all.
@@ -626,14 +586,11 @@ def _query_words(query: str) -> list[str]:
 
 
 def _fts_query(query: str) -> str:
-    """Build an FTS5 MATCH expression OR-ing the query's words.
+    """An FTS5 MATCH expression OR-ing the query's words.
 
-    Each word is quoted so FTS5 reads it as a phrase, not syntax: an unquoted
-    ``NOT``, ``OR``, ``*``, ``-`` or ``:`` parses as an operator, or raises.
-    Inside a phrase only ``"`` is special, escaped by doubling.
-
-    Returns ``""`` when nothing survives filtering, which the caller must treat
-    as an empty result — an empty MATCH expression is a syntax error to FTS5.
+    Each is quoted so an unquoted ``NOT``/``OR``/``*``/``-``/``:`` cannot parse
+    as an operator. ``""`` when nothing survives filtering — the caller must
+    treat that as an empty result, since an empty MATCH is an FTS5 syntax error.
     """
     # Keyed case-insensitively because FTS5 is — a term ORed with its own other
     # spelling scores twice. Emitted as typed: folding is the tokenizer's job.
@@ -721,40 +678,14 @@ def search(
     normalize: bool = False,
     force_refresh: bool = False,
 ) -> list[dict[str, Any]]:
-    """Rank cached markdown files against ``query`` using BM25.
+    """Rank cached markdown files against ``query`` using BM25, best first.
 
-    Returns up to ``top_k`` hits, each shaped:
+    Up to ``top_k`` hits shaped by :func:`_hit`; ``search_cached_papers``
+    documents that shape for agents. Scores are corpus-global — ``namespace``
+    selects which documents come back, not how they rank.
 
-    ::
-
-        {
-            "namespace": "arxiv",
-            "canonical_id": "2301.00001",
-            "score": 12.4,
-            "title": "Attention Is All You Need",
-            "snippet": "...the proposed transformer relies entirely on...",
-            "section": "Methods",       # H1/H2 the snippet falls under
-            "section_index": 3,         # chainable into get_paper_section
-            "char_offset": 18422,
-            "char_count": 48217,
-        }
-
-    Every returned hit matched at least one query term and scores above zero;
-    higher is better. ``section_index`` and ``char_offset`` are ``None`` when
-    the term could not be located in the text.
-
-    **Scores are corpus-global.** ``namespace`` selects which documents come
-    back, not how they rank: term rarity is computed over the whole index, so
-    one paper scores identically in a filtered and an unfiltered search.
-
-    ``normalize=True`` folds diacritics on both sides, so "cafe" and "café"
-    rank identically. ``force_refresh=True`` re-indexes every document
-    regardless of the ``(mtime, size)`` staleness signal — the safety valve for
-    a file that changed without either changing.
-
-    Raises ``sqlite3.Error`` rather than swallowing it, which would report a
-    locked or corrupt index as a confident "no paper mentions this";
-    ``search_cached_papers`` turns it into ``{error, suggestion}``.
+    Raises ``sqlite3.Error`` rather than reporting a locked or corrupt index
+    as a confident "no paper mentions this".
     """
     if top_k <= 0:
         return []
