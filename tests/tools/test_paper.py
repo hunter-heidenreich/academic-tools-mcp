@@ -1355,6 +1355,23 @@ class TestPmidRouting:
         assert result["papers"][0]["_canonical_id"] == "10.1234/x"
 
     @pytest.mark.asyncio
+    async def test_batch_reports_an_unresolvable_pmid_in_its_own_slot(self, monkeypatch):
+        """One bad identifier must not affect the others — the batch contract."""
+        _stub_pmid(monkeypatch, {"error": "No work found for PMID: 99999999", "not_found": True})
+
+        async def fake_batch(dois, **kwargs):
+            return {d: {"id": "W1", "doi": f"https://doi.org/{d}", "title": "T"} for d in dois}
+
+        monkeypatch.setattr(openalex, "get_works_batch", fake_batch)
+
+        result = await server.get_papers_metadata(["pmid:99999999", "10.1234/x"])
+
+        bad, good = result["papers"]
+        assert bad["_input"] == "pmid:99999999"
+        assert bad["not_found"] is True
+        assert good["_canonical_id"] == "10.1234/x"
+
+    @pytest.mark.asyncio
     async def test_authors_abstract_and_bibtex_take_a_pmid_too(self, monkeypatch):
         """All four unified tools reach a provider through ``_fetch_source``,
         which is what makes the substitution uniform rather than per-tool."""

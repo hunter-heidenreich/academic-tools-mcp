@@ -31,8 +31,27 @@ grouped by milestone rather than per commit.
   (null when OpenAlex has none), closing the round trip in both directions.
   Batched results carry it too. ([#115])
 
+- **`fallback_crossref` reaches all four paper tools, not just
+  `get_paper_metadata`.** A DOI Crossref had indexed and OpenAlex had not gave
+  you a title and a venue but no authors, abstract or BibTeX — on a server whose
+  stated purpose includes generating BibTeX. `get_paper_authors`,
+  `get_paper_abstract` and `get_paper_bibtex` now take the flag too, with the
+  same opt-in default and the same definitive-404 precondition, single-homed in
+  `paper._crossref_fallback` so the four cannot disagree about which papers
+  Crossref answers for. What Crossref cannot supply is null rather than absent.
+  New behind it: `crossref.abstract_text` (JATS markup rendered to plain text),
+  `crossref.author_name` (Crossref's `given`/`family` rejoined, shared with the
+  BibTeX surname rule), and `bibtex.generate_crossref_bibtex` with its own
+  `_CROSSREF_TYPE_MAP` — Crossref's type vocabulary is not OpenAlex's, and the
+  two maps stay separate. ([#116])
+
 ### Fixed
 
+- **A transient Crossref failure inside `fallback_crossref` is no longer
+  swallowed.** The agent asked for the fallback and got back only OpenAlex's
+  `not_found`, with no way to tell that Crossref had been tried and might work on
+  a retry. The error now carries `crossref_fallback_retryable: true`, mirroring
+  `published_lookup_retryable`. ([#116])
 - **`arxiv.org/html/...` URLs route to arXiv.** `/abs/` and `/pdf/` matched but
   `/html/` did not, though it has been the default landing page for new papers
   since late 2023 — the spelling a pasted browser tab carries. Unrecognised,
@@ -1715,3 +1734,4 @@ say which.
 [#110]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/110
 [#112]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/112
 [#115]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/115
+[#116]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/116
