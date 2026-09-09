@@ -17,9 +17,6 @@ Gating order (see ``slot``):
 
 ``slot`` is an async context manager so a streaming PDF download can hold it
 for the whole stream, its open connection counting against the concurrency cap.
-
-Rationale — sleep outside the lock, who counts ``http_calls``, when
-``per_host`` applies — is in ``.claude/rules/net.md``.
 """
 
 import asyncio

@@ -517,8 +517,9 @@ async def get_paper_bibtex(
     """Generate a BibTeX entry, dispatched by identifier shape.
 
     Returns ``{_source, _canonical_id, bibtex}``. Entry type per source:
-      - arxiv: @article if the paper has journal_ref, else @misc with
-        eprint / archivePrefix / primaryClass.
+      - arxiv: @article if the paper has journal_ref, else @misc. Both carry
+        eprint / archiveprefix, plus primaryclass when the paper has a
+        primary_category.
       - biorxiv: @article when published_doi is present, else @misc with
         the preprint DOI and server.
       - openalex: inferred from the work type (@article, @inproceedings,

@@ -1,11 +1,9 @@
 """Thin MCP server entry point.
 
-Imports the shared `mcp` instance and the four tool-group modules (importing them
-runs their `@mcp.tool` decorators, registering the tools), then re-exports the
-tool callables and the provider modules that tests / callers reach via
-`server.<name>`. Invariant: nothing else -- a tool module's internals stay in
-their own module, so `server.<name>` never becomes a second import name for a
-private helper. The optional operator-only debug tool is registered at the end.
+Importing a `tools/*` module runs its `@mcp.tool` decorators, so the import list
+below *is* the registration. `__all__` holds the tool callables, the provider
+modules tests patch, `mcp` and this module's debug gate. Invariant: never a tool
+module's internals.
 """
 
 from typing import Any
@@ -77,13 +75,9 @@ __all__ = [
 ]
 
 
-# Operator-only debug tools (gated behind ENABLE_DEBUG_TOOLS env var)
-# ---------------------------------------------------------------------------
-#
-# These are NOT registered when the env var is absent so agents never
-# see them in normal operation. The env var flips them on for an
-# operator who wants to inspect cumulative cache/HTTP counters from
-# within Claude Code itself, without dropping into a Python REPL.
+# Gated on a truthy ENABLE_DEBUG_TOOLS, read once at import, so flipping it needs
+# a restart. Keep `get_server_stats` inside the `if`: an agent must never observe
+# cache or throttle state.
 
 _DEBUG_TOOLS_ENABLED = config.flag("ENABLE_DEBUG_TOOLS")
 
@@ -91,18 +85,18 @@ if _DEBUG_TOOLS_ENABLED:
 
     @mcp.tool
     async def get_server_stats() -> dict[str, Any]:
-        """Operator-only: snapshot cumulative cache + HTTP counters.
+        """Operator-only: snapshot cumulative cache and HTTP counters.
 
-        Only registered when ``ENABLE_DEBUG_TOOLS=1`` in the environment;
-        agents never see it in normal operation. Returns the per-provider
-        counters tracked by ``stats.snapshot()``: cache_hits / cache_misses
-        / negative_hits, http_calls / http_retries, backpressure_refusals,
-        cache_write_failures, and live in_flight counts. Cumulative since
-        process start. Also reports ``env_file`` — the ``.env`` that won at
-        import, or null if none did.
+        Returns ``{providers, env_file}``. ``providers`` maps each cache
+        namespace (``openalex``, ``arxiv``, ``acl_anthology``, ``oa_download``,
+        ...) to the counters it has moved — ``cache_hits``, ``cache_misses``,
+        ``negative_hits``, ``http_calls``, ``http_retries``,
+        ``backpressure_refusals``, ``cache_write_failures`` since process start,
+        plus live ``in_flight``. An absent counter means zero. ``env_file`` is
+        the ``.env`` that won at import, or null.
 
-        Use this when something feels slow or rate-limit-pressured to see
-        which provider is hitting the network vs. serving from cache.
+        Use this when something feels slow or rate-limit-pressured, to see
+        which namespace is hitting the network vs. serving from cache.
         """
         return stats.snapshot()
 

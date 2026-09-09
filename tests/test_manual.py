@@ -1066,12 +1066,14 @@ class TestMigrateMisroutedArxiv:
             (directory / f"10.1038_s41586-021-03819-2{suffix}").write_text("keep")
         return tmp_path
 
-    def test_moves_only_the_misrouted_files(self, misrouted):
+    def test_refiles_only_the_misrouted_files(self, misrouted):
         """Each file lands under the stem the arXiv namespace reads.
 
         A prefixed stem is not a plain move: the legacy ``manual`` key kept the
         ``arXiv:`` prefix, so reusing the source name files the paper under a
-        stem no arXiv lookup ever builds.
+        stem no arXiv lookup ever builds. A stem carrying no such prefix is
+        linked rather than moved — a freeform label could have written it — so
+        it stays readable under ``manual`` too.
         """
         assert manual.migrate_misrouted_arxiv() == 8
 
@@ -1087,7 +1089,38 @@ class TestMigrateMisroutedArxiv:
             assert {p.name for p in manual_dir.iterdir()} == {
                 f"my-imported-paper{suffix}",
                 f"10.1038_s41586-021-03819-2{suffix}",
+                f"cond-mat.stat-mech_0501001{suffix}",
+                f"hep-th_9901001v2{suffix}",
             }
+
+    def test_an_ambiguous_stem_keeps_its_manual_file(self, misrouted):
+        """A label ``safe_stem`` cannot distinguish from an arXiv id is not lost.
+
+        ``safe_stem`` percent-encodes ``/`` to ``_`` and leaves a literal ``_``
+        alone, so ``cond-mat.stat-mech_0501001`` is both a legacy arXiv import
+        and a freeform label an operator imported under that name. Linking
+        serves both readings off one inode.
+        """
+        manual.migrate_misrouted_arxiv()
+
+        source = misrouted / "manual" / "pdfs" / "cond-mat.stat-mech_0501001.pdf"
+        target = misrouted / "arxiv" / "pdfs" / "cond-mat.stat-mech_0501001.pdf"
+        assert source.exists()
+        assert source.stat().st_ino == target.stat().st_ino
+
+    def test_a_linked_markdown_keeps_its_manual_section_index(self, misrouted):
+        """Only a moved markdown orphans its index; a linked one is still readable."""
+        from academic_tools_mcp.store import cache
+
+        for stem in ("cond-mat.stat-mech_0501001", "arxiv%3Ahep-th_9901001"):
+            cache.put(manual.NAMESPACE, "sections", stems.sections_key_for_stem(stem), {"s": 1})
+
+        manual.migrate_misrouted_arxiv()
+
+        linked = stems.sections_key_for_stem("cond-mat.stat-mech_0501001")
+        moved = stems.sections_key_for_stem("arxiv%3Ahep-th_9901001")
+        assert cache.get(manual.NAMESPACE, "sections", linked) is not None
+        assert cache.get(manual.NAMESPACE, "sections", moved) is None
 
     def test_is_idempotent(self, misrouted):
         assert manual.migrate_misrouted_arxiv() == 8
@@ -1108,13 +1141,19 @@ class TestMigrateMisroutedArxiv:
 
         assert manual.migrate_misrouted_arxiv() == 8
 
-    def test_a_move_that_fails_leaves_the_file_for_the_next_run(self, misrouted, monkeypatch):
+    def test_a_refile_that_fails_leaves_the_file_for_the_next_run(self, misrouted, monkeypatch):
+        """Neither re-filing path raises out of the lifespan; a skip is for the next run."""
+        import os
         from pathlib import Path
 
         def failing_rename(self, target):
             raise OSError("read-only filesystem")
 
+        def failing_link(source, target):
+            raise OSError("filesystem has no hard links")
+
         monkeypatch.setattr(Path, "rename", failing_rename)
+        monkeypatch.setattr(os, "link", failing_link)
 
         assert manual.migrate_misrouted_arxiv() == 0
         assert (misrouted / "manual" / "pdfs" / "hep-th_9901001v2.pdf").exists()

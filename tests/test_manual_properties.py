@@ -99,7 +99,9 @@ def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatc
     The legacy key is what the pre-fix router produced: ``doinorm.canonical``,
     which strips ``doi:`` but not ``arXiv:``. A sweep that reuses the source
     filename leaves the prefixed spellings in the arXiv namespace under a stem
-    that namespace never builds — moved, but still unreachable.
+    that namespace never builds — moved, but still unreachable. A spelling
+    ``safe_stem`` cannot tell from a freeform label is linked rather than
+    moved, so the legacy path may survive — pointing at the same inode.
     """
     root = tmp_path_factory.mktemp("cache")
     monkeypatch.setattr(cache, "CACHE_ROOT", root)
@@ -112,9 +114,10 @@ def test_a_swept_paper_lands_where_the_router_looks(tmp_path_factory, monkeypatc
     manual.migrate_misrouted_arxiv()
 
     target = manual.resolve_target(spelling)
+    swept = stems.markdown_path(target["namespace"], target["canonical"])
     assert target["namespace"] == "arxiv"
-    assert stems.markdown_path(target["namespace"], target["canonical"]).exists()
-    assert not legacy.exists()
+    assert swept.exists()
+    assert not legacy.exists() or legacy.stat().st_ino == swept.stat().st_ino
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=60)

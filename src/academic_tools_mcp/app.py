@@ -1,8 +1,8 @@
 """Shared FastMCP application core.
 
-Holds the `mcp` instance, the lifespan, the Annotated parameter vocabulary, and
-the helpers more than one tool group needs. Never imports `tools`, so tool
-modules can import from here without a cycle.
+Holds the `mcp` instance, the lifespan, the Annotated parameter vocabulary and
+the helpers the tool groups share. Never imports `tools` (CI-enforced by
+`_LAYERS` in `tests/test_layering.py`), so they can import from here.
 """
 
 import asyncio
@@ -23,11 +23,9 @@ _T = TypeVar("_T")
 
 @asynccontextmanager
 async def _lifespan(app: FastMCP) -> AsyncGenerator[None]:
-    """Startup migrations, then shutdown cleanup.
+    """Startup sweeps, then shutdown cleanup.
 
-    Four cheap, idempotent sweeps: orphaned ``*.tmp``, pre-``safe_stem``
-    filenames, ``manual`` files that now route to arXiv, and ACL PDFs named by
-    Anthology ID. Clients are pooled lazily, so only shutdown touches them.
+    A sweep added here must be idempotent and must not raise out of the lifespan.
     """
     cache.gc_orphan_tmp_files()
     stems.migrate_legacy_stems()
@@ -47,7 +45,7 @@ mcp = FastMCP(
         "OpenCitations, ACL Anthology, Wikipedia.\n\n"
         "get_paper_metadata / _authors / _abstract / _bibtex take an arXiv ID "
         "or any DOI and route to the right provider; each response tags "
-        "`_source`. For 30+ identifiers use get_papers_metadata.\n\n"
+        "`_source`. Batch many identifiers with get_papers_metadata.\n\n"
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
         "get_paper_section, all auto-detecting the provider. download_pdf "
         "handles arXiv/bioRxiv/ACL; other DOIs need allow_oa_url=True (fetches "
@@ -83,12 +81,15 @@ PAPER_ID = Annotated[
         description="Paper identifier — bare, doi:-prefixed, or a full URL. "
         "Auto-routed by shape: arXiv ID (2301.00001, hep-th/9901001), "
         "bioRxiv/medRxiv DOI (10.1101/...), ACL DOI (10.18653/v1/...), or any "
-        "other DOI. Pipeline tools (download_pdf, convert_paper, import_paper, "
-        "get_paper_sections, get_paper_section) also take a freeform label for "
-        "a manually imported file; metadata tools require a shape above."
+        "other DOI. Pipeline and markdown tools (download_pdf, convert_paper, "
+        "import_paper, get_paper_sections, get_paper_section, find_in_paper) "
+        "also take a freeform label for a manually imported file; metadata "
+        "tools require a shape above."
     ),
 ]
 
+# The harness's per-result cap: get_paper_section declares it as
+# `anthropic/maxResultSizeChars` and SECTION_MAX_CHARS caps requests at it.
 SECTION_HARNESS_CAP = 200000
 
 SECTION_OFFSET = Annotated[
@@ -110,15 +111,14 @@ SECTION_MAX_CHARS = Annotated[
 ]
 
 
-# The ordered pipeline stages. Single-homed: every "run the pipeline first" error quotes it.
+# Single-homed: every "run the pipeline first" suggestion quotes this chain.
 PIPELINE_CHAIN = "download_pdf → convert_paper → get_paper_sections → get_paper_section"
 
 
 def not_converted_error(identifier: str) -> dict[str, Any]:
     """Uniform error for "this paper has no converted markdown yet".
 
-    Invariant: recovery advice goes in ``suggestion``, never the ``error``
-    string — all four tools that can produce this emit the same shape.
+    Invariant: advice goes in ``suggestion``, never the ``error`` string.
     """
     return {
         "error": f"Paper not converted yet for: {identifier}.",
@@ -127,7 +127,7 @@ def not_converted_error(identifier: str) -> dict[str, Any]:
 
 
 def pdf_not_cached_error(identifier: str) -> dict[str, Any]:
-    """Uniform error for "no usable PDF is cached for this paper"."""
+    """Uniform error for "no usable PDF is cached"; no ``retryable``, since nothing was tried."""
     return {
         "error": f"PDF not cached for: {identifier}.",
         "suggestion": (
@@ -139,7 +139,7 @@ def pdf_not_cached_error(identifier: str) -> dict[str, Any]:
 
 
 def enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
-    """Add a suggestion to an error dict if one isn't already present."""
+    """Add *suggestion* to an error dict unless it has one; mutates in place and returns it."""
     if "error" in result and "suggestion" not in result:
         result["suggestion"] = suggestion
     return result
@@ -150,11 +150,10 @@ async def read_markdown(
 ) -> tuple[manual.Target, _T] | dict[str, Any]:
     """Resolve *identifier*, read its cached markdown, apply ``scan``.
 
-    Returns ``(target, scan(markdown))``, else :func:`not_converted_error`. The
-    one home for the read the two tools outside ``papers.sections_lock`` share
-    (``get_paper_section``, ``find_in_paper``): off the event loop, explicit
-    UTF-8, and ``FileNotFoundError`` degraded, since a cascade can unlink
-    between the ``exists()`` check and the read.
+    Returns ``(target, scan(markdown))``, else :func:`not_converted_error`. One
+    home for the two reads outside ``papers.sections_lock`` (``get_paper_section``,
+    ``find_in_paper``), so their guards can't drift: off the event loop, explicit
+    UTF-8, ``FileNotFoundError`` degraded — a cascade can unlink mid-read.
     """
     target = manual.resolve_target(identifier)
     md_path = stems.markdown_path(target["namespace"], target["canonical"])
@@ -174,9 +173,8 @@ async def read_markdown(
 def page_bounds(page: int, page_size: int) -> tuple[int, int]:
     """Half-open slice bounds for a 1-based ``page``.
 
-    The one home for the arithmetic ``tools/graph`` and ``get_paper_authors``
-    share, including the ``has_more = end < total`` rule that goes with it.
-    Envelope keys stay per-tool.
+    One home for the arithmetic ``graph._page`` and ``get_paper_authors`` share;
+    both then report ``has_more`` as ``end < total``. Envelope keys stay per-tool.
     """
     start = (page - 1) * page_size
     return start, start + page_size
@@ -198,25 +196,23 @@ def dict_list(value: Any) -> list[dict[str, Any]]:
 def unwrap_first(value: Any) -> Any:
     """First element of a list, else the value itself (None for empties).
 
-    Crossref returns scalar-ish fields (title, container-title) as
-    single-element lists; unwrap them to match the OpenAlex shape.
+    Crossref returns title / container-title as single-element lists.
     """
     if isinstance(value, list):
         return value[0] if value else None
     return value
 
 
-# Crossref publication-date fallback order. `posted` (the preprint date) is last
-# so a preprint-only record still yields a year.
+# Crossref date fallback order: `posted` is the preprint date, so it answers last.
 _CROSSREF_DATE_KEYS = ("issued", "published-print", "published-online", "published", "posted")
 
 
 def crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
     """``(year, ISO-date)`` from a Crossref work, else ``(None, None)``.
 
-    Dates are ``{"date-parts": [[year, month, day]]}``, month and day optional.
-    Every level is shape-checked, not null-checked: the ``message`` arrives
-    verbatim, so a bad record must degrade rather than raise past ``{error}``.
+    ``{"date-parts": [[year, month, day]]}``, month and day optional. Every level
+    is shape-checked, not null-checked: the ``message`` arrives verbatim, and a
+    bad record degrades instead of raising past ``{error}``.
     """
     for key in _CROSSREF_DATE_KEYS:
         parts = as_dict(work.get(key)).get("date-parts")
@@ -264,9 +260,9 @@ FALLBACK_CROSSREF = Annotated[
         description=(
             "When OpenAlex returns a definitive 404 for a DOI (not a transient "
             "5xx/429/timeout), fall back to Crossref, which often indexes new "
-            "DOIs sooner. The response carries _source='crossref' and a reduced "
-            "field set: no abstract, no open-access fields. Only affects DOIs "
-            "routed to OpenAlex."
+            "DOIs sooner. The response carries _source='crossref' with the "
+            "same key set as an OpenAlex one, but is_oa / oa_status / oa_url / "
+            "pdf_url are always null. Only affects DOIs routed to OpenAlex."
         ),
     ),
 ]
@@ -277,8 +273,9 @@ PDF_FORCE_REFRESH = Annotated[
         description=(
             "Drop the cached PDF and re-download — for a corrupt file, or a "
             "provider that replaced it under the same key (a v2 arXiv upload). "
-            "No effect on identifiers import_paper handled; replace those with "
-            "import_paper(..., force_refresh=True)."
+            "For an arXiv/bioRxiv/ACL-shaped identifier you imported yourself "
+            "this replaces your PDF and drops its markdown: use "
+            "import_paper(..., force_refresh=True) to supply the file again."
         ),
     ),
 ]
@@ -328,8 +325,8 @@ CONVERT_MODE = Annotated[
             "tables and equations: minutes, and serialised server-wide — a "
             "concurrent call gets a retryable 'busy' error. 'fast' runs a light "
             "text extractor outside that lock: seconds, never 'busy', but "
-            "DEGRADED — plain text, no tables, equations, figures, or real "
-            "headings. The response echoes conversion_mode."
+            "DEGRADED — plain text, no tables, equations, figures or headings. "
+            "The response echoes conversion_mode."
         ),
     ),
 ]
@@ -403,11 +400,9 @@ CACHE_SEARCH_TOP_K = Annotated[
     int,
     Field(
         description=(
-            "Maximum hits to return. Ranked by BM25; ties go to the first-seen "
-            "file in alphabetical order."
+            "Maximum hits to return. Ranked by BM25; ties break by namespace, then filename."
         ),
         ge=1,
-        # The engine's own cap, not a transcribed number, so the two can't drift.
         le=corpus.MAX_TOP_K,
     ),
 ]

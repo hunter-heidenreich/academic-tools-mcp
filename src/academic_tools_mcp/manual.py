@@ -1,13 +1,12 @@
 """Import of local PDFs and pre-converted markdown, plus the two dispatchers.
 
-An import is keyed by a user-supplied identifier and stored in **that
-identifier's** provider namespace (arXiv, bioRxiv/medRxiv, ACL Anthology), so
-the native pipeline tools find the file with no duplicate; only an identifier
-no provider claims falls back to ``manual``. ``resolve_target`` decides that
-for storage and ``resolve_metadata_source`` for metadata, both off one shape
-test — every paper tool routes through one of them.
+An import is stored in the identifier's *own* provider namespace, so the native
+pipeline tools find it with no duplicate; only an identifier no provider claims
+falls back to ``manual``. ``resolve_target`` decides that, and
+``resolve_metadata_source`` derives from it.
 """
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TypedDict
@@ -23,6 +22,10 @@ from .util import doinorm
 NAMESPACE = "manual"
 
 MetadataSource = Literal["arxiv", "biorxiv", "openalex"]
+RefileOutcome = Literal["moved", "linked"]
+
+# Covers the `arXiv:` prefix, every abs/pdf URL host, and the `10.48550/arXiv.` DOI.
+_ARXIV_MARKER = "arxiv"
 
 
 class Target(TypedDict):
@@ -33,9 +36,7 @@ class Target(TypedDict):
     pdf_path: Path
 
 
-# ---------------------------------------------------------------------------
 # Provider routing — store in the right namespace automatically
-# ---------------------------------------------------------------------------
 
 
 class _Route(NamedTuple):
@@ -47,8 +48,7 @@ class _Route(NamedTuple):
     pdf_path: Callable[[str], Path]
 
 
-# Ordered, and it must stay ordered: an arXiv id is not a DOI, and an ACL DOI
-# is a DOI, so the generic-DOI fallback can only come last.
+# Ordered: an arXiv id is not a DOI, an ACL DOI is, so the generic fallback comes last.
 _ROUTES = (
     _Route(arxiv.is_arxiv_id, arxiv.NAMESPACE, arxiv.canonical_arxiv_id, arxiv.pdf_path),
     _Route(
@@ -64,8 +64,8 @@ _ROUTES = (
 def resolve_target(identifier: str) -> Target:
     """Detect the target provider from *identifier* and return routing info.
 
-    An identifier no provider claims falls back to the ``manual`` namespace,
-    keyed by its bare DOI or, for a freeform label, by the label itself.
+    Anything no provider claims falls back to ``manual``, keyed by
+    ``doinorm.canonical`` of it — so a label is case-folded too.
     """
     normalized = doinorm.normalize(identifier)
 
@@ -96,13 +96,10 @@ _METADATA_SOURCE_BY_NAMESPACE: dict[str, MetadataSource] = {
 def resolve_metadata_source(identifier: str) -> MetadataSource | None:
     """Detect which provider should serve *metadata* for *identifier*.
 
-    ``None`` when nothing claims it (a freeform label). Derived from
-    :func:`resolve_target` rather than re-testing the shapes, so storage and
-    metadata cannot disagree about which identifiers are arXiv's.
-
-    Where the two differ is the mapping: ACL DOIs, and any other DOI shape,
-    route to OpenAlex — ACL Anthology has no metadata API of its own, and
-    OpenAlex handles arbitrary publisher DOIs.
+    ``None`` when nothing claims it. Derived from :func:`resolve_target`, not a
+    second pass over the shapes, so storage and metadata cannot disagree; only
+    the ``manual`` fallback re-tests its key. ACL is the one namespace that
+    changes hands — the Anthology has no metadata API.
     """
     target = resolve_target(identifier)
 
@@ -115,102 +112,86 @@ def resolve_metadata_source(identifier: str) -> MetadataSource | None:
 def migrate_misrouted_arxiv() -> int:
     """Re-file cached files that ``resolve_target`` now routes to ``arxiv``.
 
-    Renames as it moves: a ``manual`` key kept the ``arXiv:`` prefix that the
-    arXiv key drops, so reusing the source name would file
-    ``arxiv%3A2301.00001`` where only ``2301.00001`` is ever looked up.
-
-    Run once at startup, idempotent and best-effort like
-    ``stems.migrate_legacy_stems``. Returns the number of files moved.
+    Renames as it goes: the legacy ``manual`` key kept an ``arXiv:`` prefix the
+    arXiv key drops. Idempotent and best-effort, once at startup. Returns files
+    re-filed, linked as well as moved; only a moved markdown orphans its
+    ``manual`` section index.
     """
-    moved = 0
+    refiled = 0
     for entity in ("pdfs", "markdown"):
         target_dir = cache.cache_dir(arxiv.NAMESPACE, entity)
-        # Shared listing: materialised, and never raises out of the lifespan.
         for path in stems.list_dir(cache.cache_dir(NAMESPACE, entity)):
-            if not _refile_misrouted_arxiv(path, target_dir):
+            outcome = _refile_misrouted_arxiv(path, target_dir)
+            if outcome is None:
                 continue
-            moved += 1
-            if entity == "markdown":
+            refiled += 1
+            if entity == "markdown" and outcome == "moved":
                 cache.invalidate(NAMESPACE, "sections", stems.sections_key_for_stem(path.stem))
-    return moved
+    return refiled
 
 
-def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> bool:
-    """Move one arXiv-shaped ``manual`` file into *target_dir*, under its arXiv stem.
+def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> RefileOutcome | None:
+    """Re-file one arXiv-shaped ``manual`` file into *target_dir*, under its arXiv stem.
 
-    False for anything left where it is, which never raises — a skip is for the
-    next run.
+    ``None`` for anything left where it is, which never raises — a skip is for
+    the next run, and a filesystem without hard links takes that path.
     """
     if not path.is_file():
-        return False
+        return None
 
-    recovered = _misrouted_arxiv_id(path.stem)
-    if recovered is None:
-        return False
+    claim = _misrouted_arxiv_id(path.stem)
+    if claim is None:
+        return None
+    recovered, outcome = claim
 
     target = target_dir / (stems.safe_stem(recovered) + path.suffix)
     if target.exists():
-        return False
+        return None
 
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        path.rename(target)
+        if outcome == "moved":
+            path.rename(target)
+        else:
+            os.link(path, target)
     except OSError:
-        return False
-    return True
+        return None
+    return outcome
 
 
-def _misrouted_arxiv_id(stem: str) -> str | None:
-    """The arXiv key a ``manual`` stem belongs under, or None if it is manual's.
+def _misrouted_arxiv_id(stem: str) -> tuple[str, RefileOutcome] | None:
+    """The arXiv key a ``manual`` stem belongs under, and how to re-file it.
 
-    Three candidates, because the stem alone doesn't say which ``_`` were
-    slashes: ``arxiv%3A2301.00001`` carries none, ``arxiv%3Ahep-th_9901001``
-    carries one, and a URL spelling
-    (``https%3A__www.arxiv.org_abs_2301.00001``) carries one per path segment.
-    Restoring *every* ``_`` is safe only because ``is_arxiv_id`` adjudicates:
-    a candidate it rejects is discarded, so an over-eager repair cannot claim
-    a label that is genuinely manual's. Repair then decode is the order
-    ``corpus`` inverts stems in.
-
-    Deliberately *not* ``corpus._filename_to_canonical``, despite being
-    the same shape of operation. That one repairs the slash with each
-    namespace's own anchored grammar, which is right for a stem that namespace
-    wrote — and wrong here: these stems were written under the legacy
-    ``manual`` key rule, which keeps an ``arXiv:`` prefix that
-    ``_ARXIV_OLDSTYLE_STEM_RE`` (``^archive_number$``) can never match. Sharing
-    the grammar makes the sweep miss the prefixed spellings it exists for.
+    Three candidates: a stem doesn't say which ``_`` were slashes. ``safe_stem``
+    leaves a literal ``_`` alone, so ``is_arxiv_id`` cannot tell a restored
+    slash from one — ``hep-th_9901001`` reads as both, and so does
+    ``thesis_1234567``. Hence ``"linked"`` for a repair a label could have
+    written, ``"moved"`` only for a stem that is exclusively arXiv's.
+    Deliberately not ``corpus._filename_to_canonical``, whose anchored grammar
+    cannot match the ``arXiv:`` prefix these stems carry.
     """
-    for candidate in (stem, stem.replace("_", "/", 1), stem.replace("_", "/")):
+    names_arxiv = _ARXIV_MARKER in unquote(stem).lower()
+    for repaired, candidate in enumerate((stem, stem.replace("_", "/", 1), stem.replace("_", "/"))):
         recovered = unquote(candidate)
         if arxiv.is_arxiv_id(recovered):
-            return arxiv.canonical_arxiv_id(recovered)
+            exclusive = not repaired or names_arxiv
+            return arxiv.canonical_arxiv_id(recovered), "moved" if exclusive else "linked"
     return None
 
 
-# ---------------------------------------------------------------------------
 # PDF storage
-# ---------------------------------------------------------------------------
 
 
 def _manual_pdf_path(canonical: str) -> Path:
-    """PDF path in the manual namespace (fallback only).
-
-    Folds its argument first, like every provider's ``pdf_path``, so a raw
-    spelling can't build a path the cache never writes.
-    """
+    """PDF path in the manual namespace; folds first, like every provider's ``pdf_path``."""
     return stems.pdf_path(NAMESPACE, doinorm.canonical(canonical))
 
 
-# ---------------------------------------------------------------------------
 # Import argument checks — shared by both intake paths
-# ---------------------------------------------------------------------------
 
 
 def _identifier_error(identifier: str) -> dict[str, Any] | None:
-    """Reject an identifier that normalizes to nothing, else None.
-
-    The empty key stems to ``""``, so every blank import shares one entry.
-    """
+    """Reject an identifier that normalizes to nothing — every blank shares one cache entry."""
     if not doinorm.normalize(identifier):
         return {
             "error": (
@@ -223,11 +204,7 @@ def _identifier_error(identifier: str) -> dict[str, Any] | None:
 
 
 def _source_error(source: Path, file_path: str) -> dict[str, Any] | None:
-    """Reject an import source that is missing or not a regular file, else None.
-
-    Not a readability check — a file that can't be opened surfaces as the read
-    error each caller returns.
-    """
+    """Reject a missing or non-regular import source; unreadable is each caller's own error."""
     if not source.exists():
         return {"error": f"File not found: {file_path}"}
     if not source.is_file():
@@ -235,9 +212,7 @@ def _source_error(source: Path, file_path: str) -> dict[str, Any] | None:
     return None
 
 
-# ---------------------------------------------------------------------------
 # PDF import
-# ---------------------------------------------------------------------------
 
 
 def import_local_pdf(
@@ -245,13 +220,10 @@ def import_local_pdf(
 ) -> dict[str, Any]:
     """Copy a local PDF into the cache, under the identifier's own namespace.
 
-    ``force_refresh`` replaces an already-cached PDF instead of returning it as
-    ``cached``. Landing a PDF over a previous one cascades either way, dropping
-    the derived markdown and sections so the next ``convert_paper`` re-runs.
-
-    Returns ``{identifier, namespace, path, size_bytes, cached}`` or
-    ``{error}``. Caller must hold ``papers.sections_lock`` for the routed
-    ``(namespace, canonical)``.
+    Returns ``{identifier, namespace, path, size_bytes, cached}``, plus
+    ``cascaded_invalidated`` when new bytes land (``existed or force_refresh``,
+    dropping the derived markdown and sections), or ``{error}``. Caller holds
+    ``papers.sections_lock`` for the routed ``(namespace, canonical)``.
     """
     if err := _identifier_error(identifier):
         return err
@@ -283,7 +255,7 @@ def import_local_pdf(
 
     existed = dest.exists()
     if not force_refresh:
-        # cached_hit owns the stat, and the race it absorbs (pdf-download.md).
+        # cached_hit owns the stat, and the race it absorbs (download.md).
         hit = streaming.cached_hit(dest)
         if hit is not None:
             return {"identifier": canonical, "namespace": namespace, **hit}
@@ -291,8 +263,7 @@ def import_local_pdf(
     # Atomic: a crash mid-copy can't leave a half-written canonical PDF.
     try:
         atomic.copy(source, dest)
-        # Inside the try: a concurrent unlink must surface as this error, not
-        # as an OSError out of the tool.
+        # Inside the try: a concurrent unlink surfaces as this error, not an OSError.
         size_bytes = dest.stat().st_size
     except OSError as e:
         # cache.put's counter, so one row shows an operator any failed write.
@@ -314,9 +285,7 @@ def import_local_pdf(
     return result
 
 
-# ---------------------------------------------------------------------------
 # Markdown import
-# ---------------------------------------------------------------------------
 
 
 def import_markdown(
@@ -324,13 +293,9 @@ def import_markdown(
 ) -> dict[str, Any]:
     """Copy a local markdown file into the cache, skipping download and conversion.
 
-    ``force_refresh`` replaces already-cached markdown instead of returning it
-    as ``cached``, re-parsing the section index from the new file.
-
     Returns ``{identifier, namespace, markdown_path, sections, cached}`` or
-    ``{error}``. Caller must hold ``papers.sections_lock`` for the routed
-    ``(namespace, canonical)`` — this replaces the markdown / section-index
-    pair ``convert_pdf`` mutates under it.
+    ``{error}``. Caller holds ``papers.sections_lock``: this replaces the
+    markdown / section-index pair ``convert_pdf`` mutates under it.
     """
     if err := _identifier_error(identifier):
         return err
@@ -359,8 +324,7 @@ def import_markdown(
     except OSError as e:
         return {"error": f"Could not read file {file_path}: {e}"}
 
-    # Verbatim: ``_finalize_markdown``'s rstrip and image rewrite are right for
-    # converter output and wrong for an operator's own file, whose links resolve.
+    # Verbatim: ``_finalize_markdown``'s rewrites are wrong for a file whose links resolve.
     stored = papers.store_markdown_and_index(namespace, canonical, md_path, markdown, "imported")
 
     return {
@@ -375,14 +339,9 @@ def import_markdown(
 def _cached_markdown(
     md_path: Path, namespace: str, canonical: str, identifier: str
 ) -> dict[str, Any]:
-    """Serve markdown already in the cache, re-parsing its sections.
-
-    A re-parse rather than a read of the section index: it cannot disagree with
-    what a reader would compute, and it keeps this independent of cache state.
-    """
+    """Serve cached markdown, re-parsing rather than reading the index, which could disagree."""
     try:
-        # Explicit UTF-8, as it was written: a locale-default read mis-decodes
-        # non-ASCII under a non-UTF-8 host locale.
+        # Explicit UTF-8, as written: a locale-default read mis-decodes under LC_ALL=C.
         markdown = md_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
         return {

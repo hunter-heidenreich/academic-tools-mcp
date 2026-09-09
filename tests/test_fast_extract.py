@@ -44,7 +44,9 @@ class TestMissingDependency:
 
         assert fast_extract.main(["prog", "/nonexistent.pdf"]) == 1
         err = capsys.readouterr().err
-        assert "pymupdf is not installed" in err
+        assert "pymupdf is unusable" in err
+        # The reason is carried: a broken native install also raises ImportError.
+        assert "No module named 'pymupdf'" in err
         assert "academic-tools-mcp[fast]" in err
         assert "PDF_FAST_CONVERTER" in err
 
@@ -121,7 +123,7 @@ class TestExtraction:
 
     def test_non_ascii_text_survives_the_stdout_round_trip(self, tmp_path):
         doc = pymupdf.open()
-        doc.new_page().insert_text((72, 72), "Schrodinger cafe resume")
+        doc.new_page().insert_text((72, 72), "Schrödinger café résumé")
         pdf = tmp_path / "u.pdf"
         doc.save(str(pdf))
         doc.close()
@@ -133,4 +135,5 @@ class TestExtraction:
             check=False,
         )
         assert proc.returncode == 0
-        assert "Schrodinger" in proc.stdout
+        assert "Schrödinger" in proc.stdout
+        assert "café" in proc.stdout

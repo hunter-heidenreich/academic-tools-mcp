@@ -9,7 +9,7 @@ call failed.
 
 Usage. The client is the provider's pooled singleton and the GET goes through
 its throttle — never a bare ``httpx.AsyncClient``, which would bypass pooling,
-rate limiting, retry and stats (see ``.claude/rules/net.md``)::
+rate limiting, retry and stats::
 
     from ..net import http
 
@@ -204,7 +204,6 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     **Every transient outcome carries ``retryable: True``**; other 4xx are
     left unflagged rather than ``retryable: False``. ``retry_after_seconds``
     rides along on any transient status the server advertises one for.
-    ``.claude/rules/net.md`` has the why for both.
     """
     if isinstance(exc, LocalBackpressureError):
         return _backpressure_dict(provider, exc)
