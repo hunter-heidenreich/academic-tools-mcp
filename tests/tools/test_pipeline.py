@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from academic_tools_mcp import manual, papers, server
-from academic_tools_mcp.providers import acl
+from academic_tools_mcp.providers import acl, openalex
 from academic_tools_mcp.store import cache, stems
 
 
@@ -697,3 +697,100 @@ class TestImportPaperExtensions:
 
         assert result["identifier"] == "2301.00001v2"
         assert result["namespace"] == "arxiv"
+
+
+# ---------------------------------------------------------------------------
+# PMID identity across the pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineToolsAcceptPmids:
+    """A PMID names the same artifact its DOI does, at every pipeline entry.
+
+    ``import_paper`` is the one that has to hold for the others to mean
+    anything: it is the writer, so a spelling it files under and the readers
+    trade away is an import nothing can read back.
+    """
+
+    DOI = "10.1234/example"
+
+    @pytest.fixture(autouse=True)
+    def _resolve(self, monkeypatch):
+        async def fake_resolve_pmid(pmid, **kwargs):
+            return {"doi": self.DOI, "openalex_id": "https://openalex.org/W1"}
+
+        monkeypatch.setattr(openalex, "resolve_pmid", fake_resolve_pmid)
+
+    @staticmethod
+    def _markdown(tmp_path):
+        source = tmp_path / "paper.md"
+        source.write_text("# Intro\n\nthe body\n", encoding="utf-8")
+        return source
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "spelling",
+        ["pmid:20079334", "20079334", "https://pubmed.ncbi.nlm.nih.gov/20079334/"],
+    )
+    async def test_import_paper_files_a_pmid_under_the_resolved_doi(
+        self, isolated_cache, tmp_path, spelling
+    ):
+        """The echoed identifier is the cache key, and for a PMID that is the DOI."""
+        result = await server.import_paper(str(self._markdown(tmp_path)), spelling)
+
+        assert result["identifier"] == self.DOI
+        assert result["namespace"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_a_pmid_import_reads_back_under_either_spelling(self, isolated_cache, tmp_path):
+        """Writer and readers agree on one key, so the chain does not dead-end."""
+        await server.import_paper(str(self._markdown(tmp_path)), "pmid:20079334")
+
+        sections = await server.get_paper_sections("20079334")
+        assert sections["total_sections"] == 1
+        assert sections["conversion_mode"] == "imported"
+
+        hits = await server.find_in_paper("pmid:20079334", "the body")
+        assert hits["paper_identifier"] == self.DOI
+        assert hits["result_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_an_import_orphaned_under_a_pmid_stem_is_repaired_on_resolve(
+        self, isolated_cache
+    ):
+        """The lazy migration: an older build's PMID-keyed import becomes readable.
+
+        Its ``conversion_mode`` rides along, so the repair does not expose an
+        operator's own markdown to ``download_pdf``'s cascade.
+        """
+        _seed_markdown("manual", "pmid:20079334", "# Intro\n\nstranded\n")
+        cache.put(
+            "manual",
+            "sections",
+            stems.sections_key("pmid:20079334"),
+            {
+                "sections": [],
+                "sections_detected": True,
+                "markdown_checksum": stems.checksum_text("# Intro\n\nstranded\n"),
+                "conversion_mode": "imported",
+            },
+        )
+
+        sections = await server.get_paper_sections("pmid:20079334")
+
+        assert sections["conversion_mode"] == "imported"
+        assert stems.markdown_path("manual", self.DOI).exists()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_pmid_lookup_writes_nothing(self, isolated_cache, tmp_path, monkeypatch):
+        """An unresolvable PMID is an error, never a fallback to a manual label."""
+
+        async def unresolvable(pmid, **kwargs):
+            return {"error": f"No work found for PMID: {pmid}", "not_found": True}
+
+        monkeypatch.setattr(openalex, "resolve_pmid", unresolvable)
+
+        result = await server.import_paper(str(self._markdown(tmp_path)), "pmid:20079334")
+
+        assert result["not_found"] is True
+        assert not stems.markdown_path("manual", "pmid:20079334").exists()

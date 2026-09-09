@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -137,6 +138,102 @@ def canonical_author_id(author_id: str) -> str:
     return _normalize_author_id(author_id).lower()
 
 
+# PubMed's own URL, plus the legacy ``/pubmed/`` path older papers still print.
+# As permissive as ``_ARXIV_URL_RE``, for the same reason.
+_PUBMED_URL_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)"
+    r"/(\d+)/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+# The whole live PMID range fits in 8 digits; ``is_pmid`` owns the bare-run floor.
+_PMID_RE = re.compile(r"^\d{1,8}$")
+
+
+def normalize_pmid(pmid: str) -> str:
+    """Normalize a PubMed identifier to bare digits.
+
+    Accepts a bare run, an any-case ``pmid:`` prefix (OpenCitations' own
+    spelling) and a PubMed URL per ``_PUBMED_URL_RE``. Anything unrecognised
+    comes back stripped of whitespace and any prefix; ``is_pmid`` decides
+    whether that is an error. Idempotent.
+    """
+    pmid = pmid.strip()
+
+    # In a loop, as ``arxiv``/``doinorm`` do: doubled prefixes occur in pasted citations.
+    while pmid[:5].lower() == "pmid:":
+        pmid = pmid[5:].strip()
+
+    if m := _PUBMED_URL_RE.match(pmid):
+        return m.group(1)
+    return pmid
+
+
+def is_pmid(identifier: str) -> bool:
+    """The shape test the tool layer resolves on, over the normalized form.
+
+    **Two tiers, deliberately.** An explicit ``pmid:`` prefix or PubMed URL is
+    unambiguous, so any 1-8 digit id is claimed. A *bare* run is claimed only at
+    7-8 digits — the modern PMID range, and an unlikely hand-written label — so
+    a freeform ``import_paper(file, "1234")`` label keeps routing to ``manual``.
+    """
+    stripped = identifier.strip()
+    normalized = normalize_pmid(stripped)
+    if not _PMID_RE.match(normalized):
+        return False
+    # An explicit marker is what ``normalize_pmid`` removed; a bare run is unchanged.
+    return normalized != stripped or len(normalized) >= 7
+
+
+def _pmid_ids(work: dict[str, Any]) -> dict[str, Any]:
+    """The id mapping ``pmids`` caches: what a PMID trades itself for.
+
+    Not the work — that is warmed into ``works`` under its DOI, so the paper
+    keeps one full entry on one TTL clock. ``doi`` is bare and canonical, or
+    ``None`` for a work OpenAlex indexes without one.
+    """
+    work_doi = work.get("doi")
+    doi = doinorm.canonical(work_doi) if isinstance(work_doi, str) and work_doi else None
+    if doi:
+        cache.warm(NAMESPACE, "works", doi, work, max_age_seconds=_POSITIVE_TTL_SECONDS)
+    work_id = work.get("id")
+    return {"doi": doi, "openalex_id": work_id if isinstance(work_id, str) else None}
+
+
+async def resolve_pmid(pmid: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """Trade a PMID for the paper's DOI, so no paper caches twice.
+
+    Returns ``{doi, openalex_id}`` — ``doi`` ``None`` when OpenAlex indexes the
+    work without one — or the shared ``{error, ...}`` contract. The fetch warms
+    ``works`` under that DOI, so the ``get_work`` that follows costs no request;
+    a 404 negative-caches under the PMID.
+    """
+    canonical = normalize_pmid(pmid)
+
+    async def _fetch() -> dict[str, Any]:
+        # ``safe=""``: a PMID has no path structure, so a stray slash is an escape.
+        api_pmid = quote(canonical, safe="")
+        return await _fetch_singleton(
+            entity="pmids",
+            url=f"{OPENALEX_BASE_URL}/works/pmid:{api_pmid}",
+            bare=canonical,
+            canonical=canonical,
+            not_found_error=f"No work found for PMID: {pmid}",
+            store=_pmid_ids,
+        )
+
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="pmids",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        sf_key=("pmid", canonical),
+    )
+
+
 async def _fetch_singleton(
     *,
     entity: str,
@@ -144,6 +241,7 @@ async def _fetch_singleton(
     bare: str,
     canonical: str,
     not_found_error: str,
+    store: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """GET one OpenAlex singleton endpoint, applying the shared caching decisions.
 
@@ -154,6 +252,12 @@ async def _fetch_singleton(
 
     Both guards are needed: a ``doi:`` prefix keeps the last path segment
     non-empty, so ``bare`` is tested too (as ``opencitations`` does).
+
+    ``store`` maps the validated body to what this entity caches and returns, for
+    an entity that is a *view* of a work rather than the work itself — ``pmids``
+    files an id mapping and warms ``works`` under the DOI, so one paper does not
+    occupy two entries on two TTL clocks. Runs after the shape guard, so it is
+    handed a dict with an ``id``. Default: cache the body verbatim.
     """
     if not bare or not http.addresses_a_record(url):
         # Bad identifier: refused before a request is spent, so nothing is cached.
@@ -177,8 +281,9 @@ async def _fetch_singleton(
     if not isinstance(data, dict) or "id" not in data:
         return _parse_error_dict()
 
-    cache.put(NAMESPACE, entity, canonical, data)
-    return data
+    record = store(data) if store is not None else data
+    cache.put(NAMESPACE, entity, canonical, record)
+    return record
 
 
 async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str, Any]:

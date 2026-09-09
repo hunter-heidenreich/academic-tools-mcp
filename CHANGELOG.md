@@ -13,6 +13,49 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
+## [Unreleased]
+
+### Added
+
+- **A PMID is an identifier this server accepts, not just one it hands out.**
+  Every OpenCitations row carries a `pmid` cross-reference, so a citing row with
+  a `pmid` and no `doi` was a dead end. `pmid:20079334`, a
+  `pubmed.ncbi.nlm.nih.gov` URL (including the legacy `/pubmed/` path) or a bare
+  7–8 digit run now works anywhere a DOI does: the paper tools, the PDF pipeline
+  and the graph tools. A PMID is **traded for the paper's DOI** and is never
+  itself a cache key, so both spellings share one `_canonical_id` and one cached
+  work, and the lookup after the trade costs no request. OpenAlex is the
+  resolver, so a paper it has not indexed does not resolve; PMCIDs are
+  unsupported. ([#115])
+- **`get_paper_metadata` reports an OpenAlex work's `pmid`**, as bare digits
+  (null when OpenAlex has none), closing the round trip in both directions.
+  Batched results carry it too. ([#115])
+
+### Fixed
+
+- **`arxiv.org/html/...` URLs route to arXiv.** `/abs/` and `/pdf/` matched but
+  `/html/` did not, though it has been the default landing page for new papers
+  since late 2023 — the spelling a pasted browser tab carries. Unrecognised,
+  `get_paper_metadata` answered "Cannot resolve paper provider" and the pipeline
+  filed the paper a **second** time under `manual`. The startup sweep re-files
+  anything already misfiled. ([#115])
+- **`import_paper` trades a PMID for the paper's DOI**, as every tool that reads
+  what it writes already did. It filed under a key `convert_paper`,
+  `get_paper_sections`, `get_paper_section` and `find_in_paper` all resolve away
+  — an import no tool could read back, under any spelling. ([#115])
+
+### Changed
+
+- **A bare 7–8 digit identifier is now read as a PMID.** Shorter runs are
+  unchanged, so a freeform `import_paper(file, "1234")` label still routes to
+  `manual`. An **existing** 7–8 digit label is not stranded: the first call that
+  resolves it re-files its cached PDF and markdown onto the DOI stem, carrying
+  the section index across so an imported file keeps the `"imported"` marker
+  that exempts it from `download_pdf`'s cascade. A bare-digit stem is *linked*
+  rather than moved — a freeform label could have written it — so the original
+  reading survives too. This cannot be a startup sweep: the destination is the
+  paper's DOI, which only a network lookup knows. ([#115])
+
 ## [2026.09.08] — 2026-09-08
 
 The largest release so far: a review pass over every provider, the PDF
@@ -1671,3 +1714,4 @@ say which.
 [#108]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/108
 [#110]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/110
 [#112]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/112
+[#115]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/115

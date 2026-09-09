@@ -7,7 +7,7 @@ Crossref row formatters, and the partial-failure envelope.
 import pytest
 
 from academic_tools_mcp import server
-from academic_tools_mcp.providers import crossref, opencitations
+from academic_tools_mcp.providers import crossref, openalex, opencitations
 
 # ---------------------------------------------------------------------------
 # get_paper_references: source="auto" picks the bigger provider
@@ -286,6 +286,57 @@ class TestGraphToolsRejectNonDois:
 
         result = await server.get_paper_citations_count("https://doi.org/10.1234/x")
         assert result["count"] == 7
+
+
+class TestGraphToolsAcceptPmids:
+    """The graph tools *hand out* a ``pmid`` on every OpenCitations row, so they
+    must take one back. Before this, a citing row carrying a ``pmid`` and no
+    ``doi`` was a dead end: the docstring told the agent to chain the identifier
+    into another tool, and no tool accepted it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _resolve(self, monkeypatch):
+        async def fake_resolve_pmid(pmid, **kwargs):
+            return {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"}
+
+        monkeypatch.setattr(openalex, "resolve_pmid", fake_resolve_pmid)
+
+    @pytest.mark.parametrize(
+        "spelling", ["pmid:20079334", "20079334", "https://pubmed.ncbi.nlm.nih.gov/20079334/"]
+    )
+    @pytest.mark.asyncio
+    async def test_citations_count_resolves_and_echoes_the_doi(self, monkeypatch, spelling):
+        seen: list[str] = []
+
+        async def fake_oc(doi, **kwargs):
+            seen.append(doi)
+            return {"count": 7}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations_count(spelling)
+
+        assert result["count"] == 7
+        # Canonical, not the spelling passed — the cross-tool echo contract.
+        assert result["doi"] == "10.1234/x"
+        assert seen == ["10.1234/x"]
+
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_pmid_errors_rather_than_reaching_a_provider(self, monkeypatch):
+        async def boom(*args, **kwargs):
+            raise AssertionError("a PMID that did not resolve must not reach a provider")
+
+        async def fake_resolve_pmid(pmid, **kwargs):
+            return {"error": "No work found for PMID: 99999999", "not_found": True}
+
+        monkeypatch.setattr(openalex, "resolve_pmid", fake_resolve_pmid)
+        monkeypatch.setattr(opencitations, "get_citations", boom)
+
+        result = await server.get_paper_citations_count("pmid:99999999")
+
+        assert result["not_found"] is True
+        assert "suggestion" in result
 
 
 class TestReferencesCount:

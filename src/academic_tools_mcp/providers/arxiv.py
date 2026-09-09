@@ -97,7 +97,7 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 
 # As permissive as ``doinorm._DOI_URL_RE``: a spelling it misses files the same paper twice.
 _ARXIV_URL_RE = re.compile(
-    r"(?:https?://)?(?:www\.|export\.)?arxiv\.org/(?:abs|pdf)/([^?#]+?)(?:\.pdf)?/?(?:[?#].*)?$",
+    r"(?:https?://)?(?:www\.|export\.)?arxiv\.org/(?:abs|pdf|html)/([^?#]+?)(?:\.pdf)?/?(?:[?#].*)?$",
     re.IGNORECASE,
 )
 
@@ -130,7 +130,7 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
     Accepts:
       - bare ID: 2301.00001, 2301.00001v2, hep-th/9901001
       - ``arXiv:`` prefix in any case, with or without a space
-      - an ``abs``/``pdf`` URL, either scheme (or none), optional ``www.`` /
+      - an ``abs``/``pdf``/``html`` URL, either scheme (or none), optional ``www.`` /
         ``export.`` host label, optional ``.pdf`` extension and trailing slash
       - arXiv's DataCite DOI (``10.48550/arXiv.…``), in any spelling ``doinorm.normalize`` takes
 

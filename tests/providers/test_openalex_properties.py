@@ -257,3 +257,64 @@ def test_reconstructing_a_malformed_abstract_never_raises(index: Any) -> None:
     """`get_paper_abstract` has no try, and none of the AttributeError /
     TypeError a wrong shape raises is in `_PARSE_ERRORS` or `HTTPX_ERRORS`."""
     assert isinstance(openalex.reconstruct_abstract(index), str)
+
+
+# ---------------------------------------------------------------------------
+# PMID normalization: one key per PMID, and no claim on anything else
+# ---------------------------------------------------------------------------
+
+_pmids = st.integers(min_value=1, max_value=99_999_999).map(str)
+
+
+def _pmid_spellings(pmid: str) -> list[str]:
+    """Every input form ``normalize_pmid`` documents."""
+    return [
+        pmid,
+        f"  {pmid}  ",
+        f"pmid:{pmid}",
+        f"PMID:{pmid}",
+        f"pmid: {pmid}",
+        # The prefix loop: a single pass would leave this keying separately.
+        f"pmid:pmid:{pmid}",
+        f"https://pubmed.ncbi.nlm.nih.gov/{pmid}",
+        f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+        f"http://www.pubmed.ncbi.nlm.nih.gov/{pmid}/",
+        f"pubmed.ncbi.nlm.nih.gov/{pmid}",
+        f"HTTPS://PUBMED.NCBI.NLM.NIH.GOV/{pmid}/",
+        f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/?utm=1",
+        f"https://pubmed.ncbi.nlm.nih.gov/{pmid}#abstract",
+        # The legacy path, still printed on older papers.
+        f"https://www.ncbi.nlm.nih.gov/pubmed/{pmid}",
+        # The prefix must be stripped before the URL handling, as in `arxiv`.
+        f"pmid:https://pubmed.ncbi.nlm.nih.gov/{pmid}",
+    ]
+
+
+@given(_pmids)
+def test_every_accepted_spelling_yields_one_key(pmid: str) -> None:
+    for spelling in _pmid_spellings(pmid):
+        assert openalex.normalize_pmid(spelling) == pmid, spelling
+
+
+@given(_pmids)
+def test_an_explicitly_marked_pmid_is_always_claimed(pmid: str) -> None:
+    """`is_pmid`'s tiers: a `pmid:` prefix or PubMed URL names a PMID at any
+    length, while a *bare* run is claimed only at 7-8 digits — shorter runs stay
+    freeform `import_paper` labels."""
+    bare = {pmid, f"  {pmid}  "}
+    for spelling in _pmid_spellings(pmid):
+        expected = len(pmid) >= 7 if spelling in bare else True
+        assert openalex.is_pmid(spelling) is expected, spelling
+
+
+@given(_pmids)
+def test_normalize_pmid_is_idempotent(pmid: str) -> None:
+    for spelling in _pmid_spellings(pmid):
+        once = openalex.normalize_pmid(spelling)
+        assert openalex.normalize_pmid(once) == once, spelling
+
+
+@given(generic_dois)
+def test_a_doi_is_never_claimed_as_a_pmid(doi: str) -> None:
+    """The routing consequence of a false claim is a wasted lookup on every DOI."""
+    assert openalex.is_pmid(doi) is False

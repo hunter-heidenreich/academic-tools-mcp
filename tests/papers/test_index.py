@@ -395,3 +395,55 @@ class TestForceRefreshPreservesProvenance:
 
         assert [s["title"] for s in refreshed["sections"]] == ["Real"]
         assert refreshed["conversion_mode"] == "fast"
+
+
+_REKEY_ENTRY = {
+    "sections": [{"index": 0, "title": "Intro"}],
+    "sections_detected": True,
+    "markdown_checksum": "abc",
+    "conversion_mode": "imported",
+}
+
+
+class TestRekeySections:
+    """Carrying an entry onto a re-filed paper's key, and refusing to invent one.
+
+    Not a third assembler beside ``store_markdown_and_index`` and
+    ``_reparse_sections_locked``: it copies a complete entry verbatim, only onto
+    an empty destination, so it can neither mint a key nor clobber a live index.
+    """
+
+    def test_carries_a_complete_entry_verbatim(self):
+        cache.put("manual", "sections", stems.sections_key("pmid:20079334"), dict(_REKEY_ENTRY))
+
+        assert papers.rekey_sections(
+            "manual", stems.safe_stem("pmid:20079334"), "manual", "10.1234/example"
+        )
+        assert (
+            cache.get("manual", "sections", stems.sections_key("10.1234/example")) == _REKEY_ENTRY
+        )
+
+    def test_a_live_destination_index_is_never_clobbered(self):
+        """The destination is what every reader resolves to; the source is not."""
+        cache.put("manual", "sections", stems.sections_key("pmid:20079334"), dict(_REKEY_ENTRY))
+        live = dict(_REKEY_ENTRY, conversion_mode="full", markdown_checksum="live")
+        cache.put("manual", "sections", stems.sections_key("10.1234/example"), live)
+
+        assert not papers.rekey_sections(
+            "manual", stems.safe_stem("pmid:20079334"), "manual", "10.1234/example"
+        )
+        assert cache.get("manual", "sections", stems.sections_key("10.1234/example")) == live
+
+    @pytest.mark.parametrize("missing", ["sections", "sections_detected", "conversion_mode"])
+    def test_a_partial_entry_is_refused_rather_than_carried(self, missing):
+        """A partial entry reads as complete at the new key, so it is not carried."""
+        partial = {k: v for k, v in _REKEY_ENTRY.items() if k != missing}
+        cache.put("manual", "sections", stems.sections_key("pmid:20079334"), partial)
+
+        assert not papers.rekey_sections(
+            "manual", stems.safe_stem("pmid:20079334"), "manual", "10.1234/example"
+        )
+        assert cache.get("manual", "sections", stems.sections_key("10.1234/example")) is None
+
+    def test_no_source_entry_is_not_an_error(self):
+        assert not papers.rekey_sections("manual", "20079334", "manual", "10.1234/example")

@@ -128,6 +128,11 @@ state.
   Deliberately **not** `corpus._filename_to_canonical`: that one repairs the
   slash with each namespace's own *anchored* grammar, which can never match a
   stem carrying the `arXiv:` prefix the legacy `manual` key kept.
+- **Every pipeline entry point resolves a PMID before routing, `import_paper`
+  included** — it is the one that *writes*, so a spelling it files under and the
+  readers resolve away is an import nothing reads back. `refile_pmid_stems`
+  catches up with what an older build stranded, linking a bare digit run rather
+  than moving it for the reason `_misrouted_arxiv_id` links a repaired slash.
 - **Both import functions stay synchronous; the async boundary is the tool
   layer.** `tools/pipeline.import_paper` wraps each in `asyncio.to_thread` — an
   arbitrarily large copy or parse run inline stalls every concurrent tool call —

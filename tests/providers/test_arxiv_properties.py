@@ -61,6 +61,9 @@ def _spellings(ident: str) -> list[str]:
         f"https://arxiv.org/pdf/{ident}",
         f"https://arxiv.org/pdf/{ident}.pdf",
         f"https://arxiv.org/pdf/{ident}.pdf?download=1",
+        # arXiv's HTML rendering, the default landing page for new papers.
+        f"https://arxiv.org/html/{ident}",
+        f"https://arxiv.org/html/{ident}#S3",
         # The prefix must be stripped *before* the URL handling, or this nested
         # form (which occurs in pasted citations) keys separately.
         f"arXiv:https://www.arxiv.org/abs/{ident}",
