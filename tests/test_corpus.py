@@ -1664,8 +1664,9 @@ class TestStopwordsStayOutOfTheMatchExpression:
         assert corpus._fts_query("BERT bert Bert") == '"BERT"'
 
     def test_a_nul_splits_a_query_the_way_the_tokeniser_does(self):
-        # sqlite3 cannot bind a string carrying a NUL at all, and `unicode61`
-        # treats it as a separator, so the query is split on it.
+        # `unicode61` treats a NUL as a separator, so the query splits on it.
+        # sqlite3 binds one in a parameter fine; it is the statement text that
+        # cannot carry one, and the MATCH expression is never interpolated.
         assert corpus._fts_query("attention\x00model") == '"attention" OR "model"'
 
     def test_empty_match_expression_short_circuits_before_indexing(

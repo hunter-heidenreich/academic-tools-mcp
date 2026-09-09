@@ -8,8 +8,8 @@ from .providers import arxiv
 from .util import doinorm
 from .util.textnorm import fold
 
-# OpenAlex's own `type` vocabulary (not Crossref's) -> BibTeX entry type;
-# anything unlisted falls to @misc. Re-derive: `works?group_by=type`.
+# OpenAlex's `type` vocabulary (not Crossref's); anything unlisted falls to
+# @misc. Re-derive: `works?group_by=type`.
 _TYPE_MAP: dict[str, str] = {
     "article": "article",
     "review": "article",
@@ -40,12 +40,12 @@ _TYPE_MAP: dict[str, str] = {
     "other": "misc",
 }
 
-# Particles publishers *capitalize*; `_is_particle`'s case rule covers the
-# lowercase ones. Don't grow this — a capitalized "Du"/"Bin" is a given name.
+# Particles publishers *capitalize*; the case rule covers the rest. Don't grow
+# it — a capitalized "Du"/"Bin" is a given name.
 _PARTICLES = {"van", "von", "de", "del", "della", "di", "la", "le", "den", "der", "el", "al"}
 
-# Stopwords for the first significant title word: English closed class, plus
-# the articles and prepositions of the other major publication languages.
+# First-significant-word stopwords: English closed class, plus the articles,
+# prepositions and conjunctions of the other major publication languages.
 _TITLE_STOPWORDS = """
 a an the and or but nor if than then so yet
 of in on at by to for from with within without into onto over under about
@@ -69,11 +69,10 @@ _TITLE_SKIP = frozenset(_TITLE_STOPWORDS.split())
 # Keeps compounds whole: "Pre-exposure" -> "preexposure", not "pre".
 _TITLE_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['\u2019-][A-Za-z0-9]+)*")
 
-# A one-letter Romance elision is an article: "L'exil" -> "exil".
+# Strip a leading one-letter elision, the Romance article case: "L'exil" -> "exil".
 _ELISION_RE = re.compile(r"^[A-Za-z]['\u2019]")
 
-# Characters with no NFKD decomposition that fold() leaves intact — transliterate
-# to ASCII so citation keys stay ASCII-only.
+# No NFKD decomposition, so fold() leaves them — transliterate to keep keys ASCII.
 _TRANSLIT = str.maketrans(
     {
         "ø": "o",
@@ -95,8 +94,7 @@ _TRANSLIT = str.maketrans(
     }
 )
 
-# Organisational author names (consortia, collaborations) must be brace-wrapped
-# so BibTeX treats them atomically instead of splitting off a fake surname.
+# Consortia and collaborations are brace-wrapped so BibTeX doesn't split off a surname.
 _ORG_RE = re.compile(
     r"\b(collaboration|consortium|group|team|project|network|initiative|survey)\b",
     re.IGNORECASE,
@@ -104,16 +102,16 @@ _ORG_RE = re.compile(
 
 
 def _fold_translit(s: str) -> str:
-    """Transliterate non-decomposables, then NFKD-fold. Case is preserved."""
+    """Transliterate what ``fold`` leaves intact, then NFKD-fold; the table lowercases."""
     return fold(s.translate(_TRANSLIT))
 
 
-# Everything a citation key may not contain. The hottest of this file's regexes.
+# Everything a citation key may not contain; runs on every key word component.
 _NON_KEY_RE = re.compile(r"[^a-z0-9]")
 
 
 def _key_token(s: str) -> str:
-    """Fold, lowercase and strip to ``[a-z0-9]`` — the only citation-key gate."""
+    """Fold, lowercase and strip to ``[a-z0-9]`` — the gate for a key's word components."""
     return _NON_KEY_RE.sub("", _fold_translit(s).lower())
 
 
@@ -125,9 +123,8 @@ def _surname_is_cased(parts: list[str]) -> bool:
 def _is_particle(token: str, *, cased: bool) -> bool:
     """Is ``token`` part of the surname's particle run (BibTeX's "von" part)?
 
-    The wordlist, plus BibTeX's own rule that a lowercase-initial word before
-    the last one is the von part — gated on ``cased`` so an all-lowercase
-    display name doesn't collapse into one run.
+    The wordlist, plus BibTeX's lowercase-initial rule — gated on ``cased`` so an
+    all-lowercase display name doesn't collapse into one run.
     """
     return token.lower() in _PARTICLES or (cased and token[:1].islower())
 
@@ -135,9 +132,8 @@ def _is_particle(token: str, *, cased: bool) -> bool:
 def _surname_start(parts: list[str]) -> int:
     """Index where the surname begins, particle run included.
 
-    The one home for the rule: a citation key and an ``author`` field that
-    spelled this walk separately could disagree about one name in one entry.
-    Callers handle ``len(parts) <= 1`` themselves, so ``parts[-1]`` is safe.
+    Single home, so the key and the ``author`` field can't disagree about one
+    name. Callers handle ``len(parts) <= 1``, so ``parts[-1]`` is safe.
     """
     cased = _surname_is_cased(parts)
     start = len(parts) - 1
@@ -149,11 +145,7 @@ def _surname_start(parts: list[str]) -> int:
 
 
 def _extract_last_name(display_name: str) -> str:
-    """Extract a key-safe last name from an author display name.
-
-    Handles particles like 'van Tilborg' -> 'vantilborg' and guarantees an
-    ASCII ``[a-z0-9]`` result.
-    """
+    """Key-safe last name: 'van Tilborg' -> 'vantilborg', always ``[a-z0-9]``."""
     parts = display_name.strip().split()
     if len(parts) <= 1:
         return (_key_token(parts[0]) if parts else "") or "unknown"
@@ -224,7 +216,7 @@ def _format_one_name(display_name: str) -> str:
 
 
 def _format_names(items: Iterable[Any], name_of: Callable[[Any], str]) -> str:
-    """Join names with ' and ', skipping blanks. ``name_of`` reads each item."""
+    """Join names with ' and ', skipping blanks."""
     names = (_format_one_name(name_of(item) or "") for item in items)
     return " and ".join(name for name in names if name)
 
@@ -239,8 +231,8 @@ def _format_flat_authors_bibtex(authors: list[dict[str, Any]]) -> str:
     return _format_names(authors, lambda a: (a or {}).get("name") or "")
 
 
-# One pass, never rescanning its output: the braces `\textbackslash{}` emits
-# survive the `{`/`}` deletions sitting in the same table.
+# One `str.translate` pass: chained replaces would eat the braces
+# `\textbackslash{}` emits with the `{`/`}` deletions in this same table.
 _BIBTEX_ESCAPES: dict[str, str | None] = {
     "{": None,
     "}": None,
@@ -255,21 +247,20 @@ _BIBTEX_ESCAPES: dict[str, str | None] = {
 }
 _BIBTEX_TABLE = str.maketrans(_BIBTEX_ESCAPES)
 
-# Same set, but a DOI keeps its braces (escaped, not dropped): it has to stay
-# resolvable rather than read as prose.
+# Same table, but a DOI keeps its braces — escaped, not dropped — to stay resolvable.
 _DOI_ESCAPES = _BIBTEX_ESCAPES | {"{": r"\{", "}": r"\}"}
 _DOI_TABLE = str.maketrans(_DOI_ESCAPES)
 
-# Inside `\url{}` url.sty takes verbatim catcodes, so a backslash escape would
-# land in the link target — percent-encode instead; the resolver decodes it.
+# url.sty takes verbatim catcodes, so a backslash escape would land in the
+# link target — percent-encode instead.
 _URL_TABLE = str.maketrans({ch: f"%{ord(ch):02X}" for ch in "%#\\{}^_&$~ "})
 
 
 def _escape_bibtex(s: str) -> str:
-    """Neutralize LaTeX specials so ``s`` is safe as a literal field value.
+    """Neutralize LaTeX specials for a literal field value.
 
-    Plain text: braces are dropped rather than kept for case-protection, and
-    whitespace runs collapse (Atom feeds wrap a title across lines).
+    Braces dropped, not kept for case-protection; whitespace collapsed, since an
+    Atom-wrapped title would break the one-field-per-line layout.
     """
     return " ".join(s.split()).translate(_BIBTEX_TABLE)
 
@@ -282,10 +273,9 @@ def _escape_doi(s: str) -> str:
 def _arxiv_eprint_from_doi(doi: str) -> str:
     """Bare, unversioned arXiv id out of an arXiv DOI; ``""`` if it isn't one.
 
-    Through the provider's grammar, not a local copy: the router and the
-    ``eprint`` field must agree about which papers are arXiv's. Case survives
-    (``strip_version``, not ``base_arxiv_id``) so an old-style id keeps its
-    archive class — ``10.48550/arXiv.hep-th/9901001`` is ``hep-th/9901001``.
+    Through the provider's grammar, so the router and ``eprint`` agree on which
+    papers are arXiv's. ``strip_version``, not ``base_arxiv_id``, so an
+    old-style archive class keeps its case (``math.GT/0309136``).
     """
     return arxiv.strip_version(arxiv.normalize_arxiv_id(doi)) if arxiv.is_arxiv_id(doi) else ""
 
@@ -301,7 +291,7 @@ def _url_field(url: str) -> tuple[str, str]:
 
 
 def _render_entry(entry_type: str, key: str, fields: list[tuple[str, str]]) -> str:
-    """Assemble ``@type{key, name=value, ...}`` — the one place entries are formatted."""
+    """Assemble ``@type{key, ...}`` — the one formatting site. Values arrive brace-delimited."""
     body = ",\n".join(f"  {name}={value}" for name, value in fields)
     return f"@{entry_type}{{{key},\n{body}\n}}"
 
@@ -314,8 +304,8 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     key = _generate_key(work)
     authorships = work.get("authorships") or []
     year = _key_year(work.get("publication_year"))
-    # OpenAlex gives the DOI as a resolver URL, not always https — the shared
-    # normalizer takes both; a local prefix test emits `doi={http://doi.org/...}`.
+    # OpenAlex's DOI is a resolver URL, http or https — a local prefix strip
+    # would emit `doi={http://doi.org/...}`.
     doi = doinorm.normalize(work.get("doi") or "")
 
     biblio = work.get("biblio") or {}
@@ -327,14 +317,12 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     if authors := _format_authors_bibtex(authorships):
         fields.append(("author", f"{{{authors}}}"))
 
-    # Type-specific venue field
     if entry_type == "article" and venue_name:
         fields.append(("journal", f"{{{_escape_bibtex(venue_name)}}}"))
     elif entry_type in ("inproceedings", "incollection") and venue_name:
         fields.append(("booktitle", f"{{{_escape_bibtex(venue_name)}}}"))
     elif entry_type == "phdthesis":
-        # `or {}` at both levels, as `_author_display_name` does: a null element
-        # of either list is a shape OpenAlex's verbatim tree can carry.
+        # `or {}` at both levels: OpenAlex's tree carries a null authorship or institution.
         school = next(
             (
                 name
@@ -366,7 +354,9 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     if doi:
         fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
 
-    # arXiv DOI -> eprint; any other preprint -> a resolvable URL.
+    # Keys on the work type, not `@misc`: datasets and software land there too.
+    # arXiv DOI -> eprint; else a resolver URL, then the OpenAlex landing page,
+    # then no URL field at all — never a bare \url{}.
     if work_type == "preprint":
         if eprint := _arxiv_eprint_from_doi(doi):
             fields.append(("eprint", f"{{{_escape_doi(eprint)}}}"))
@@ -377,9 +367,6 @@ def generate_bibtex(work: dict[str, Any]) -> str:
             fields.append(_url_field(landing_page))
 
     return _render_entry(entry_type, key, fields)
-
-
-# --- arXiv BibTeX generation ---
 
 
 def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
@@ -411,14 +398,12 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     return _render_entry(entry_type, key, fields)
 
 
-# --- bioRxiv BibTeX generation ---
-
-
 def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     """Generate a BibTeX entry from a parsed bioRxiv/medRxiv paper dict.
 
-    Uses @article if the paper has a published_doi (journal publication),
-    otherwise @misc with DOI and howpublished pointing to the preprint server.
+    ``@article`` on a ``published_doi``, with no ``journal`` — bioRxiv reports
+    the DOI, never the venue. Otherwise ``@misc``, ``publisher`` naming the
+    server and a resolver URL only if the preprint has a DOI.
     """
     key = _flat_key(paper, "date")
     year = _year_from_date(paper, "date")

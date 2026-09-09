@@ -16,7 +16,7 @@ from ..net.throttle import Throttle
 from ..store import cache, singleflight, stems
 from ..util import config, doinorm, useragent
 
-# Both are transient, not "not found" — .claude/rules/providers.md § arxiv.py.
+# Both are transient, not "not found".
 _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
 
 

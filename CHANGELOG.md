@@ -143,6 +143,61 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **The startup sweep no longer strands a manually imported paper whose label
+  looks like an old-style arXiv id.** `safe_stem` percent-encodes `/` to `_`
+  but leaves a literal `_` alone, so a freeform label reads back from disk
+  identically to the arXiv id it would have come from — and the archive
+  grammar is loose enough that `thesis_1234567` is claimed too.
+  `migrate_misrouted_arxiv` moved those files into the `arxiv` namespace and
+  dropped the `manual` section index, after which the label resolved to
+  nothing. A stem that could only ever have been arXiv's — one needing no
+  slash repair, or one naming arXiv outright — is still moved; anything a
+  label could have written is now hard-linked instead, one inode under both
+  keys, so neither reading loses its file. Only a moved markdown drops the
+  `manual` section index. ([#108])
+- **`download_pdf`'s `force_refresh` no longer claims to be a no-op on
+  imported papers.** It said it had "no effect on identifiers `import_paper`
+  handled". Because an import is stored under the identifier's *own* provider
+  namespace, a forced re-download of an arXiv/bioRxiv/ACL-shaped identifier
+  replaces the PDF you supplied and drops its markdown — the opposite of what
+  the parameter advertised. ([#108])
+- **`get_server_stats` now describes the shape it actually returns.** The
+  counters were listed as though they were top-level; they are nested under a
+  `providers` key, keyed by *cache namespace* rather than provider name
+  (`acl_anthology`, `oa_download`), and a counter is absent from a row until
+  first incremented — an agent could not tell absent from zero. ([#108])
+- **`fallback_crossref` no longer describes a "reduced field set".** A
+  Crossref fallback returns the same keys as an OpenAlex response with the four
+  open-access fields set to null, so an agent feature-detecting `oa_url` found
+  it present and read the null as "not open access". ([#108])
+- **`search_cached_papers` documents its real tie-break.** Ties break by
+  namespace then filename (`ORDER BY bm25(), ns, stem`), not by "first-seen
+  file in alphabetical order". ([#108])
+- **`get_paper_bibtex` no longer implies `eprint` / `archiveprefix` are
+  `@misc`-only.** An arXiv paper with a `journal_ref` renders as `@article`
+  and carries them alongside `journal`; the entry type turns on `journal_ref`
+  alone. ([#108])
+- **The `[fast]` extra requires `pymupdf>=1.24.3`.** The top-level `pymupdf`
+  import alias landed in 1.24.3, so 1.24.0–1.24.2 satisfied the old pin and
+  then failed at import — reporting, misleadingly, that pymupdf was not
+  installed. That message now carries the underlying `ImportError`, which also
+  distinguishes a broken native install from a missing one. ([#108])
+- **Docstring accuracy and concision pass over the six top-level modules.**
+  Prose is down ~110 lines net (462 → 354 docstring + comment lines): design
+  rationale that `.claude/rules/*.md` already carries is cited rather than
+  restated, and two-line comments that fit on one now do. Corrected claims
+  that were false against the code: `bibtex._fold_translit` does not preserve
+  case (its transliteration table lowercases), `_key_token` is not the only
+  citation-key gate (`_key_year` gates the year), `_NON_KEY_RE` is not the
+  file's hottest regex (`_ORG_RE` is, on any multi-author work),
+  `corpus._QUERY_SPLIT_RE`'s NUL rationale (sqlite3 binds a NUL in a parameter
+  fine — it is statement text that cannot carry one), `_reindex_file`'s churn
+  accounting, `manual.resolve_target`'s key for a freeform label (it is
+  case-folded), and two stale counts. Also documents what was missing:
+  `import_local_pdf`'s `cascaded_invalidated`, `search`'s silent `top_k` clamp
+  and its index-refresh side effect, `enrich_error`'s in-place mutation, and
+  the import-time capture behind `ENABLE_DEBUG_TOOLS`. ([#108])
+
 - **`search_cached_papers` ranking no longer degrades as the index ages.**
   The FTS5 tables are contentless, so SQLite cannot decrement their corpus
   statistics when a document is deleted — every re-converted or removed paper
@@ -2662,3 +2717,4 @@ grouped by milestone rather than per commit.
 [#105]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/105
 [#106]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/106
 [#107]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/107
+[#108]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/108

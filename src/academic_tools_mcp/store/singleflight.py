@@ -5,9 +5,6 @@ cache-miss path, all queue behind the throttle, and three re-fetch what the
 first already wrote — the throttle releases between requests, but nobody
 re-checks the cache. Here the first caller wins the in-flight slot for
 ``key`` and runs the factory; the rest ``await`` the same future.
-
-The cancellation contract in both directions, and why followers receive the
-leader's *object* rather than a copy, live in ``.claude/rules/store.md``.
 """
 
 import asyncio

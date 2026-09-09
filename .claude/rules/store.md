@@ -47,7 +47,7 @@ The one home for the force_refresh → check → single-flight → in-slot re-ch
 
 `SingleFlight.do(key, factory)` collapses N concurrent calls for the same key into one execution; followers `await` the same future and share the leader's outcome — success or failure, and the *same object*. The slot is dropped after resolution, so a failure is never cached.
 
-Cancellation is the subtle part, and neither direction may leak — the module docstring points here rather than restating it.
+Cancellation is the subtle part, and neither direction may leak.
 
 - **A cancelled leader must not fail its followers.** The leader's task ending (an agent's tool call timing out, say) says nothing about the followers' lifetimes, so the `CancelledError` set on the shared future is not theirs to honour: a follower that is not itself cancelling takes over as the new leader and runs the factory. `_self_is_cancelling` — `Task.cancelling()`, the 3.11 cancel/uncancel protocol — is what tells the two apart.
 - **A cancelled follower must not reach the leader**, which is what `asyncio.shield` is for. Cancelling a task cancels the future it is suspended on, and for a follower that is the *shared* future: unshielded, one follower giving up cancels the slot out from under everybody, the leader's `set_result` raises `InvalidStateError` into its own caller in place of a good result, and every remaining follower re-runs the factory.

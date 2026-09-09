@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 # Bundled backend for convert_paper(mode="fast") when PDF_FAST_CONVERTER=pymupdf.
 # The default fast backend ("pdftotext") needs the system poppler-utils instead.
-fast = ["pymupdf>=1.24"]
+fast = ["pymupdf>=1.24.3"]  # 1.24.3 is where the top-level `pymupdf` import alias landed
 
 [project.scripts]
 academic-tools-mcp = "academic_tools_mcp.server:mcp.run"
@@ -89,8 +89,10 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN", "B011", "D", "S"]
-# Both write to stderr on purpose: stdout is the JSON-RPC channel.
+# fast_extract is a subprocess whose stdout IS the extracted document: these
+# prints are stderr on purpose, since anything on stdout is cached as the paper.
 "src/academic_tools_mcp/fast_extract.py" = ["T201"]
+# The server speaks JSON-RPC on stdout, so diagnostics go to stderr.
 "src/academic_tools_mcp/net/stats.py" = ["T201"]
 
 [tool.mypy]

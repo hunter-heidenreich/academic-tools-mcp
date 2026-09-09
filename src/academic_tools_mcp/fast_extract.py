@@ -1,23 +1,16 @@
-"""Bundled pymupdf text-extraction runner for the fast conversion path.
+"""Bundled pymupdf text extractor for the fast conversion path.
 
-Invoked as a subprocess by ``papers.convert._convert_fast`` when
-``PDF_FAST_CONVERTER=pymupdf``:
-
-    python -m academic_tools_mcp.fast_extract <pdf_path>
-
-Extracts plain text from every page and writes it to **stdout** (the contract
-every fast-converter backend follows). pymupdf is an optional dependency —
-install it with ``pip install academic-tools-mcp[fast]``. On a missing import
-or any extraction error this writes a clear message to stderr and exits
-non-zero so the caller surfaces a permanent (non-retryable) error rather than
-caching an empty file.
+Spawned by ``papers.convert._convert_fast`` under ``sys.executable``, which is
+why this is a module and not an inline ``python -c``. Invariant: stdout carries
+the extracted document and nothing else — diagnostics go to stderr with a
+non-zero exit, hence the ``T201`` ignore.
 """
 
 import sys
 
 
 def main(argv: list[str]) -> int:
-    """Print the PDF's text to stdout; diagnostics to stderr, non-zero on failure."""
+    """Write the PDF's text to stdout; diagnostics to stderr, non-zero exit on failure."""
     if len(argv) != 2:
         print("usage: python -m academic_tools_mcp.fast_extract <pdf_path>", file=sys.stderr)
         return 2
@@ -26,9 +19,9 @@ def main(argv: list[str]) -> int:
 
     try:
         import pymupdf
-    except ImportError:
+    except ImportError as e:
         print(
-            "pymupdf is not installed. Install the optional extra with "
+            f"pymupdf is unusable ({e}). Install the optional extra with "
             "`pip install academic-tools-mcp[fast]`, or set PDF_FAST_CONVERTER "
             "to a different backend (e.g. 'pdftotext').",
             file=sys.stderr,
@@ -38,7 +31,7 @@ def main(argv: list[str]) -> int:
     try:
         with pymupdf.open(pdf_path) as doc:
             text = "\n\n".join(page.get_text() for page in doc)
-    except Exception as e:  # noqa: BLE001 — surface any extraction failure cleanly
+    except Exception as e:  # noqa: BLE001 — pymupdf's failure set is open: FileNotFoundError through its own mupdf-backed types
         print(f"pymupdf failed to extract text from {pdf_path!r}: {e}", file=sys.stderr)
         return 1
 

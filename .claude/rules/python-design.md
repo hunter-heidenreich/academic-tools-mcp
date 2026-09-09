@@ -73,7 +73,7 @@ Prefer a new function or module over a boolean parameter that makes one function
 Keep comments **brief** and reserve them for what the code cannot say about itself.
 
 - **Do state the non-obvious**: why this ordering is load-bearing, which upstream quirk forces a branch, what an unusual constant is protecting against, which invariant a block holds. In `streaming`, "artifact before negative entry" earns its paragraph in `cached_download`'s docstring; `stream_to_file`'s `os.replace` line needs nothing.
-- **Prefer one line to a paragraph.** A comment that needs several sentences is usually describing a design decision — those belong in the matching `.claude/rules/` file, where they load once for the whole module rather than at one call site.
+- **Prefer one line to a paragraph.** A comment that needs several sentences is usually describing a design decision — those belong in the matching `.claude/rules/` file, where they load once for the whole module rather than at one call site. **Don't cite that file from the source.** It auto-loads from its own `paths:` frontmatter whenever the module is touched, so a pointer to it is a line that tells the reader nothing they don't already have.
 - Docstrings are the exception to brevity: a `@mcp.tool` docstring *is* the agent-facing API description (see `.claude/rules/server.md`), so it carries parameters and response keys in full.
 
 ## Testing — pytest, hypothesis, ZOMBIES
