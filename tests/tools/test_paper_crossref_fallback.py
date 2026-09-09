@@ -11,7 +11,7 @@ fields are null on the fallback response.
 import pytest
 
 from academic_tools_mcp import server
-from academic_tools_mcp.providers import crossref, openalex
+from academic_tools_mcp.providers import arxiv, biorxiv, crossref, openalex
 from academic_tools_mcp.tools import paper
 
 
@@ -502,3 +502,65 @@ class TestFallbackFailureIsNotSwallowed:
 
         assert result["not_found"] is True
         assert "crossref_fallback_retryable" not in result
+
+
+class TestFallbackIsOpenalexOnly:
+    """`fallback_crossref` reaches OpenAlex-routed DOIs and nothing else.
+
+    arXiv and bioRxiv flag their own misses `not_found` too, so a gate built
+    from that flag alone claims them: an arXiv id would reach `get_work` as if
+    it were a DOI, and a bioRxiv miss would come back tagged `crossref`, since
+    Crossref does index `10.1101` DOIs. That is not what the parameter says it
+    does, and an agent branching on `_source` would be told the wrong provider.
+    """
+
+    @staticmethod
+    def _recording_crossref(monkeypatch):
+        calls: list[str] = []
+
+        async def fake_get_work(doi, **kwargs):
+            calls.append(doi)
+            return dict(_CROSSREF_WORK)
+
+        monkeypatch.setattr(crossref, "get_work", fake_get_work)
+        return calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool",
+        ["get_paper_metadata", "get_paper_authors", "get_paper_abstract", "get_paper_bibtex"],
+    )
+    async def test_an_arxiv_miss_never_reaches_crossref(self, monkeypatch, tool):
+        """An arXiv id is not a DOI — consulting Crossref spends a request on nothing."""
+
+        async def fake_arxiv(arxiv_id, **kwargs):
+            return {"error": f"No paper found for arXiv ID: {arxiv_id}", "not_found": True}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
+        calls = self._recording_crossref(monkeypatch)
+
+        result = await getattr(server, tool)("2301.99999", fallback_crossref=True)
+
+        assert calls == []
+        assert result["not_found"] is True
+        assert "crossref_fallback_retryable" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool",
+        ["get_paper_metadata", "get_paper_authors", "get_paper_abstract", "get_paper_bibtex"],
+    )
+    async def test_a_biorxiv_miss_is_not_answered_by_crossref(self, monkeypatch, tool):
+        """Crossref indexes 10.1101 DOIs, so this one would silently succeed."""
+
+        async def fake_biorxiv(doi, **kwargs):
+            return {"error": f"No paper found for DOI: {doi}", "not_found": True}
+
+        monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv)
+        calls = self._recording_crossref(monkeypatch)
+
+        result = await getattr(server, tool)("10.1101/2026.01.01.999999", fallback_crossref=True)
+
+        assert calls == []
+        assert result.get("_source") != "crossref"
+        assert result["not_found"] is True

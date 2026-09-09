@@ -60,7 +60,12 @@ These hold across several tools, so changing one tool alone breaks the set.
   still `get_paper_metadata`-only, `follow_published` being that one tool's.
   **The fallback's precondition and opt-in gate live once**, in
   `paper._crossref_fallback`; a tool that spells them itself is how the four
-  start disagreeing about which papers Crossref answers for.
+  start disagreeing about which papers Crossref answers for. **`source` is part
+  of that precondition, not decoration**: arXiv and bioRxiv flag their own misses
+  `not_found` too, so a gate built from that flag alone sends an arXiv id to
+  `crossref.get_work` as if it were a DOI and answers a bioRxiv miss with
+  `_source: "crossref"` — Crossref indexes `10.1101` DOIs. The fallback is
+  OpenAlex-routed DOIs only, exactly as `FALLBACK_CROSSREF` says.
 - **Every search tool owes the agent *some* "more exist" signal** —
   `total_results` (the provider's own upstream count, never `len(results)`),
   `result_count` alone where there is no upstream total, or `truncated`. Pick one

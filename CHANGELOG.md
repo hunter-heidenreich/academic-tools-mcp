@@ -36,12 +36,14 @@ grouped by milestone rather than per commit.
   you a title and a venue but no authors, abstract or BibTeX — on a server whose
   stated purpose includes generating BibTeX. `get_paper_authors`,
   `get_paper_abstract` and `get_paper_bibtex` now take the flag too, with the
-  same opt-in default and the same definitive-404 precondition, single-homed in
-  `paper._crossref_fallback` so the four cannot disagree about which papers
-  Crossref answers for. What Crossref cannot supply is null rather than absent.
+  same opt-in default, the same definitive-404 precondition and the same
+  OpenAlex-only rule, single-homed in `paper._crossref_fallback` so the four
+  cannot disagree about which papers Crossref answers for. What Crossref cannot
+  supply is null rather than absent.
   New behind it: `crossref.abstract_text` (JATS markup rendered to plain text),
   `crossref.author_name` (Crossref's `given`/`family` rejoined, shared with the
-  BibTeX surname rule), and `bibtex.generate_crossref_bibtex` with its own
+  BibTeX surname rule), `crossref.institution_name`, and
+  `bibtex.generate_crossref_bibtex` with its own
   `_CROSSREF_TYPE_MAP` — Crossref's type vocabulary is not OpenAlex's, and the
   two maps stay separate. ([#116])
 
@@ -52,6 +54,12 @@ grouped by milestone rather than per commit.
   `not_found`, with no way to tell that Crossref had been tried and might work on
   a retry. The error now carries `crossref_fallback_retryable: true`, mirroring
   `published_lookup_retryable`. ([#116])
+- **A Crossref-sourced `@phdthesis` carries its `school` again.** Crossref
+  deposits `institution` as a list of *objects*, not the list of strings
+  `title` and `container-title` carry, so reading it with the same accessor
+  dropped the field from every dissertation. `crossref.institution_name` is the
+  shape-guarded reader, beside `author_name`. A non-string `publisher` is now
+  dropped rather than stringified into the entry. ([#116])
 - **`arxiv.org/html/...` URLs route to arXiv.** `/abs/` and `/pdf/` matched but
   `/html/` did not, though it has been the default landing page for new papers
   since late 2023 — the spelling a pasted browser tab carries. Unrecognised,

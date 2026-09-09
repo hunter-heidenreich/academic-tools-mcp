@@ -513,7 +513,9 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
 
     doi = doinorm.normalize(work.get("DOI") or "" if isinstance(work.get("DOI"), str) else "")
     venue = _crossref_first(work.get("container-title"))
-    publisher = work.get("publisher")
+    # Guarded once: `publisher` feeds two fields, and `_escape_bibtex` raises on a
+    # non-string, which nothing below a Crossref `message` rules out.
+    publisher = work["publisher"] if isinstance(work.get("publisher"), str) else ""
 
     fields: list[tuple[str, str]] = [_title_field(title)]
     if authors := _format_names(authors_list, crossref.author_name):
@@ -523,10 +525,14 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
         fields.append(("journal", f"{{{_escape_bibtex(venue)}}}"))
     elif entry_type in ("inproceedings", "incollection") and venue:
         fields.append(("booktitle", f"{{{_escape_bibtex(venue)}}}"))
-    elif entry_type == "phdthesis" and (school := _crossref_first(work.get("institution"))):
+    # `institution` is a list of *objects*, not the list of strings `title` and
+    # `container-title` carry, so it needs the provider's own accessor.
+    elif entry_type == "phdthesis" and (
+        school := crossref.institution_name(work.get("institution"))
+    ):
         fields.append(("school", f"{{{_escape_bibtex(school)}}}"))
-    elif entry_type == "techreport" and (venue or publisher):
-        fields.append(("institution", f"{{{_escape_bibtex(venue or str(publisher))}}}"))
+    elif entry_type == "techreport" and (issuer := venue or publisher):
+        fields.append(("institution", f"{{{_escape_bibtex(issuer)}}}"))
 
     # Crossref's volume/issue are freeform strings; escaped like any other value.
     if isinstance(volume := work.get("volume"), str) and volume:
@@ -537,7 +543,7 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
         fields.append(("pages", f"{{{pages}}}"))
     if year_token:
         fields.append(("year", f"{{{year_token}}}"))
-    if isinstance(publisher, str) and publisher:
+    if publisher:
         fields.append(("publisher", f"{{{_escape_bibtex(publisher)}}}"))
     if doi:
         fields.append(("doi", f"{{{_escape_doi(doi)}}}"))

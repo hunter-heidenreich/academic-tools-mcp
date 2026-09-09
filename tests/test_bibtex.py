@@ -1064,13 +1064,45 @@ class TestGenerateCrossrefBibtex:
         assert "booktitle={Nature}" in proc
 
     def test_thesis_takes_its_school_from_institution(self):
+        """Crossref's real shape: a list of objects, not the strings elsewhere.
+
+        `title` and `container-title` are lists of strings, so a reader that
+        treats `institution` alike drops every dissertation's `school`.
+        """
         work = {
             "type": "dissertation",
             "title": ["T"],
-            "institution": [{"name": "MIT"}, "Cambridge"],
+            "institution": [{"name": "MIT", "place": ["Cambridge, MA"]}],
         }
-        # `_crossref_first` skips the non-string entry rather than raising on it.
-        assert "school={Cambridge}" in bibtex.generate_crossref_bibtex(work, year=2020)
+        assert "school={MIT}" in bibtex.generate_crossref_bibtex(work, year=2020)
+
+    @pytest.mark.parametrize(
+        ("institution", "expected"),
+        [
+            ("MIT", "school={MIT}"),
+            ([{"place": ["Cambridge"]}, {"name": "MIT"}], "school={MIT}"),
+            ([{"name": 7}], None),
+            ([], None),
+            (None, None),
+        ],
+    )
+    def test_a_wrong_shaped_institution_drops_the_field_rather_than_raising(
+        self, institution, expected
+    ):
+        """Nothing below a Crossref `message` is typed, and `_escape_bibtex` raises."""
+        work = {"type": "dissertation", "title": ["T"], "institution": institution}
+        out = bibtex.generate_crossref_bibtex(work, year=2020)
+        if expected is None:
+            assert "school=" not in out
+        else:
+            assert expected in out
+
+    def test_a_non_string_publisher_is_dropped_rather_than_stringified(self):
+        """`str(publisher)` would print a Python repr into the entry."""
+        work = {"type": "report", "title": ["T"], "publisher": {"name": "NIST"}}
+        out = bibtex.generate_crossref_bibtex(work, year=2020)
+        assert "publisher=" not in out
+        assert "institution=" not in out
 
     @pytest.mark.parametrize(
         ("page", "expected"),

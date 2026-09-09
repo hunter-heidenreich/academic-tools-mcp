@@ -74,6 +74,12 @@ so the caller passes the year down rather than this file growing a second walker
   suffix is not an arXiv DOI. Any other preprint gets a `howpublished` URL built
   from the **normalized** DOI, falling back to the OpenAlex landing page, and
   omitted when there is neither — never a bare `\url{}`.
+- **A Crossref record's field shapes are not uniform, and `providers/crossref`
+  owns each one.** `title` and `container-title` are lists of *strings*;
+  `institution` is a list of *objects*, so it reads through
+  `crossref.institution_name`, not the string-list accessor beside it — treating
+  the two alike drops every dissertation's `school` silently. `author` is
+  `author_name`'s.
 - **OpenAlex nulls are load-bearing.** It emits `"author": null` /
   `"display_name": null` / `"authorships": null` rather than dropping the key, so
   every read is `or`-defaulted and no `.get(k, default)` alone is trusted. The

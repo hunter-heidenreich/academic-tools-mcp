@@ -950,3 +950,30 @@ class TestAbstractText:
 
     def test_missing_key_returns_none(self):
         assert crossref.abstract_text({}) is None
+
+
+class TestInstitutionName:
+    """`institution` is a list of *objects*, unlike the string lists beside it.
+
+    A reader that treats it like `title` or `container-title` silently drops
+    every dissertation's awarding school, which is why the accessor lives here
+    rather than being open-coded by `bibtex`.
+    """
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ([{"name": "MIT", "place": ["Cambridge, MA"]}], "MIT"),
+            ({"name": "MIT"}, "MIT"),
+            ("MIT", "MIT"),
+            # Some deposits carry a place-only entry ahead of the named one.
+            ([{"place": ["Cambridge"]}, {"name": "MIT"}], "MIT"),
+            ([], ""),
+            ([{"name": 7}], ""),
+            ({"place": ["Cambridge"]}, ""),
+            (None, ""),
+            (7, ""),
+        ],
+    )
+    def test_pulls_the_name_out_of_every_shape_crossref_deposits(self, value, expected):
+        assert crossref.institution_name(value) == expected

@@ -224,6 +224,7 @@ def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) ->
 
 
 async def _crossref_fallback(
+    source: manual.MetadataSource,
     canonical_id: str | None,
     obj: dict[str, Any],
     *,
@@ -233,9 +234,15 @@ async def _crossref_fallback(
     """The Crossref work to answer with, and whether the attempt failed transiently.
 
     ``(work, False)`` on a hit, ``(None, retryable)`` otherwise. One home for the
-    opt-in gate and the ``not_found`` precondition, so the four paper tools cannot
-    disagree about when Crossref is consulted — a DOI Crossref has indexed and
-    OpenAlex has not is the same paper to all of them.
+    opt-in gate, the ``not_found`` precondition **and the OpenAlex-only rule**, so
+    the four paper tools cannot disagree about when Crossref is consulted — a DOI
+    Crossref has indexed and OpenAlex has not is the same paper to all of them.
+
+    ``source`` is load-bearing, not decoration: arXiv and bioRxiv flag their own
+    misses ``not_found`` too, so without it an arXiv id reaches ``get_work`` as a
+    DOI and a bioRxiv miss comes back tagged ``crossref`` — Crossref indexes
+    ``10.1101`` DOIs. This fallback is what ``FALLBACK_CROSSREF`` says it is:
+    OpenAlex-routed DOIs only.
 
     Keyed off ``canonical_id``, not the caller's spelling: by here a PMID has
     already been traded for its DOI, and Crossref is DOI-only.
@@ -243,7 +250,7 @@ async def _crossref_fallback(
     ``force_refresh`` threads through: this path is for brand-new DOIs, where
     staleness is likeliest.
     """
-    if not (fallback_crossref and canonical_id and obj.get("not_found")):
+    if not (fallback_crossref and source == "openalex" and canonical_id and obj.get("not_found")):
         return None, False
     cr = await crossref.get_work(canonical_id, force_refresh=force_refresh)
     if "error" not in cr:
@@ -378,7 +385,7 @@ async def get_paper_metadata(
             return result
 
     cr, cr_retryable = await _crossref_fallback(
-        canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
+        source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
     )
     if cr is not None:
         return _format_crossref_metadata(cr, canonical_id)
@@ -574,7 +581,7 @@ async def get_paper_authors(
     start, end = page_bounds(page, page_size)
 
     cr, cr_retryable = await _crossref_fallback(
-        canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
+        source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
     )
     if cr is not None:
         page_slice = _format_crossref_authors(cr, start, end)
@@ -644,7 +651,7 @@ async def get_paper_abstract(
         return obj  # unknown-identifier error
 
     cr, cr_retryable = await _crossref_fallback(
-        canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
+        source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
     )
     if cr is not None:
         return {
@@ -702,7 +709,7 @@ async def get_paper_bibtex(
         return obj  # unknown-identifier error
 
     cr, cr_retryable = await _crossref_fallback(
-        canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
+        source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
     )
     if cr is not None:
         # The date walk is single-homed in `app.crossref_date`, which `bibtex`

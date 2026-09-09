@@ -154,6 +154,29 @@ def author_name(author: Any) -> str:
     return name if isinstance(name, str) else ""
 
 
+def institution_name(institution: Any) -> str:
+    """The awarding institution's name from a Crossref ``institution`` value, or ``""``.
+
+    Crossref deposits it as a *list of objects* (``[{"name": ..., "place": [...]}]``),
+    not the list of strings ``title`` and ``container-title`` carry — so a reader
+    that treats the two alike silently drops every dissertation's ``school``.
+    Sibling of :func:`author_name`, and here for the same reason: the record's
+    shape is this module's business.
+
+    ``Any``, not ``dict``: the value comes from untyped JSON, and a bare string
+    is accepted since some deposits carry one.
+    """
+    if isinstance(institution, list):
+        # First *named* entry: a place-only entry ahead of it is a real deposit.
+        return next((found for entry in institution if (found := institution_name(entry))), "")
+    if isinstance(institution, str):
+        return institution
+    if not isinstance(institution, dict):
+        return ""
+    name = institution.get("name")
+    return name if isinstance(name, str) else ""
+
+
 # Crossref deposits an abstract as a JATS fragment, so it is markup, not text.
 _JATS_TAG_RE = re.compile(r"<[^>]*>")
 # A structured abstract's section titles are content ("Background", "Methods"),
