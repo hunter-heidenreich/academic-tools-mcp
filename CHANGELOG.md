@@ -44,13 +44,25 @@ grouped by milestone rather than per commit.
   Unrecognised, `get_paper_metadata` answered "Cannot resolve paper provider" and
   the pipeline tools filed the paper a **second** time under the `manual`
   namespace. The startup sweep re-files anything already misfiled. ([#115])
+- **`import_paper` trades a PMID for the paper's DOI, like every tool that reads
+  what it writes.** It was the one pipeline entry point that did not, so it filed
+  under a key `convert_paper`, `get_paper_sections`, `get_paper_section` and
+  `find_in_paper` all resolve away — an import no tool could read back, under any
+  spelling. ([#115])
 
 ### Changed
 
 - **A bare 7–8 digit identifier is now read as a PMID.** Shorter runs are
   unchanged, so a freeform `import_paper(file, "1234")` label still routes to
-  `manual`; an existing 7–8 digit label should be passed with an explicit prefix
-  or renamed. ([#115])
+  `manual`. An **existing** 7–8 digit label is not stranded: the first call that
+  resolves it re-files its cached PDF and markdown onto the DOI stem, carrying
+  the section index — and with it `conversion_mode` — across, so an imported
+  file keeps the `"imported"` marker that exempts it from `download_pdf`'s
+  cascade. A bare-digit stem is *linked* rather than moved, since a freeform
+  label could have written it, so the original reading survives too; an
+  explicitly marked one moves. There is no startup sweep for this, and cannot
+  be: the destination is the paper's DOI, which only a network lookup knows.
+  ([#115])
 
 ## [2026.09.08] — 2026-09-08
 

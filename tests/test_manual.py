@@ -1197,3 +1197,122 @@ class TestMigrateMisroutedArxiv:
 
         assert cache.get("manual", "sections", stems.sections_key(canonical)) is None
         assert stems.markdown_path("arxiv", "2301.00001").exists()
+
+
+class TestRefilePmidStems:
+    """An import filed under a PMID spelling is re-filed onto the DOI stem.
+
+    Lazy rather than a startup sweep: a PMID stem's destination is the paper's
+    DOI, which only a network lookup knows, so ``resolve_paper_identifier`` is
+    the one place that can name it. Moved for a spelling nothing but a PMID
+    writes, linked for a bare digit run a freeform label could have written.
+    """
+
+    DOI = "10.1234/example"
+
+    @pytest.fixture
+    def orphans(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+        for entity in ("pdfs", "markdown"):
+            (tmp_path / "manual" / entity).mkdir(parents=True)
+        return tmp_path
+
+    @staticmethod
+    def _seed(root, canonical, text="orphan"):
+        for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
+            path = root / "manual" / entity / (stems.safe_stem(canonical) + suffix)
+            path.write_text(text)
+
+    def test_a_prefixed_stem_is_moved_onto_the_doi_stem(self, orphans):
+        """``pmid:`` is a marker nothing but a PMID writes, so the move is safe."""
+        self._seed(orphans, "pmid:20079334")
+
+        assert manual.refile_pmid_stems("pmid:20079334", self.DOI) == 2
+
+        assert stems.markdown_path("manual", self.DOI).read_text() == "orphan"
+        assert not stems.markdown_path("manual", "pmid:20079334").exists()
+
+    def test_a_bare_digit_stem_is_linked_so_a_label_reading_survives(self, orphans):
+        """A bare run could equally be a freeform label, so the original stays."""
+        self._seed(orphans, "20079334")
+
+        assert manual.refile_pmid_stems("20079334", self.DOI) == 2
+
+        source = stems.markdown_path("manual", "20079334")
+        target = stems.markdown_path("manual", self.DOI)
+        assert source.exists()
+        assert source.stat().st_ino == target.stat().st_ino
+
+    def test_the_callers_own_url_spelling_is_re_filed(self, orphans):
+        """The URL forms are unbounded, so only the caller's spelling reaches one."""
+        url = "https://pubmed.ncbi.nlm.nih.gov/20079334/"
+        self._seed(orphans, url.lower())
+
+        assert manual.refile_pmid_stems(url, self.DOI) == 2
+        assert stems.markdown_path("manual", self.DOI).read_text() == "orphan"
+
+    def test_a_moved_markdown_carries_its_index_rather_than_re_deriving_it(self, orphans):
+        """``conversion_mode`` survives the re-key.
+
+        Re-deriving would reset it to null, and with it the ``"imported"``
+        marker that keeps an operator's own markdown out of the download
+        cascade.
+        """
+        from academic_tools_mcp.store import cache
+
+        self._seed(orphans, "pmid:20079334", text="# Intro\n\nbody\n")
+        cache.put(
+            "manual",
+            "sections",
+            stems.sections_key("pmid:20079334"),
+            {
+                "sections": [],
+                "sections_detected": True,
+                "markdown_checksum": stems.checksum_text("# Intro\n\nbody\n"),
+                "conversion_mode": "imported",
+            },
+        )
+
+        manual.refile_pmid_stems("pmid:20079334", self.DOI)
+
+        moved = cache.get("manual", "sections", stems.sections_key(self.DOI))
+        assert moved is not None
+        assert moved["conversion_mode"] == "imported"
+        assert cache.get("manual", "sections", stems.sections_key("pmid:20079334")) is None
+
+    def test_an_existing_doi_stem_is_never_overwritten(self, orphans):
+        """The destination is what every reader resolves to; the orphan is not."""
+        self._seed(orphans, "pmid:20079334")
+        atomic.write_text(stems.markdown_path("manual", self.DOI), "live")
+
+        manual.refile_pmid_stems("pmid:20079334", self.DOI)
+
+        assert stems.markdown_path("manual", self.DOI).read_text() == "live"
+
+    def test_is_idempotent(self, orphans):
+        """A second resolve of the same PMID re-files nothing."""
+        self._seed(orphans, "pmid:20079334")
+
+        assert manual.refile_pmid_stems("pmid:20079334", self.DOI) == 2
+        assert manual.refile_pmid_stems("pmid:20079334", self.DOI) == 0
+
+    def test_a_biorxiv_doi_re_files_into_the_biorxiv_namespace(self, orphans):
+        """The destination asks the router too — not every DOI lands in ``manual``."""
+        self._seed(orphans, "pmid:20079334")
+
+        assert manual.refile_pmid_stems("pmid:20079334", "10.1101/2024.01.01.573000") == 2
+        assert stems.markdown_path("biorxiv", "10.1101/2024.01.01.573000").exists()
+
+    def test_a_failed_move_leaves_the_file_for_the_next_run(self, orphans, monkeypatch):
+        """A re-file that raises is a skip, never an exception out of a resolve."""
+        self._seed(orphans, "pmid:20079334")
+
+        def boom(self, target):
+            raise OSError(errno.EXDEV, "cross-device link")
+
+        monkeypatch.setattr("pathlib.Path.rename", boom)
+
+        assert manual.refile_pmid_stems("pmid:20079334", self.DOI) == 0
+        assert stems.markdown_path("manual", "pmid:20079334").exists()

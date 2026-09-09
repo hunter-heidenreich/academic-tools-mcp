@@ -367,6 +367,13 @@ async def import_paper(
             ),
         }
 
+    # After the extension check, so a bad suffix still costs no request, and before
+    # resolve_target: a PMID that reached storage would file the paper under a key
+    # every reader of it trades away, leaving the import unreachable.
+    identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
+    if pmid_error is not None:
+        return pmid_error
+
     # Synchronous and unbounded in size, so off the event loop; under
     # sections_lock, which every writer of the markdown/section-index pair takes.
     target = manual.resolve_target(identifier)

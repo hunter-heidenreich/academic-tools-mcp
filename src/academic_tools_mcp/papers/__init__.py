@@ -25,6 +25,7 @@ from .index import (
     drop_derived,
     get_or_parse_sections,
     recorded_conversion_mode,
+    rekey_sections,
     sections_lock,
     store_markdown_and_index,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "parse_sections",
     "parse_sections_and_detect",
     "recorded_conversion_mode",
+    "rekey_sections",
     "section_at_offset",
     "section_boundaries",
     "sections_lock",

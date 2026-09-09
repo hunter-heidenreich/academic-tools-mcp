@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal, TypeVar
 from fastmcp import FastMCP
 from pydantic import Field
 
-from . import corpus, manual
+from . import corpus, manual, papers
 from .net import clients, http
 from .providers import acl, openalex
 from .store import cache, stems
@@ -168,6 +168,11 @@ async def resolve_paper_identifier(
     Sits here rather than in ``manual.resolve_target`` because resolution is a
     network call and that dispatcher is pure and synchronous; it is above
     ``providers`` in ``_LAYERS``, and three tool modules need it.
+
+    Has one filesystem side effect: a successful trade also re-files an import
+    left under a PMID stem by an older build onto the DOI stem every reader now
+    resolves to. This is the only point where both spellings are in hand, so no
+    startup sweep can do it.
     """
     if not openalex.is_pmid(identifier):
         return identifier, None
@@ -195,7 +200,23 @@ async def resolve_paper_identifier(
                 "your choosing to read the full text."
             ),
         }
+
+    await _repair_pmid_import(identifier, doi)
     return doi, None
+
+
+async def _repair_pmid_import(raw_identifier: str, doi: str) -> None:
+    """Re-file an orphaned PMID-keyed import onto *doi*'s stem. Never raises.
+
+    Inline rather than on a thread: the stems are computable, so the miss costs a
+    handful of ``stat`` calls and no directory listing, and the hit is ``rename``
+    / ``link`` — metadata ops within one cache root, never a copy. Under the
+    *destination*'s lock, the one every markdown writer takes; the source stems
+    have no writer left.
+    """
+    dest = manual.resolve_target(doi)
+    async with papers.sections_lock(dest["namespace"], dest["canonical"]):
+        manual.refile_pmid_stems(raw_identifier, doi)
 
 
 async def read_markdown(
