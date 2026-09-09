@@ -143,6 +143,48 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Four tool docstrings promised a `suggestion` key the unknown-identifier
+  error never carries.** `get_paper_metadata` / `_authors` / `_abstract` /
+  `_bibtex` all said an unresolvable identifier returns `{error, suggestion}`;
+  `_unknown_identifier_error` returns `{error}` alone, with the advice inside
+  the message. They now distinguish that from a provider failure, which does
+  carry `suggestion`. ([#110])
+- **`get_paper_references` claimed `retryable` is always present on a
+  tool-layer error.** It is absent on a definitive miss (`not_found: true`) and
+  on an unclassified 4xx, so an agent branching on its absence read a permanent
+  failure as retryable. The docstring now states the three-state verdict and
+  says to branch on `retryable is true`. ([#110])
+- **The OpenCitations "no edges in this index" caveat reached no agent.** It
+  was in `README.md` and `CLAUDE.md` but in none of the graph tool docstrings,
+  so `total: 0` / `count: 0` read as "this paper cites nothing". Now stated in
+  `get_paper_references`, `get_paper_citations` and
+  `get_paper_citations_count`. ([#110])
+- **`get_wikipedia_summary` described `extract` as a list on a disambiguation
+  page.** It is always a string; nothing in the stack can produce a list.
+  ([#110])
+- **`find_in_paper` and `search_cached_papers` gave a chain snippet that fails
+  validation.** `get_paper_section`'s `section` parameter is a string, so
+  passing the integer `section_index` is rejected by pydantic; both snippets
+  now show `str(section_index)`. ([#110])
+- **Missing response and error keys named in their tool docstrings**:
+  `download_pdf`'s `retry_after_seconds` / `backpressure` / `max_concurrency`;
+  `get_paper_section`'s out-of-range and empty-markdown errors;
+  `get_paper_authors`' `author_count` covering the whole list, not the page;
+  `get_author`'s `top_topics` element shape; the graph tools' forwarded
+  provider-error keys; `get_wikipedia_summary`'s `pageid`. ([#110])
+- **Docstring and comment corrections across `net/`, `store/`, `download/`,
+  `providers/`, `papers/` and `tools/`** — roughly fifty claims that had drifted
+  from the code they annotate, including a stale `ResponseNotRead` rationale in
+  `streaming`, `atomic.write_text`'s over-broad "the next read deletes as
+  corrupt", `stats.reset`'s "zero every counter" (it drops rows), `arxiv`'s
+  module docstring calling its cache key versionless, `openalex`'s claiming a
+  topics endpoint, `biorxiv`'s claiming the two servers are told apart by DOI
+  prefix, `papers`' package docstring calling each submodule "importable on its
+  own" (the facade imports all three), `sections._CHARS_PER_TOKEN` documented
+  with its units inverted, and `index`'s claim that `sections_lock` serialises
+  every write of the markdown/index pair (neither converter path holds it).
+  ([#110])
+
 - **The startup sweep no longer strands a manually imported paper whose label
   looks like an old-style arXiv id.** `safe_stem` percent-encodes `/` to `_`
   but leaves a literal `_` alone, so a freeform label reads back from disk
@@ -2718,3 +2760,4 @@ grouped by milestone rather than per commit.
 [#106]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/106
 [#107]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/107
 [#108]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/108
+[#110]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/110

@@ -1,10 +1,8 @@
 """Single-flight: collapse N concurrent calls for the same key into one.
 
-Four unified paper tools called in parallel for one ID all take the
-cache-miss path, all queue behind the throttle, and three re-fetch what the
-first already wrote — the throttle releases between requests, but nobody
-re-checks the cache. Here the first caller wins the in-flight slot for
-``key`` and runs the factory; the rest ``await`` the same future.
+The hazard: the four unified paper tools called in parallel for one ID all miss
+the cache, and the throttle only paces them — it releases between requests — so
+without a shared slot three re-fetch what the first wrote.
 """
 
 import asyncio
@@ -13,8 +11,8 @@ from typing import Any, TypeVar
 
 _T = TypeVar("_T")
 
-# How many cancelled leaders one caller watches before running the factory
-# itself, unslotted. A bound, not a policy: it exists so this can never spin.
+# Cancelled leaders one caller follows before running the factory itself,
+# unslotted — an anti-spin bound, not a tuned policy.
 _MAX_FOLLOW_ATTEMPTS = 3
 
 
@@ -32,9 +30,9 @@ def _self_is_cancelling() -> bool:
 class SingleFlight:
     """Coalesce concurrent calls keyed by a hashable identifier.
 
-    The factory runs at most once per key *while a call is in flight*: the
-    slot is dropped when the future resolves, so the next call re-runs it.
-    This is not a cache.
+    Absent cancellation the factory runs once per key *per in-flight window*: the
+    slot is dropped when the future resolves, so the next call re-runs it. This is
+    not a cache.
     """
 
     def __init__(self) -> None:
@@ -44,14 +42,15 @@ class SingleFlight:
     async def do(self, key: Hashable, factory: Callable[[], Awaitable[_T]]) -> _T:
         """Run ``factory`` if no call for ``key`` is in flight; else share.
 
-        Every waiter for ``key`` gets the leader's outcome — the same result
-        *object*, or the same exception instance. Neither is cached.
+        Every waiter gets the leader's outcome — the same result *object*, or the
+        same exception instance; neither is cached. A cancelled leader is the
+        exception: a waiter not cancelling itself takes over and re-runs.
         """
         for _ in range(_MAX_FOLLOW_ATTEMPTS):
             existing = self._inflight.get(key)
             if existing is None:
-                # Awaiting a coroutine runs its body inline, so nothing yields
-                # between this check and ``_lead``'s insert — no double-claim.
+                # Awaiting a coroutine runs its body inline: nothing yields between this
+                # check and ``_lead``'s insert, so the slot can't be double-claimed.
                 return await self._lead(key, factory)
             try:
                 # shield: cancel our *view* of the shared future, never the future.
@@ -66,20 +65,20 @@ class SingleFlight:
 
     async def _lead(self, key: Hashable, factory: Callable[[], Awaitable[_T]]) -> _T:
         """Own the in-flight slot for ``key`` and run the factory."""
-        # We are in a coroutine, so the running loop is guaranteed;
-        # get_event_loop's thread-local fallback is never what this wants.
+        # In a coroutine the running loop is guaranteed; ``get_event_loop``'s
+        # thread-local fallback is never what this wants.
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         # Register before the first await, or a second caller opens its own slot.
         self._inflight[key] = future
         try:
             result = await factory()
-            # Defence in depth: shield should leave this pending, and set_result
-            # on a resolved one is an InvalidStateError in place of an answer.
+            # Defence in depth: shield should leave this pending, and ``set_result`` on
+            # a resolved future raises ``InvalidStateError`` in place of the answer.
             if not future.done():
                 future.set_result(result)
             return result
         except BaseException as exc:
-            # Already done can only mean cancelled: nothing else resolves it.
+            # Defensive, like the success path: nothing outside ``_lead`` resolves this.
             if not future.done():
                 future.set_exception(exc)
                 # Mark retrieved: with no follower awaiting, asyncio would log

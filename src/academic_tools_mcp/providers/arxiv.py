@@ -1,4 +1,4 @@
-"""arXiv client: Atom search and metadata, keyed by canonical (versionless) ID."""
+"""arXiv client: Atom metadata, search and PDF download, keyed by a version-preserving ID."""
 
 import re
 import xml.etree.ElementTree as ET
@@ -21,23 +21,22 @@ _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
 
 
 def _parse_error_dict() -> dict[str, Any]:
-    """Fresh structured error for an unparseable arXiv response — it speaks XML, not JSON."""
+    """Fresh transient error for an arXiv body that isn't parseable XML."""
     return http.parse_error_dict(LABEL, detail="could not be parsed as XML")
 
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 NAMESPACE = "arxiv"
 
-# Agent-facing provider name; every site that names us reads it (providers.md).
+# Agent-facing provider name; every site that names us reads it.
 LABEL = "arXiv"
 
-# XML namespaces
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 _ARXIV_NS = "http://arxiv.org/schemas/atom"
 _OPENSEARCH_NS = "http://a9.com/-/spec/opensearch/1.1/"
 
-# concurrency=1 is arXiv's documented "single connection" rule; 5 pending at a
-# 3s gap is 15s of agent-blocking, past which callers get backpressure.
+# concurrency=1 is arXiv's documented "single connection" rule; _MAX_PENDING x
+# _MIN_REQUEST_GAP bounds how long a queued caller blocks before backpressure.
 _MAX_CONCURRENT = 1
 _MIN_REQUEST_GAP = 3.0
 _MAX_PENDING = 5
@@ -47,17 +46,17 @@ _single_flight = singleflight.SingleFlight()
 # Short: an arXiv id goes live mid-session, so a 404 at 9am should clear by 10am.
 _NEG_TTL_SECONDS = 3600.0
 
-# Cache entity for definitive PDF-download failures, on that same short TTL.
+# Definitive PDF-download failures negative-cache here, on that same short TTL.
 _NEG_ENTITY = "downloads"
 
-# PDF downloads are larger than a metadata call; use a generous timeout.
+# A PDF is megabytes where a metadata call is kilobytes.
 _PDF_TIMEOUT_SECONDS = 60.0
 
 # Exported so ``search_arxiv``'s validation bound isn't a second spelling of it.
 MAX_SEARCH_RESULTS = 50
 
-# Long: a record is stable per version. Short enough that a revision still
-# surfaces under a bare ("whatever is current") key.
+# Long: a record is stable per version — but bounded, so a revision still surfaces
+# under a bare key.
 _POSITIVE_TTL_SECONDS = 14 * 86400.0
 
 
@@ -77,8 +76,7 @@ _throttle = Throttle(
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
-    # Above the shared default: arXiv penalty-boxes an IP for longer than one
-    # retry's backoff covers.
+    # Above the shared default: an arXiv penalty-box outlasts one retry's backoff.
     retry_attempts=3,
 )
 
@@ -97,21 +95,19 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 # ID normalization
 # ---------------------------------------------------------------------------
 
-# As permissive as ``doinorm._DOI_URL_RE``, and for the same reason: a spelling
-# this misses is one ``manual`` files the same paper under a second time.
+# As permissive as ``doinorm._DOI_URL_RE``: a spelling it misses files the same paper twice.
 _ARXIV_URL_RE = re.compile(
     r"(?:https?://)?(?:www\.|export\.)?arxiv\.org/(?:abs|pdf)/([^?#]+?)(?:\.pdf)?/?(?:[?#].*)?$",
     re.IGNORECASE,
 )
 
-# arXiv's own DataCite DOI. Exported as ``acl.ACL_DOI_PREFIX`` is — ``bibtex``
-# builds its ``eprint`` field from it.
+# arXiv's DataCite registrant prefix, public as ``acl.ACL_DOI_PREFIX`` is: one
+# spelling, not two.
 ARXIV_DOI_PREFIX = "10.48550/arXiv."
 _ARXIV_DOI_RE = re.compile(rf"^{re.escape(ARXIV_DOI_PREFIX)}(.+)$", re.IGNORECASE)
 
-# The old-style pair is exported: ``corpus`` matches it over
-# ``safe_stem``'s ``_`` rather than ``/``. ``math.GT``/``cond-mat.stat-mech``
-# are why the archive class carries ``.``.
+# Exported: ``corpus`` matches the old-style form over ``safe_stem``'s ``_``, not ``/``.
+# ``math.GT``/``cond-mat.stat-mech`` are why the archive class carries ``.``.
 OLD_ARCHIVE_PATTERN = r"[a-z][a-z.\-]*"
 _VERSION_PATTERN = r"(?:v\d+)?"
 OLD_NUMBER_PATTERN = rf"\d{{7}}{_VERSION_PATTERN}"
@@ -136,12 +132,11 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
       - ``arXiv:`` prefix in any case, with or without a space
       - an ``abs``/``pdf`` URL, either scheme (or none), optional ``www.`` /
         ``export.`` host label, optional ``.pdf`` extension and trailing slash
-      - arXiv's DataCite DOI, ``10.48550/arXiv.2301.00001``, in any spelling
-        ``doinorm.normalize`` accepts
+      - arXiv's DataCite DOI (``10.48550/arXiv.…``), in any spelling ``doinorm.normalize`` takes
 
-    Case is preserved (``canonical_arxiv_id`` owns the fold) and an
-    unrecognised string comes back stripped but untouched. **Idempotent for
-    every input**; the step order below is load-bearing to keep it that way.
+    Case is preserved (``canonical_arxiv_id`` owns the fold); an unrecognised string
+    comes back stripped of whitespace and any ``arXiv:`` prefix. **Idempotent for every
+    input** — the step order below is what keeps it that way.
     """
     arxiv_id = arxiv_id.strip()
 
@@ -151,9 +146,9 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
     if m := _ARXIV_URL_RE.match(arxiv_id):
         return m.group(1)
 
-    # Via the shared normalizer, so the ``doi.org`` and ``doi:`` spellings
-    # collapse too. Only an arXiv-shaped tail: an unrelated DataCite record
-    # must survive, and a nested spelling must stay idempotent.
+    # Through the shared normalizer, so ``doi.org``/``doi:`` spellings collapse too. Only
+    # an arXiv-shaped tail: an unrelated DataCite record must survive, and nesting stay
+    # idempotent.
     if (m := _ARXIV_DOI_RE.match(doinorm.normalize(arxiv_id))) and _is_arxiv_shape(m.group(1)):
         return m.group(1)
 
@@ -170,7 +165,7 @@ def canonical_arxiv_id(arxiv_id: str) -> str:
 
 
 def is_arxiv_id(identifier: str) -> bool:
-    """The shape test ``manual``'s two dispatchers route on, over the canonical form.
+    """The shape test ``manual.resolve_target`` routes on, over the canonical form.
 
     An id this rejects lands in ``manual`` under a key already arXiv's, so the
     same paper caches, downloads and converts twice.
@@ -191,8 +186,8 @@ def base_arxiv_id(arxiv_id: str) -> str:
 def id_from_entry(paper: dict[str, Any]) -> str:
     """The bare, versioned ID from an Atom entry's ``id`` URL. Never a local ``split``.
 
-    ``isinstance``, not truthiness: a non-string ``id`` reaches ``.strip()``
-    as an AttributeError rather than degrading to "".
+    ``isinstance``, not truthiness: a non-string ``id`` degrades to ``""`` instead of
+    reaching ``.strip()`` as an AttributeError.
     """
     raw = paper.get("id")
     return normalize_arxiv_id(raw) if isinstance(raw, str) else ""
@@ -295,16 +290,15 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
                 params={"id_list": normalize_arxiv_id(arxiv_id)},
             )
 
-            # Before raise_for_status, as every sibling does: via error_dict a
-            # 404 would negative-cache a raw body snippet for the hour.
+            # Before raise_for_status, as every sibling does: through error_dict a 404
+            # is an uncached body snippet carrying no ``not_found``.
             if response.status_code == 404:
                 return _not_found()
 
             response.raise_for_status()
 
             root = _safe_fromstring(response.text)
-        # Neither branch caches: an unparseable body and a 5xx/timeout/429
-        # both say nothing about whether the paper exists.
+        # Neither caches: a garbled body and a 5xx/timeout/429 say nothing about existence.
         except _PARSE_ERRORS:
             return _parse_error_dict()
         except http.HTTPX_ERRORS as e:
@@ -336,8 +330,9 @@ async def search_papers(
 ) -> dict[str, Any]:
     """Search arXiv. ``query`` takes field prefixes (ti:, au:, abs:, cat:) and AND/OR/ANDNOT.
 
-    Returns ``{total_results, entries}``. The result list is not cached
-    (ad-hoc queries), but each hit warms the paper cache.
+    ``max_results`` is clamped to ``MAX_SEARCH_RESULTS``. Returns ``{total_results,
+    entries}``; the result list is not cached (ad-hoc queries), but each hit warms the
+    paper cache.
     """
     capped = min(max(max_results, 1), MAX_SEARCH_RESULTS)
 
@@ -362,7 +357,7 @@ async def search_papers(
 
     entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
-    # Not retryable: the query is what's wrong, and re-running it cannot help.
+    # Not retryable: the query is what's wrong.
     if entries and _is_error_entry(entries[0]):
         summary_el = entries[0].find(f"{{{_ATOM_NS}}}summary")
         detail = " ".join((summary_el.text or "").split()) if summary_el is not None else ""
@@ -373,14 +368,11 @@ async def search_papers(
 
     papers = [_parse_entry(e) for e in entries]
 
-    # ``isdecimal``, not ``isdigit``: ``int()`` rejects the superscripts
-    # ``isdigit`` accepts, and ValueError is in neither except clause above.
     total_el = root.find(f"{{{_OPENSEARCH_NS}}}totalResults")
     total_text = total_el.text.strip() if total_el is not None and total_el.text else ""
 
-    # Search always returns the current version, so each hit is valid under
-    # *both* the versioned key (that exact revision) and the bare key (whatever
-    # is current). Warming only the versioned one leaves every bare lookup a miss.
+    # Search returns the current version, so each hit is valid under both the versioned
+    # key and the bare one; warming only the versioned key leaves every bare lookup a miss.
     for paper in papers:
         paper_id = id_from_entry(paper)
         if not is_arxiv_id(paper_id):
@@ -388,6 +380,7 @@ async def search_papers(
         for key in {canonical_arxiv_id(paper_id), base_arxiv_id(paper_id)}:
             cache.warm(NAMESPACE, "papers", key, paper, max_age_seconds=_POSITIVE_TTL_SECONDS)
 
+    # ``isdecimal``, not ``isdigit``: a superscript passes ``isdigit`` and raises in ``int()``.
     return {
         "total_results": int(total_text) if total_text.isdecimal() else 0,
         "entries": papers,
@@ -395,7 +388,7 @@ async def search_papers(
 
 
 def pdf_path(arxiv_id: str) -> Path:
-    """Return the expected cache path for a PDF (may or may not exist yet)."""
+    """The PDF's cache path, whether or not it exists yet."""
     canonical = canonical_arxiv_id(arxiv_id)
     return stems.pdf_path(NAMESPACE, canonical)
 
@@ -411,8 +404,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     dest = stems.pdf_path(NAMESPACE, canonical)
 
     async def _fetch() -> dict[str, Any]:
-        # force_refresh threaded through: resolving the URL from a stale
-        # record would re-fetch the very bytes we were asked to replace.
+        # Threaded through: a stale record's link re-fetches the bytes we were told to replace.
         paper = await get_paper(arxiv_id, force_refresh=force_refresh)
         if "error" in paper:
             return paper

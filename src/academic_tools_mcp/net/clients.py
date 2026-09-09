@@ -1,8 +1,7 @@
 """Per-provider persistent ``httpx.AsyncClient`` pool.
 
-Each provider gets one long-lived client, so a multi-call session pays one
-TCP+TLS handshake rather than one per request. ``app._lifespan`` calls
-``aclose_all`` on shutdown.
+One long-lived client per provider amortizes the TCP+TLS handshake rather than
+paying one per request; ``app._lifespan`` calls ``aclose_all`` on shutdown.
 
 Pooling is orthogonal to throttling — servers count requests, not connections —
 so this neither raises nor lowers 429 risk, and arXiv's documented "single
@@ -20,7 +19,7 @@ import httpx
 _POOL: dict[str, httpx.AsyncClient] = {}
 
 
-# Each client gets its own pool, so these caps are per-provider: slow OpenAlex can't starve arXiv.
+# Per-client connection pool, so these caps are per-provider: slow OpenAlex can't starve arXiv.
 # keepalive_expiry undercuts the idle window after which NAT/firewall devices evict a socket.
 _DEFAULT_LIMITS = httpx.Limits(
     max_connections=10,
@@ -39,9 +38,9 @@ def get_client(
 ) -> httpx.AsyncClient:
     """Return the shared AsyncClient for ``name``, creating it on first use.
 
-    ``headers`` and ``timeout`` are baked in at construction; a later call with
-    the same ``name`` returns the existing client and **silently ignores its
-    kwargs**, so each provider must configure its client in exactly one place.
+    Every argument is baked in at construction; a later call with the same
+    ``name`` returns the existing client and **silently ignores its kwargs**, so
+    a provider configures its client in exactly one place.
     Per-call overrides still work through ``client.get(url, timeout=...)``.
     """
     existing = _POOL.get(name)
@@ -58,21 +57,21 @@ def get_client(
     return client
 
 
-# aclose can hang indefinitely on a wedged socket. Sized well past any healthy close,
-# yet short enough that a buggy provider can't hold the FastMCP lifespan open on shutdown.
+# aclose can hang forever on a wedged socket: past any healthy close, short of
+# pinning the FastMCP lifespan open.
 _ACLOSE_TIMEOUT_SECONDS = 5.0
 
 
 async def aclose_all() -> None:
     """Close every pooled client. Idempotent.
 
-    Drains the registry first, so a ``get_client`` racing shutdown builds a fresh
-    client instead of seeing a half-closed one (that client leaks until exit).
+    Drains the registry first: a ``get_client`` racing shutdown then builds a
+    fresh client (which leaks until exit) rather than getting a half-closed one.
 
-    Invariant: the bound is hard — ``_ACLOSE_TIMEOUT_SECONDS`` covers the whole set
-    and ``asyncio.wait`` returns when it expires regardless of whether the closes
-    honour cancellation. Transport errors are swallowed per client;
-    ``CancelledError`` propagates, so a cancelled shutdown never reports success.
+    Invariant: the bound is hard — ``_ACLOSE_TIMEOUT_SECONDS`` covers the whole
+    set and ``asyncio.wait`` returns at expiry whether or not a close honours
+    cancellation. Any exception from a close is swallowed; ``CancelledError``
+    propagates, so a cancelled shutdown never reports success.
     """
     clients = list(_POOL.values())
     _POOL.clear()
@@ -80,7 +79,7 @@ async def aclose_all() -> None:
         return
 
     async def _close(client: httpx.AsyncClient) -> None:
-        # asyncio.wait never retrieves task exceptions, so a raising close swallows its own.
+        # asyncio.wait never retrieves a task's exception, so swallow it here, not at GC.
         with contextlib.suppress(Exception):
             await client.aclose()
 

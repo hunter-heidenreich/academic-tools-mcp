@@ -17,11 +17,10 @@ from . import atomic, singleflight
 def _resolve_cache_root() -> Path:
     """Resolve the on-disk cache root.
 
-    Honours the ``CACHE_DIR`` env var (so an installed wheel, where the
-    project tree isn't writable, can point the cache somewhere sensible);
-    otherwise defaults to ``.cache`` next to the project. The root itself is
-    ``config.project_root()`` — one home, because ``config`` resolves its own
-    ``.env`` against the same directory and the two sit at different depths.
+    ``CACHE_DIR`` wins — an installed wheel's project tree isn't writable —
+    otherwise ``.cache/`` under ``config.project_root()``, which finds the root
+    *by name*: a ``parents[n]`` here counts from this module's depth and would be
+    right for at most one of the two modules that need the root.
     """
     configured = config.get("CACHE_DIR")
     if configured:
@@ -33,8 +32,7 @@ def _resolve_cache_root() -> Path:
 # eviction is on-read TTL.
 CACHE_ROOT = _resolve_cache_root()
 
-# Absorbs burst retries on a known-bad identifier; still surfaces a
-# newly-registered DOI within a day.
+# Absorbs burst retries on a known-bad identifier without hiding a DOI registered since.
 _DEFAULT_NEG_TTL_SECONDS = 86400.0
 
 # Negatives live in their own tree, so a corrupt or expired one can never be
@@ -42,18 +40,17 @@ _DEFAULT_NEG_TTL_SECONDS = 86400.0
 _NEG_SUBDIR = "_neg"
 
 
-# Well past any legitimate write (mkstemp -> os.replace takes milliseconds),
-# short enough that an operator watching leakage doesn't wait a day.
+# Well past any legitimate write (mkstemp -> os.replace is milliseconds), short
+# enough that an operator watching leakage doesn't wait it out.
 _ORPHAN_TMP_AGE_SECONDS = 3600.0
 
 
 def cache_dir(namespace: str, entity: str) -> Path:
     """Build the directory for a namespace/entity pair. Creates nothing.
 
-    e.g., namespace="openalex", entity="works" -> .cache/openalex/works/
-
-    Public because the PDF and markdown path builders live in other modules.
-    Reads ``CACHE_ROOT`` per call — the seam tests redirect. Don't capture it.
+    e.g. ``openalex``/``works`` -> ``.cache/openalex/works/``. Public because the
+    path builders live elsewhere (``stems``). Reads ``CACHE_ROOT`` per call — tests
+    redirect that attribute; don't capture it.
     """
     return CACHE_ROOT / namespace / entity
 
@@ -61,9 +58,9 @@ def cache_dir(namespace: str, entity: str) -> Path:
 def _cache_key(identifier: str) -> str:
     """Hash an arbitrary identifier into a safe, exact filename.
 
-    Exact, never normalizing: canonicalize before calling (``doinorm.canonical``).
-    Hashing also keeps case-variant identifiers apart on a case-insensitive
-    filesystem, so macOS and Linux agree on what is one entry.
+    Exact, never normalizing: canonicalize first (``doinorm.canonical``). Hashing
+    also keeps case-variant identifiers apart on a case-insensitive filesystem, so
+    macOS and Linux agree on what is one entry.
     """
     return hashlib.sha256(identifier.encode("utf-8")).hexdigest()
 
@@ -85,10 +82,10 @@ def _unlink_quietly(path: Path) -> None:
 def _read_entry(path: Path, *, max_age_seconds: float | None = None) -> dict[str, Any] | None:
     """Read a cache file, or heal it away. The one home for that bargain.
 
-    Returns None for anything that is not a live, well-formed dict — over-age
-    by mtime, unreadable, not JSON, not a dict — unlinking the file in every
-    case but "absent", so the next put writes cleanly. Skipping fsync on write
-    is only survivable because every read comes through here.
+    Returns None for anything not a live, well-formed dict — over-age by mtime,
+    unparseable, not a dict — unlinking it so the next put writes cleanly. A failed
+    ``stat`` unlinks nothing: absent, or unreachable anyway. Skipping fsync on write
+    is survivable only because every read comes through here.
     """
     try:
         mtime = path.stat().st_mtime
@@ -102,8 +99,7 @@ def _read_entry(path: Path, *, max_age_seconds: float | None = None) -> dict[str
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         _unlink_quietly(path)
         return None
-    # Entries are always dicts (see put()'s signature). Anything else is a
-    # tampered or foreign file, not a hit.
+    # put() only writes dicts; anything else is a foreign or tampered file.
     if not isinstance(data, dict):
         _unlink_quietly(path)
         return None
@@ -136,14 +132,14 @@ def get(
 ) -> dict[str, Any] | None:
     """Retrieve a cached response, or None if there isn't a live one.
 
-    ``max_age_seconds`` treats entries older than that (by mtime) as absent;
-    exactly that age still serves. Pass it for data that drifts — citation
-    counts, bioRxiv's late ``published_doi``, the OpenCitations graph — and omit
-    it for data that is immutable once written.
+    ``max_age_seconds`` evicts entries older than that (by mtime) and returns
+    None; exactly that age still serves. Pass it for data that drifts — citation
+    counts, bioRxiv's late ``published_doi``, the OpenCitations graph — and omit it
+    for data immutable once written.
 
-    Only a serve moves a counter, and only ``cache_hits``: ``cache_misses``
-    means "went upstream", which the fetch side books. ``count=False`` for reads
-    that aren't a lookup being served — the search cache-warming probes.
+    Only a serve moves a counter, and only ``cache_hits``; ``cache_misses`` means
+    "went upstream" and is booked on the fetch side. ``count=False`` for a read
+    that isn't a lookup being served — ``warm``, ``papers``' sections reads.
     """
     data = _read_entry(_entry_path(namespace, entity, identifier), max_age_seconds=max_age_seconds)
     if count and data is not None:
@@ -170,14 +166,13 @@ def warm(
 ) -> None:
     """Opportunistically cache a record a *search* returned, never clobbering a live one.
 
-    The probe is TTL-aware rather than a presence test, so fresher search data
-    replaces an entry already past ``max_age_seconds`` but a within-TTL entry
-    wins. Pass the same TTL the provider's reader uses, or the probe and the
-    reader disagree about what "fresh" means. ``count=False``: warming is not a
+    TTL-aware rather than a presence test: fresher search data replaces an entry
+    already past ``max_age_seconds``. Pass the same TTL the provider's reader uses,
+    or the two disagree about what "fresh" means. ``count=False``: warming is not a
     lookup being served.
 
-    Which keys a hit warms is the provider's policy and stays there — crossref
-    derives one from ``item["DOI"]``, arxiv derives a versioned/bare pair.
+    Which keys a hit warms is provider policy and stays there — crossref derives
+    one from ``item["DOI"]``, arxiv a versioned/bare pair.
     """
     if get(namespace, entity, identifier, max_age_seconds=max_age_seconds, count=False) is None:
         put(namespace, entity, identifier, data)
@@ -187,8 +182,8 @@ def warm(
 # Negative cache (TTL-bounded)
 # ---------------------------------------------------------------------------
 
-# A negative entry records a *definitive* "not found" — HTTP 404 or a
-# provider's equivalent. Never a transient failure: those stay retryable.
+# A negative entry records a *definitive* "not found" (404 or equivalent), never
+# a transient failure — those stay retryable.
 
 
 def get_negative(namespace: str, entity: str, identifier: str) -> dict[str, Any] | None:
@@ -322,7 +317,6 @@ def gc_orphan_tmp_files(*, max_age_seconds: float = _ORPHAN_TMP_AGE_SECONDS) -> 
             path.unlink()
             removed += 1
         except OSError:
-            # Concurrent unlink, permissions, race with a writer — all
-            # benign; the next sweep will pick it up if needed.
+            # Concurrent unlink, permissions, a racing writer — all benign; the next sweep retries.
             continue
     return removed

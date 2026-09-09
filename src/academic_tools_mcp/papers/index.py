@@ -1,15 +1,14 @@
 """The sections cache: read it, refresh it when the markdown drifted, drop it.
 
-One JSON entry per paper, keyed by :func:`stems.sections_key`, checksummed
-against the markdown it describes so a manual edit is picked up on the next
-read.
+One JSON entry per paper, keyed by :func:`stems.sections_key` and checksummed
+against the markdown it describes, so a manual edit shows up on the next read.
 
 **Invariant: an entry carries all four of ``sections``, ``sections_detected``,
-``markdown_checksum`` and ``conversion_mode``.** A missing ``sections_detected``
-costs a re-parse; a wrong one is reported to the agent as truth. New writers go
-through :func:`store_markdown_and_index`.
+``markdown_checksum`` and ``conversion_mode``**, only the last nullable. A
+missing ``sections`` or ``sections_detected`` re-parses; a wrong one reaches the
+agent as truth. New writers go through :func:`store_markdown_and_index`.
 
-The per-paper ``sections_lock`` serialises everything that replaces the
+The per-paper ``sections_lock`` serialises re-parses and every unlink of the
 markdown/index pair. Every unlinker holds it, so a reader that has it can trust
 a successful read for the rest of its call.
 """
@@ -42,13 +41,11 @@ def recorded_conversion_mode(namespace: str, canonical: str) -> str | None:
 
     ``"full"`` / ``"fast"`` for converter output, ``"imported"`` for a file an
     operator handed to ``import_paper``, ``None`` for an entry predating the
-    field or no entry at all. The named read for callers deciding whether they
-    may replace the markdown — ``tools/pipeline``'s download cascade is the
-    one, and it must not reach into the sections cache itself. Caller holds
+    field or no entry at all — including an index deleted by hand: nothing
+    recorded, nothing to protect. The named read for callers deciding whether
+    they may replace the markdown — ``tools/pipeline``'s download cascade is
+    the one, and it must not reach into the sections cache itself. Caller holds
     :func:`sections_lock`, as :func:`drop_derived` requires.
-
-    ``None`` for a markdown file whose index was deleted by hand: nothing
-    recorded, nothing to protect.
     """
     entry = cache.get(namespace, "sections", sections_key(canonical), count=False)
     if entry is None:
@@ -57,14 +54,13 @@ def recorded_conversion_mode(namespace: str, canonical: str) -> str | None:
     return mode if isinstance(mode, str) else None
 
 
-# Per-paper locks, LRU-capped so a long session touching thousands of papers
-# doesn't grow this map without bound.
+# Per-paper locks, LRU-capped so a long session can't grow this map unbounded.
 _SECTION_LOCKS_MAX: int = 1024
 _section_locks: "OrderedDict[tuple[str, str], asyncio.Lock]" = OrderedDict()
 
 
 def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
-    """Return the async lock guarding the sections cache for one paper.
+    """Return the async lock guarding one paper's markdown/section-index pair.
 
     **Invariant: this map is the only owner of a lock across an await.** Write
     ``async with sections_lock(...)`` as one expression — acquiring an
@@ -78,9 +74,8 @@ def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         existing = _section_locks.setdefault(key, lock)
         if existing is lock:
-            # Evict oldest-first, rotating held locks and the just-added key to
-            # the back. Bail once everything has been skipped once: going
-            # slightly over cap is fine, spinning forever is not.
+            # Held locks rotate to the back, never evicted: mutual exclusion
+            # can't be dropped under a writer. Over cap beats spinning forever.
             held_skips = 0
             while len(_section_locks) > _SECTION_LOCKS_MAX:
                 if held_skips >= len(_section_locks):
@@ -140,8 +135,7 @@ async def _reparse_sections_locked(
             stored_checksum is not None
             and stored_checksum == current_checksum
             and cached.get("sections") is not None
-            # Re-parse rather than default a legacy entry: a wrong
-            # sections_detected reaches the agent as truth.
+            # Re-parse rather than default: a guess would reach the agent as truth.
             and cached.get("sections_detected") is not None
         ):
             return cached
@@ -183,12 +177,12 @@ def store_markdown_and_index(
 ) -> dict[str, Any]:
     """Write markdown to the cache and store its section index.
 
-    The single home for assembling an entry, so it can never be built with a
-    key missing. ``mode`` is provenance: ``"full"`` / ``"fast"`` for converter
-    output, ``"imported"`` for a file that never ran through one.
-
-    Takes the markdown verbatim — post-processing is the caller's, since what
-    is right for converter output is wrong for a file an operator wrote.
+    The entry writer every other module goes through, so an entry can never be
+    built with a key missing (``_reparse_sections_locked`` is the only other
+    assembler). ``mode`` is provenance: ``"full"`` / ``"fast"`` for converter
+    output, ``"imported"`` for a file that never ran through one. Takes the
+    markdown verbatim — post-processing is the caller's, since what is right for
+    converter output is wrong for a file an operator wrote.
     """
     atomic.write_text(md_path, markdown)
 

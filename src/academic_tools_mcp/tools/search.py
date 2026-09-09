@@ -1,4 +1,4 @@
-"""Search tools: arXiv / Crossref / in-paper / cached corpus / Wikipedia."""
+"""Search tools: arXiv / Crossref / in-paper / cached corpus / Wikipedia (search + summary)."""
 
 import asyncio
 import sqlite3
@@ -32,7 +32,7 @@ def _first_author_name(paper: dict[str, Any]) -> str | None:
 def _crossref_first_author(authors: list[dict[str, Any]]) -> str | None:
     """The first Crossref author's name, falling back to a consortium ``name``.
 
-    Values are type-checked, not truth-checked: the rows arrive verbatim.
+    Values are ``isinstance``-checked and non-empty-checked: the rows arrive verbatim.
     """
     for a in authors:
         name_parts = [p for p in (a.get("given"), a.get("family")) if isinstance(p, str) and p]
@@ -47,8 +47,8 @@ def _crossref_first_author(authors: list[dict[str, Any]]) -> str | None:
 def _published_year(paper: dict[str, Any]) -> int | None:
     """Leading year of an arXiv entry's ``published`` timestamp.
 
-    ``isdecimal``, not ``isdigit``: the latter admits superscripts ``int()``
-    rejects. Same trap as ``arxiv.search_papers``, same guard as ``_key_year``.
+    ``isdecimal``, not ``isdigit``: the latter admits superscripts ``int()`` rejects.
+    Same trap as ``arxiv.search_papers``.
     """
     published = paper.get("published")
     if not isinstance(published, str) or len(published) < 4:
@@ -79,19 +79,21 @@ async def search_arxiv(
     """Search arXiv papers. Returns a slim triage list.
 
     Returns ``{total_results, result_count, results: [{arxiv_id, title,
-    first_author, author_count, published_year}, ...]}`` — the same envelope
-    as search_crossref_by_title. ``total_results`` is how many matches exist
-    upstream, ``result_count`` how many this call returned, so a much larger
-    ``total_results`` means more exist. ``author_count`` without the author
-    list keeps consortium papers from ballooning the response.
+    first_author, author_count, published_year}, ...]}``. ``total_results`` is
+    the upstream match count, ``result_count`` what this call returned — a larger
+    ``total_results`` means more exist. The author list is omitted so consortium
+    papers can't balloon the response.
+
+    Errors: ``{error, suggestion}`` plus arXiv's verdict — ``retryable: false``
+    for a query arXiv rejected, ``retryable: true`` for a transport or parse
+    failure.
 
     Call get_paper_metadata(arxiv_id) for the full record — every hit is
     already cached, so it costs no request.
     """
     result = await arxiv.search_papers(query, max_results=max_results)
     if "error" in result:
-        # A malformed query is `retryable: False`; advising a wait would send
-        # the agent back at a call that cannot succeed.
+        # A malformed query is `retryable: False`; a wait cannot help.
         return enrich_error(
             result,
             "Rewrite the query — arXiv rejected this one. Check the field "
@@ -141,11 +143,14 @@ async def search_crossref_by_title(
     Finds the published DOI when you have only a title or an arXiv ID, and is
     the de facto bioRxiv search since Crossref indexes every bioRxiv DOI.
 
-    Returns ``{total_results, result_count, results: [{doi, title,
-    first_author, author_count, year}, ...]}`` — the same envelope as
-    search_arxiv. A bibliographic query matches broadly, so ``total_results``
-    runs far ahead of ``result_count``: refine the title rather than raising
-    ``max_results``. Crossref dates may differ from arXiv preprint dates.
+    Returns ``{total_results, result_count, results: [{doi, title, first_author,
+    author_count, year}, ...]}``. A bibliographic query matches broadly, so
+    ``total_results`` runs far ahead of ``result_count``: refine the title rather
+    than raising ``max_results``. Crossref dates may differ from arXiv preprint
+    dates.
+
+    Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
+    parse failure; an unclassified 4xx carries no verdict.
 
     Call get_paper_metadata(doi) for the full record.
     """
@@ -170,8 +175,7 @@ async def search_crossref_by_title(
         )
 
     return {
-        # Crossref omits `total-results` on some responses; the key has to mean
-        # the same thing here as in search_arxiv.
+        # Crossref sometimes omits `total-results`; the key must mean what it does in search_arxiv.
         "total_results": response.get("total_results") or 0,
         "result_count": len(results),
         "results": results,
@@ -225,13 +229,12 @@ async def find_in_paper(
 ) -> dict[str, Any]:
     """Find every occurrence of a query inside one converted paper.
 
-    Jumps straight to the part of a paper that discusses X instead of paging
-    through sections. Pairs with search_cached_papers, which finds *which*
-    paper mentions X.
+    Jumps to the part of a paper that discusses X instead of paging sections;
+    search_cached_papers finds *which* paper mentions X.
 
     Returns ``{query, paper_identifier, result_count, truncated, results:
     [{section_index, section, char_offset, match, snippet}, ...]}``. Chain into
-    ``get_paper_section(identifier, section_index, offset=char_offset)``;
+    ``get_paper_section(identifier, str(section_index), offset=char_offset)``;
     offsets align with that tool's stripped text. ``truncated`` means more
     matches exist than ``max_results`` returned. ``paper_identifier`` is the
     canonical cache key, which may differ from the spelling you passed
@@ -335,30 +338,27 @@ async def search_cached_papers(
 
     Returns ``{query, result_count, results: [{namespace, canonical_id, score,
     title, snippet, section, section_index, char_offset, char_count}, ...]}``.
-    Chain with ``get_paper_section(canonical_id, section_index)`` — not
+    Chain with ``get_paper_section(canonical_id, str(section_index))`` — not
     ``section``, which is heading text and repeats often enough to be rejected
     as ambiguous. ``char_offset`` and ``section_index`` are null when the term
     could not be located; the hit is real, just not centrable, so reach for
     find_in_paper to place it.
 
     When part of the corpus can never match, the response also carries
-    ``unindexable_count``, ``unindexable`` (a sample of up to
-    ``_UNINDEXABLE_SAMPLE`` ``{namespace, stem, canonical_id, reason}``
-    records — chain ``canonical_id``, never ``stem``) and
-    ``unindexable_note``. All three are absent when the corpus is clean.
+    ``unindexable_count``, ``unindexable`` (a capped sample of ``{namespace, stem,
+    canonical_id, reason}`` records — chain ``canonical_id``, never ``stem``) and
+    ``unindexable_note``, absent otherwise.
 
     Empty results mean no cached paper matched, never a failure: an unreadable
     index returns ``{error, retryable: True, suggestion}`` instead.
 
     Limits: pure keyword match, no synonyms ("self-attention" won't surface a
-    paper that only says "scaled dot-product attention"). Only converted
-    papers are indexed. Scripts without whitespace word breaks (CJK) are
-    indexed but findable only by whole runs, not sub-phrases — use
-    find_in_paper there.
+    paper that only says "scaled dot-product attention"). Scripts without
+    whitespace word breaks (CJK) are indexed but findable only by whole runs,
+    not sub-phrases — use find_in_paper there.
     """
 
-    # One hop off the event loop, and one corpus walk: `search` refreshes the
-    # index, so `unindexable` reads the state it just left behind.
+    # One hop off the loop, one walk: `search` refreshes the index `unindexable` reads.
     def _search_and_diagnose() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         hits = corpus.search(
             query,
@@ -372,10 +372,8 @@ async def search_cached_papers(
     try:
         results, skipped = await asyncio.to_thread(_search_and_diagnose)
     except (sqlite3.Error, OSError) as exc:
-        # Derived state, so a read failure is recoverable — but it must never
-        # come back as "no paper mentions this". `_connect` rebuilds a corrupt
-        # file already; what reaches here is a locked database or an
-        # unreachable cache directory.
+        # Derived state, so retryable — but never "no paper mentions this".
+        # `_connect` rebuilds a corrupt file; this is a lock or an unreachable cache dir.
         return {
             "error": f"The local search index could not be read: {exc}",
             "retryable": True,
@@ -391,7 +389,6 @@ async def search_cached_papers(
         "results": results,
     }
 
-    # Reported only when non-empty, so the common response stays lean.
     if skipped:
         response["unindexable_count"] = len(skipped)
         response["unindexable"] = skipped[:_UNINDEXABLE_SAMPLE]
@@ -414,14 +411,15 @@ async def search_wikipedia(
         ),
     ] = 5,
 ) -> dict[str, Any]:
-    """Search Wikipedia for articles matching a query (titles + URLs only).
+    """Search Wikipedia for articles matching a query.
 
     Returns ``{query, result_count, results: [{title, url}, ...]}``. Wikipedia
     reports no upstream total, so ``result_count`` is the only "more exist"
     signal: a full page means refine the query. Pass a hit's title to
     get_wikipedia_summary for the article extract.
 
-    Errors: outage / rate limit → ``{error, suggestion}`` with a retry hint.
+    Errors: outage / rate limit → ``{error, retryable: true, suggestion}``, with
+    ``retry_after_seconds`` when the server advertises one.
     """
     response = await wikipedia.search(query, limit=limit)
     if "error" in response:
@@ -446,11 +444,12 @@ async def get_wikipedia_summary(
     """Fetch the structured summary (extract) of a Wikipedia article.
 
     Returns ``{title, description, extract, url, type, pageid}``. ``type`` is
-    ``"standard"``, or ``"disambiguation"`` when ``extract`` is a list of
-    candidate meanings instead of an article.
+    ``"standard"``, or ``"disambiguation"`` when ``extract`` lists candidate
+    meanings in prose instead of summarising one article.
 
-    Errors: page not found / outage → ``{error, suggestion}``. Use
-    search_wikipedia first if you don't know the canonical title.
+    Errors: page not found → ``{error, not_found: true, suggestion}``; an outage →
+    ``{error, retryable: true, suggestion}``. Use search_wikipedia first if you
+    don't know the canonical title.
     """
     result = await wikipedia.get_summary(title, force_refresh=force_refresh)
     if "error" in result:

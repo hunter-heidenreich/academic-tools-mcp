@@ -15,7 +15,7 @@ from ..util import config, doinorm, useragent
 CROSSREF_BASE_URL = "https://api.crossref.org"
 NAMESPACE = "crossref"
 
-# Agent-facing provider name; every site that names us reads it (providers.md).
+# Agent-facing provider name; every site that names us reads it.
 LABEL = "Crossref"
 
 _PARSE_ERRORS = http.JSON_PARSE_ERRORS
@@ -26,8 +26,8 @@ def _parse_error_dict() -> dict[str, Any]:
     return http.parse_error_dict(LABEL)
 
 
-# The rate we take must follow the identity we send: hardcoding the polite
-# figures would request at that rate anonymously. Tiers in providers.md.
+# The rate we take must follow the identity we send: hardcoding the polite figures
+# would request at that rate anonymously.
 _POLITE_MAX_CONCURRENT = 3
 _POLITE_REQUEST_GAP = 0.1  # 100ms -> 10 req/sec
 _POLITE_SEARCH_GAP = 0.334  # ~3 req/sec
@@ -63,7 +63,7 @@ _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
 def _build_headers() -> dict[str, str]:
-    """Request headers; the User-Agent is unconditional, the mailto is not.
+    """Request headers: User-Agent always, mailto only when configured.
 
     Gating the whole header on ``CROSSREF_MAILTO`` would leave the default
     configuration identifying as ``python-httpx/x.y``.
@@ -72,11 +72,7 @@ def _build_headers() -> dict[str, str]:
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the pooled AsyncClient for Crossref calls.
-
-    Configured here only: ``clients.get_client`` ignores kwargs on every later
-    call for this namespace.
-    """
+    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
     return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
@@ -94,7 +90,7 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
     return await _throttle.get(_get_client(), url, **kwargs)
 
 
-# A lock, not a second Throttle: its semaphore would let searches and singles
+# A lock, not a second Throttle: a second semaphore would let searches and singles
 # together exceed Crossref's one concurrency budget.
 _search_lock = asyncio.Lock()
 _last_search_time = 0.0
@@ -103,21 +99,21 @@ _last_search_time = 0.0
 def reset_search_pacing() -> None:
     """Rebuild the search lock and clear its timestamp (test seam).
 
-    Mirrors ``Throttle.reset``: a lock left over from a previous event loop
-    raises "bound to a different event loop".
+    Mirrors ``Throttle.reset``: a lock left from a previous event loop raises
+    "bound to a different event loop".
     """
-    global _search_lock, _last_search_time  # noqa: PLW0603 — process-wide search _throttle
+    global _search_lock, _last_search_time  # noqa: PLW0603 — process-wide search pacing state
     _search_lock = asyncio.Lock()
     _last_search_time = 0.0
 
 
 async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
-    """Execute a search GET, honouring Crossref's tighter search rate limit.
+    """GET at Crossref's tighter *search* rate.
 
-    Stamped before the singles hand-off, so a queued search can start after its
-    stamp — a known drift, argued in providers.md.
+    Stamped before the singles hand-off, so a queued search can start after its stamp —
+    known, accepted drift.
     """
-    global _last_search_time  # noqa: PLW0603 — process-wide search _throttle
+    global _last_search_time  # noqa: PLW0603 — process-wide search pacing state
     async with _search_lock:
         elapsed = time.monotonic() - _last_search_time
         if _last_search_time > 0 and elapsed < _SEARCH_REQUEST_GAP:
@@ -144,8 +140,8 @@ def canonical_doi(doi: str) -> str:
 def _message_of(data: object) -> dict[str, object] | None:
     """Crossref's ``message`` envelope, or ``None`` for a wrong-shape body.
 
-    The first two rungs of the shape ladder, shared by both readers;
-    ``search_works`` adds the ``items`` rungs on top.
+    The shape ladder's first two rungs, shared by both readers; ``search_works`` adds
+    the ``items`` rungs on top.
     """
     if not isinstance(data, dict):
         return None
@@ -160,18 +156,18 @@ async def search_works(
 ) -> dict[str, Any]:
     """Search Crossref works by bibliographic query (title, author, etc.).
 
-    Returns ``{"items": [...], "total_results": N}`` on success — ``items``
-    holds only dict-shaped hits — or ``{"error": ...}`` on transport / HTTP
-    failure or a wrong-shape body. The result list is not cached (ad-hoc
-    queries), but each hit with a DOI warms the works cache.
+    Returns ``{"items": [...], "total_results": N | None}`` — dict-shaped hits only, and
+    Crossref omits its count on some responses — or ``{"error": ...}`` on transport/HTTP
+    failure or a wrong-shape body. The list is not cached (ad-hoc queries), but each hit
+    with a DOI warms the works cache.
     """
     params: dict[str, str] = {
         "query.bibliographic": bibliographic,
         "rows": str(min(max(rows, 1), MAX_SEARCH_ROWS)),
     }
     if year is not None:
-        # Year-only on purpose; a fully-specified date drops works whose own
-        # deposited date is year-only (CrossRef/rest-api-doc#7).
+        # Year-only on purpose: a fully-specified date drops works whose deposited date
+        # is itself year-only (CrossRef/rest-api-doc#7).
         params["filter"] = f"from-pub-date:{year},until-pub-date:{year}"
 
     try:
@@ -184,8 +180,8 @@ async def search_works(
     except http.HTTPX_ERRORS as e:
         return http.error_dict(LABEL, e)
 
-    # Every rung is a shape that raises out of the provider unguarded, and none
-    # is an empty result set: "no papers match" ends the agent's search.
+    # A wrong shape here either raises out of the provider or reads as an empty result
+    # set, and "no papers match" ends the agent's search.
     message = _message_of(data)
     if message is None:
         return _parse_error_dict()
@@ -195,8 +191,8 @@ async def search_works(
         return _parse_error_dict()
     items = [item for item in items if isinstance(item, dict)]
 
-    # A hit has the same shape as /works/{doi}, so the inevitable follow-up
-    # get_work is a free cache hit. Mirrors arxiv.search_papers.
+    # A hit has the same shape as /works/{doi}, so a later get_work — the graph tools and
+    # paper.py's fallback_crossref, never get_paper_metadata's main path — is free.
     for item in items:
         doi = item.get("DOI")
         # isinstance, not truthiness: a non-string DOI reaches doinorm.normalize
@@ -213,12 +209,9 @@ async def search_works(
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a work by DOI from Crossref, using cache when available.
 
-    Concurrent callers for the same DOI share one fetch via single-flight.
-    Returns the Crossref work object (the 'message' from the API response).
-
-    ``force_refresh=True`` drops both positive and negative cache entries
-    before fetching — useful when the reference list may have grown since the
-    cached fetch, or to retry an identifier that previously 404'd.
+    Concurrent callers for one DOI share a fetch. Returns the Crossref work object
+    (the response's ``message``); ``force_refresh=True`` drops both cache halves first —
+    for a reference list that may have grown, or to retry an identifier that 404'd.
     """
     canonical = canonical_doi(doi)
 
@@ -226,23 +219,21 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
     async def _fetch() -> dict[str, Any]:
         bare_doi = doinorm.normalize(doi)
-        # Percent-encoded so a reserved character can't truncate the request
-        # to the wrong record; the DOI's own slash stays literal.
+        # Percent-encoded so a reserved character can't truncate the request to the
+        # wrong record; the DOI's own slash stays literal.
         url = f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}"
 
         if not http.addresses_a_record(url):
-            # A `.`/`..` segment shortens the path to the /works *collection*,
-            # whose 200 carries a work-list under a dict `message` — it clears
-            # the shape ladder below and would cache as this DOI's work.
-            # Refused before the request is spent, so nothing is cached.
+            # A `.`/`..` segment shortens the path to the /works *collection*, whose 200
+            # carries a work-list under a dict `message`: it clears the ladder below and
+            # would cache as this DOI's work. Nothing cached — no request was spent.
             return http.not_found(not_found_error)
 
         try:
             response = await _throttled_get(url)
 
             if response.status_code == 404:
-                # Definitive, hence both the negative entry and the flag
-                # tools/graph.py forwards.
+                # Definitive, hence both the negative entry and the flag tools/graph.py forwards.
                 err = http.not_found(not_found_error)
                 cache.put_negative(NAMESPACE, "works", canonical, err)
                 return err

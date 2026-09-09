@@ -1,15 +1,13 @@
 """Per-provider counters and optional request logging.
 
-In-process metrics for an operator: no dependencies, no endpoint, no
-persistence. ``snapshot()`` names every counter; ``grep stats.incr`` finds
-who moves them. Not an MCP tool — agents must not branch on operational data.
+In-process operator metrics: no third-party dependency, no endpoint, no
+persistence. ``snapshot()`` names every counter; ``grep stats.incr`` finds who
+moves them. An agent sees it only through ``server.get_server_stats``, gated on
+``ENABLE_DEBUG_TOOLS``.
 
-Two invariants callers must hold:
-
-- **Key by the module's cache namespace**, so its cache and HTTP counters
-  share one row.
-- **``incr`` is event-loop-thread only** — an unsynchronised
-  read-modify-write, so a caller under ``asyncio.to_thread`` loses counts.
+Callers key by the module's cache namespace, so its cache and HTTP counters
+share one row. ``incr`` is an unsynchronised read-modify-write: a count raced
+from an ``asyncio.to_thread`` worker can be lost.
 """
 
 import sys
@@ -24,9 +22,8 @@ if TYPE_CHECKING:
 
 _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
-# The package root, not this module's parent: `throttles()` scans every
-# imported module in the package, and deriving the prefix from the parent
-# would silently narrow the scan to `net.*` and miss every provider.
+# The package root, not `net.`: `throttles()` scans the whole package, so a
+# narrower prefix silently samples no provider at all.
 _PACKAGE_PREFIX = f"{__name__.split('.', 1)[0]}."
 
 
@@ -36,15 +33,14 @@ def incr(provider: str, metric: str) -> None:
 
 
 def debug_requests_enabled() -> bool:
-    """Whether DEBUG_REQUESTS is set; re-read per call so it flips without a restart."""
+    """Whether ``DEBUG_REQUESTS`` is enabled; re-read per call, so it flips without a restart."""
     return config.flag("DEBUG_REQUESTS")
 
 
 def log_request(provider: str, url: str, wait_seconds: float) -> None:
-    """Log a throttled GET to stderr when DEBUG_REQUESTS is enabled.
+    """Log a throttled GET to stderr when ``DEBUG_REQUESTS`` is enabled.
 
-    stderr deliberately — MCP servers speak JSON-RPC on stdout, so
-    anything we write there would corrupt the protocol stream.
+    stderr deliberately: stdout carries the JSON-RPC stream.
     """
     if not debug_requests_enabled():
         return
@@ -55,11 +51,9 @@ def log_request(provider: str, url: str, wait_seconds: float) -> None:
     )
 
 
-# Spelled out rather than imported, so sampling a provider never drags the
-# throttle machinery in. The coupling is real: move throttle.py and
-# ``_is_throttle`` silently matches nothing, which empties ``throttles()``
-# rather than raising. The discovery tests in tests/net/test_stats.py are
-# what make that fail loudly.
+# A string, not an import: `throttle` imports `stats`. Invariant: it tracks
+# throttle.py's path — stale, `_is_throttle` matches nothing and `throttles()`
+# empties silently, which the discovery tests in tests/net/test_stats.py catch.
 _THROTTLE_MODULE = f"{_PACKAGE_PREFIX}net.throttle"
 
 
@@ -72,12 +66,12 @@ def _is_throttle(value: object) -> bool:
 
 
 def throttles() -> Iterator["Throttle"]:
-    """Yield every ``Throttle`` instance held by an already-imported package module.
+    """Yield every ``Throttle`` held by an already-imported package module.
 
-    Scanned, never imported: sampling a provider must not load it. Every
-    attribute qualifies, not just one named ``_throttle``, so a module that
-    grows a second throttle cannot drop out of the reset seam or the in-flight
-    sample — deduped by identity, since one instance may be re-exported.
+    Scanned, never imported: sampling a provider must not load it. Any
+    attribute qualifies, not just ``_throttle``, so a module that grows a second
+    throttle stays in the reset seam and the in-flight sample; deduped by
+    identity, since one instance may be re-exported.
     """
     seen: set[int] = set()
     for name, module in list(sys.modules.items()):
@@ -95,16 +89,14 @@ def snapshot() -> dict[str, Any]:
 
     ``{"providers": {<namespace>: {<counter>: int}}, "env_file": str | None}``.
 
-    ``env_file`` names the ``.env`` that won at import, or None if none did —
-    the one way an operator can tell which file their settings came from.
-
-    ``cache_hits`` and ``negative_hits`` count lookups served from disk;
-    ``cache_misses`` counts lookups that went upstream, booked at the fetch,
-    so the three series partition served lookups rather than overlapping.
-    Alongside them: ``http_calls``, ``http_retries``, ``backpressure_refusals``
-    and ``cache_write_failures``, cumulative since process start (or the last
-    ``reset()``), plus an ``in_flight`` sampled live and summed over every
-    ``Throttle`` the namespace owns. Rows are copies, so mutating the result
+    ``env_file`` is the ``.env`` that won at import, or None — an operator's
+    only view of which file their settings came from. ``cache_hits`` and
+    ``negative_hits`` count lookups served from disk, ``cache_misses`` those
+    booked at the fetch on the way upstream, so no lookup moves two of them;
+    ``http_calls``, ``http_retries``, ``backpressure_refusals`` and
+    ``cache_write_failures`` are cumulative since process start or the last
+    ``reset()``; ``in_flight`` is sampled live and summed over every
+    ``Throttle`` in the namespace. Rows are copies, so mutating the result
     cannot corrupt the counters.
     """
     out: dict[str, dict[str, int]] = {
@@ -123,5 +115,5 @@ def snapshot() -> dict[str, Any]:
 
 
 def reset() -> None:
-    """Zero every counter. Used by tests; safe to call at runtime."""
+    """Drop every counter row; the throttles' ``in_flight`` is untouched. Safe at runtime."""
     _counters.clear()

@@ -1,9 +1,9 @@
 """Open-access PDF download path for generic publisher DOIs.
 
-arxiv/biorxiv/acl build a PDF URL from the identifier; a generic
-publisher DOI has none, but OpenAlex often surfaces one. This module fetches
-*only* that OpenAlex-surfaced URL, never a caller-supplied one, so the server
-stays a metadata-gated fetcher rather than a general scraper.
+arxiv/biorxiv/acl derive a PDF URL from the identifier; a generic publisher DOI
+has none, but OpenAlex often surfaces one. This module fetches *only* that
+OpenAlex-surfaced URL, never a caller-supplied one — a metadata-gated fetcher,
+not a general scraper.
 """
 
 from contextlib import AbstractAsyncContextManager
@@ -22,25 +22,23 @@ from . import streaming
 
 NAMESPACE = "oa_download"
 
-# Agent-facing provider name; every site that names us reads it (providers.md).
+# Agent-facing provider name; every site that names us reads it.
 LABEL = "OA download"
 
 
 def _get_client() -> httpx.AsyncClient:
-    """Return the pooled AsyncClient for open-access download calls.
+    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``.
 
-    Configured here only: ``clients.get_client`` ignores kwargs on every later
-    call for this namespace, so the UA and ``_PDF_TIMEOUT_SECONDS`` are set here
-    or not at all. This client only ever downloads, so unlike arxiv/biorxiv it
-    needs no per-call timeout override.
+    Download-only, so ``_PDF_TIMEOUT_SECONDS`` is what gets baked in; arxiv/biorxiv
+    bake in a metadata timeout and widen it per PDF call.
     """
     return clients.get_client(NAMESPACE, headers=useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS)
 
 
-# The slot is held for the whole stream: 2 concurrent downloads, not 2 requests.
+# The slot is held for the whole stream, so this caps concurrent downloads, not requests.
 _MAX_CONCURRENT = 2
 
-# Per host (per_host=True below): one journal's DOIs all resolve to one domain.
+# The gap alone is per host (per_host=True below): one journal's DOIs all hit one domain.
 _MIN_REQUEST_GAP = 1.0
 _MAX_PENDING = 5
 
@@ -48,9 +46,8 @@ _single_flight = singleflight.SingleFlight()
 
 _PDF_TIMEOUT_SECONDS = 60.0
 
-# 24h: long enough to stop a retrying agent's churn, short relative to how
-# often a paper's OA status flips.
 _NEG_ENTITY = "downloads"
+# Long enough to stop a retrying agent's churn, short against how often OA status flips.
 _NEG_TTL_SECONDS = 24 * 60 * 60
 
 _IMPORT_SUGGESTION = (
@@ -80,8 +77,7 @@ async def _resolve_and_download(
 ) -> dict[str, Any]:
     """Resolve the OA PDF URL via OpenAlex and stream it to ``dest``.
 
-    Returns the raw success / error dict with no caching applied — the caller
-    decides whether a failure is worth negative-caching.
+    Returns the raw result dict; ``cached_download`` owns the negative-cache decision.
     """
     work = await openalex.get_work(identifier, force_refresh=force_refresh)
     if "error" in work:
@@ -115,7 +111,7 @@ async def _resolve_and_download(
         require_pdf=True,
         not_found_message=(f"Open-access PDF not found at {url} for {identifier}"),
     )
-    # Same hatch for a dead URL. The predicate excludes a cap abort and a 0-byte blip.
+    # Same hatch for a 404 or a non-PDF; the predicate excludes a cap abort and a 0-byte blip.
     if streaming.is_definitive_failure(result):
         return {**result, "suggestion": _IMPORT_SUGGESTION}
     return result
@@ -124,13 +120,11 @@ async def _resolve_and_download(
 async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Download a generic-DOI PDF via its OpenAlex open-access URL.
 
-    Resolves the work through OpenAlex, takes ``best_pdf_url``, and streams it
-    into the ``manual`` namespace so the rest of the pipeline finds it.
-
-    Returns ``{path, size_bytes, cached}`` or ``{error, suggestion?}``. The
-    failures *this module* establishes are negative-cached (24h); a DOI
-    OpenAlex doesn't know rides OpenAlex's own entry. Concurrent callers for
-    the same identifier share one fetch.
+    Streams ``openalex.best_pdf_url`` into the ``manual`` namespace, where the rest
+    of the pipeline finds it. Returns ``{path, size_bytes, cached}`` or ``{error,
+    retryable?, suggestion?}``; failures *this module* establishes are negative-cached
+    for ``_NEG_TTL_SECONDS``, while a DOI OpenAlex doesn't know rides OpenAlex's own
+    entry. Concurrent callers for one identifier share a fetch.
     """
     target = manual.resolve_target(identifier)
     dest = target["pdf_path"]

@@ -1,13 +1,12 @@
 """Shared streaming PDF download helper.
 
-Backs all four ``download_pdf`` paths (arxiv, biorxiv, acl,
-openaccess). Slot acquisition stays per-provider — each has its own gap and
-concurrency caps — while streaming, size-capping, PDF sniffing and atomic
-rename are identical, so they live here.
+Backs all four ``download_pdf`` paths (arxiv, biorxiv, acl, openaccess). Slot
+acquisition stays per-provider — each has its own gap and concurrency caps —
+while streaming, size-capping, PDF sniffing and atomic rename are identical.
 
-Streaming is the load-bearing choice: peak memory stays at one chunk rather
-than 2× the PDF, and the size cap fires partway through rather than after the
-whole response is already buffered in RAM.
+Streaming is load-bearing: peak memory is one chunk rather than 2× the PDF, and
+the size cap fires partway through rather than after the whole response is
+buffered in RAM.
 """
 
 import contextlib
@@ -34,13 +33,12 @@ _CHUNK_SIZE = 64 * 1024
 def is_usable_pdf(path: Path) -> bool:
     """Whether a cached PDF should be trusted as a hit.
 
-    Rejects what an interrupted or degenerate download leaves behind: a
-    0-byte file, and an HTML landing page saved under a .pdf name. Gate
-    every cached-PDF check on this, never ``Path.exists()``.
-
-    Not a validity proof — a file truncated after the header passes. That
-    is recoverable (the converter fails); silently serving an empty file
-    is not.
+    Gate every cached-PDF check on this, never ``Path.exists()``: it rejects
+    what an interrupted or degenerate download leaves behind — a missing or
+    unreadable path, a 0-byte file, an HTML landing page saved under a .pdf
+    name. Not a validity proof: a file truncated after the header passes, and
+    that is recoverable (the converter fails) where silently serving an empty
+    file is not.
     """
     try:
         if path.stat().st_size == 0:
@@ -52,11 +50,10 @@ def is_usable_pdf(path: Path) -> bool:
 
 
 def cached_hit(dest: Path) -> dict[str, Any] | None:
-    """Return the cache hit for ``dest``, or None to re-download.
+    """Return the ``{path, size_bytes, cached}`` hit for ``dest``, or None to re-download.
 
-    Payload is ``{path, size_bytes, cached}``. Owns the ``stat``, so a file
-    unlinked between the check and the size read is a miss rather than an
-    ``OSError`` out of the caller.
+    Owns the ``stat``, so a file unlinked between the usability check and the
+    size read is a miss rather than an ``OSError`` out of the caller.
     """
     try:
         if not is_usable_pdf(dest):
@@ -69,23 +66,22 @@ def cached_hit(dest: Path) -> dict[str, Any] | None:
 def is_definitive_failure(result: dict[str, Any]) -> bool:
     """Whether a failure is paper-intrinsic, and so worth negative-caching.
 
-    An allowlist: explicit ``retryable: False``, nothing else. Loosening it to
-    "not marked retryable" would negative-cache every unclassified 4xx, and a
-    paywalled 403 is not known to be permanent. ``max_bytes`` is excluded on
-    the same principle — a cap bump fixes it, so it says nothing about the
-    paper.
+    An allowlist: an ``error`` dict explicitly marked ``retryable: False``,
+    ``max_bytes`` aborts excepted. "Not marked retryable" would negative-cache
+    every unclassified 4xx, and a paywalled 403 is not known to be permanent; a
+    cap bump fixes ``max_bytes``, which says nothing about the paper.
     """
     return "error" in result and result.get("retryable") is False and "max_bytes" not in result
 
 
 def resolve_max_pdf_bytes() -> int | None:
-    """Resolve the MAX_PDF_BYTES env var.
+    """Resolve the ``MAX_PDF_BYTES`` env var.
 
-    Returns the cap in bytes, or None to disable it. The disable vocabulary is
-    ``config._DISABLE_VALUES``. Anything else — unset, empty, unparseable, or
-    a non-positive number — falls back to the default, so a mistyped cap can't
-    silently drop the disk guard: "-1" is an unlimited idiom elsewhere, but
-    here it's a typo, which is what ``on_nonpositive="default"`` says.
+    Returns the cap in bytes, or None when ``config._DISABLE_VALUES`` disables
+    it. Everything else — unset, empty, unparseable, or a parsed value ``<= 0``
+    — falls back to the default, so a mistyped cap can't silently drop the disk
+    guard: ``on_nonpositive="default"`` reads "-1" as a typo, not as the
+    unlimited idiom it is elsewhere.
     """
     return config.number(
         "MAX_PDF_BYTES",
@@ -125,10 +121,11 @@ async def stream_to_file(
     ways); the ``%PDF-`` magic bytes are authoritative, so an
     ``octet-stream`` PDF still passes. Native providers leave it ``False``.
 
-    Returns ``{path, size_bytes, cached: False}``, or an error dict: a 404 or
-    a not-a-PDF rejection → ``{error, retryable: False}``; over the cap adds
-    ``max_bytes``; a transport, empty-body or disk failure → ``retryable:
-    True``, never a raised ``OSError``.
+    Returns ``{path, size_bytes, cached: False}``, or an error dict: a 404 or a
+    not-a-PDF rejection → ``retryable: False``; over the cap adds ``max_bytes``;
+    an empty body or a disk failure → ``retryable: True``, never a raised
+    ``OSError``. Any other HTTP or transport failure is ``http.error_dict``'s
+    verdict, which leaves an unclassified 4xx unflagged.
     """
     max_bytes = resolve_max_pdf_bytes()
     tmp_path: Path | None = None
@@ -142,8 +139,7 @@ async def stream_to_file(
                     "retryable": False,
                 }
             if response.status_code >= 400:
-                # error_dict reads exc.response.text; unread, that raises
-                # ResponseNotRead — a RuntimeError, so it escapes HTTPX_ERRORS.
+                # Read inside the stream, or error_dict's 4xx snippet is a placeholder.
                 await response.aread()
             response.raise_for_status()
             if require_pdf:
@@ -252,8 +248,8 @@ async def cached_download(
     rule. Pass ``sf_key`` when ``fetch`` awaits another getter sharing this
     ``SingleFlight``, or it will await its own slot and deadlock.
 
-    ``force_refresh`` drops the negative entry and re-fetches, but never
-    unlinks the PDF, so a failed refresh leaves the caller the copy they had.
+    ``force_refresh`` re-fetches and drops the negative entry but never the
+    PDF, so a failed refresh leaves the caller the copy they had.
     ``extra_fields`` decorates every *successful* payload, cached and fresh
     alike, so the two branches can't disagree; errors stay undecorated. Each
     caller gets an independent deep copy, safe to mutate.
@@ -281,9 +277,8 @@ async def cached_download(
             return copy.deepcopy(early)
 
     async def _runner() -> dict[str, Any]:
-        # A leader may have landed the file, or recorded a definitive
-        # failure, while we waited. Skipped under force_refresh: the caller
-        # asked for fresh bytes.
+        # A leader may have landed the file or a definitive failure while we
+        # waited. Skipped under force_refresh: the caller asked for fresh bytes.
         if not force_refresh:
             early = _short_circuit()
             if early is not None:

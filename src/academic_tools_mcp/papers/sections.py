@@ -1,20 +1,15 @@
 """Markdown structure: sections, sub-headings, and in-document search.
 
-Pure — text in, dicts out. No filesystem, no cache, no asyncio, so the corpus
-search and the section reader can both depend on it without pulling in the
-converter.
+Pure — text in, dicts out. No filesystem, cache or asyncio, so corpus search and
+the section reader depend on it without pulling in the converter.
 
-Section splitting is fixed, not adaptive — see ``_SECTION_LEVELS``.
-
-**One heading scan, one set of boundaries.** ``parse_sections``,
-``find_in_markdown``, ``get_section_content`` and ``corpus.search`` all
-route through :func:`_scan`; ``first_section_heading`` is the one deliberate
-exception, short-circuiting on the first heading rather than parsing the whole
-document. A second implementation is agent-visible, not merely untidy: drop the
-empty-section filter and a search hit names a section the reader's index does
-not have; return a title instead of an index and the agent's chain into
-``get_paper_section`` dies on "Ambiguous section title" whenever a paper repeats
-a heading.
+**One heading scan.** Every function here bar ``first_section_heading``, plus
+``corpus.search``, routes through :func:`_scan`; that one short-circuits on the
+first heading instead of parsing the document. A second implementation is
+agent-visible: drop the empty-section filter and a search hit names a section the
+reader's index lacks; return a title instead of an index and the agent's chain
+into ``get_paper_section`` dies on "Ambiguous section title" whenever a paper
+repeats a heading.
 """
 
 import re
@@ -22,14 +17,14 @@ from typing import Any
 
 from ..util import textnorm
 
-# Approximate tokens per character (conservative estimate for English text)
+# Rough characters-per-token for English prose; approx_tokens is an estimate, not a count.
 _CHARS_PER_TOKEN = 4
 
 # Heading lines: captures (level, title). Matched per line, so no re.MULTILINE.
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 
-# H1 and H2 both open a new section (converters disagree on which level the
-# paper title gets), H3 is the sub-heading level, H4+ are ignored entirely.
+# Fixed, not adaptive: H1 and H2 both open a section (converters disagree on which
+# level the paper title gets), H3 is the sub-heading level, H4+ are ignored.
 _SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
 _SUB_LEVEL: int = 3
 
@@ -60,8 +55,8 @@ def _scan(markdown: str) -> tuple[list[str], list[Section], bool]:
 
     Sections whose body is blank are dropped, so the indices returned here are
     the indices ``get_section_content`` accepts. The lines and the detection
-    flag ride along rather than being recomputed: every caller needs the lines
-    to slice a body, and re-splitting is a second pass over the document.
+    flag ride along: every caller needs the lines to slice a body, and re-splitting
+    is a second pass.
     """
     lines = markdown.split("\n")
     spans: list[Section] = []
@@ -85,8 +80,7 @@ def _scan(markdown: str) -> tuple[list[str], list[Section], bool]:
             h3s.append(m.group(2).strip())
 
     spans.append(Section(title, start, len(lines), h3s))
-    # A blank body is exactly a span with no non-whitespace line, so test that
-    # rather than building every body just to throw it away.
+    # Same as body(lines) == "", without materialising every body to discard it.
     non_empty = [sp for sp in spans if any(ln.strip() for ln in lines[sp.start : sp.end])]
     return lines, non_empty, detected
 
@@ -133,8 +127,8 @@ def section_at_offset(markdown: str, offset: int) -> tuple[int, str] | None:
 
     # Newlines strictly before the offset; str.count clamps its own end.
     line_no = markdown.count("\n", 0, offset)
-    # Spans are ordered and disjoint, so the first ending past line_no contains
-    # it. A heading line therefore resolves forward, to the section it opens.
+    # Ordered and disjoint but not contiguous, so the first span ending past
+    # line_no wins; a heading line resolves forward, to the section it opens.
     for index, sp in enumerate(spans):
         if line_no < sp.end:
             return index, sp.title
@@ -146,9 +140,7 @@ def section_at_offset(markdown: str, offset: int) -> tuple[int, str] | None:
 def parse_sections(markdown: str) -> list[dict[str, Any]]:
     """Parse markdown into sections with sub-heading previews.
 
-    Returns one dict per section::
-
-      {"index": 0, "title": "Introduction", "h3s": ["Background"], "approx_tokens": 800}
+    Returns ``{index, title, h3s, approx_tokens}`` per section.
 
     Content before the first heading is captured as a "Preamble" section.
     """
@@ -179,8 +171,7 @@ def _section_dicts(lines: list[str], spans: list[Section]) -> list[dict[str, Any
     ]
 
 
-# Snippet window around an in-paper match. ~60 chars on each side gives
-# the agent enough context to recognise relevance without overflowing.
+# Chars of context each side of an in-paper match: enough to judge relevance, no more.
 _FIND_SNIPPET_WINDOW = 60
 
 
@@ -216,8 +207,7 @@ def find_in_markdown(
     if normalize:
         folded_query = textnorm.fold(query)
         if not folded_query:
-            # Query was entirely combining marks — an empty pattern would
-            # match at every position, so there is nothing to find.
+            # All combining marks: an empty pattern would match at every position.
             return [], False
         pattern = re.escape(folded_query)
     else:
@@ -245,8 +235,7 @@ def find_in_markdown(
                 matched = section_text[pos:span_end]
             ws = max(0, pos - _FIND_SNIPPET_WINDOW)
             we = min(len(section_text), pos + len(matched) + _FIND_SNIPPET_WINDOW)
-            # Collapse newlines so the snippet renders on one line in
-            # the agent's view; the surrounding context stays readable.
+            # So the snippet renders on one line in the agent's view.
             snippet = section_text[ws:we].replace("\n", " ").strip()
             hits.append(
                 {
@@ -263,7 +252,7 @@ def find_in_markdown(
 def _match_section_title(section: str, spans: list[Section]) -> list[tuple[int, Section]]:
     """Sections whose title contains ``section``, case- and diacritic-insensitively.
 
-    The folded pass runs only when the exact one finds nothing, so folding can
+    The folded pass runs only when the lowercased one finds nothing, so folding can
     widen a miss into a hit ("Resume" → "Résumé") but never turns a resolving
     query into an ambiguity error.
     """
@@ -285,20 +274,17 @@ def get_section_content(
 
     Args:
         markdown: Full markdown text.
-        section: Integer index, or a string title matched as a case-insensitive
-            substring — falling back to a diacritic-folded comparison when
-            nothing matches exactly (see ``_match_section_title``).
-        offset: Starting character offset within the section. Defaults to 0.
-            Use ``next_offset`` from a previous call to page through.
-        max_chars: Slice size in characters. Defaults to 16000 (~4000 tokens).
-            Must be positive.
+        section: Integer index, or a title matched as a case-insensitive substring,
+            falling back to a diacritic-folded comparison when nothing matches.
+        offset: Starting character offset within the section; pass ``next_offset``
+            from a previous call to page through.
+        max_chars: Slice size in characters (~4 per token). Must be positive.
 
     Returns:
-        On success: ``{index, title, content, offset, chars_returned,
-        total_chars, approx_tokens, has_more, next_offset}``. ``approx_tokens``
-        and ``total_chars`` describe the full section, not the slice.
-        On error: ``{"error": ...}`` (lists available titles for unknown
-        section names).
+        On success: ``{index, title, content, offset, chars_returned, total_chars,
+        approx_tokens, has_more, next_offset}``; ``approx_tokens`` and ``total_chars``
+        describe the full section, not the slice. On error: ``{"error": ...}``, which
+        lists the available titles for an unknown section name.
     """
     if max_chars <= 0:
         return {"error": f"max_chars must be positive, got {max_chars}"}
@@ -308,8 +294,7 @@ def get_section_content(
     lines, spans, _ = _scan(markdown)
 
     if not spans:
-        # A converter can exit 0 on a 0-page or image-only PDF. Say so, rather
-        # than falling through to a literal "out of range (0--1)".
+        # A converter exits 0 on a 0-page or image-only PDF; beats "out of range (0--1)".
         return {
             "error": "The converted markdown for this paper is empty — no readable text.",
             "suggestion": (
