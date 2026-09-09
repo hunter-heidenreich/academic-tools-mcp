@@ -51,7 +51,7 @@ All configuration is via environment variables in `.env`. Nothing is required to
 | `CACHE_DIR` | No | Where the on-disk cache lives (default: `.cache/` beside the project). Set it when running from an installed wheel. |
 | `ACADEMIC_TOOLS_ENV_FILE` | No | Explicit path to the `.env` to load. Authoritative: when set it is the *only* candidate, so a path that isn't there means no `.env` rather than a silent fallback to another file. |
 | `MAX_PDF_BYTES` | No | Cap on a single PDF download (default `200000000` ≈ 200 MB). `none` / `off` / `disabled` / `0` disables; any other unparseable value (including a negative one) falls back to the default. |
-| `WIKIPEDIA_MAILTO` | No | Your email — required by [Wikimedia policy](https://meta.wikimedia.org/wiki/User-Agent_policy) for the User-Agent header |
+| `WIKIPEDIA_MAILTO` | No | Your email, appended to the Wikipedia User-Agent. A descriptive agent is sent either way, which is what matters: [Wikimedia](https://www.mediawiki.org/wiki/Wikimedia_APIs/Rate_limits) caps an unidentified client at 10 req/min against 200 with a compliant one. |
 | `PDF_CONVERTER` | No | PDF-to-markdown backend: `mineru` (default), `marker`, or a custom command (see [PDF Pipeline](#pdf-pipeline)) |
 | `PDF_CONVERTER_VENV` | No | Path to a virtualenv to activate before running the converter (e.g. `~/.venvs/mineru`) |
 | `PDF_CONVERT_TIMEOUT` | No | Hard timeout for a single PDF→markdown conversion in seconds (default `1800` = 30 min). Set to `none` / `off` / `disabled` / `0`, or any value `<= 0`, to disable. Unparseable or non-finite falls back to the default. |
@@ -100,12 +100,12 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | Tool | Description |
 |------|-------------|
 | `get_paper_metadata` | Title, dates, venue / categories, identifiers — shape varies by `_source`. Optional `follow_published=True` auto-chains a bioRxiv preprint to its journal version on OpenAlex when one exists. |
-| `get_papers_metadata` | Bulk metadata for many identifiers at once. OpenAlex DOIs collapse into one batched HTTP call per 50; arXiv / bioRxiv fan out concurrently. Designed for reference-graph enrichment after `get_paper_references`. Cap 100 per call. |
+| `get_papers_metadata` | Bulk metadata for many identifiers at once. *Uncached* OpenAlex DOIs are chunked into batched `/works?filter=doi:...` calls — a cached one costs no request at all; arXiv / bioRxiv fan out concurrently. Designed for reference-graph enrichment after `get_paper_references`. Cap 100 per call. |
 | `get_paper_authors` | Author list with source-appropriate detail (affiliations, corresponding author, OpenAlex IDs) |
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
 
-Pass an arXiv ID or any DOI — including bioRxiv/medRxiv (`10.1101/...`), ACL Anthology (`10.18653/v1/...`), or generic publisher DOIs. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"openalex"`) so you know which provider answered and which fields to expect. arXiv IDs always route to arXiv; bioRxiv DOIs route to bioRxiv; everything else (including ACL) routes to OpenAlex.
+Pass an arXiv ID or any DOI — including bioRxiv/medRxiv (`10.1101/...`), ACL Anthology (`10.18653/v1/...`), or generic publisher DOIs. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"openalex"`) so you know which provider answered and which fields to expect; `follow_published` adds `"openalex_via_biorxiv"` when the chain reaches the journal version. arXiv IDs always route to arXiv; bioRxiv DOIs route to bioRxiv; everything else (including ACL) routes to OpenAlex.
 
 An arXiv ID is accepted in every spelling that names the same paper, so one paper never caches twice: bare (`2301.00001`, `2301.00001v2`, `hep-th/9901001`), arXiv's `arXiv:` "Cite as" prefix, an `abs`/`pdf` URL (any scheme or none, with or without a `www.`/`export.` host label), and arXiv's own DataCite DOI (`10.48550/arXiv.2301.00001`). The version suffix is part of the identity: `2301.00001` means "whatever is current" and `2301.00001v2` means that revision, and the two cache separately.
 
@@ -169,7 +169,7 @@ After importing a PDF, use the unified pipeline tools (`convert_paper` → `get_
 | Tool | Description |
 |------|-------------|
 | `search_wikipedia` | Search for articles matching a query |
-| `get_wikipedia_summary` | Title, description, extract, URL, and page type (`standard` / `disambiguation`); errors with `not_found` if the page doesn't exist |
+| `get_wikipedia_summary` | Title, description, extract, URL, page type (`standard` / `disambiguation`), and `pageid`; errors with `not_found` if the page doesn't exist |
 
 ## PDF Pipeline
 
@@ -335,7 +335,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
 
 - **Lean responses.** Tools return only what's needed — not the full API response. An agent calling `get_paper_authors` doesn't get flooded with unrelated metadata.
 - **One tool per job, auto-routed.** The four core paper tools (`get_paper_metadata`, `get_paper_authors`, `get_paper_abstract`, `get_paper_bibtex`) dispatch on identifier shape rather than forcing the agent to pick between arXiv/bioRxiv/OpenAlex families. Provider-native fields are preserved and tagged with `_source`.
-- **Batch where it matters.** `get_papers_metadata` collapses N parallel singletons into one HTTP call per 50 OpenAlex DOIs (`/works?filter=doi:...|...`) plus concurrent fan-out for arXiv / bioRxiv — designed for reference-graph enrichment.
+- **Batch where it matters.** `get_papers_metadata` collapses N parallel singletons into batched `/works?filter=doi:...|...` calls over the OpenAlex DOIs that actually miss the cache, plus concurrent fan-out for arXiv / bioRxiv — designed for reference-graph enrichment.
 - **One API hit per entity.** All tools for a given DOI share one cached response. Concurrent same-key callers are coalesced by single-flight to one fetch.
 - **Per-provider concurrency, and per-host pacing where the host isn't fixed.** Each provider has its own concurrency cap (arxiv=1, per its single-connection rule; openalex=4; crossref resolved from config, see below) — multiple GETs run in flight up to the cap while a brief gap-lock enforces inter-start spacing. The open-access download path is the one client whose URLs are publisher CDNs rather than a single API, so it paces at 1 request/second **per host**: a reference walk through one journal resolves many DOIs to the same domain, and a global gap would either under-pace that or needlessly throttle unrelated publishers.
 - **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry honouring `Retry-After` in either form RFC 9110 permits — delay-seconds or HTTP-date — capped at 10 minutes, before surfacing to the agent. arXiv retries twice instead of once: its edge returns 429/503 with no `Retry-After`, and a single retry tends to land in the same cooldown.
@@ -349,7 +349,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
 - **Provider-aware routing.** Manual imports auto-detect identifier types and store in the correct provider's cache, preventing duplicates.
 - **Subprocess isolation for PDF converters.** The PDF pipeline shells out to external tools rather than importing them, keeping the dependency tree light and avoiding license entanglement.
 - **Pre-computed aggregates.** List responses include counts (`author_count`, `topic_count`, `total_sections`, etc.) so agents don't need follow-up calls to check sizes.
-- **Structured error hints.** Error responses include a `suggestion` field with recovery guidance (e.g. which search tool to try).
+- **Structured error hints.** Error responses carry a `suggestion` field with recovery guidance (e.g. which search tool to try). One exception: an identifier no provider claims carries its guidance in the `error` string instead, since there is no provider failure to enrich.
 
 ## Versioning
 
