@@ -1,9 +1,8 @@
-"""Shared DOI normalization — the single home for it.
+"""The single home for DOI normalization.
 
-**Never add a local copy.** Divergent normalization lands one paper under
-several cache keys, and a key that is not a bare DOI builds a malformed
-upstream URL: leave `https://dx.doi.org/10.1234/x` as a URL and OpenAlex
-fetches `/works/doi:https://...`.
+**Never add a local copy** — of these functions or of the DOI-shape regex.
+Divergent normalization keys one paper several ways, and a non-bare key builds
+a malformed upstream URL: OpenAlex fetches `/works/doi:https://dx.doi.org/...`.
 
 Per-provider *policy* (which prefix a URL path needs, whether an ID is an
 Anthology ID) stays in the provider — only the normalization is shared.
@@ -11,8 +10,7 @@ Anthology ID) stays in the provider — only the normalization is shared.
 
 import re
 
-# Exported: `corpus` inverts a stored filename stem with this same
-# pattern, and a second spelling would let the two disagree on what a DOI is.
+# Exported: `corpus` inverts a stored filename stem with this same pattern.
 REGISTRANT_PATTERN = r"10\.\d{4,}"
 
 # The URL forms publishers and reference managers actually emit.
@@ -27,19 +25,18 @@ _DOI_RE = re.compile(rf"^{REGISTRANT_PATTERN}/\S+$")
 def normalize(doi: str) -> str:
     """Normalize a DOI to bare form (``10.1234/example``).
 
-    Accepts a bare DOI, a ``doi:`` prefix in any case, and a ``doi.org`` /
-    ``dx.doi.org`` / ``www.doi.org`` URL over http or https. A URL's query
-    string and fragment are discarded; a bare DOI keeps a literal ``?`` or
-    ``#``, which are legal suffix characters.
+    Accepts a bare DOI, an any-case ``doi:`` prefix, and a resolver URL (hosts and
+    schemes per ``_DOI_URL_RE``). A URL's query and fragment are cut; a bare DOI keeps
+    a literal ``?``/``#`` — legal suffix characters, so cutting would key another paper.
 
-    A string that is not recognisably a DOI is returned stripped but
-    otherwise untouched — callers decide whether that is an error.
+    Anything unrecognised comes back stripped of whitespace and any ``doi:``
+    prefix; the caller decides whether that's an error.
 
     Idempotent: ``normalize(normalize(s)) == normalize(s)`` for every input.
     """
     doi = doi.strip()
 
-    # Prefix before URL: "doi:https://doi.org/10.x/y" occurs in the wild.
+    # Prefix before URL, and in a loop: both "doi:https://doi.org/10.x/y" and "doi:doi:" occur.
     while doi[:4].lower() == "doi:":
         doi = doi[4:].strip()
 
@@ -49,10 +46,10 @@ def normalize(doi: str) -> str:
 
 
 def canonical(doi: str) -> str:
-    """Return the cache-key form: ``normalize`` plus a lowercase fold.
+    """Cache-key form: ``normalize`` plus a case fold.
 
-    DOIs are case-insensitive by spec, so the key folds case; ``normalize``
-    doesn't, because a request keeps whatever case the caller supplied.
+    DOIs are case-insensitive by spec; ``normalize`` doesn't fold because the
+    request keeps the caller's case.
     """
     return normalize(doi).lower()
 
