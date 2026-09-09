@@ -131,9 +131,7 @@ def normalize_arxiv_id(arxiv_id: str) -> str:
       - bare ID: 2301.00001, 2301.00001v2, hep-th/9901001
       - ``arXiv:`` prefix in any case, with or without a space
       - an ``abs``/``pdf``/``html`` URL, either scheme (or none), optional ``www.`` /
-        ``export.`` host label, optional ``.pdf`` extension and trailing slash.
-        ``html`` is arXiv's own rendering, the default landing page for new
-        papers and so the spelling a pasted browser tab carries
+        ``export.`` host label, optional ``.pdf`` extension and trailing slash
       - arXiv's DataCite DOI (``10.48550/arXiv.…``), in any spelling ``doinorm.normalize`` takes
 
     Case is preserved (``canonical_arxiv_id`` owns the fold); an unrecognised string

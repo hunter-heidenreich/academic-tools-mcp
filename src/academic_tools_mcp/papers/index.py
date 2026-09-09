@@ -23,8 +23,8 @@ from ..store import atomic, cache
 from ..store.stems import checksum_text, markdown_path, sections_key, sections_key_for_stem
 from .sections import parse_sections_and_detect
 
-# The four-key invariant above, as a value: `rekey_sections` refuses to carry a
-# partial entry onto a new key, where it would read as complete.
+# The four-key invariant above, as a value: a partial entry carried onto a new
+# key would read there as complete.
 _ENTRY_KEYS = frozenset({"sections", "sections_detected", "markdown_checksum", "conversion_mode"})
 
 
@@ -63,16 +63,13 @@ def rekey_sections(
 ) -> bool:
     """Carry a section index entry onto a re-filed paper's new key, verbatim.
 
-    For a re-file that moves markdown out from under its index: the key changed,
-    the bytes did not. Re-deriving instead would reset ``conversion_mode`` to
-    ``None`` and with it the ``"imported"`` marker that keeps an operator's own
-    markdown from being cascaded away by ``tools/pipeline``'s download.
+    The key changed, the bytes did not. Re-deriving would reset
+    ``conversion_mode`` to ``None``, losing the ``"imported"`` marker that keeps
+    an operator's own markdown out of ``tools/pipeline``'s download cascade.
 
-    Not a third assembler: it copies a *complete* entry and only onto an empty
-    destination, so it can neither invent a key nor overwrite a live index.
-    Returns whether anything was carried. Keyed by the source *stem*, since the
-    caller found the file on disk. Caller holds the destination's
-    :func:`sections_lock`.
+    Not a third assembler: it copies a *complete* entry, only onto an empty
+    destination. Keyed by the source *stem*, which is what the caller found on
+    disk. Caller holds the destination's :func:`sections_lock`.
     """
     entry = cache.get(src_namespace, "sections", sections_key_for_stem(src_stem), count=False)
     if entry is None or not entry.keys() >= _ENTRY_KEYS:

@@ -149,7 +149,7 @@ def _place(path: Path, target: Path, outcome: RefileOutcome) -> bool:
 
     Never overwrites and never raises — a skip is for the next run, and a
     filesystem without hard links takes that path. Shared by both re-filers, so
-    the never-overwrite guard cannot hold in one and not the other.
+    the guard cannot hold in one and not the other.
     """
     if not path.is_file() or target.exists():
         return False
@@ -188,15 +188,12 @@ def _misrouted_arxiv_id(stem: str) -> tuple[str, RefileOutcome] | None:
 def _pmid_sources(raw_identifier: str) -> list[tuple[Target, RefileOutcome]]:
     """Candidate targets a PMID import may sit under, and how to re-file each.
 
-    The caller's own spelling first: ``openalex._PUBMED_URL_RE`` accepts an
-    unbounded set of URL forms and ``resolve_target`` keys the whole lowercased
-    URL, so that spelling is reachable no other way. Then the two a hand-written
-    label plausibly takes. Deduped by key, order preserved.
+    The caller's spelling first — ``_PUBMED_URL_RE`` takes an unbounded set of
+    URL forms, so a URL key is reachable no other way — then the two a
+    hand-written label plausibly takes. Deduped, order preserved.
 
-    The outcome reuses ``openalex.is_pmid``'s own two-tier test rather than
-    respelling it: a key still carrying an explicit marker is one nothing but a
-    PMID writes, so it moves; a bare digit run is one a freeform label could
-    equally have written, so it is linked and the original survives.
+    The outcome reuses ``is_pmid``'s two tiers rather than respelling them: a
+    key still carrying an explicit marker moves, a bare digit run is linked.
     """
     bare = openalex.normalize_pmid(raw_identifier)
 
@@ -215,16 +212,13 @@ def _pmid_sources(raw_identifier: str) -> list[tuple[Target, RefileOutcome]]:
 def refile_pmid_stems(raw_identifier: str, doi: str) -> int:
     """Re-file an import filed under a PMID spelling onto the DOI stem readers use.
 
-    The lazy counterpart of :func:`migrate_misrouted_arxiv`, and lazy because it
-    must be: a PMID stem's destination is the paper's *DOI*, which only a network
-    lookup knows, so no offline sweep could name it.
-    ``app.resolve_paper_identifier`` calls this at the one moment both spellings
-    are in hand. Returns files re-filed; never raises.
+    The lazy counterpart of :func:`migrate_misrouted_arxiv`, and lazy of
+    necessity: the destination is the paper's *DOI*, which only a network lookup
+    knows, so no offline sweep could name it. Returns files re-filed; never
+    raises. Caller holds the destination's ``papers.sections_lock``.
 
-    The destination comes from the router too — a PMID's DOI usually lands back
-    in ``manual`` under a different stem, but ``10.1101/…`` is bioRxiv's and
-    ``10.18653/v1/…`` the Anthology's. Caller holds the destination's
-    ``papers.sections_lock``.
+    The destination asks the router too — that DOI is usually another ``manual``
+    stem, but ``10.1101/…`` is bioRxiv's and ``10.18653/v1/…`` the Anthology's.
     """
     dest = resolve_target(doi)
     dest_markdown = stems.markdown_path(dest["namespace"], dest["canonical"])
@@ -237,9 +231,7 @@ def refile_pmid_stems(raw_identifier: str, doi: str) -> int:
         if not _place(src_markdown, dest_markdown, outcome):
             continue
         refiled += 1
-        # Before the invalidate, which is what it reads: re-deriving the entry at
-        # the new key would lose the `"imported"` mode and expose an operator's
-        # own markdown to the download cascade.
+        # Before the invalidate: the entry it carries is the one being dropped.
         papers.rekey_sections(
             src["namespace"], src_markdown.stem, dest["namespace"], dest["canonical"]
         )

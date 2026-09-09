@@ -138,8 +138,8 @@ def canonical_author_id(author_id: str) -> str:
     return _normalize_author_id(author_id).lower()
 
 
-# PubMed's own URL, plus the legacy ``/pubmed/`` path still printed on older
-# papers. As permissive as ``_ARXIV_URL_RE`` for the same reason.
+# PubMed's own URL, plus the legacy ``/pubmed/`` path older papers still print.
+# As permissive as ``_ARXIV_URL_RE``, for the same reason.
 _PUBMED_URL_RE = re.compile(
     r"^(?:https?://)?(?:www\.)?(?:pubmed\.ncbi\.nlm\.nih\.gov|ncbi\.nlm\.nih\.gov/pubmed)"
     r"/(\d+)/?(?:[?#].*)?$",
@@ -153,13 +153,10 @@ _PMID_RE = re.compile(r"^\d{1,8}$")
 def normalize_pmid(pmid: str) -> str:
     """Normalize a PubMed identifier to bare digits.
 
-    Accepts a bare run, an any-case ``pmid:`` prefix (OpenCitations' own spelling,
-    so a cross-referenced id pastes straight back in), and a PubMed URL per
-    ``_PUBMED_URL_RE``. Anything unrecognised comes back stripped of whitespace
-    and any ``pmid:`` prefix; ``is_pmid`` decides whether that is an error.
-
-    Idempotent: the output of a recognised form is bare digits, which every
-    branch below leaves alone.
+    Accepts a bare run, an any-case ``pmid:`` prefix (OpenCitations' own
+    spelling) and a PubMed URL per ``_PUBMED_URL_RE``. Anything unrecognised
+    comes back stripped of whitespace and any prefix; ``is_pmid`` decides
+    whether that is an error. Idempotent.
     """
     pmid = pmid.strip()
 
@@ -175,14 +172,10 @@ def normalize_pmid(pmid: str) -> str:
 def is_pmid(identifier: str) -> bool:
     """The shape test the tool layer resolves on, over the normalized form.
 
-    **Two tiers, deliberately.** An explicit ``pmid:`` prefix or PubMed URL names
-    a PMID unambiguously, so any 1-8 digit id is claimed. A *bare* digit run is
-    claimed only at 7-8 digits: shorter runs stay unclaimed so a freeform
-    ``import_paper(file, "1234")`` label keeps routing to ``manual``, and 7-8
-    digits is both the modern PMID range and an unlikely hand-written label.
-
-    Nothing is ever *stored* under a PMID key — ``resolve_pmid`` trades it for the
-    paper's DOI — so a claim here costs one lookup, never a second cache identity.
+    **Two tiers, deliberately.** An explicit ``pmid:`` prefix or PubMed URL is
+    unambiguous, so any 1-8 digit id is claimed. A *bare* run is claimed only at
+    7-8 digits — the modern PMID range, and an unlikely hand-written label — so
+    a freeform ``import_paper(file, "1234")`` label keeps routing to ``manual``.
     """
     stripped = identifier.strip()
     normalized = normalize_pmid(stripped)
@@ -195,9 +188,9 @@ def is_pmid(identifier: str) -> bool:
 def _pmid_ids(work: dict[str, Any]) -> dict[str, Any]:
     """The id mapping ``pmids`` caches: what a PMID trades itself for.
 
-    Not the work — that is warmed into ``works`` under its own DOI key, so the
-    paper keeps one full entry on one TTL clock. ``doi`` is bare and canonical,
-    or ``None`` for a work OpenAlex indexes without one.
+    Not the work — that is warmed into ``works`` under its DOI, so the paper
+    keeps one full entry on one TTL clock. ``doi`` is bare and canonical, or
+    ``None`` for a work OpenAlex indexes without one.
     """
     work_doi = work.get("doi")
     doi = doinorm.canonical(work_doi) if isinstance(work_doi, str) and work_doi else None
@@ -211,9 +204,9 @@ async def resolve_pmid(pmid: str, *, force_refresh: bool = False) -> dict[str, A
     """Trade a PMID for the paper's DOI, so no paper caches twice.
 
     Returns ``{doi, openalex_id}`` — ``doi`` ``None`` when OpenAlex indexes the
-    work without one — or the shared ``{error, ...}`` contract. The fetch also
-    warms the ``works`` cache under that DOI, so the ``get_work`` that follows
-    costs no request; a 404 negative-caches under the PMID.
+    work without one — or the shared ``{error, ...}`` contract. The fetch warms
+    ``works`` under that DOI, so the ``get_work`` that follows costs no request;
+    a 404 negative-caches under the PMID.
     """
     canonical = normalize_pmid(pmid)
 
@@ -261,10 +254,10 @@ async def _fetch_singleton(
     non-empty, so ``bare`` is tested too (as ``opencitations`` does).
 
     ``store`` maps the validated body to what this entity caches and returns, for
-    an entity that is a *view* of a work rather than the work: ``pmids`` files a
-    small id mapping and warms ``works`` under the DOI, so one paper does not
-    occupy two full entries on two TTL clocks. It runs after the shape guard, so
-    it is handed a dict with an ``id``. Default: cache the body verbatim.
+    an entity that is a *view* of a work rather than the work itself — ``pmids``
+    files an id mapping and warms ``works`` under the DOI, so one paper does not
+    occupy two entries on two TTL clocks. Runs after the shape guard, so it is
+    handed a dict with an ``id``. Default: cache the body verbatim.
     """
     if not bare or not http.addresses_a_record(url):
         # Bad identifier: refused before a request is spent, so nothing is cached.

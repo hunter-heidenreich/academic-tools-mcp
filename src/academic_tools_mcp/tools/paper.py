@@ -84,9 +84,8 @@ async def _fetch_source(
     caller can branch on a provider flag first: get_paper_metadata reads ``not_found``
     for the Crossref fallback.
 
-    A PMID is traded for its DOI first, so everything below sees one identity per
-    paper. The four unified paper tools all reach a provider through here, which is
-    what makes that substitution uniform across them.
+    All four paper tools reach a provider through here, so the PMID trade at the
+    top is uniform across them.
     """
     identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
@@ -151,12 +150,10 @@ def _format_biorxiv_metadata(
 def _openalex_pmid(work: dict[str, Any]) -> str | None:
     """The work's PMID as bare digits, or ``None``.
 
-    OpenAlex spells it as a PubMed URL. Normalized here so what this server hands
-    back is what it accepts, rather than a third spelling — ``pmid:`` it and every
-    paper tool takes it, whatever its length.
-
-    ``isdecimal``, not ``is_pmid``: that predicate's 7-digit floor on a *bare* run
-    is a routing tier, and the handful of short PMIDs on early papers are real.
+    OpenAlex spells it as a PubMed URL; normalized here so the server hands back
+    a spelling it also accepts. ``isdecimal``, not ``is_pmid``: that predicate's
+    floor on a bare run is a routing tier, and short PMIDs on early papers are
+    real.
     """
     raw = as_dict(work.get("ids")).get("pmid")
     if not isinstance(raw, str) or not raw:
@@ -264,9 +261,8 @@ async def get_paper_metadata(
       - crossref (``fallback_crossref`` after an OpenAlex 404): openalex's fields
         with is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
 
-    A PMID is traded for the paper's DOI before dispatch, so ``_source`` is
-    ``openalex`` and ``_canonical_id`` the DOI — one identity per paper, whichever
-    of the two you passed.
+    A PMID dispatches as its DOI, so ``_source`` is ``openalex`` and
+    ``_canonical_id`` the DOI whichever of the two you passed.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``. Siblings get_paper_authors / _abstract /
@@ -358,8 +354,8 @@ async def get_papers_metadata(
         formatted["_input"] = ident
         results[slot] = formatted
 
-    # Resolved first and concurrently: routing is by shape, and a PMID has the shape
-    # of nothing until it is traded for its DOI. `_input` stays the caller's spelling.
+    # First and concurrently: routing is by shape, and a PMID has none until it is
+    # traded. `_input` stays the caller's spelling.
     resolved = await asyncio.gather(
         *(resolve_paper_identifier(ident, force_refresh=force_refresh) for ident in identifiers)
     )

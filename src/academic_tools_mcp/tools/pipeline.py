@@ -55,8 +55,8 @@ async def _download_pdf_by_provider(
     the next ``convert_paper`` re-runs. Markdown recorded ``"imported"`` is
     exempt unless ``force_refresh``: no converter can reproduce it.
 
-    A PMID is traded for its DOI before routing, so storage and metadata cannot
-    disagree about which paper it names.
+    A PMID is traded for its DOI before routing, so storage and metadata agree
+    on which paper it names.
     """
     identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
@@ -367,9 +367,8 @@ async def import_paper(
             ),
         }
 
-    # After the extension check, so a bad suffix still costs no request, and before
-    # resolve_target: a PMID that reached storage would file the paper under a key
-    # every reader of it trades away, leaving the import unreachable.
+    # After the extension check, so a bad suffix costs no request; before
+    # resolve_target, or this writes under a key every reader trades away.
     identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
         return pmid_error

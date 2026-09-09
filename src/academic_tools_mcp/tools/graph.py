@@ -60,9 +60,8 @@ async def _resolve_doi(doi: str, *, force_refresh: bool) -> tuple[str, dict[str,
     """Canonical DOI for a graph call, or the error that ends it.
 
     The one entry every graph tool takes, so the PMID trade and the DOI-only
-    rejection stay in one order for all four. Resolving first is what makes the
-    ``pmid`` these tools *hand out* on every OpenCitations row an identifier they
-    also accept — before this, a row with a ``pmid`` and no ``doi`` was a dead end.
+    rejection keep one order across all four. Resolving first is what makes the
+    ``pmid`` these tools hand out on every OpenCitations row one they also take.
     """
     doi, pmid_error = await resolve_paper_identifier(doi, force_refresh=force_refresh)
     if pmid_error is not None:

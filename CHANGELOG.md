@@ -18,37 +18,31 @@ grouped by milestone rather than per commit.
 ### Added
 
 - **A PMID is an identifier this server accepts, not just one it hands out.**
-  Every OpenCitations row carries a `pmid` cross-reference, which
-  `get_paper_citations` / `get_paper_references` forward and document per entry —
-  and no tool took one, so a citing row with a `pmid` and no `doi` was a dead
-  end. `pmid:20079334`, a `pubmed.ncbi.nlm.nih.gov` URL (including the legacy
-  `/pubmed/` path), or a bare 7–8 digit run now works anywhere a DOI does: the
-  paper tools, the PDF pipeline, and the graph tools. A PMID is **traded for the
-  paper's DOI** by a new `openalex.resolve_pmid` and is never itself a cache key,
-  so the two spellings share one `_canonical_id` and one cached work; the
-  resolving request warms the work cache, so the lookup that follows costs
-  nothing. Resolution is single-homed in `app.resolve_paper_identifier`, and a
-  non-PMID identifier reaches it without any I/O. OpenAlex is the resolver, so a
-  paper it has not indexed does not resolve; PMCIDs are unsupported, OpenAlex
-  having effectively no `pmcid` coverage. ([#115])
+  Every OpenCitations row carries a `pmid` cross-reference, so a citing row with
+  a `pmid` and no `doi` was a dead end. `pmid:20079334`, a
+  `pubmed.ncbi.nlm.nih.gov` URL (including the legacy `/pubmed/` path) or a bare
+  7–8 digit run now works anywhere a DOI does: the paper tools, the PDF pipeline
+  and the graph tools. A PMID is **traded for the paper's DOI** and is never
+  itself a cache key, so both spellings share one `_canonical_id` and one cached
+  work, and the lookup after the trade costs no request. OpenAlex is the
+  resolver, so a paper it has not indexed does not resolve; PMCIDs are
+  unsupported. ([#115])
 - **`get_paper_metadata` reports an OpenAlex work's `pmid`**, as bare digits
-  (null when OpenAlex has none) — the identifier the server now also accepts, so
-  the round trip closes in both directions. Reaches the batch formatter too, not
-  just the singleton one. ([#115])
+  (null when OpenAlex has none), closing the round trip in both directions.
+  Batched results carry it too. ([#115])
 
 ### Fixed
 
-- **`arxiv.org/html/...` URLs route to arXiv.** `_ARXIV_URL_RE` matched `/abs/`
-  and `/pdf/` only, but arXiv's HTML rendering has been the default landing page
-  for new papers since late 2023 — it is what a pasted browser tab carries.
-  Unrecognised, `get_paper_metadata` answered "Cannot resolve paper provider" and
-  the pipeline tools filed the paper a **second** time under the `manual`
-  namespace. The startup sweep re-files anything already misfiled. ([#115])
-- **`import_paper` trades a PMID for the paper's DOI, like every tool that reads
-  what it writes.** It was the one pipeline entry point that did not, so it filed
-  under a key `convert_paper`, `get_paper_sections`, `get_paper_section` and
-  `find_in_paper` all resolve away — an import no tool could read back, under any
-  spelling. ([#115])
+- **`arxiv.org/html/...` URLs route to arXiv.** `/abs/` and `/pdf/` matched but
+  `/html/` did not, though it has been the default landing page for new papers
+  since late 2023 — the spelling a pasted browser tab carries. Unrecognised,
+  `get_paper_metadata` answered "Cannot resolve paper provider" and the pipeline
+  filed the paper a **second** time under `manual`. The startup sweep re-files
+  anything already misfiled. ([#115])
+- **`import_paper` trades a PMID for the paper's DOI**, as every tool that reads
+  what it writes already did. It filed under a key `convert_paper`,
+  `get_paper_sections`, `get_paper_section` and `find_in_paper` all resolve away
+  — an import no tool could read back, under any spelling. ([#115])
 
 ### Changed
 
@@ -56,13 +50,11 @@ grouped by milestone rather than per commit.
   unchanged, so a freeform `import_paper(file, "1234")` label still routes to
   `manual`. An **existing** 7–8 digit label is not stranded: the first call that
   resolves it re-files its cached PDF and markdown onto the DOI stem, carrying
-  the section index — and with it `conversion_mode` — across, so an imported
-  file keeps the `"imported"` marker that exempts it from `download_pdf`'s
-  cascade. A bare-digit stem is *linked* rather than moved, since a freeform
-  label could have written it, so the original reading survives too; an
-  explicitly marked one moves. There is no startup sweep for this, and cannot
-  be: the destination is the paper's DOI, which only a network lookup knows.
-  ([#115])
+  the section index across so an imported file keeps the `"imported"` marker
+  that exempts it from `download_pdf`'s cascade. A bare-digit stem is *linked*
+  rather than moved — a freeform label could have written it — so the original
+  reading survives too. This cannot be a startup sweep: the destination is the
+  paper's DOI, which only a network lookup knows. ([#115])
 
 ## [2026.09.08] — 2026-09-08
 
