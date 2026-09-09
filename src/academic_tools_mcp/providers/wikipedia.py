@@ -29,8 +29,8 @@ def _parse_error_dict() -> dict[str, Any]:
     return http.parse_error_dict(LABEL)
 
 
-# The inter-start gap is deliberately conservative for an unauthenticated reader;
-# concurrency of 2 lets a search and a summary lookup overlap.
+# 200 req/min is the documented ceiling for an identified anonymous client, so the gap
+# leaves ample headroom; concurrency stays under Wikimedia's recommended cap of 3.
 _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 1.0
 _MAX_PENDING = 5
@@ -49,7 +49,8 @@ def _build_headers() -> dict[str, str]:
 def _get_client() -> httpx.AsyncClient:
     """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``.
 
-    Headers are mandatory, not polite: Wikimedia may block an unidentified agent.
+    Headers are mandatory, not polite: an unidentified client is capped at 10 req/min,
+    where a compliant User-Agent gets 200.
     """
     return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=15.0)
 
