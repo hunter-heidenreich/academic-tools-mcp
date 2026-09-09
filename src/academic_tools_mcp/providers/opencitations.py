@@ -13,7 +13,7 @@ from ..util import doinorm, useragent
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
 
-# Agent-facing provider name; every site that names us reads it (providers.md).
+# Agent-facing provider name; every site that names us reads it.
 LABEL = "OpenCitations"
 
 _PARSE_ERRORS = http.JSON_PARSE_ERRORS
@@ -61,11 +61,10 @@ def canonical_doi(doi: str) -> str:
 
 
 def _parse_ids(raw: Any) -> dict[str, str]:
-    """Parse a space-delimited OpenCitations ID string into a dict.
+    """Split OpenCitations' space-delimited ``prefix:value`` ID string into a dict.
 
-    Input:  "omid:br/062102024238 doi:10.1103/physrevx.2.031001 openalex:W3101024234 pmid:20079334"
-    Output: {"omid": "br/062102024238", "doi": "10.1103/physrevx.2.031001",
-             "openalex": "W3101024234", "pmid": "20079334"}
+    ``"omid:br/062102024238 doi:10.1103/physrevx.2.031001"`` ->
+    ``{"omid": "br/062102024238", "doi": "10.1103/physrevx.2.031001"}``
 
     ``Any``, not ``str``: the value comes from untyped JSON.
     """
@@ -74,15 +73,15 @@ def _parse_ids(raw: Any) -> dict[str, str]:
     ids: dict[str, str] = {}
     for token in raw.split():
         prefix, sep, value = token.partition(":")
-        # An empty value is dropped: these flatten onto the record and reach
-        # the agent, where a blank `doi` reads as a real identifier.
+        # A token with no `:`, or with either half empty, is dropped: these flatten
+        # onto the record, where a blank `doi` reads to an agent as a real identifier.
         if sep and prefix and value:
             ids[prefix] = value
     return ids
 
 
 def _format_record(raw: dict[str, Any], id_field: str) -> dict[str, Any]:
-    """Format a raw OpenCitations citation record into a clean dict."""
+    """Flatten one index record: ``id_field``'s IDs, ``creation``, the self-citation flags."""
     record: dict[str, Any] = _parse_ids(raw.get(id_field))
     record["creation"] = raw.get("creation")
     record["journal_self_citation"] = raw.get("journal_sc") == "yes"
@@ -95,7 +94,7 @@ def _edges_of(records: Any, *, kind: str, id_field: str) -> dict[str, Any] | Non
 
     ``None`` is a wrong *shape* — anything not a list. Non-dict items are
     skipped and ``count`` follows the survivors. An empty list is a real
-    answer, not a miss (providers.md) — don't turn it into one.
+    answer, not a miss — don't turn it into one.
     """
     if not isinstance(records, list):
         return None
@@ -106,11 +105,11 @@ def _edges_of(records: Any, *, kind: str, id_field: str) -> dict[str, Any] | Non
 async def _fetch_direction(
     doi: str, *, kind: str, id_field: str, force_refresh: bool
 ) -> dict[str, Any]:
-    """Fetch one citation direction for a DOI, returning ``{kind: [...], count: N}``.
+    """Fetch one citation direction: ``{kind: [...], count: N}``, or an error dict.
 
-    ``kind`` is the API path segment, the cache entity and the result key at
-    once; ``id_field`` names the *other* end of the link, which inverts —
-    outgoing references read ``cited``, incoming citations read ``citing``.
+    ``kind`` is the API path segment, the cache entity and the result key at once;
+    ``id_field`` names the link's far end — ``cited`` for references, ``citing`` for
+    citations.
     """
     canonical = canonical_doi(doi)
     not_found_error = f"No {kind} found on OpenCitations for DOI: {doi}"
@@ -120,10 +119,9 @@ async def _fetch_direction(
         # safe="/" keeps the "doi:" prefix and the DOI's own slash literal.
         url = f"{OPENCITATIONS_BASE_URL}/{kind}/doi:{quote(bare_doi, safe='/')}"
 
-        # Neither check is one `quote` can do: a `.`/`..` segment is removed
-        # after encoding, and the `doi:` prefix hides an empty identifier from
-        # `addresses_a_record`. Both shorten the path to a live endpoint whose
-        # answer would cache under this DOI's key.
+        # Two checks, not one: `addresses_a_record` catches the `.`/`..` segment `quote`
+        # cannot; the `doi:` prefix keeps the last segment non-empty, so an empty DOI would
+        # ask upstream about `doi:` and cache under this DOI's key.
         if not bare_doi or not http.addresses_a_record(url):
             return http.not_found(not_found_error)
 
@@ -131,8 +129,8 @@ async def _fetch_direction(
             response = await _throttled_get(url)
 
             if response.status_code == 404:
-                # Rare — an unknown DOI answers 200 with [] (see below) — but
-                # the only branch here that can carry `not_found: True`.
+                # Rare: an unknown DOI answers 200 with `[]` (`_edges_of`). Still the
+                # only branch here that can carry `not_found: True`.
                 err = http.not_found(not_found_error)
                 cache.put_negative(NAMESPACE, kind, canonical, err)
                 return err
@@ -170,10 +168,10 @@ async def _fetch_direction(
 
 
 async def get_references(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """Fetch outgoing references for a DOI from OpenCitations.
+    """Fetch outgoing references for a DOI: ``{"references": [...], "count": N}``.
 
-    Each record carries the parsed IDs of the cited work (doi, omid, openalex,
-    pmid), its creation date, and the two self-citation flags.
+    Each record carries whatever IDs OpenCitations lists for the cited work (doi,
+    omid, openalex, pmid), the ``creation`` date and the two self-citation flags.
     """
     return await _fetch_direction(
         doi, kind="references", id_field="cited", force_refresh=force_refresh
@@ -181,7 +179,7 @@ async def get_references(doi: str, *, force_refresh: bool = False) -> dict[str, 
 
 
 async def get_citations(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """Fetch incoming citations for a DOI from OpenCitations.
+    """Fetch incoming citations for a DOI: ``{"citations": [...], "count": N}``.
 
     Same record shape as :func:`get_references`, for the works citing this DOI.
     """

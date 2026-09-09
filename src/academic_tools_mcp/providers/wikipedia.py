@@ -1,8 +1,4 @@
-"""Thin async client for the Wikipedia API.
-
-MediaWiki OpenSearch for title matching; the Wikimedia REST API for page
-summaries. No authentication required.
-"""
+"""Wikipedia client. MediaWiki OpenSearch for titles, Wikimedia REST for summaries; no auth."""
 
 from typing import Any
 from urllib.parse import quote
@@ -16,7 +12,7 @@ from ..util import config, useragent
 
 NAMESPACE = "wikipedia"
 
-# Agent-facing provider name; every site that names us reads it (providers.md).
+# Agent-facing provider name; every site that names us reads it.
 LABEL = "Wikipedia"
 
 _OPENSEARCH_URL = "https://en.wikipedia.org/w/api.php"
@@ -33,7 +29,7 @@ def _parse_error_dict() -> dict[str, Any]:
     return http.parse_error_dict(LABEL)
 
 
-# ~1 req/sec keeps the sustained rate well inside the 1,000/hour reader tier;
+# The inter-start gap is deliberately conservative for an unauthenticated reader;
 # concurrency of 2 lets a search and a summary lookup overlap.
 _MAX_CONCURRENT = 2
 _MIN_REQUEST_GAP = 1.0
@@ -53,8 +49,7 @@ def _build_headers() -> dict[str, str]:
 def _get_client() -> httpx.AsyncClient:
     """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``.
 
-    The headers are mandatory here, not polite: Wikimedia may block an
-    unidentified agent outright.
+    Headers are mandatory, not polite: Wikimedia may block an unidentified agent.
     """
     return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=15.0)
 
@@ -76,9 +71,8 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 def canonical_title(title: str) -> str:
     """Return the cache-key form, which is also the URL path segment.
 
-    MediaWiki reads space and underscore as one character and collapses runs
-    of them; only the leading letter is auto-capitalized, so ``PET`` and
-    ``Pet`` stay distinct articles.
+    MediaWiki reads space and underscore as one character and collapses runs of them;
+    only the leading letter is auto-capitalized, so ``PET`` and ``Pet`` stay distinct.
     """
     underscored = "_".join(title.replace("_", " ").split())
     first, rest = underscored[:1], underscored[1:]
@@ -122,8 +116,7 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
     if not isinstance(data, list) or len(data) < 4:
         return _parse_error_dict()
 
-    # Neither rung is an empty result set: a wrong shape reported as "no
-    # matches" ends the agent's search, and two strings zip into per-char hits.
+    # Two strings zip into per-character "hits", and a wrong shape is never "no matches".
     titles, urls = data[1], data[3]
     if not isinstance(titles, list) or not isinstance(urls, list):
         return _parse_error_dict()
@@ -158,10 +151,10 @@ def _desktop_page_url(content_urls: Any) -> str:
 
 
 def _summary_of(data: Any) -> dict[str, Any] | None:
-    """The slice of a REST summary this tool returns, or ``None`` for a wrong shape.
+    """The slice of a REST summary ``get_summary`` returns, or ``None`` for a wrong shape.
 
-    ``Any``: the ``get`` calls raise ``AttributeError`` on a scalar body, which
-    no ``except`` here catches. A wrong shape is never an empty page.
+    ``Any``: a scalar body raises ``AttributeError``, caught by nothing — the call sits
+    outside ``_fetch``'s ``try``. A wrong shape is never an empty page.
     """
     if not isinstance(data, dict):
         return None
@@ -178,20 +171,18 @@ def _summary_of(data: Any) -> dict[str, Any] | None:
 async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a page summary from the Wikipedia REST API.
 
-    Returns title, description, extract (plain text), url, and page type, or an
-    error dict if the page doesn't exist.
+    Returns ``{title, description, extract, url, type, pageid}``. A 404 is a
+    negative-cached ``not_found``; transport and wrong-shape failures are retryable.
     """
     canonical = canonical_title(title)
     not_found_error = f"Wikipedia page not found: {title}"
 
     async def _fetch() -> dict[str, Any]:
-        # safe="": a slash in a title like "AC/DC" is part of the title,
-        # not a path separator, so the whole segment is escaped.
+        # safe="": a slash in a title like "AC/DC" is part of the title, not a separator.
         url = f"{_SUMMARY_URL}/{quote(canonical, safe='')}"
 
-        # The guard `quote` cannot be: `.`/`..` are unreserved, so RFC 3986
-        # removes the segment and /page answers 200 with a dict, which would
-        # cache as this title. Uncached — no request was spent.
+        # `.`/`..` (unreserved, so `quote` can't help) and an empty title both shorten this
+        # to `/page`, whose 200 dict would cache as the title. Uncached — nothing spent.
         if not http.addresses_a_record(url):
             return http.not_found(not_found_error)
 

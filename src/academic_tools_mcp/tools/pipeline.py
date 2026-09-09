@@ -49,7 +49,8 @@ async def _download_pdf_by_provider(
 ) -> dict[str, Any]:
     """Dispatch to the provider claiming this identifier, then cascade.
 
-    Fresh bytes (``cached is False``) invalidate the markdown they replaced, so
+    Fresh bytes (``cached is False``) invalidate the markdown and section index they
+    replaced, so
     the next ``convert_paper`` re-runs. Markdown recorded ``"imported"`` is
     exempt unless ``force_refresh``: no converter can reproduce it.
     """
@@ -80,7 +81,7 @@ async def _download_pdf_by_provider(
         }
 
     if "error" in result:
-        # http supplies a retry verdict, never advice; agents branch on `suggestion`.
+        # net/http supplies a retry verdict, never advice — the tool layer adds it.
         return enrich_error(
             result,
             "Wait and retry — the provider is temporarily unavailable."
@@ -107,19 +108,18 @@ async def download_pdf(
     """Download and cache a paper's PDF, auto-detecting the source.
 
     Step 1 of the PDF pipeline. Direct download covers arXiv IDs, bioRxiv/medRxiv
-    DOIs (10.1101/...) and ACL Anthology DOIs (10.18653/v1/...). Any other
-    identifier is refused — this tool never fetches a caller-supplied URL. See
-    ``allow_oa_url`` for the one narrow exception, and import_paper for the
-    fallback that always works.
+    DOIs (10.1101/...) and ACL DOIs (10.18653/v1/...); anything else is refused
+    unless ``allow_oa_url``, since this tool never fetches a caller-supplied URL.
+    import_paper is the fallback that always works.
 
     Returns ``{size_bytes, cached}``, plus ``{anthology_id, pdf_url}`` for ACL
-    papers. An actual download (``cached: False``) also drops the paper's cached
+    papers. A real download (``cached: False``) also drops the paper's cached
     markdown and section index, reported as ``cascaded_invalidated: ["markdown",
-    "sections"]`` — so you never pass ``force_refresh`` to convert_paper as well.
-    Markdown you supplied via import_paper survives that; ``force_refresh=True``
-    replaces it too.
+    "sections"]`` — so never pass ``force_refresh`` to convert_paper as well.
+    Markdown from import_paper survives that unless ``force_refresh=True``.
 
-    Errors: ``{error, suggestion, retryable?, not_found?, max_bytes?}``.
+    Errors: ``{error, suggestion, retryable?, retry_after_seconds?, backpressure?,
+    max_concurrency?, not_found?, max_bytes?}``.
     ``retryable: True`` is the only value meaning a retry might work.
 
     Next step: convert_paper → get_paper_sections → get_paper_section.
@@ -177,13 +177,13 @@ async def convert_paper(
     Returns ``{sections, sections_detected, cached, conversion_mode}``, each
     section entry ``{index, title, h3s, approx_tokens}``. ``cached`` is true
     whenever the expensive conversion was skipped, re-parses included.
-    ``conversion_mode`` is the markdown's provenance: ``"full"`` / ``"fast"``,
-    ``"imported"`` for a file handed to import_paper, or null for a paper
-    converted before the field existed.
+    ``conversion_mode`` is provenance: ``"full"`` / ``"fast"``, ``"imported"``
+    (a file handed to import_paper), or null (converted before the field existed).
 
     Errors: ``{error, retryable, conversion_mode, pdf_size_mb?, suggestion}``,
     where ``conversion_mode`` names the mode that *failed*.
-      - No usable PDF cached → suggestion points at download_pdf / import_paper.
+      - No usable PDF cached → ``{error, suggestion}`` only, pointing at
+        download_pdf / import_paper; nothing was tried, so no ``retryable``.
       - Another conversion in flight (full mode only) → ``{busy: True,
         retryable: True, in_progress: {...}}``; retry, or use ``mode="fast"``.
       - Timeout → ``{timed_out: True, timeout_seconds}``; the suggestion points
@@ -221,10 +221,9 @@ async def get_paper_sections(
 
     Returns ``{total_sections, total_approx_tokens, sections_detected,
     conversion_mode, sections}``, each section entry ``{index, title, h3s,
-    approx_tokens}`` with ``h3s`` its sub-headings. ``conversion_mode`` is the
-    markdown's provenance: ``"full"`` / ``"fast"``, ``"imported"`` for a file
-    handed to import_paper, or null for a paper converted before the field
-    existed.
+    approx_tokens}`` with ``h3s`` its sub-headings. ``conversion_mode`` is
+    provenance: ``"full"`` / ``"fast"``, ``"imported"`` (a file handed to
+    import_paper), or null (converted before the field existed).
 
     ``sections_detected: false`` means the markdown had **no headings at all**,
     so the single section returned is synthetic and its title meaningless — not
@@ -240,9 +239,8 @@ async def get_paper_sections(
     if sections_data is None:
         return not_converted_error(identifier)
 
-    # Subscripted: an entry missing either key is re-parsed rather than defaulted.
-    # Only `conversion_mode` may legitimately be null, and only per-row keys —
-    # outside the entry invariant — are defaulted.
+    # Subscripted: _reparse_sections_locked re-parses an entry missing either key.
+    # Only `conversion_mode` may be null; only per-row keys are defaulted.
     sections_list = sections_data["sections"]
     detected = sections_data["sections_detected"]
     response: dict[str, Any] = {
@@ -283,11 +281,12 @@ async def get_paper_section(
 
     Returns: ``{index, title, content, offset, chars_returned, total_chars,
     approx_tokens, has_more, next_offset}``. ``total_chars`` and
-    ``approx_tokens`` describe the full section, not the slice. When
-    ``has_more`` is true, call again with ``offset=next_offset`` to continue.
+    ``approx_tokens`` describe the full section, not the slice.
 
     Errors: not yet converted → guidance to run convert_paper. Unknown or
-    ambiguous section title → error listing the available titles.
+    ambiguous section title → error listing the available titles; an
+    out-of-range index → the valid range. Markdown with no readable text →
+    ``{error, suggestion, retryable: False}``.
     """
     try:
         section_key: int | str = int(section)
@@ -326,12 +325,13 @@ async def import_paper(
     yourself and pass it with the paper's DOI or arXiv ID, and the rest of the
     pipeline finds it under that identifier without re-fetching. An unrecognised
     identifier works too — the file lands in the ``manual`` namespace. A PDF is
-    validated by its ``%PDF-`` header; markdown is read as UTF-8 and parsed into
-    sections immediately, skipping convert_paper.
+    validated by its ``%PDF-`` header; markdown is read as UTF-8 and indexed
+    immediately.
 
     Returns ``{identifier, namespace, cached}`` plus ``size_bytes`` for a PDF or
     ``section_count`` for markdown — call get_paper_sections for the full index.
-    Replacing a cached PDF also drops its markdown and section index, reported as
+    Landing PDF bytes over an existing file — or any ``force_refresh`` PDF import —
+    also drops the paper's markdown and section index, reported as
     ``cascaded_invalidated: ["markdown", "sections"]``. ``identifier`` is the
     canonical cache key, which may differ from what you passed
     (``arXiv:2301.00001v2`` → ``2301.00001v2``).
@@ -351,9 +351,8 @@ async def import_paper(
             ),
         }
 
-    # Both imports are synchronous and unbounded in size, so they run off the
-    # event loop; both hold sections_lock, which every writer of the
-    # markdown/section-index pair takes.
+    # Synchronous and unbounded in size, so off the event loop; under
+    # sections_lock, which every writer of the markdown/section-index pair takes.
     target = manual.resolve_target(identifier)
     if ext == ".pdf":
         async with papers.sections_lock(target["namespace"], target["canonical"]):

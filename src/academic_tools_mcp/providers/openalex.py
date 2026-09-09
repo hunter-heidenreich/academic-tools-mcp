@@ -1,4 +1,4 @@
-"""OpenAlex client: works, authors, topics and the batched multi-work fetch."""
+"""OpenAlex client: works, authors and the batched multi-work fetch."""
 
 import asyncio
 import re
@@ -15,13 +15,10 @@ from ..util import config, doinorm, useragent
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
 
-# Agent-facing provider name; every site that names us reads it (providers.md).
+# Agent-facing provider name; every site that names us reads it.
 LABEL = "OpenAlex"
 
-# The OpenAlex API returns JSON; a malformed/truncated 200 body raises
-# ``json.JSONDecodeError`` on ``.json()``. It is handled alongside the HTTP
-# errors so the tool always returns the uniform ``{error}`` contract rather
-# than crashing on a garbled response. Mirrors crossref/biorxiv.
+# JSON body: a malformed/truncated 200 is transient, never a miss.
 _PARSE_ERRORS = http.JSON_PARSE_ERRORS
 
 
@@ -30,28 +27,21 @@ def _parse_error_dict() -> dict[str, Any]:
     return http.parse_error_dict(LABEL)
 
 
-# Rate limiting. OpenAlex's polite-pool soft cap is 10 req/sec; we set
-# the gap conservatively at 100ms (10 req/sec) so a fan-out can't burn
-# the whole daily budget in a few seconds. Concurrency cap of 4 lets
-# reference-graph traversals run multiple lookups in parallel — well
-# under any concurrency limit OpenAlex enforces and a big win on the
-# previous serialise-everything model. Burst cap of 5 mirrors the
-# other providers — past 5 stacked requests, the agent gets fast
-# feedback instead of silent serialisation.
+# The gap paces us at OpenAlex's documented 10 req/sec, so a fan-out can't burn the
+# daily budget in seconds; the concurrency cap lets a reference-graph traversal run
+# lookups in parallel (OpenAlex documents no concurrency limit); the burst cap, as with
+# every other provider, gives a stacked caller feedback instead of silent queueing.
 _MAX_CONCURRENT = 4
 _MIN_REQUEST_GAP = 0.1
 _MAX_PENDING = 5
 
-# Coalesces concurrent calls for the same DOI / author ID so the
-# unified-paper tools (metadata, authors, abstract, bibtex) plus the
-# OpenAlex-only tools don't all fire in parallel for one paper.
+# Coalesces concurrent calls for one DOI / author ID: the four unified paper tools
+# and the OpenAlex-only ones share a single fetch per paper.
 _single_flight = singleflight.SingleFlight()
 
-# Positive cache TTL. OpenAlex works grow citation counts and gain
-# authors / topics over time; 30 days is long enough to amortise
-# repeated reads in a session and short enough that a paper's metadata
-# isn't frozen forever. Authors share the same TTL — h_index and
-# works_count drift on the same timescale.
+# Long: a work's citation count and topics drift slowly, an author's h_index and
+# works_count on the same timescale — long enough to amortise a session's reads, short
+# enough that neither entity is frozen. Both entities share this TTL.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
@@ -67,7 +57,8 @@ def best_pdf_url(work: dict[str, Any]) -> str | None:
     (OpenAlex's chosen best OA copy), ``primary_location``'s (the version of
     record, if OA), then ``open_access.oa_url`` — frequently a landing page.
 
-    Type-checked, not null-checked: this is the OA download trust boundary.
+    Type-checked all the way down, not annotation-trusted: this is the OA download
+    trust boundary, and whatever it returns is fetched.
     """
     for obj_key, url_key in (
         ("best_oa_location", "pdf_url"),
@@ -165,8 +156,7 @@ async def _fetch_singleton(
     non-empty, so ``bare`` is tested too (as ``opencitations`` does).
     """
     if not bare or not http.addresses_a_record(url):
-        # Definitively a bad identifier, and refused before it is spent
-        # upstream — as ``acl._strip_acl_prefix`` refuses an empty suffix.
+        # Bad identifier: refused before a request is spent, so nothing is cached.
         return http.not_found(not_found_error)
 
     try:
@@ -192,7 +182,7 @@ async def _fetch_singleton(
 
 
 async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """Fetch an author by OpenAlex ID or ORCID, using cache when available.
+    """Fetch an author by OpenAlex ID or ORCID URL, using cache when available.
 
     Concurrent callers for the same ID share one fetch. ``force_refresh=True``
     drops both cache halves first — h_index and works_count drift.
@@ -200,9 +190,8 @@ async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str
     canonical = canonical_author_id(author_id)
 
     async def _fetch() -> dict[str, Any]:
-        # Percent-encode as get_work does, so reserved characters can't split
-        # the path. ``:`` and ``/`` stay literal so the ORCID-URL spelling
-        # OpenAlex resolves survives byte-identical.
+        # Percent-encode so reserved characters can't split the path; ``:`` and ``/``
+        # stay literal, keeping the ORCID-URL spelling OpenAlex resolves byte-identical.
         bare_id = _normalize_author_id(author_id)
         api_id = quote(bare_id, safe=":/")
         return await _fetch_singleton(
@@ -235,10 +224,8 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     canonical = canonical_doi(doi)
 
     async def _fetch() -> dict[str, Any]:
-        # Percent-encode the DOI so reserved characters (#, ?, …) aren't
-        # misread as a URL fragment/query and silently truncate the request
-        # to the wrong record. The prefix/suffix slash stays literal
-        # (safe="/"); the "doi:" path prefix is added outside the encode.
+        # Percent-encode so a ``#``/``?`` in the DOI can't truncate the request to the
+        # wrong record; the DOI's own slash stays literal and ``doi:`` is added outside.
         bare_doi = doinorm.normalize(doi)
         api_doi = f"doi:{quote(bare_doi, safe='/')}"
         return await _fetch_singleton(
@@ -261,11 +248,8 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     )
 
 
-# Per-batch chunk size for /works?filter=doi:... fan-in. OpenAlex's
-# upper bound on the number of OR-joined IDs in a filter is around 100;
-# 50 keeps us comfortably under any URL-length limits while still
-# collapsing 50× single GETs into one HTTP call. With a 100 ms gap +
-# concurrency 4, the saving is dramatic on reference-graph traversals.
+# ``/works?filter=doi:...`` fan-in size. OpenAlex ORs at most ~100 filter values;
+# staying well under keeps the URL short and still collapses a chunk of GETs into one.
 _BATCH_CHUNK_SIZE = 50
 
 # The resolver prefixes a *response* DOI can carry: ``doinorm._DOI_URL_RE``'s host
@@ -295,18 +279,17 @@ async def _fetch_chunk(
     Returns ``{canonical: work_or_error}`` for every DOI in ``chunk``; the
     single-flight key sorts it, so argument order can't defeat coalescing.
 
-    **Deliberately not deep-copied**, unlike ``cache.cached_lookup``: the
-    aliasing hazard was *within* a chunk, which per-key construction fixes,
-    and copying fifty full works on every batch call is not the same cost as
-    copying one record. A consumer that needs to mutate one copies that one.
+    **Deliberately not deep-copied**, unlike ``cache.cached_lookup``: the aliasing
+    hazard is *within* a chunk and per-key construction closes it, and copying a whole
+    chunk of works on every batch call is not the cost of copying one record. A consumer
+    that needs to mutate one copies that one.
     """
     # ``force_refresh`` rides in the key and nowhere else: the caller has already
     # invalidated, so all that is left is not coalescing with a plain call.
     sf_key = ("works_batch", tuple(sorted(chunk)), force_refresh)
 
     async def _runner() -> dict[str, dict[str, Any]]:
-        # This path bypasses cache.cached_lookup, so it books its own misses —
-        # one per DOI about to be resolved upstream.
+        # Bypasses ``cache.cached_lookup``, so it books its own misses — one per DOI.
         for _ in chunk:
             stats.incr(NAMESPACE, "cache_misses")
         return await _fetch_chunk_uncoalesced(chunk)
@@ -318,8 +301,7 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
     """The actual batch GET + result mapping for one chunk."""
     out: dict[str, dict[str, Any]] = {}
     params = _build_params()
-    # OpenAlex's filter syntax: pipe-separated values are OR'd. The
-    # bare DOI (no doi.org prefix) is what the filter expects.
+    # OpenAlex filter syntax: ``|`` is OR, and it wants the bare DOI, no resolver prefix.
     params["filter"] = "doi:" + "|".join(chunk)
     params["per-page"] = str(len(chunk))
 
@@ -328,13 +310,11 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
         response.raise_for_status()
         data = response.json()
     except _PARSE_ERRORS:
-        # A garbled 200 body — transient. Surface a retryable error for
-        # every DOI in the chunk and do NOT negative-cache (a retry must
-        # re-fetch); we can't tell which DOI the upstream meant to error.
-        # A fresh dict per key. ``dict.fromkeys`` aliased one object across up
-        # to 50 keys, so a caller mutating its own error corrupted the other
-        # 49 — against ``parse_error_dict``'s documented "fresh dict each
-        # call" and ``cached_lookup``'s deep-copy discipline.
+        # A garbled 200 body is transient: every DOI in the chunk gets a retryable
+        # error, nothing is negative-cached (a retry must re-fetch), and we can't tell
+        # which DOI upstream meant to error on. Invariant: one fresh dict per key —
+        # ``dict.fromkeys`` would alias one object across the chunk, so a caller
+        # mutating its error corrupts all of them.
         return {c: _parse_error_dict() for c in chunk}
     except http.HTTPX_ERRORS as e:
         return {c: http.error_dict(LABEL, e) for c in chunk}
@@ -354,9 +334,9 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
             _canonical_from_response_doi(work.get("doi")) if isinstance(work, dict) else None
         )
         if work_canonical is None or work_canonical not in chunk_set:
-            # Unattributable: a non-dict entry, no usable ``doi``, or a DOI we
-            # did not ask for. Still cache it if we can — it is real data — but
-            # the response no longer accounts for itself.
+            # Unattributable — a non-dict entry, no usable ``doi``, or a DOI we did not
+            # ask for: still real data worth caching, but the response no longer accounts
+            # for itself.
             unattributed += 1
             if work_canonical is not None:
                 cache.put(NAMESPACE, "works", work_canonical, work)
@@ -365,10 +345,9 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
         out[work_canonical] = work
         seen_in_chunk.add(work_canonical)
 
-    # A DOI we asked for and didn't get back is a definitive miss — but only if
-    # the response accounted for itself. An unattributable record or a truncated
-    # page means a "missing" DOI may well exist, and negative-caching it would
-    # poison the entry for the negative TTL.
+    # A DOI we asked for and didn't get back is a definitive miss only if the response
+    # accounted for itself: after an unattributable record or a truncated page it may well
+    # exist, and negative-caching would poison a live DOI for the negative TTL.
     meta = data.get("meta")
     reported = meta.get("count") if isinstance(meta, dict) else None
     truncated = isinstance(reported, int) and reported > len(results)
@@ -433,11 +412,9 @@ async def get_works_batch(
             continue
         misses.append(canonical)
 
-    # DOIs containing OpenAlex filter metacharacters ('|' = OR, ',' = AND)
-    # can't be safely OR-joined into the batch filter — they'd corrupt the
-    # query and silently shift which records resolve. Resolve them one at a
-    # time via the singleton path endpoint (properly percent-encoded by
-    # get_work) and batch the rest.
+    # A DOI holding a filter metacharacter (``|`` = OR, ``,`` = AND) would corrupt the
+    # OR-joined query and silently shift which records resolve, so it goes through
+    # ``get_work``'s percent-encoded path endpoint instead.
     safe_misses: list[str] = []
     unsafe_misses: list[str] = []
     for canonical in misses:
@@ -449,9 +426,8 @@ async def get_works_batch(
         for start in range(0, len(safe_misses), _BATCH_CHUNK_SIZE)
     ]
 
-    # Chunks and singleton fallbacks run concurrently; the provider's
-    # ``Throttle`` is what bounds real parallelism. return_exceptions=False is
-    # fine here: every task already converts its failures into error dicts.
+    # The ``Throttle``, not this gather, bounds the real parallelism.
+    # ``return_exceptions=False`` is safe: every task converts its own failures already.
     results = await asyncio.gather(
         *(get_work(c, force_refresh=force_refresh) for c in unsafe_misses),
         *(_fetch_chunk(chunk, force_refresh=force_refresh) for chunk in chunks),
@@ -461,8 +437,8 @@ async def get_works_batch(
     for chunk_out in results[len(unsafe_misses) :]:
         out.update(chunk_out)
 
-    # Re-keyed in input order rather than in resolution order. Total by
-    # construction: every canonical is a cache hit or lands in one fan-out branch.
+    # Input order, not resolution order; total by construction — every canonical is a
+    # cache hit or lands in one fan-out branch.
     return {c: out[c] for c in canonicals_in_order}
 
 

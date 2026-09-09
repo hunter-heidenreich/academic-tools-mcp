@@ -17,7 +17,7 @@ from ..util import doinorm, useragent
 # Not "acl": this is the cache *directory* name, so renaming it needs a sweep.
 NAMESPACE = "acl_anthology"
 
-# Agent-facing provider name; every site that names us reads it (providers.md).
+# Agent-facing provider name; every site that names us reads it.
 LABEL = "ACL Anthology"
 
 # Exported: ``corpus`` inverts a stored stem with this same prefix.
@@ -26,14 +26,14 @@ ACL_DOI_PREFIX = "10.18653/v1/"
 # PDF downloads are larger than a metadata call; use a generous timeout.
 _PDF_TIMEOUT_SECONDS = 60.0
 
-# No documented rate limit, hence no gap. A static-file CDN, so 4 PDF
-# downloads may stream at once; the burst cap still applies past _MAX_PENDING.
+# No documented rate limit, hence no gap. A static-file CDN, so several PDFs may
+# stream at once; past _MAX_PENDING a caller gets backpressure, not a queue.
 _MAX_CONCURRENT = 4
 _MIN_REQUEST_GAP = 0.0
 _MAX_PENDING = 5
 
-# 24h, not the preprint servers' 1h: a camera-ready file is static, so a 404
-# means a wrong ID or a paper not posted yet — neither resolves in minutes.
+# Long, unlike the preprint servers': a camera-ready file is static, so a 404 means
+# a wrong ID or a paper not posted yet — neither resolves in minutes.
 _NEG_ENTITY = "downloads"
 _NEG_TTL_SECONDS = 24 * 60 * 60
 
@@ -54,10 +54,7 @@ def _get_client() -> httpx.AsyncClient:
 
 
 def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
-    """ACL Anthology's rate-limit slot (see ``Throttle.slot``).
-
-    Module-level so ``slot_factory`` and the test seam resolve an attribute.
-    """
+    """ACL Anthology's rate-limit slot (``Throttle.slot``). Module-level: it is a test seam."""
     return _throttle.slot(url)
 
 
@@ -69,9 +66,10 @@ def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
 def _strip_acl_prefix(bare: str) -> str | None:
     """Return the anthology-id suffix if ``bare`` carries the ACL prefix, else ``None``.
 
-    The prefix is matched case-insensitively (DOIs are), and the suffix comes
-    back untouched for ``_normalize_anthology_id``. An empty suffix is *not* an
-    ACL DOI: ``safe_stem("")`` would cache every ``10.18653/v1/`` as one ``.pdf``.
+    Case-insensitive (DOIs are); the suffix comes back verbatim for
+    ``_normalize_anthology_id``. A *blank* suffix is not an ACL DOI: ``10.18653/v1/``
+    names no paper, so it must fall through to the generic-DOI route rather than reach
+    ``pdf_url`` as an empty Anthology ID.
     """
     if bare[: len(ACL_DOI_PREFIX)].lower() != ACL_DOI_PREFIX:
         return None
@@ -106,11 +104,10 @@ def _normalize_anthology_id(anthology_id: str) -> str:
 
 
 def doi_to_anthology_id(doi: str) -> str | None:
-    """Extract an ACL Anthology ID from a DOI.
+    """Extract an ACL Anthology ID from a DOI; ``None`` if the DOI is not an ACL one.
 
-    e.g., "10.18653/v1/2023.acl-long.1" -> "2023.acl-long.1"; ``None`` if the
-    DOI is not an ACL one. Invariant: the ID addresses the CDN and names nothing
-    on disk — every cached artifact keys on ``canonical_key``.
+    Invariant: the ID addresses the CDN and names nothing on disk — every cached
+    artifact keys on ``canonical_key``.
     """
     suffix = _strip_acl_prefix(doinorm.normalize(doi))
     if suffix is None:
@@ -135,8 +132,9 @@ def pdf_url(anthology_id: str) -> str:
 def pdf_path(doi: str) -> Path:
     """Return the expected cache path for a PDF (may or may not exist yet).
 
-    Raises ``ValueError`` for a non-ACL DOI rather than returning a sentinel: a
-    path whose ``.exists()`` is truthy slips a non-PDF past ``convert_paper``.
+    Raises ``ValueError`` for a non-ACL DOI rather than returning a path: every stem in
+    this namespace is an ACL DOI, so any other answer names a file for a paper ACL does
+    not own.
     """
     if not is_acl_doi(doi):
         raise ValueError(f"Not an ACL Anthology DOI: {doi}")
@@ -146,10 +144,11 @@ def pdf_path(doi: str) -> Path:
 async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Download the PDF for an ACL Anthology paper and cache it locally.
 
-    Returns the file path and size, or an error. ``force_refresh=True``
-    re-downloads and atomically replaces the cached PDF — the Anthology
-    occasionally re-issues a camera-ready at the same URL — keeping the
-    existing file if the re-download fails.
+    Returns the file path, size and ACL provenance (``anthology_id``, ``pdf_url``) on a
+    cached hit and a fresh download alike, or an error. ``force_refresh=True``
+    re-downloads and atomically replaces the cached PDF — the Anthology occasionally
+    re-issues a camera-ready at the same URL — keeping the existing file if the
+    re-download fails.
     """
     aid = doi_to_anthology_id(doi)
     if aid is None:
@@ -172,8 +171,6 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             not_found_message=f"PDF not found on ACL Anthology for: {aid}",
         )
 
-    # ``extra_fields`` puts the ACL provenance on a cached hit and a fresh
-    # success alike, without this function restating either branch.
     return await streaming.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
@@ -198,17 +195,15 @@ _CANONICAL_STEM_PREFIX = stems.safe_stem(ACL_DOI_PREFIX)
 def migrate_legacy_pdf_stems() -> int:
     """Re-file cached PDFs named after the Anthology ID, not the canonical key.
 
-    Only ``pdfs/`` moves; markdown and sections were always canonical-keyed.
-    Run at startup, so idempotent and best-effort like
-    ``stems.migrate_legacy_stems``: nothing here may raise out of the lifespan.
-    Returns the number of files moved.
+    Only ``pdfs/`` moves; markdown and sections were always canonical-keyed. Run at
+    startup, so idempotent and best-effort like ``stems.migrate_legacy_stems``: nothing
+    here may raise out of the lifespan. Returns the number of files moved.
     """
     moved = 0
     pdf_dir = cache.cache_dir(NAMESPACE, "pdfs")
     # Materialised: the loop renames files into the directory it walks.
     for path in stems.list_dir(pdf_dir):
-        # An in-flight ``.tmp`` still carries the destination's stem; renaming
-        # it breaks the writer's ``os.replace``.
+        # An in-flight ``.tmp`` carries its destination's stem; renaming breaks os.replace.
         if path.suffix != ".pdf" or path.stem.startswith(_CANONICAL_STEM_PREFIX):
             continue
         if not path.is_file():
@@ -217,8 +212,7 @@ def migrate_legacy_pdf_stems() -> int:
             stems.safe_stem(canonical_key(ACL_DOI_PREFIX + unquote(path.stem))) + ".pdf"
         )
         if target.exists():
-            # Already migrated (or a genuine collision) — leave both in place
-            # rather than destroying data.
+            # Already migrated (or a genuine collision) — never destroy data.
             continue
         try:
             path.rename(target)

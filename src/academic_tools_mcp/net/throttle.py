@@ -12,11 +12,12 @@ Gating order (see ``slot``):
    before any sem/lock acquisition, so a fan-out fails fast instead of
    silently queueing.
 2. **Concurrency cap** — ``asyncio.Semaphore(max_concurrent)``.
-3. **Inter-start gap** — a lock held just long enough to pace request *starts*
-   (not durations) by ``min_gap_seconds``, released before the GET.
+3. **Inter-start gap** — a lock held only to compute and reserve this caller's
+   start, pacing *starts* (not durations) by ``min_gap_seconds``; the sleep and
+   the GET happen outside it.
 
-``slot`` is an async context manager so a streaming PDF download can hold it
-for the whole stream, its open connection counting against the concurrency cap.
+``slot`` is an async context manager, so a streaming PDF download holds it for
+the whole stream and its open connection counts against the concurrency cap.
 """
 
 import asyncio
@@ -30,8 +31,8 @@ import httpx
 
 from . import http, stats
 
-# A bound on a pathological walk, far above the tens of publisher domains one
-# session actually sees — not a tuning knob.
+# Not a tuning knob: a bound on a pathological walk, far above the tens of
+# publisher domains a session sees.
 _MAX_TRACKED_HOSTS = 512
 
 _GLOBAL_KEY = ""
@@ -54,13 +55,13 @@ class Throttle:
         """Build a throttle for one provider from its published rate policy."""
         self.namespace = namespace
         self.label = label
-        # Clamped, not trusted: a typo'd policy constant fails silently —
-        # ``Semaphore(0)`` waits forever, ``max_pending=0`` refuses everyone.
+        # Clamped, not trusted: a typo'd constant fails silently — ``Semaphore(0)``
+        # waits forever, ``max_pending=0`` refuses everyone.
         self.max_concurrent = max(1, max_concurrent)
         self.min_gap_seconds = max(0.0, min_gap_seconds)
         self.max_pending = max(1, max_pending)
         self.per_host = per_host
-        # Total attempts, not retries: 2 is one original plus one retry.
+        # Total attempts, not retries: 2 = original + one retry.
         self.retry_attempts = max(1, retry_attempts)
         self.pending = 0
         self._last_start: dict[str, float] = {}
@@ -68,17 +69,16 @@ class Throttle:
         self._lock = asyncio.Lock()
 
     def _key(self, url: str) -> str:
-        # Lowercased: RFC 3986 makes netloc case-insensitive and OpenAlex's is
-        # inconsistent. Netloc, not hostname: two ports are two services.
+        # Lowercased: RFC 3986 makes host casing insignificant and the OA URLs
+        # OpenAlex reports vary. Netloc, not hostname: two ports are two services.
         return urlsplit(url).netloc.lower() if self.per_host else _GLOBAL_KEY
 
     def _prune(self, now: float) -> None:
         """Bound the last-start map. Called under ``_lock``.
 
-        Invariant: a swept entry could not have produced a wait at ``now``, so
-        ``now`` is the real clock, never a caller's reserved (future) start.
-        Past the cap with nothing expired, dropping the oldest costs one early
-        request.
+        Invariant: a swept entry could not have paced a caller at ``now``, so
+        ``now`` must be the real clock, never a reserved (future) start. Past the
+        cap with nothing expired, dropping the oldest costs one early request.
         """
         if len(self._last_start) <= _MAX_TRACKED_HOSTS:
             return
@@ -105,12 +105,13 @@ class Throttle:
     async def slot(self, url: str, *, count_request: bool = True) -> AsyncGenerator[None]:
         """Acquire the rate-limit slot for the lifetime of the with-block.
 
-        Raises ``LocalBackpressureError`` past ``max_pending`` callers, so a
-        fan-out gets fast feedback instead of stacking behind the gap.
+        Raises ``LocalBackpressureError`` past ``max_pending`` *admitted* callers
+        — in-flight plus queued, not queue depth — so a fan-out gets fast feedback
+        instead of stacking behind the gap.
 
-        ``count_request`` records one ``http_calls`` — right for a streaming
-        download, one slot per request. ``get`` passes ``False`` and lets
-        ``get_with_retry`` count the attempts it actually makes.
+        ``count_request`` records one ``http_calls``, right for a streaming download
+        (one slot, one request); ``get`` passes ``False`` so ``get_with_retry``
+        counts the attempts it makes.
         """
         if self.pending >= self.max_pending:
             stats.incr(self.namespace, "backpressure_refusals")
@@ -127,8 +128,8 @@ class Throttle:
                     wait_seconds = (
                         0.0 if last is None else max(0.0, self.min_gap_seconds - (now - last))
                     )
-                    # A future instant, reserved: it lets the sleep sit outside
-                    # the lock without two callers picking the same start.
+                    # A reserved future instant: it lets the sleep sit outside the
+                    # lock without two callers picking the same start.
                     self._last_start[key] = now + wait_seconds
                     self._prune(now)
                 if wait_seconds:
@@ -143,8 +144,8 @@ class Throttle:
     async def get(self, client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
         """Fire one GET inside the slot, retried per ``retry_attempts``.
 
-        The backoff floor is the provider's own gap, so a retry cannot undercut
-        the documented rate.
+        The backoff floor is the provider's own gap, floored at one second, so a
+        retry cannot undercut the documented rate.
         """
         async with self.slot(url, count_request=False):
             return await http.get_with_retry(

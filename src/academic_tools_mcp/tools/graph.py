@@ -17,16 +17,13 @@ from ..net import http
 from ..providers import crossref, opencitations
 from ..util import doinorm
 
-# Auto source-selection bias. Crossref entries carry structured
-# bibliographic metadata (author/title/year/journal/DOI); OpenCitations
-# entries are bare DOI-to-DOI links. A near-tie on raw count would flip
-# auto to the metadata-poor source for the sake of a row or two, so
-# OpenCitations only wins when it has *materially* more references.
+# Auto-selection bias: OpenCitations rows are bare DOI links where Crossref's
+# carry metadata, so a row-or-two lead must not flip `auto` to the poorer source.
 _CROSSREF_HYSTERESIS = 1.2
 
 
-# Structured fields worth forwarding from a provider error into a
-# multi-source response. Everything an agent might branch on.
+# Everything an agent might branch on, forwarded from a provider error into a
+# multi-source response.
 _FORWARDED_ERROR_KEYS = (
     "error",
     "retryable",
@@ -41,10 +38,9 @@ _FORWARDED_ERROR_KEYS = (
 def _reject_non_doi(doi: str) -> dict[str, Any] | None:
     """Error dict when ``doi`` is not DOI-shaped, else ``None``.
 
-    Both graph providers are DOI-only. Without this, an arXiv ID spends an
-    upstream round-trip to earn a 404 and then plants a ``not_found`` negative
-    cache entry keyed to an identifier that could never have resolved. Uses the
-    same predicate as the metadata dispatcher, so the two agree on what a DOI is.
+    Both graph providers are DOI-only, so without this an arXiv ID buys a 404
+    round-trip and negative-caches it under an identifier that could never have
+    resolved. ``doinorm.looks_like_doi`` is the metadata dispatcher's predicate too.
     """
     if doinorm.looks_like_doi(doi):
         return None
@@ -61,14 +57,10 @@ def _reject_non_doi(doi: str) -> dict[str, Any] | None:
 def _source_error(result: dict[str, Any]) -> dict[str, Any]:
     """Lean copy of a provider error dict for embedding in a multi-source response.
 
-    Forwards the whole structured signal, not just the message string, so an
-    agent can tell a transient failure from a definitive one *and* act on it.
-    Each key in ``_FORWARDED_ERROR_KEYS`` earns its place: ``retryable`` (is it
-    worth retrying), ``retry_after_seconds`` (how long to wait),
-    ``backpressure`` + ``max_concurrency`` (we refused locally, and how much
-    parallelism is safe), ``not_found`` (definitively absent vs. transiently
-    unavailable), ``suggestion`` (what to do instead). Trimming the set to just
-    the message strands the agent with a failure it cannot classify.
+    Forwards the whole structured signal, not just ``error``: trimmed to the
+    message, the agent cannot tell a transient failure from a definitive one or act
+    on it. ``backpressure`` + ``max_concurrency`` are the least obvious pair — we
+    refused locally, and this is how much parallelism is safe.
     """
     return {k: result[k] for k in _FORWARDED_ERROR_KEYS if k in result}
 
@@ -76,13 +68,12 @@ def _source_error(result: dict[str, Any]) -> dict[str, Any]:
 def _crossref_refs(work: dict[str, Any]) -> list[dict[str, Any]]:
     """A Crossref work's reference rows, or ``[]``.
 
-    Both the list *and its rows* are type-checked: ``message`` being a dict is
-    as far as ``crossref.get_work``'s shape ladder reaches, so a string here
-    would ``len()`` to a character count and then slice character-wise, and a
-    non-dict row would reach ``_format_crossref_reference`` as an
-    ``AttributeError``. Filtering here — the one list both the count tool and
-    the page tool read — is what keeps them from disagreeing about a work.
-    Mirrors ``opencitations._edges_of``, which drops non-dict records upstream.
+    ``crossref.get_work``'s shape ladder stops at ``message`` being a dict, so the
+    list *and its rows* are checked here — a string would ``len()`` to a character
+    count and slice character-wise; a non-dict row would reach
+    ``_format_crossref_reference`` as an ``AttributeError``. The one list both the
+    count tool and the page tool read, so filtering here keeps them agreeing about a
+    work. Mirrors ``opencitations._edges_of``.
     """
     refs = work.get("reference")
     if not isinstance(refs, list):
@@ -110,9 +101,8 @@ def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
     if ref.get("unstructured"):
         entry["unstructured"] = ref["unstructured"]
     if not entry and ref.get("key"):
-        # A row carrying only bookkeeping fields is a real deposit with no
-        # usable metadata. Emitting Crossref's own `key` says that, where a
-        # bare {} reads as a formatter that lost the entry.
+        # A bookkeeping-only row is a real deposit with no usable metadata;
+        # a bare {} would read as a formatter that lost the entry.
         entry["key"] = ref["key"]
     return entry
 
@@ -123,20 +113,17 @@ async def get_paper_references_count(
 ) -> dict[str, Any]:
     """Survey outgoing-reference coverage across Crossref and OpenCitations.
 
-    Fires both providers in parallel via asyncio.gather. Counts often
-    differ — call this first to pick the better-covered source before
-    paginating with get_paper_references.
+    Both providers are fetched in parallel. Counts often differ — call this first
+    to pick the better-covered source before paginating with get_paper_references.
 
-    ``force_refresh=True`` re-fetches both sources, bypassing the cache —
-    useful when a reference list may have grown since it was last cached.
+    Returns ``{doi, sources: {crossref: {count} | error, opencitations: {count} | error}}``.
+    An error object carries ``error`` plus whichever of ``retryable``,
+    ``retry_after_seconds``, ``not_found``, ``backpressure``, ``max_concurrency``,
+    ``suggestion`` the provider set; one source erroring still reports the other's
+    count. The echoed ``doi`` is canonical, not the spelling you passed.
 
-    Returns ``{doi, sources: {crossref: {count: N} | {error, suggestion?},
-    opencitations: {count: M} | {error, suggestion?}}}``. Partial-failure
-    tolerant: if one source errors the other's count is still reported. The
-    echoed ``doi`` is the canonical form of whatever spelling you passed.
-
-    A non-DOI identifier is rejected locally, without a request —
-    both providers are DOI-only.
+    A non-DOI identifier is rejected locally, without a request, as
+    ``{error, not_found: true, suggestion}`` — the graph tools are DOI-only.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
@@ -167,9 +154,9 @@ def _page(
 
     One home for the slice arithmetic and the key set, so the references and
     citations tools cannot drift apart on ``has_more`` or on which fields a
-    page carries. ``total`` is derived from the sliced list rather than from a
-    provider's own count field, because it is what ``has_more`` and the offsets
-    have to agree with.
+    page carries. ``total`` is ``len(entries)`` — the list
+    actually being sliced, never a provider's own count field, since it is what
+    ``has_more`` and the offsets have to agree with.
     """
     total = len(entries)
     start, end = page_bounds(page, page_size)
@@ -204,9 +191,9 @@ def _opencitations_page(
 ) -> dict[str, Any]:
     """One page of an OpenCitations payload, in either direction.
 
-    ``kind`` is the provider's own ``references`` / ``citations`` key — the two
-    directions differ by nothing else on this side either, which is what
-    ``opencitations._fetch_direction`` already parameterises upstream.
+    ``kind`` is the provider's own ``references`` / ``citations`` key and the only
+    difference between the two directions here, as in
+    ``opencitations._fetch_direction``.
     """
     entries = data.get(kind)
     return _page(
@@ -229,52 +216,39 @@ async def get_paper_references(
 ) -> dict[str, Any]:
     """Page through outgoing references (bibliography) from the chosen source.
 
-    Default ``source="auto"`` fires Crossref and OpenCitations in parallel
-    and pages from the better source — saves a turn vs. calling
-    get_paper_references_count first. Selection is biased toward Crossref
-    (its entries carry structured author/title/year metadata vs.
-    OpenCitations' bare DOI links): OpenCitations only wins when it has
-    materially more references, not on a one-or-two-entry margin. The
-    chosen source is reported in ``_source``. If one provider errors, the
-    other wins automatically and the response carries a ``partial_failure``
-    field naming the failed source so an empty result isn't mistaken for a
-    confident "no references"; if both error, the response carries both errors.
+    ``auto`` surveys both providers on page 1 and pages from the winner — Crossref
+    unless OpenCitations has materially more rows — saving a turn over
+    get_paper_references_count; the winner is echoed in ``_source``. An errored
+    provider loses automatically and the response gains ``partial_failure`` naming
+    it, so an empty result isn't mistaken for a confident "no references".
 
-    ``source="auto"`` only resolves on the first page. Paginating past page 1
-    must pin ``_source`` to the value returned on page 1 (auto on page>1
-    returns an error) — re-surveying could pick a different source mid-walk
-    and silently shift the offsets.
-
-    ``force_refresh=True`` re-fetches the underlying source(s), bypassing the
-    cache — pass it on the first page when you need fresh coverage; omit it
-    when paginating so page 2..N reuse the warmed cache.
+    Paginating past page 1 must pin ``source`` to the ``_source`` from page 1
+    (``auto`` there is an error) — re-surveying could pick a different source
+    mid-walk and silently shift the offsets. Omit ``force_refresh`` on pages
+    2..N so they reuse the cache page 1 warmed.
 
     Returns ``{_source, doi, total, page, page_size, has_more, references: [...]}``.
-    The per-entry shape differs by source:
-      - crossref: structured metadata, fields conditionally present based
-        on publisher deposit quality. Possible keys: doi, author, title,
-        year, journal, volume, first_page, unstructured (raw citation
-        text fallback when structured fields are absent), key (last-resort
-        fallback: the publisher deposited the row with no usable metadata).
-      - opencitations: DOI-to-DOI links with cross-referenced IDs flattened
-        at the top level. Possible keys: doi (cited paper), omid, openalex,
-        pmid, creation (date string), journal_self_citation,
-        author_self_citation. No bibliographic metadata.
+    The echoed ``doi`` is canonical, not the spelling you passed. The per-entry
+    shape differs by source:
+      - crossref: keys present vary with publisher deposit quality — doi, author,
+        title, year, journal, volume, first_page, unstructured (raw citation text
+        when structured fields are absent), key (last resort: the row was
+        deposited with no usable metadata).
+      - opencitations: whichever cross-referenced IDs it listed — doi (cited
+        paper), omid, openalex, pmid — plus creation (date string, may be null),
+        journal_self_citation, author_self_citation. No bibliographic metadata,
+        and ``total: 0`` means "no edges in this index", not "no references":
+        OpenCitations answers an unindexed DOI and one with zero edges alike.
 
-    Defaults: page=1, page_size=20 (1-50). Call get_paper_references_count
-    explicitly only if you want to compare coverage before committing.
-
-    Errors: bad DOI / upstream failure → ``{error, suggestion, retryable}``.
-    ``retryable`` is always present on a tool-layer error, so branch on it
-    rather than on the message: ``source="auto"`` past page 1 is
-    ``retryable: false`` (re-issuing the identical call cannot help). When
-    *both* providers fail the response adds ``sources: {crossref, opencitations}``
-    carrying each one's own error, and the top-level ``retryable`` is the
-    disjunction of the two. A non-DOI identifier is rejected locally, without
-    a request — both providers are DOI-only.
-
-    The echoed ``doi`` is the canonical form of whatever spelling you passed,
-    so every spelling of one paper correlates to one value across calls.
+    Errors: ``{error, suggestion}`` plus a verdict — ``retryable`` on a transient
+    failure, ``not_found: true`` on a definitive miss (including the local non-DOI
+    rejection, which costs no request: both providers are DOI-only), and neither
+    on an unclassified 4xx, so branch on ``retryable is true``, never on its
+    absence. ``source="auto"`` past page 1 is ``retryable: false``. When *both*
+    providers fail the response adds ``sources: {crossref, opencitations}``, each
+    carrying ``error`` plus any of ``retryable``, ``retry_after_seconds``,
+    ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion``, and the
+    top-level ``retryable`` is the disjunction of the two.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
@@ -295,11 +269,8 @@ async def get_paper_references(
             return enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
         return _opencitations_page(data, doi, page, page_size, kind="references")
 
-    # source == "auto": resolve the source on page 1 only. Pages 2..N must
-    # pin the source returned on page 1 — re-surveying here could pick a
-    # different provider if the cached counts have drifted (a force_refresh
-    # on a later page, or a TTL lapse mid-walk), silently shifting `total`
-    # and the slice offsets out from under the agent.
+    # source == "auto", page 1 only: drifted counts (a later force_refresh, a TTL
+    # lapse mid-walk) could pick a different provider and shift the offsets.
     if page > 1:
         return {
             "error": "source='auto' only resolves on page 1; pin _source to paginate.",
@@ -311,8 +282,6 @@ async def get_paper_references(
             ),
         }
 
-    # Survey both. The fetches are cached so a follow-up page-1 call with
-    # the same DOI doesn't re-fetch.
     cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
     cr_work, oc_data = await asyncio.gather(cr_task, oc_task)
@@ -323,14 +292,10 @@ async def get_paper_references(
     oc_count = oc_data.get("count", 0) if oc_ok else -1
 
     if not cr_ok and not oc_ok:
-        # Both upstreams failed. Surface both errors so the agent can
-        # decide whether to retry or pick one explicitly.
         return {
             "error": "Both reference sources failed for this DOI.",
-            # Retrying the pair is worth it if *either* source might answer on
-            # a second call, so the top-level verdict is the disjunction of the
-            # two. Without it an agent branching on the top level — the shape
-            # every other tool-layer error carries — learns nothing.
+            # Disjunction: retrying the pair helps if *either* might answer, and an
+            # agent branching on the top level (every tool-layer error's shape) needs one.
             "retryable": bool(cr_work.get("retryable") or oc_data.get("retryable")),
             "sources": {
                 "crossref": _source_error(cr_work),
@@ -344,18 +309,14 @@ async def get_paper_references(
             ),
         }
 
-    # Pick the source. With both available, bias toward Crossref's richer
-    # per-entry metadata: OpenCitations wins only when it has materially
-    # more references. When one source errored its count is -1, so the
-    # surviving source wins automatically.
+    # An errored source counted -1 above, so the survivor wins this comparison.
     if oc_count > cr_count * _CROSSREF_HYSTERESIS:
         page_result = _opencitations_page(oc_data, doi, page, page_size, kind="references")
     else:
         page_result = _crossref_refs_page(cr_work, doi, page, page_size)
 
-    # If exactly one source failed, the chosen page came from the survivor.
-    # Surface the failure so an empty/short result isn't read as a confident
-    # "no references" when the other source merely had a transient error.
+    # Surface the survivor's twin failing, so a short page isn't read as a
+    # confident "no references".
     if cr_ok != oc_ok:
         failed = "opencitations" if cr_ok else "crossref"
         failed_result = oc_data if cr_ok else cr_work
@@ -370,17 +331,16 @@ async def get_paper_citations_count(
 ) -> dict[str, Any]:
     """Count incoming citations (papers that cite this work) via OpenCitations.
 
-    Returns ``{doi, count}`` on success or ``{error, suggestion}`` on failure;
-    the echoed ``doi`` is the canonical form of whatever spelling you passed.
-    OpenCitations is the only source for incoming citations (no Crossref
-    equivalent), so unlike get_paper_references_count there is no source
-    survey — call this then page with get_paper_citations.
+    Returns ``{doi, count}``, the echoed ``doi`` canonical rather than the spelling
+    you passed. ``count: 0`` means "no edges in this index", not "nothing cites this
+    work" — OpenCitations answers an unindexed DOI and one with zero edges alike.
+    It is the only source of incoming citations (no Crossref equivalent), so there
+    is no source survey — call this, then page with get_paper_citations.
 
-    ``force_refresh=True`` re-fetches from OpenCitations, bypassing the cache —
-    incoming citations grow continuously, so use it for a fresher count.
-
-    A non-DOI identifier is rejected locally, without a request —
-    both providers are DOI-only.
+    Errors: ``{error, suggestion}`` plus the provider's verdict — ``retryable``
+    (with ``retry_after_seconds`` when advertised) on a transient failure,
+    ``not_found: true`` on a definitive miss, including the local non-DOI
+    rejection, which costs no request: the graph tools are DOI-only.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
@@ -401,30 +361,24 @@ async def get_paper_citations(
 ) -> dict[str, Any]:
     """Page through incoming citations (papers that cite this work) from OpenCitations.
 
-    Returns ``{_source, doi, total, page, page_size, has_more, citations: [...]}``.
-    Each citation entry has cross-referenced IDs flattened at the top
-    level: doi (citing paper), omid, openalex, pmid, creation (date
-    string), journal_self_citation, author_self_citation. No bibliographic
-    metadata — chain a citing DOI into get_paper_metadata for that.
+    Returns ``{_source, doi, total, page, page_size, has_more, citations: [...]}``,
+    the echoed ``doi`` canonical rather than the spelling you passed. Each entry
+    carries whichever cross-referenced IDs OpenCitations listed — doi (citing
+    paper), omid, openalex, pmid — plus creation (date string, may be null),
+    journal_self_citation, author_self_citation. No bibliographic metadata: chain
+    a citing DOI into get_paper_metadata for that. ``total: 0`` means "no edges in
+    this index", not "nothing cites this work".
 
-    Defaults: page=1, page_size=20 (1-50). Call get_paper_citations_count
-    first to see the total. OpenCitations is the only source for incoming
-    citations today, so there is no source parameter (unlike
-    get_paper_references); one would be reintroduced if a second citation
-    source ever ships.
+    Call get_paper_citations_count first for the total. OpenCitations is the only
+    index of incoming citations, so there is no ``source`` parameter and no
+    ``sources`` envelope (unlike get_paper_references); one would return if a
+    second source ships. Omit ``force_refresh`` when paginating so pages 2..N
+    reuse the cache page 1 warmed.
 
-    ``force_refresh=True`` re-fetches from OpenCitations, bypassing the cache —
-    pass it on the first page for fresh coverage; omit it when paginating so
-    page 2..N reuse the warmed cache.
-
-    Errors: bad DOI / upstream failure → ``{error, suggestion}``, plus
-    ``retryable`` and ``retry_after_seconds`` on a transient one, forwarded
-    from OpenCitations. There is no ``sources`` envelope here and no
-    ``source`` parameter: OpenCitations is the only index of incoming
-    citations, so there is nothing to survey between. A non-DOI identifier is
-    rejected locally, without a request, and carries ``not_found: true``.
-
-    The echoed ``doi`` is the canonical form of whatever spelling you passed.
+    Errors: ``{error, suggestion}`` plus the provider's verdict — ``retryable``
+    (with ``retry_after_seconds`` when advertised) on a transient failure,
+    ``not_found: true`` on a definitive miss, including the local non-DOI
+    rejection, which costs no request.
     """
     if (bad := _reject_non_doi(doi)) is not None:
         return bad
