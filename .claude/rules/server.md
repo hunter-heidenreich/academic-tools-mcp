@@ -187,8 +187,13 @@ instead.
   Crossref namespace — but `manual.resolve_metadata_source()` sends every plain
   DOI to **OpenAlex**, so a `search_crossref_by_title` hit is free only for the
   reference tools and the `fallback_crossref` path, never for
-  `get_paper_metadata`. This file is the authority; a docstring, `README.md` or
-  `app.py`'s `instructions=` string that says otherwise is the one to fix.
+  `get_paper_metadata`. `openalex.search_works` is the one that lands where the
+  dispatcher looks: its hits warm `openalex/works` under the same key
+  `get_paper_metadata` reads, so that chain really is free. **That is why it must
+  not use `select=`** — a projected work is a partial object, and warming the key
+  with one poisons every reader of it. This file is the authority; a docstring,
+  `README.md` or `app.py`'s `instructions=` string that says otherwise is the one
+  to fix.
 - **Date extraction is single-homed** in `app.crossref_date` /
   `_CROSSREF_DATE_KEYS`. `paper._format_crossref_metadata` takes both elements,
   `search_crossref_by_title` and `get_paper_bibtex` take `[0]`; don't add a

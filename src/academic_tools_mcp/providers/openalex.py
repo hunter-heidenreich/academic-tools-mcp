@@ -374,6 +374,60 @@ def _canonical_from_response_doi(work_doi: Any) -> str | None:
     return _RESPONSE_DOI_URL_RE.sub("", work_doi.strip()).lower() or None
 
 
+# Our own ceiling on a triage list, not OpenAlex's (per-page allows 200).
+MAX_SEARCH_RESULTS = 50
+
+
+async def search_works(query: str, *, year: int | None = None, rows: int = 10) -> dict[str, Any]:
+    """Search OpenAlex works by free text over title, abstract and fulltext.
+
+    Returns ``{"items": [...], "total_results": N | None}`` — dict-shaped hits
+    only — or ``{"error": ...}`` on transport/HTTP failure or a wrong-shape body.
+    The list is not cached (ad-hoc queries), but each hit with a DOI warms the
+    works cache, exactly as ``crossref.search_works`` does.
+
+    **No ``select=``, deliberately.** A projected work is a partial object, and
+    warming ``works`` with one would poison every reader of that key. The full
+    records cost bytes on the wire that never leave this process, and buy a hit
+    that ``get_paper_metadata`` really can answer for free — which a Crossref hit
+    cannot, every plain DOI routing to OpenAlex.
+    """
+    params = _build_params()
+    params["search"] = query
+    params["per-page"] = str(min(max(rows, 1), MAX_SEARCH_RESULTS))
+    if year is not None:
+        params["filter"] = f"publication_year:{year}"
+
+    try:
+        response = await _throttled_get(f"{OPENALEX_BASE_URL}/works", params=params)
+        response.raise_for_status()
+        data = response.json()
+    except _PARSE_ERRORS:
+        return _parse_error_dict()
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(LABEL, e)
+
+    # A wrong shape here either raises out of the provider or reads as an empty
+    # result set, and "no papers match" ends the agent's search.
+    if not isinstance(data, dict):
+        return _parse_error_dict()
+    results = data.get("results")
+    if not isinstance(results, list):
+        return _parse_error_dict()
+    items = [item for item in results if isinstance(item, dict)]
+
+    for item in items:
+        # ``_canonical_from_response_doi`` handles the resolver prefix a response
+        # DOI carries; a non-string reaches ``doinorm`` and raises AttributeError,
+        # which no ``except`` here catches.
+        if canonical := _canonical_from_response_doi(item.get("doi")):
+            cache.warm(NAMESPACE, "works", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
+
+    meta = data.get("meta")
+    count = meta.get("count") if isinstance(meta, dict) else None
+    return {"items": items, "total_results": count if isinstance(count, int) else None}
+
+
 async def _fetch_chunk(
     chunk: list[str],
     *,

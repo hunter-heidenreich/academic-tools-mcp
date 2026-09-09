@@ -38,6 +38,7 @@ from .tools.search import (
     search_arxiv,
     search_cached_papers,
     search_crossref_by_title,
+    search_openalex,
     search_wikipedia,
 )
 from .util import config
@@ -70,6 +71,7 @@ __all__ = [
     "search_arxiv",
     "search_cached_papers",
     "search_crossref_by_title",
+    "search_openalex",
     "search_wikipedia",
     "wikipedia",
 ]
