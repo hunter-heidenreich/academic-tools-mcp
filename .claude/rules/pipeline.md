@@ -128,20 +128,11 @@ state.
   Deliberately **not** `corpus._filename_to_canonical`: that one repairs the
   slash with each namespace's own *anchored* grammar, which can never match a
   stem carrying the `arXiv:` prefix the legacy `manual` key kept.
-- **The PMID trade is a precondition of every pipeline entry point, `import_paper`
-  included.** It is the one that *writes*, so a spelling it files under and the
-  readers resolve away is an import nothing can read back. `refile_pmid_stems` is
-  the lazy counterpart of `migrate_misrouted_arxiv` for what an older build
-  already stranded, and lazy is the only option: a PMID stem's destination is the
-  paper's **DOI**, which no offline sweep can name. Two invariants beyond the
-  arXiv sweep's:
-  - **It carries the section index rather than letting it re-derive**
-    (`papers.rekey_sections`). Re-deriving resets `conversion_mode` to null, and
-    an operator's own markdown then loses the `"imported"` marker that is the
-    only thing keeping the download cascade from deleting it.
-  - **A bare digit run is linked, never moved.** It is the ambiguous stem a
-    freeform label could equally have written — the same reasoning that makes
-    `_misrouted_arxiv_id` link a repaired slash.
+- **Every pipeline entry point resolves a PMID before routing, `import_paper`
+  included** — it is the one that *writes*, so a spelling it files under and the
+  readers resolve away is an import nothing reads back. `refile_pmid_stems`
+  catches up with what an older build stranded, linking a bare digit run rather
+  than moving it for the reason `_misrouted_arxiv_id` links a repaired slash.
 - **Both import functions stay synchronous; the async boundary is the tool
   layer.** `tools/pipeline.import_paper` wraps each in `asyncio.to_thread` — an
   arbitrarily large copy or parse run inline stalls every concurrent tool call —
