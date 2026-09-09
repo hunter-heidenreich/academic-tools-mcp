@@ -5,166 +5,205 @@ paths:
 
 # API providers
 
+**Per-provider mechanics live in each module's own docstrings and comments** —
+they are written for this, and they are the first thing you will read anyway.
+This file covers only what no single module can say: the contract every client
+holds, and the per-provider quirks that are upstream facts rather than code.
+
 ## Common shape
 
-Every per-provider client uses the same pattern. The two cross-cutting pieces — *throttling* and the *cached-getter protocol* — are **shared infrastructure**, not per-provider code: see `throttle.Throttle` (`.claude/rules/net.md`) and `cache.cached_lookup` (`.claude/rules/store.md`). A provider supplies only its *policy* and its *quirks*. This section is the *client* shape; registration, tools and tests for a brand-new provider are the `add-provider` skill's checklist.
+Throttling (`throttle.Throttle`, `.claude/rules/net.md`) and the cached-getter
+protocol (`cache.cached_lookup`, `.claude/rules/store.md`) are shared
+infrastructure. A provider supplies only its policy and its quirks. **Mirror
+`providers/biorxiv.py`** — the fullest instance — and read `crossref.py` as a
+counter-example, not a template. The build checklist for a new provider is the
+`add-provider` skill's, not this file's.
 
-- Persistent client from `clients.get_client(NAMESPACE, headers=..., timeout=...)`, **always with headers**, and DOI normalization from the shared `doinorm` module — never a local copy of either. Rationale in `.claude/rules/util.md`. Going out as `python-httpx/x.y` is the generic agent several upstreams throttle hardest, and the one that leaves an operator no way to reach us.
-- **`NAMESPACE` and `LABEL` are the module's two names, each spelled once.** `NAMESPACE` is the cache directory and stats row; `LABEL` is the agent-facing provider name, and four sites must agree on it — `Throttle(label=)`, `http.error_dict`, `http.parse_error_dict` and `streaming.stream_to_file(provider_label=)`. A divergence does not fail loudly: `error_dict` prefers a `LocalBackpressureError`'s own `provider` (the throttle's `label`) over its argument, so a hardcoded literal would name the provider one way on the backpressure branch and another everywhere else. `tests/net/test_stats.py` pins the `Throttle` site at runtime; a `tests/test_politeness.py` AST scan pins the other three, discovering modules the way `stats.throttles` does rather than from a roster.
-- `_MAX_CONCURRENT` / `_MIN_REQUEST_GAP` / `_MAX_PENDING` are declared per provider with the reason in a comment beside them and passed to one module-level `Throttle`, reached through thin wrappers: `_throttled_get` (→ `_throttle.get`) wherever the provider parses a body, `_request_slot` (→ `_throttle.slot`) wherever it streams a PDF. `acl` is PDF-only and has only the slot wrapper. **`_throttled_get` is url-only in every provider** and builds the pooled client itself — the client is configured in `_get_client` or nowhere, so no caller has one to pass, and keeping it out of the signature is what makes that true. Crossref's `_MAX_CONCURRENT` / `_MIN_REQUEST_GAP` / `_SEARCH_REQUEST_GAP` are **`_resolve_policy()` output, resolved at import from config** — never read them as fixed numbers; its `_MAX_PENDING` is a literal like every other provider's.
-- Module-level `_single_flight` instance, passed to `cache.cached_lookup`.
-- Each getter is `canonical = canonical_*(id)` → an async `_fetch()` closure holding the HTTP + parse + caching decisions → `return await cache.cached_lookup(...)`. Accept `force_refresh: bool = False` and thread it in; don't hand-roll any of the rest (`.claude/rules/store.md` for what the protocol owns). `wikipedia.canonical_title` is the one canonicalizer built from free-form text rather than an identifier grammar.
-- Pass a tuple `sf_key` when one canonical id has multiple sub-fetches (openalex `("work"|"author", canonical)`, opencitations `("references"|"citations", canonical)`, and arxiv/biorxiv `download_pdf`'s `("pdf", canonical)`, whose `fetch` awaits their own `get_paper` on the same `SingleFlight`); omit it to key on `canonical`, as `acl.download_pdf` does — PDF-only, so nothing can collide.
-- Inside `_fetch`: on definitive 404, write the error dict to negative cache before returning; on a transient parse failure return `_parse_error_dict()` and cache nothing. **Every negative-cached error carries `not_found: True`**, and `http.not_found(message)` is its one constructor — never a hand-spelled dict. That flag is what `tools/graph.py`'s `_FORWARDED_ERROR_KEYS` and `tools/paper.py`'s `fallback_crossref` gate branch on, and it is the only thing distinguishing "the provider does not have this" from "the provider was briefly unreachable". `acl.download_pdf`'s non-ACL-DOI rejection carries it too: a definitive "not mine" that arrives unflagged reads to every classifier as "unknown".
-- **The PDF-downloading providers route `download_pdf` through `streaming.cached_download`** the way getters route through `cache.cached_lookup` — see `.claude/rules/download.md`. Definitive download failures are negative-cached under entity `downloads` in the provider's own namespace; `_NEG_TTL_SECONDS` is the per-provider policy. arxiv and biorxiv reuse their short metadata negative TTL (arXiv renders PDFs lazily, so a just-announced paper's PDF can 404 for minutes; bioRxiv is the same "live in an hour" case), acl declares a long one (static camera-ready CDN — a 404 means a wrong ID or a paper not yet posted).
+Two things the shape does not make obvious:
 
-**Parsing and encoding hardening — the shared contract.** Every client that parses a body holds these; `acl` is PDF-only and has none.
+- **Going out as `python-httpx/x.y`** is the generic agent several upstreams
+  throttle hardest, and the one that leaves an operator no way to reach us.
+  Hence headers always, from the shared `useragent` module.
+- **`acl` is PDF-only**, so it has the slot wrapper but no `_throttled_get`, no
+  metadata getter, and none of the parsing contract below.
 
-- **A malformed or truncated 200 body is transient, not definitive.** The `json.JSONDecodeError` (or `ET.ParseError`) is caught via the module's `_PARSE_ERRORS` and returned as `_parse_error_dict()` — `{error, retryable: True}`, a fresh dict each call — and is **not** negative-cached, so a retry re-fetches.
-- **An anomalous 200 of the wrong shape is treated identically**, rather than crashing the parse. Each provider knows what "wrong shape" means for its endpoint (non-dict, missing the entity `id`, not a list of records), and none of them is ever positive-cached for the TTL. **The guard goes all the way down to the elements, and to the fields a key is built from**: a list-shaped payload is checked for being a list, its entries for being dicts, and any field handed to `doinorm.normalize` / `.split()` for being a `str` — each raises `AttributeError`, in neither `_PARSE_ERRORS` nor `HTTPX_ERRORS`, on the wrong type. An annotation is not a guard here: these values come from untyped JSON, so `raw: str | None` buys nothing at runtime. A wrong shape is an error, never an empty result set: reported as "no matches", it ends the agent's search instead of prompting a retry.
-- **Identifiers reaching a request path are percent-encoded** via `quote(...)`, so reserved characters (`#`, `?`, a stray `/`) can't split the path or truncate the request to the wrong record. `safe=` differs per provider and is a policy, not a default — `openalex.get_author` uses `safe=":/"` so the ORCID-URL spelling OpenAlex resolves survives byte-identical, while `acl.pdf_url` uses `safe=""` because an Anthology ID has no path structure, so a stray `/` is an escape. **Encoding is not sufficient on its own**: a `.` or `..` path segment is *removed* by RFC 3986 resolution, and both characters are unreserved, so no `quote` escapes them. `http.addresses_a_record` is the shared guard for it (`.claude/rules/net.md`); `openalex`, `crossref`, `opencitations`, `wikipedia` and `biorxiv` all refuse before spending the request. **It is necessary, not sufficient, and what it misses differs per provider** — it tests the *trailing* segment, so a provider that interpolates its identifier anywhere else needs a second check of its own: `openalex` and `opencitations` test the bare identifier (a `doi:` prefix keeps the last segment non-empty), and `biorxiv` tests for an empty segment *anywhere* in the DOI, because its identifier sits mid-path. That second check cannot be shared: an empty segment is legal in `openalex.get_author`'s deliberately URL-shaped identifier, which `safe=":/"` exists to preserve.
+### Parsing and encoding — the shared contract
+
+- **A malformed or truncated 200 body is transient; an anomalous 200 of the
+  *wrong shape* is treated identically.** Neither is ever positive-cached.
+- **The guard goes all the way down to the elements, and to the fields a key is
+  built from.** A list-shaped payload is checked for being a list, its entries
+  for being dicts, and any field handed to `doinorm.normalize` / `.split()` for
+  being a `str` — each raises `AttributeError` on the wrong type, and
+  `AttributeError` is in neither `_PARSE_ERRORS` nor `HTTPX_ERRORS`, so an
+  unguarded body escapes the provider entirely instead of surfacing as the
+  uniform `{error, retryable}` contract. **An annotation is not a guard here**:
+  these values come from untyped JSON, so `raw: str | None` buys nothing at
+  runtime. Each provider names its guard — `crossref._message_of`,
+  `wikipedia._summary_of`, `opencitations._edges_of`, `biorxiv._collection_of` —
+  so the check and the comprehension it protects stay one thought.
+- **A wrong shape is an error, never an empty result set.** Reported as "no
+  matches", it ends the agent's search instead of prompting a retry.
+- **`safe=` is per-provider policy, not a default.** `openalex.get_author` uses
+  `safe=":/"` so the ORCID-URL spelling OpenAlex resolves survives byte-identical;
+  `acl.pdf_url` and `wikipedia` use `safe=""` because their identifiers have no
+  path structure, so a stray `/` is an escape. The request-side guard that
+  `quote` cannot be, and the second check each provider owes on top of it, are in
+  `.claude/rules/net.md` § `addresses_a_record` — this file does not restate it.
+- **Every negative-cached error carries `not_found: True`, built by
+  `http.not_found`** — never a hand-spelled dict. `acl.download_pdf`'s
+  non-ACL-DOI rejection carries it too: a definitive "not mine" that arrives
+  unflagged reads to every classifier as "unknown".
 
 ## openalex.py
 
-Singleton endpoints (`/works/{id}`, `/authors/{id}`). Each entity has a **public** `canonical_*` (`canonical_doi`, `canonical_author_id`); `manual` and the tool layer import `canonical_doi`, while `canonical_author_id` is the module's own cache-key form — the tool layer round-trips OpenAlex's raw `id` URL back through `get_author`, which normalizes on the way in.
+**Guards reach the elements, not just the top-level object.** Three values come
+from untyped JSON and are consumed where nothing above catches an
+`AttributeError`/`TypeError`: `best_pdf_url`'s sub-objects and URLs (the OA
+download trust boundary — `streaming.cached_download` does not wrap its `fetch`),
+`_canonical_from_response_doi`'s argument (it runs *after* the batch request's
+`try` has closed), and `reconstruct_abstract`'s index (`get_paper_abstract` has
+no `try`). Each takes `Any`, type-checks, and degrades to `None` / `""`.
 
-**The two getters share one body, `_fetch_singleton`** — the seam `opencitations._fetch_direction` is, and for the same reason. It owns every decision the entities must not disagree about: 404 tested *before* `raise_for_status`, `not_found: True` negative-cached on a definitive miss, parse and transport failures returned uncached, an anomalous 200 treated as a parse failure, a good record cached. The caller supplies only its URL (with its own `quote` policy), canonical key, not-found wording and tuple `sf_key`. A third entity is that, not another copy.
+**`get_author` needs the request-side guard in reverse.** An empty author id
+*does* leave a trailing slash, and `safe=":/"` means its identifier may
+legitimately contain empty segments (`https://orcid.org/...`), so only the
+trailing-segment rule is safe there — not the bare-identifier check
+`_fetch_singleton` applies to a DOI.
 
-**Identifier handling.** The bare DOI comes straight from `doinorm.normalize` (`.claude/rules/util.md`) and is encoded into `/works/doi:{doi}` with `quote(..., safe="/")`. `_normalize_author_id` collapses the `openalex.org` URL family through `_OPENALEX_URL_RE` — optional scheme, optional `www.`/`api.` label, optional entity path segment, trailing slash, case-folded, matching `doinorm._DOI_URL_RE`'s and `arxiv._ARXIV_URL_RE`'s latitude for the same reason. It is gated on an entity-shaped tail (`[a-z]\d+`) so an **ORCID URL falls through verbatim**, which is the spelling OpenAlex itself resolves. Wrong shape for both entities means non-dict *or* missing the entity `id` key.
-
-**`http.addresses_a_record` is the request-side guard `quote` cannot be.** A `.`/`..` path segment is removed by RFC 3986 resolution *after* percent-encoding — both characters are unreserved, so no encoder escapes them — and an identifier that normalized to nothing leaves the path at the entity collection. Either way the request lands on a shorter, existing endpoint (a different record, or a list) and its response caches under the key we asked for. `_fetch_singleton` refuses both before spending the request, returning the caller's definitive not-found, as `acl._strip_acl_prefix` refuses an empty suffix. It checks the *encoded* path, so an escaped `%2E` is a normal segment. The `doi:` prefix protects only the first segment: `10.1000/a/..` is a work DOI that shortens the path.
-
-**That is why `_fetch_singleton` takes `bare` as well as `url`.** The `doi:` prefix keeps the last path segment non-empty, so a DOI that normalized to nothing sails past `addresses_a_record` and spends a request on `/works/doi:` — then negative-caches the 404 under the empty key, where every blank identifier would find it. `opencitations._fetch_direction` holds the same two checks for the same reason. `get_author` needs the URL half in reverse: an empty author id *does* leave a trailing slash, and `safe=":/"` means its identifier may legitimately contain empty segments (`https://orcid.org/...`), so only the trailing-segment rule is safe there.
-
-**Guards reach the elements, not just the top-level object.** Three values here come from untyped JSON and are consumed where nothing above catches an `AttributeError`/`TypeError`: `best_pdf_url`'s sub-objects and URLs (the OA download trust boundary — `streaming.cached_download` does not wrap its `fetch`), `_canonical_from_response_doi`'s argument (it runs *after* the batch request's `try` has closed), and `reconstruct_abstract`'s index (`get_paper_abstract` has no `try`). Each takes `Any`, type-checks, and degrades to `None` / `""` rather than raising. `best_pdf_url` returns a non-empty `str` or nothing — whatever it returns is fetched.
-
-**Batch fetch:** `get_works_batch` collapses N cache-miss DOIs into ⌈N/`_BATCH_CHUNK_SIZE`⌉ HTTP calls via `/works?filter=doi:DOI1|DOI2|...`. It chunks the *misses*, not the argument, so a warm cache exercises none of it. Cached entries (positive or negative) are served without a network call. Each fetched work is written to the singleton cache, so a follow-up `get_work(doi)` is a free hit. A DOI containing OpenAlex filter metacharacters (`|` = OR, `,` = AND) would corrupt the OR-joined filter, so it is split out and resolved individually through `get_work`. A parse failure, non-dict body or non-list `results` on the batch GET maps every DOI in that chunk to a retryable `_parse_error_dict()`. The response is re-keyed in **first-appearance order of the input**, and is total: one entry per distinct canonical DOI.
-
-A requested DOI missing from the response is negative-cached **only when the response accounted for itself**: every returned record was attributable to a DOI we asked for, and `meta.count` did not exceed `len(results)`. *Unattributable* is the whole set — a non-dict entry, a record with no usable `doi`, and one carrying a DOI string we did not ask for are one case, not three, and each blocks negative caching for the entire chunk. Otherwise the miss is inconclusive and returns `{error, retryable: True}` uncached — negative-caching a truncated page would poison a live DOI for the full negative TTL. A record that is attributable but unrequested is still cached under its own key; it is real data.
-
-Per-chunk errors are one fresh dict per key — never `dict.fromkeys`, which would alias one object across the whole chunk. That per-key freshness is why `_fetch_chunk` is the one deliberate `SingleFlight.do` caller that skips `cached_lookup`'s deep copy; its docstring carries the argument. `_fetch_chunk`'s `force_refresh` argument rides in the single-flight key and nowhere else: `get_works_batch` has already invalidated, so all that is left is keeping a forced refresh from coalescing with a plain call.
+**A batch miss is negative-cached only when the response accounted for itself**:
+every returned record attributable to a DOI we asked for, **and `meta.count` not
+exceeding `len(results)`**. That second conjunct is the one that is easy to drop
+— without it a truncated page poisons a live DOI for the full negative TTL.
 
 ## arxiv.py
 
-arXiv Atom API (`export.arxiv.org/api/query`).
+**The version suffix is part of the cache key**, deliberately the opposite of
+bioRxiv. `2301.00001` means "whatever is current"; `2301.00001v2` means that
+revision. Do not "normalize" it away.
 
-**The version suffix is part of the cache key.** `2301.00001` means "whatever is current"; `2301.00001v2` means that revision. Stripping it serves the wrong paper — the fetch keeps the version even when the key doesn't. Do not "normalize" it away. `get_paper`'s "not found" path covers three definitive shapes — a 200 with no entries, arXiv's 200-with-`api/errors` entry, and a genuine HTTP 404 — collapsed onto **one** `_not_found()` closure so all three cache one payload carrying `not_found: True`. The 404 is tested on `response.status_code` *before* `raise_for_status`, as every sibling does: routed through `http.error_dict` instead it is an uncached body snippet carrying no `not_found`, so the miss is never established. Transient failures (5xx / timeout / 429 / backpressure) are returned as retryable errors and **not** cached.
+**A spelling `normalize_arxiv_id` rejects does not merely fail to fetch.** It is
+not an arXiv *shape* either, so `manual.resolve_target` files the paper under
+`manual` with a canonical key that is already arXiv's — and the same paper
+caches, downloads and converts twice. That cost is what buys the permissiveness:
+`_ARXIV_URL_RE` carries `re.IGNORECASE`, an optional scheme and an optional
+`www.`/`export.` label, matching `doinorm._DOI_URL_RE`'s latitude, because those
+are the forms pasted citations and plain-text notes carry.
 
-**`normalize_arxiv_id` is the single home for the ID's spellings, and it must stay idempotent.** It accepts a bare id, an `arXiv:` prefix in any case (arXiv's own "Cite as" form), an `abs`/`pdf` URL, and arXiv's own DataCite DOI. **Invariant: the prefix is stripped before the URL and DOI handling, in a loop, with whitespace re-stripped after** — the ordering `doinorm.normalize` holds for `doi:`, and for the same reasons: `arXiv:https://arxiv.org/abs/…` occurs in pasted citations, and a single pass leaves `arXiv:arXiv:…` keying separately from its own output. A spelling this rejects does not merely fail to fetch: it is not an arXiv *shape* either, so `manual.resolve_target` files the paper under `manual` with a canonical key that is already arXiv's, and the same paper caches, downloads and converts twice.
+**`ARXIV_DOI_PREFIX` is stripped only when the tail is itself arXiv-shaped.** The
+prefix names arXiv's DOI registrant, not a promise about what follows; stripping
+it unconditionally mangles an unrelated DataCite record *and* costs the pass its
+idempotence for a nested spelling. It is public for the reason
+`acl.ACL_DOI_PREFIX` is — one spelling of a registrant, not two.
 
-Two consequences of that cost, both load-bearing:
+**arXiv answers HTTP 200 with a synthetic `api/errors` entry for both an invalid
+id and a malformed `search_query`.** Parsed as a normal entry it becomes a "hit"
+whose id is an errors URL, which the agent then chains the next tool call onto.
+`_is_error_entry` is shared so `get_paper` and `search_papers` classify it
+identically — as not-found and as a non-retryable query rejection respectively.
 
-- **`_ARXIV_URL_RE` is `re.IGNORECASE` with an optional scheme and an optional `www.`/`export.` host label**, matching `doinorm._DOI_URL_RE`'s latitude for the same reason — those are the forms pasted citations and plain-text notes carry.
-- **`ARXIV_DOI_PREFIX` (`10.48550/arXiv.`) is stripped only when the tail is itself arXiv-shaped.** The prefix names arXiv's DOI registrant, not a promise about what follows; stripping it unconditionally mangles an unrelated DataCite record *and* costs the pass its idempotence for a nested spelling. The prefix is public for the reason `acl.ACL_DOI_PREFIX` is — one spelling of arXiv's registrant, not two — though unlike ACL's it currently has no consumer under `src/`: `bibtex` builds `eprint` through `normalize_arxiv_id` / `strip_version`, not from the constant.
+**arXiv raises `retry_attempts` above the shared default.** Its Fastly edge
+returns 429/503 with no `Retry-After` when an IP is briefly penalty-boxed, and
+one retry tends to land in the same cooldown; two ride `get_with_retry`'s backoff
+out of it.
 
-The *shape* is `is_arxiv_id`, public beside it: `manual`'s two dispatchers route on it exactly as they route on `biorxiv.is_biorxiv_doi` and `acl.is_acl_doi`, so no caller re-derives what an arXiv id looks like. `OLD_ARCHIVE_PATTERN` / `OLD_NUMBER_PATTERN` are exported for the reason `doinorm` exports `REGISTRANT_PATTERN` — `corpus` matches the old-style form over `safe_stem`'s `_` rather than `/`, and a second spelling would let it invert a stem that never routes here. The new-style grammar crosses no module boundary and stays private.
-
-**Version stripping has one body, in two spellings of one rule.** `strip_version` preserves case (BibTeX's `eprint` keeps `math.GT/0309136`'s archive class); `base_arxiv_id` is `strip_version` over the folded canonical, and is the cache key a bare request uses. `id_from_entry` inverts the `id` URL in a parsed Atom entry — the tool layer's `arxiv_id` field and `search_papers`' warm keys both come from it, so a local `split("/abs/")` anywhere is a fork.
-
-**`search_papers` warms both keys, through `cache.warm`.** Each hit is written under `canonical_arxiv_id` *and* `base_arxiv_id`: warming only the versioned one would leave every bare lookup a miss. `max_results` is clamped to the exported `MAX_SEARCH_RESULTS`, which is also the `search_arxiv` tool's validation bound.
-
-**arXiv answers with HTTP 200 and a synthetic `api/errors` entry for both an invalid id *and* a malformed `search_query`.** `_is_error_entry` is shared so `get_paper` and `search_papers` classify it identically — as not-found and as a non-retryable query rejection respectively. Parsed as a normal entry it becomes a "hit" whose id is an errors URL, which the agent then chains the next tool call onto.
-
-**The positive TTL is long (14 days) because an arXiv record is stable per version** — but a bare id keys on *whatever is current*, so it is not unbounded: a revision uploaded next week has to surface without a `force_refresh`.
-
-**arXiv raises `retry_attempts` above the shared default.** arXiv's Fastly edge returns 429/503 with no `Retry-After` when an IP is briefly penalty-boxed, and one retry tends to land in the same cooldown; two ride `get_with_retry`'s backoff out of it.
-
-**XML is parsed with `defusedxml`**, so an entity-expansion payload is refused rather than expanded; the refusal joins `ET.ParseError` in `_PARSE_ERRORS` and is transient, not not-found. `get_paper` and `search_papers` share it.
+**XML is parsed with `defusedxml`**, and the refusal joins `ET.ParseError` in
+`_PARSE_ERRORS` — transient, not not-found.
 
 ## biorxiv.py
 
-bioRxiv/medRxiv API (`api.biorxiv.org`). Nothing in the shared `10.1101/` prefix tells the two servers apart, so `get_paper` tries bioRxiv and falls back to medRxiv — including when the *first* response was wrong-shape, since medRxiv may still answer cleanly. (A body that doesn't parse at all never reaches that branch; it raises out at `.json()`.)
-
-**A bioRxiv DOI names the paper, not a version — deliberately the opposite of arxiv.** `_normalize_doi` strips a `v\d+` suffix and any rendering tail (`.full`, `.full.pdf`, `.abstract`, `.supplementary-material`) from *both* the content-URL and the bare spelling, so every rendering of one preprint keys on one string. bioRxiv mints one DOI for all versions, the details path is only ever asked for the whole set (`/na/`) and `_pick_latest_version` takes the newest — a suffixed key names no distinct record, and upstream rejects it as "DOI not recognizable", which the endpoint reports as a well-formed empty collection and this module would negative-cache as a definitive miss. `_RENDER_TAIL_RE`'s word-segment alternative requires a non-digit first character; that is what keeps it off the DOI's own dotted suffix, whose every segment is numeric. The strip is gated on `DOI_PREFIX` because `is_biorxiv_doi` shows `_normalize_doi` every DOI in the repo.
-
-**The DOI is a *middle* path segment (`/details/{server}/{doi}/na/json`), so `get_paper` holds two request-side checks.** A `.`/`..` shortens the path to `/details/{server}/na/json` — the interval/cursor form of the same endpoint, a live route whose well-formed collection `_pick_latest_version` would cache as this DOI's paper; `http.addresses_a_record` catches that. An *empty* segment is not removed by RFC 3986, and `addresses_a_record` tests only the trailing one, so `10.1101/` leaves `/details/biorxiv//na/json` looking well-formed; the module tests the DOI's own segments for that. Neither refusal is cached — no request was spent. `download_pdf` inherits both through `get_paper`. `_BIORXIV_URL_RE` carries `re.IGNORECASE`, an optional scheme and an optional `www.` for the reason `_ARXIV_URL_RE` does.
-
-**"Not found" needs *both* servers to have answered well-formed.** `_collection_of` returns `None` for a wrong-shape body and a list (possibly empty) for a well-formed one; its shape guard is load-bearing, not padding — the docstring says why. Only when bioRxiv *and* medRxiv both return a well-formed **empty** collection is the miss definitive and negative-cached (carrying `not_found: True`, as arxiv's and openalex's do). If either was wrong-shape nothing was established: `_parse_error_dict()`, uncached. Negative-caching on one server's evidence files a live preprint as absent for the negative TTL.
-
-`published_doi` appears asynchronously once a preprint is published; that lag is what sets the positive TTL and what `follow_published` consumes (`.claude/rules/server.md`).
+`published_doi` appears asynchronously once a preprint is published; that lag is
+what sets the positive TTL and what `follow_published` consumes
+(`.claude/rules/server.md`). Everything else about this module — the two-server
+fallback, the version-is-not-identity rule, the two request-side checks, the
+both-servers-must-answer rule — is stated at length in its own comments.
 
 ## crossref.py
 
-Crossref REST API (`api.crossref.org/works/{doi}`). Full work object cached; the tool layer slices out the reference list with pagination.
-
-**Search opportunistically warms the works cache** — each `search_works` hit with a DOI goes through `cache.warm` (`.claude/rules/store.md`), which owns the TTL-aware probe. A subsequent `get_work(doi)` is a free cache hit. Wrong shape here is a four-rung ladder, not one check: non-dict body, non-dict `message`, non-list `items` all return `_parse_error_dict()`, and non-dict entries *inside* a valid `items` list are dropped before anything reads `item["DOI"]`. The first two rungs are `_message_of`, shared by both readers — `get_work` takes the envelope itself as the work, `search_works` adds the `items` rungs on top — so the two cannot disagree about what a Crossref body is. `rows` is clamped to the exported `MAX_SEARCH_ROWS`. As with `arxiv.MAX_SEARCH_RESULTS` and `wikipedia.MAX_SEARCH_LIMIT`, it is also the tool validation bound: `search_crossref_by_title`'s `max_results` carries `le=crossref.MAX_SEARCH_ROWS` and is passed as `rows`.
-
-**`http.addresses_a_record` guards the request path, and here the stakes are the highest of the three providers holding it.** A `.`/`..` segment shortens `/works/{doi}` to the `/works` *collection*, whose 200 carries a work-list under a dict `message` — it clears all four rungs of the shape ladder above and positive-caches as that DOI's work. Refused before the request is spent, returning the same definitive not-found the 404 branch does, uncached.
-
-**The year filter is deliberately year-only** (`from-pub-date:{year},until-pub-date:{year}`). Crossref does not document how it pads a partial date, and CrossRef/rest-api-doc#7 reports the fully-specified form dropping works whose deposited date is itself year-only — so spelling out `-01-01` / `-12-31` is a regression, not a hardening.
-
-**The tier is chosen from config, not assumed.** `_resolve_policy()` picks the rate constants at import from `in_polite_pool()`, so `_MAX_CONCURRENT` / `_MIN_REQUEST_GAP` / `_SEARCH_REQUEST_GAP` are its output rather than literals — don't read any one of them as a fixed number. Limits per Crossref's REST API docs; this table is the one `tests/test_politeness.py` points at:
+**The tier is chosen from config, not assumed.** `_resolve_policy()` picks the
+rate constants at import from `in_polite_pool()`, so `_MAX_CONCURRENT` /
+`_MIN_REQUEST_GAP` / `_SEARCH_REQUEST_GAP` are its *output* — don't read any one
+of them as a fixed number. Limits per Crossref's REST API docs:
 
 |        | singles    | search    | concurrent |
 |--------|------------|-----------|------------|
 | polite | 10 req/sec | 3 req/sec | 3          |
 | public | 5 req/sec  | 1 req/sec | 1          |
 
-If you touch these, keep the two halves in lockstep: **the rate we take must follow the identity we send.** Hardcoding the polite tier while the mailto stays unconfigured makes the documented default (an empty `.env`) request at the polite rate anonymously.
+**The rate we take must follow the identity we send.** Hardcoding the polite tier
+while the mailto stays unconfigured makes the documented default (an empty
+`.env`) request at the polite rate anonymously.
 
-`_resolve_policy()` runs at **import** but `_build_headers()` reads config per request, so changing `CROSSREF_MAILTO` in a live process moves the identity without moving the rate — a tier mismatch, not a no-op. Restart, same as `ENABLE_DEBUG_TOOLS`.
+**`_resolve_policy()` runs at import but `_build_headers()` reads config per
+request**, so changing `CROSSREF_MAILTO` in a live process moves the identity
+without moving the rate — a tier mismatch, not a no-op. Restart, same as
+`ENABLE_DEBUG_TOOLS`.
 
-Search is paced separately (`_throttled_search_get`) because Crossref limits it far more tightly than singleton lookups — sharing the singles throttle leaves the search limit unenforced in either tier. The search gate rides *on top of* the shared `Throttle` rather than owning a second one: Crossref's concurrency budget covers all requests, so a separate semaphore would let searches and singles together exceed it. Search uses `query.bibliographic` on `/works`.
+**The year filter is deliberately year-only.** Crossref does not document how it
+pads a partial date, and CrossRef/rest-api-doc#7 reports the fully-specified form
+dropping works whose deposited date is itself year-only — so spelling out
+`-01-01` / `-12-31` is a regression, not a hardening.
 
-The gate stamps `_last_search_time` *before* handing off to the singles slot, so under mixed load a queued search can start later than its stamp and two searches land closer together than the gap. Known and accepted: reserving the instant the way `Throttle.slot` does needs a second `Throttle`, whose `pending` `stats.throttles()` would then sum into this namespace's `in_flight` row.
+**Accepted limitation:** the search gate stamps `_last_search_time` *before*
+handing off to the singles slot, so under mixed load a queued search can start
+later than its stamp and two searches land closer together than the gap.
+Reserving the instant the way `Throttle.slot` does needs a second `Throttle`,
+whose `pending` `stats.throttles()` would then sum into this namespace's
+`in_flight` row.
 
 ## opencitations.py
 
-OpenCitations Index API v2. Outgoing references (`/references/doi:...`) and incoming citations (`/citations/doi:...`).
+**An empty list is a real answer, positive-cached.** An unknown-but-well-formed
+DOI answers 200 with `[]`, never 404 — OpenCitations cannot tell "never indexed"
+from "indexed with zero edges", so neither can this module. **Don't "fix" it into
+a definitive miss the way `biorxiv._collection_of` does**: bioRxiv's empty
+collection means the DOI is absent, OpenCitations' does not.
 
-**Encoding and shape.** The bare DOI is encoded into `.../doi:{doi}` with `quote(..., safe="/")` — the `doi:` scheme prefix and the DOI's own slash stay literal. Wrong shape here means anything that isn't a list of records (dict / null / string), which would otherwise crash the `_format_record` comprehension; non-dict items inside a valid list are skipped, and `count` follows the records that survive that filter. `_edges_of` is that guard *and* the formatting, named together for the reason `biorxiv._collection_of` is — the check and the comprehension it protects are one thought.
-
-**The request-side guard is two checks, not one.** `http.addresses_a_record` catches the `.`/`..` segment, but the `doi:` prefix keeps the last segment non-empty, so an identifier that normalized to nothing gets past it and asks upstream about `doi:` — `_fetch_direction` tests the bare DOI as well, as `openalex._fetch_singleton` does. Both refusals are uncached: no request was spent, so nothing was learned worth holding for the negative TTL.
-
-**An empty list is a real answer, positive-cached.** An unknown-but-well-formed DOI answers **200 with `[]`**, not 404 — OpenCitations cannot tell "never indexed" from "indexed with zero edges", so neither can this module, and `{kind: [], count: 0}` is cached like any other result. The 404 branch is therefore rare in practice and covers a malformed path or an upstream route change; it stays because it is the only thing that can carry `not_found: True` here. Don't "fix" the empty case into a definitive miss the way `biorxiv._collection_of` does: bioRxiv's empty collection means the DOI is absent, OpenCitations' does not.
-
-**`_parse_ids` drops a token with no `:` and one with an empty value.** Its pairs are flattened onto the record by `_format_record` and forwarded verbatim by `tools/graph.py`, so a blank `doi` would read to an agent as a real identifier to chain the next tool call onto. A repeated prefix takes the last token — not a decision anyone made, and pinned by a test rather than relied on.
-
-`get_references` / `get_citations` are one-line wrappers over a shared `_fetch_direction(doi, *, kind, id_field, force_refresh)`; the two directions differ only by `kind` (API path segment, cache entity, result key) and `id_field` (`"cited"` / `"citing"`). The 404 negative-caches per direction, so one DOI can be a definitive miss for references and a hit for citations.
+**`_parse_ids`' pairs are forwarded verbatim to the agent** by `_format_record`
+and `tools/graph.py`, so a blank `doi` would read as a real identifier to chain
+the next tool call onto — hence the drops. A repeated prefix takes the last
+token: not a decision anyone made, and pinned by a test rather than relied on.
 
 ## wikipedia.py
 
-MediaWiki OpenSearch (`/w/api.php?action=opensearch`) for title search; Wikimedia REST (`/api/rest_v1/page/summary/{title}`) for summaries. **Requests without a `User-Agent` may be blocked outright.**
+**Requests without a `User-Agent` may be blocked outright.**
 
-**`canonical_title` is the single home for a title's spellings**, as `canonical_doi` is for a DOI's — the one provider whose canonical form is built from free-form user text rather than an identifier grammar. It is the cache key *and* the URL path segment, so the two cannot drift. Three rules, each load-bearing:
-
-- **Space and underscore are one character to MediaWiki, and runs of them collapse**, so every spacing of one article keys once. Skip this and `Cytochrome P450`, `Cytochrome_P450` and `Cytochrome  P450` are three cache entries free to disagree.
-- **Only the leading character is folded.** Wikipedia auto-capitalizes the first letter and nothing else, so `PET` and `Pet` are distinct articles and a full fold serves one for the other.
-- **That fold must preserve length.** `"ß".upper()` is `"SS"` — a two-character expansion that names a different title — so the upper is taken only when it is one character.
-
-**Encoding — `safe=""`, unlike the DOI providers.** The title is encoded with `quote(canonical, safe="")`, escaping the *whole* segment: a slash in a title like `AC/DC` is part of the title, not a path separator.
-
-**`http.addresses_a_record` guards the request path.** A `.`/`..` title survives `quote` (both characters are unreserved) and RFC 3986 then *removes* the segment, landing the request on `/api/rest_v1/page` — a live endpoint whose dict-shaped body clears the non-dict guard below and positive-caches as that title's summary for the 30-day TTL. An all-whitespace title empties the segment for the same effect. Both are refused before the request is spent, returning the definitive not-found uncached.
-
-**Wrong shape.** For `get_summary`, a non-dict body, which would crash the `data.get(...)` calls; `content_urls` and its `desktop` sub-object are checked the same way, each raising `AttributeError` — in neither `_PARSE_ERRORS` nor `HTTPX_ERRORS` — on the wrong type, and degrading to `""`. For `search`, anything that isn't the 4-element OpenSearch array with list-shaped titles and urls: two *strings* zip into per-character "hits" an agent would chain the next tool call onto. Non-string entries inside valid lists are dropped. Never an empty result set — see § Common shape.
-
-`MAX_SEARCH_LIMIT` is the `search_wikipedia` tool's validation bound as well as the provider's clamp, as arxiv's `MAX_SEARCH_RESULTS` and crossref's `MAX_SEARCH_ROWS` are for theirs.
-
-The 404 error dict carries `not_found: True` (mirroring `openalex.get_work`) and is negative-cached.
+**`canonical_title` is built from free-form user text rather than an identifier
+grammar** — the only canonicalizer here that is. It is the cache key *and* the
+URL path segment, so the two cannot drift; its three folding rules and the
+`"ß".upper()` length trap are in its own docstring.
 
 ## acl.py
 
-**The module is `acl`; the namespace is `acl_anthology`.** The one place the two diverge — every other provider's module name is its namespace. `NAMESPACE` is the cache *directory* name, so folding it to `acl` orphans every cached ACL artifact; rename it only behind a sweep like `migrate_legacy_pdf_stems`. It is also the value an agent passes to `search_cached_papers(namespace=...)`.
+**The module is `acl`; the namespace is `acl_anthology`** — the one place the two
+diverge. It is also the value an agent passes to
+`search_cached_papers(namespace=...)`.
 
-PDF source for ACL Anthology papers. Downloads camera-ready PDFs from `aclanthology.org`. No API, no auth, no documented rate limit — but routes through the same canonical pooled-client + retry + burst-cap shape as every other provider, with no inter-start gap and single-flight on the canonical DOI. `manual.resolve_target()` is what routes an ACL DOI here, and it must be checked before the generic-DOI branch.
-
-**Invariant: the Anthology ID addresses the CDN and names nothing on disk.** `pdf_path` keys on `canonical_key`, so the PDF, the markdown and the section index share one stem — the identity `corpus._restore_slashes` inverts an ACL filename with, and the reason `tools/pipeline`'s force_refresh cascade (which drops artifacts keyed on `target["canonical"]`) reaches the file the agent just replaced. Key the PDF on the Anthology ID instead and this becomes the one namespace whose three artifacts disagree.
-
-`doi_to_anthology_id` therefore serves `pdf_url` and the `anthology_id` provenance field only: it strips the prefix (case-insensitively) and **uppercases old-format IDs** (`_OLD_FORMAT_ID_RE`, e.g. `P16-1160`), because the CDN path is case-sensitive and Crossref hands these DOIs back lowercased. New-format IDs (`2023.acl-long.1`) must stay untouched. `canonical_key` is `doinorm.canonical` — ACL layers no URL form of its own, so unlike `biorxiv.canonical_key` there is no second normalization step to hold here, and no `_normalize_doi` wrapper either: `_strip_acl_prefix` takes `doinorm.normalize`'s output directly.
-
-**A blank suffix is not an ACL DOI.** `_strip_acl_prefix` rejects `10.18653/v1/`, so it falls through to the generic-DOI route: it names no paper, and anything that got past would reach `pdf_url` as an empty Anthology ID — the hole `manual._identifier_error` closes for a blank import.
-
-**`migrate_legacy_pdf_stems()`** re-files PDFs written under the old Anthology-ID stem, at startup beside `stems.migrate_legacy_stems` and `manual.migrate_misrouted_arxiv`. Same discipline as those (`.claude/rules/pipeline.md`): `.pdf` only, materialised listing via `stems.list_dir`, skip on collision, idempotent because a migrated stem now carries the `safe_stem(ACL_DOI_PREFIX)` prefix the sweep gates on. Only `pdfs/` moves — markdown and sections were always canonical-keyed.
-
-`ACL_DOI_PREFIX` is exported (as `biorxiv.DOI_PREFIX` is) for the reason `doinorm` exports `REGISTRANT_PATTERN`: `corpus._NAMESPACE_DOI_PREFIXES` needs the prefix rather than the function, and a second spelling would let the router and the stem inverter disagree.
+**Invariant: the Anthology ID addresses the CDN and names nothing on disk.**
+`pdf_path` keys on `canonical_key`, so the PDF, the markdown and the section
+index share one stem — the identity `corpus._restore_slashes` inverts an ACL
+filename with, and the reason `tools/pipeline`'s force_refresh cascade (which
+drops artifacts keyed on `target["canonical"]`) reaches the file the agent just
+replaced. Key the PDF on the Anthology ID instead and this becomes the one
+namespace whose three artifacts disagree.
 
 ---
 
 ## Politeness: what is enforced, and what is not
 
-Enforced per provider: the inter-start gap, the concurrency cap, the burst cap, `Retry-After` (both the delay-seconds **and** the HTTP-date form RFC 9110 permits — Wikimedia- and Cloudflare-fronted endpoints emit dates), and a descriptive `User-Agent`.
+Enforced per provider: the inter-start gap, the concurrency cap, the burst cap,
+`Retry-After` in both RFC 9110 forms, and a descriptive `User-Agent`.
 
-Two limits are real and deliberately **not** solved. State them rather than implying the caps are stronger than they are:
+Two limits are real and deliberately **not** solved. State them rather than
+implying the caps are stronger than they are:
 
-- **Caps are per-process, not per-machine.** Each provider's `Throttle` is one module-level instance holding its own `asyncio.Semaphore`, so the cap is scoped to the interpreter. Two server instances on one machine (Claude Desktop *and* the CLI, a common setup) each get their own allowance, so arXiv's documented "single connection" rule is honoured *per process* and the host as a whole can double it. Fixing this needs a file-lock or a shared token bucket; until then, arxiv's `_MAX_CONCURRENT` is a per-process claim.
-- **`max_pending` bounds queued *plus* in-flight callers**, not queued alone, so a provider's declared burst cap buys less headroom than the number suggests. The mechanism is in `.claude/rules/net.md` § `net/throttle.py`.
+- **Caps are per-process, not per-machine.** Each provider's `Throttle` is one
+  module-level instance holding its own `asyncio.Semaphore`, so the cap is scoped
+  to the interpreter. Two server instances on one machine (Claude Desktop *and*
+  the CLI, a common setup) each get their own allowance, so arXiv's documented
+  "single connection" rule is honoured *per process* and the host as a whole can
+  double it. Fixing this needs a file-lock or a shared token bucket; until then,
+  arxiv's `_MAX_CONCURRENT` is a per-process claim.
+- **`max_pending` bounds queued *plus* in-flight callers**, so a provider's
+  declared burst cap buys less headroom than the number suggests
+  (`.claude/rules/net.md` § `net/throttle.py`).

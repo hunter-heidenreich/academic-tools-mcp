@@ -74,7 +74,7 @@ ignore = [
     "D403",     # would "fix" arXiv/bioRxiv to ArXiv/BioRxiv
     "E501",     # the formatter wraps code; long docstrings/URLs are fine
     "ISC001",   # conflicts with the formatter
-    "PTH105",   # os.replace is the named guarantee in README + .claude/rules, not a stylistic slip
+    "PTH105",   # os.replace is the atomicity guarantee every cache write rests on, not a stylistic slip
     "RUF001",   # ambiguous unicode is the domain here: author diacritics
     "RUF002",
     "RUF003",
