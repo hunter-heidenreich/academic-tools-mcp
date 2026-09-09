@@ -1000,3 +1000,138 @@ class TestBatchSingleFlight:
         )
 
         assert len(requests) == 1
+
+
+class TestNormalizePmid:
+    """Every spelling of one PMID must reach one key, as with arXiv IDs — and
+    ``is_pmid``'s two tiers are what keep a freeform ``import_paper`` label out."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "20079334",
+            "  20079334  ",
+            "pmid:20079334",
+            "PMID:20079334",
+            "pmid: 20079334",
+            # The prefix loop: a single pass would leave this keying separately.
+            "pmid:pmid:20079334",
+            "https://pubmed.ncbi.nlm.nih.gov/20079334",
+            "https://pubmed.ncbi.nlm.nih.gov/20079334/",
+            "http://www.pubmed.ncbi.nlm.nih.gov/20079334/",
+            "pubmed.ncbi.nlm.nih.gov/20079334",
+            "HTTPS://PUBMED.NCBI.NLM.NIH.GOV/20079334/",
+            "https://pubmed.ncbi.nlm.nih.gov/20079334/?foo=1",
+            # The legacy path still printed on older papers.
+            "https://www.ncbi.nlm.nih.gov/pubmed/20079334",
+            "pmid:https://pubmed.ncbi.nlm.nih.gov/20079334",
+        ],
+    )
+    def test_every_spelling_normalizes_to_bare_digits(self, spelling):
+        assert openalex.normalize_pmid(spelling) == "20079334"
+        assert openalex.is_pmid(spelling) is True
+
+    def test_normalize_is_idempotent(self):
+        for spelling in ("pmid:20079334", "https://pubmed.ncbi.nlm.nih.gov/20079334/", "nonsense"):
+            once = openalex.normalize_pmid(spelling)
+            assert openalex.normalize_pmid(once) == once
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            # Every other identifier shape the server routes must fall through.
+            "2301.00001",
+            "2301.00001v2",
+            "hep-th/9901001",
+            "10.1234/x",
+            "10.1101/2020.01.01.000001",
+            "W2741809807",
+            "my-thesis",
+            "",
+            # A bare short run stays a freeform label (see `is_pmid`'s two tiers).
+            "1234",
+            "123456",
+            # 9 digits is past the live PMID range.
+            "123456789",
+        ],
+    )
+    def test_non_pmids_are_not_claimed(self, identifier):
+        assert openalex.is_pmid(identifier) is False
+
+    def test_explicit_prefix_claims_a_short_pmid(self):
+        """The tier split: bare "1" is a label, ``pmid:1`` is unambiguous."""
+        assert openalex.is_pmid("1") is False
+        assert openalex.is_pmid("pmid:1") is True
+        assert openalex.normalize_pmid("pmid:1") == "1"
+
+
+class TestResolvePmid:
+    @pytest.mark.asyncio
+    async def test_returns_doi_and_warms_the_work_cache(self, monkeypatch):
+        """The point of the entity: one request answers the PMID *and* pays for
+        the ``get_work`` that follows, so a PMID never costs a paper two fetches."""
+        requests = _stub_json_responses(monkeypatch, _work_response("10.1234/x"))
+
+        resolved = await openalex.resolve_pmid("pmid:20079334")
+        assert resolved == {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"}
+
+        work = await openalex.get_work("10.1234/x")
+        assert work["id"] == "https://openalex.org/W1"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_second_call_is_free(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _work_response())
+
+        await openalex.resolve_pmid("20079334")
+        await openalex.resolve_pmid("https://pubmed.ncbi.nlm.nih.gov/20079334/")
+
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_caches_the_mapping_not_the_work(self, monkeypatch):
+        """``pmids`` is a view of a work, so it must not be a second full copy on
+        a second TTL clock."""
+        _stub_json_responses(monkeypatch, _work_response("10.1234/x"))
+
+        await openalex.resolve_pmid("20079334")
+
+        entry = cache.get(openalex.NAMESPACE, "pmids", "20079334", max_age_seconds=3600)
+        assert entry == {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"}
+
+    @pytest.mark.asyncio
+    async def test_requests_the_pmid_endpoint(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _work_response())
+
+        await openalex.resolve_pmid("pmid:20079334")
+
+        assert requests[0].url.path == "/works/pmid:20079334"
+
+    @pytest.mark.asyncio
+    async def test_404_carries_not_found_and_negative_caches(self, monkeypatch):
+        _stub_json_responses(monkeypatch, _Resp(404))
+
+        result = await openalex.resolve_pmid("99999999")
+        assert result.get("not_found") is True
+        assert "No work found for PMID" in result["error"]
+        assert cache.get_negative(openalex.NAMESPACE, "pmids", "99999999") is not None
+
+    @pytest.mark.asyncio
+    async def test_work_without_a_doi_resolves_to_a_null_doi(self, monkeypatch):
+        """OpenAlex indexes some PubMed records without a DOI. That is a real
+        answer, not a miss — the caller decides what to do with it."""
+        _stub_json_responses(monkeypatch, {"id": "https://openalex.org/W9", "title": "T"})
+
+        resolved = await openalex.resolve_pmid("20079334")
+        assert resolved == {"doi": None, "openalex_id": "https://openalex.org/W9"}
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_is_retryable_and_uncached(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _BAD_JSON, _work_response())
+
+        first = await openalex.resolve_pmid("20079334")
+        assert first.get("retryable") is True
+
+        second = await openalex.resolve_pmid("20079334")
+        assert second["doi"] == "10.1234/x"
+        assert len(requests) == 2

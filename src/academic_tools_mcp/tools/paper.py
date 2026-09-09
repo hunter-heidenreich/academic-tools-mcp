@@ -20,6 +20,7 @@ from ..app import (
     enrich_error,
     mcp,
     page_bounds,
+    resolve_paper_identifier,
     unwrap_first,
 )
 from ..bibtex import generate_arxiv_bibtex, generate_bibtex, generate_biorxiv_bibtex
@@ -82,7 +83,15 @@ async def _fetch_source(
     when no provider claims it. ``obj`` keeps the provider's *un-enriched* error so a
     caller can branch on a provider flag first: get_paper_metadata reads ``not_found``
     for the Crossref fallback.
+
+    A PMID is traded for its DOI first, so everything below sees one identity per
+    paper. The four unified paper tools all reach a provider through here, which is
+    what makes that substitution uniform across them.
     """
+    identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
+    if pmid_error is not None:
+        return None, None, pmid_error
+
     source = manual.resolve_metadata_source(identifier)
     canonical_id = _canonical_for_source(source, identifier)
     if source == "arxiv":
@@ -139,6 +148,23 @@ def _format_biorxiv_metadata(
     return result
 
 
+def _openalex_pmid(work: dict[str, Any]) -> str | None:
+    """The work's PMID as bare digits, or ``None``.
+
+    OpenAlex spells it as a PubMed URL. Normalized here so what this server hands
+    back is what it accepts, rather than a third spelling — ``pmid:`` it and every
+    paper tool takes it, whatever its length.
+
+    ``isdecimal``, not ``is_pmid``: that predicate's 7-digit floor on a *bare* run
+    is a routing tier, and the handful of short PMIDs on early papers are real.
+    """
+    raw = as_dict(work.get("ids")).get("pmid")
+    if not isinstance(raw, str) or not raw:
+        return None
+    normalized = openalex.normalize_pmid(raw)
+    return normalized if normalized.isdecimal() else None
+
+
 def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
     primary_location = as_dict(work.get("primary_location"))
     source_obj = as_dict(primary_location.get("source"))
@@ -148,6 +174,7 @@ def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) ->
         "_canonical_id": canonical_id,
         "title": work.get("title"),
         "doi": work.get("doi"),
+        "pmid": _openalex_pmid(work),
         "publication_year": work.get("publication_year"),
         "publication_date": work.get("publication_date"),
         "type": work.get("type"),
@@ -228,13 +255,18 @@ async def get_paper_metadata(
         journal version adds ``followed_published=False``, plus
         ``published_lookup_retryable=True`` if that lookup failed transiently
         (5xx/429/timeout); both absent when no chain was attempted.
-      - openalex: title, doi, publication_year, publication_date, type,
-        language, venue, is_oa, oa_status, oa_url, pdf_url.
+      - openalex: title, doi, pmid, publication_year, publication_date, type,
+        language, venue, is_oa, oa_status, oa_url, pdf_url. ``pmid`` is bare
+        digits (null when OpenAlex has none) and is itself an accepted identifier.
       - openalex_via_biorxiv (``follow_published`` reached the journal version):
         openalex's fields plus preprint_doi and ``followed_published=True``,
         ``_canonical_id`` being the journal DOI.
       - crossref (``fallback_crossref`` after an OpenAlex 404): openalex's fields
         with is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
+
+    A PMID is traded for the paper's DOI before dispatch, so ``_source`` is
+    ``openalex`` and ``_canonical_id`` the DOI — one identity per paper, whichever
+    of the two you passed.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``. Siblings get_paper_authors / _abstract /
@@ -307,10 +339,10 @@ async def get_papers_metadata(
     results: list[dict[str, Any] | None] = [None] * n
 
     singleton_tasks: list[asyncio.Task] = []
-    openalex_indices: list[tuple[int, str]] = []  # (slot, original input)
+    openalex_indices: list[tuple[int, str, str]] = []  # (slot, routed id, caller's input)
 
-    async def _singleton_one(slot: int, ident: str) -> None:
-        source, canonical, obj = await _fetch_source(ident, force_refresh=force_refresh)
+    async def _singleton_one(slot: int, routed: str, ident: str) -> None:
+        source, canonical, obj = await _fetch_source(routed, force_refresh=force_refresh)
         if source is None:
             # Unreachable: the loop routes only arXiv/bioRxiv here. Guards the hint
             # lookup against a None key regardless.
@@ -326,12 +358,21 @@ async def get_papers_metadata(
         formatted["_input"] = ident
         results[slot] = formatted
 
-    for i, ident in enumerate(identifiers):
-        source = manual.resolve_metadata_source(ident)
+    # Resolved first and concurrently: routing is by shape, and a PMID has the shape
+    # of nothing until it is traded for its DOI. `_input` stays the caller's spelling.
+    resolved = await asyncio.gather(
+        *(resolve_paper_identifier(ident, force_refresh=force_refresh) for ident in identifiers)
+    )
+
+    for i, (ident, (routed, pmid_error)) in enumerate(zip(identifiers, resolved, strict=True)):
+        if pmid_error is not None:
+            results[i] = {"_input": ident, **pmid_error}
+            continue
+        source = manual.resolve_metadata_source(routed)
         if source in ("arxiv", "biorxiv"):
-            singleton_tasks.append(asyncio.create_task(_singleton_one(i, ident)))
+            singleton_tasks.append(asyncio.create_task(_singleton_one(i, routed, ident)))
         elif source == "openalex":
-            openalex_indices.append((i, ident))
+            openalex_indices.append((i, routed, ident))
         else:
             results[i] = {"_input": ident, **_unknown_identifier_error(ident)}
 
@@ -339,15 +380,15 @@ async def get_papers_metadata(
         if not openalex_indices:
             return
         batch = await openalex.get_works_batch(
-            [d for _, d in openalex_indices], force_refresh=force_refresh
+            [d for _, d, _ in openalex_indices], force_refresh=force_refresh
         )
-        for slot, ident in openalex_indices:
-            canonical = openalex.canonical_doi(ident)
+        for slot, routed, ident in openalex_indices:
+            canonical = openalex.canonical_doi(routed)
             work = batch.get(canonical)
             # get_works_batch is total, so `is None` means a test stub. dict(): batch
             # entries aren't deep-copied and two spellings of one DOI share the one entry.
             if work is None or "error" in work:
-                err = work or {"error": f"No work found for DOI: {ident}"}
+                err = work or {"error": f"No work found for DOI: {routed}"}
                 results[slot] = {
                     "_input": ident,
                     **enrich_error(dict(err), _OPENALEX_METADATA_HINT),

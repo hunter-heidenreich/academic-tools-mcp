@@ -13,6 +13,45 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
+## [Unreleased]
+
+### Added
+
+- **A PMID is an identifier this server accepts, not just one it hands out.**
+  Every OpenCitations row carries a `pmid` cross-reference, which
+  `get_paper_citations` / `get_paper_references` forward and document per entry —
+  and no tool took one, so a citing row with a `pmid` and no `doi` was a dead
+  end. `pmid:20079334`, a `pubmed.ncbi.nlm.nih.gov` URL (including the legacy
+  `/pubmed/` path), or a bare 7–8 digit run now works anywhere a DOI does: the
+  paper tools, the PDF pipeline, and the graph tools. A PMID is **traded for the
+  paper's DOI** by a new `openalex.resolve_pmid` and is never itself a cache key,
+  so the two spellings share one `_canonical_id` and one cached work; the
+  resolving request warms the work cache, so the lookup that follows costs
+  nothing. Resolution is single-homed in `app.resolve_paper_identifier`, and a
+  non-PMID identifier reaches it without any I/O. OpenAlex is the resolver, so a
+  paper it has not indexed does not resolve; PMCIDs are unsupported, OpenAlex
+  having effectively no `pmcid` coverage. ([#115])
+- **`get_paper_metadata` reports an OpenAlex work's `pmid`**, as bare digits
+  (null when OpenAlex has none) — the identifier the server now also accepts, so
+  the round trip closes in both directions. Reaches the batch formatter too, not
+  just the singleton one. ([#115])
+
+### Fixed
+
+- **`arxiv.org/html/...` URLs route to arXiv.** `_ARXIV_URL_RE` matched `/abs/`
+  and `/pdf/` only, but arXiv's HTML rendering has been the default landing page
+  for new papers since late 2023 — it is what a pasted browser tab carries.
+  Unrecognised, `get_paper_metadata` answered "Cannot resolve paper provider" and
+  the pipeline tools filed the paper a **second** time under the `manual`
+  namespace. The startup sweep re-files anything already misfiled. ([#115])
+
+### Changed
+
+- **A bare 7–8 digit identifier is now read as a PMID.** Shorter runs are
+  unchanged, so a freeform `import_paper(file, "1234")` label still routes to
+  `manual`; an existing 7–8 digit label should be passed with an explicit prefix
+  or renamed. ([#115])
+
 ## [2026.09.08] — 2026-09-08
 
 The largest release so far: a review pass over every provider, the PDF
@@ -1671,3 +1710,4 @@ say which.
 [#108]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/108
 [#110]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/110
 [#112]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/112
+[#115]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/115

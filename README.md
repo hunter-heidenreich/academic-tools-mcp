@@ -105,9 +105,11 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
 
-Pass an arXiv ID or any DOI — including bioRxiv/medRxiv (`10.1101/...`), ACL Anthology (`10.18653/v1/...`), or generic publisher DOIs. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"openalex"`) so you know which provider answered and which fields to expect; `follow_published` adds `"openalex_via_biorxiv"` when the chain reaches the journal version. arXiv IDs always route to arXiv; bioRxiv DOIs route to bioRxiv; everything else (including ACL) routes to OpenAlex.
+Pass an arXiv ID, any DOI, or a PMID — DOIs including bioRxiv/medRxiv (`10.1101/...`), ACL Anthology (`10.18653/v1/...`), or generic publisher DOIs. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"openalex"`) so you know which provider answered and which fields to expect; `follow_published` adds `"openalex_via_biorxiv"` when the chain reaches the journal version. arXiv IDs always route to arXiv; bioRxiv DOIs route to bioRxiv; everything else (including ACL) routes to OpenAlex.
 
-An arXiv ID is accepted in every spelling that names the same paper, so one paper never caches twice: bare (`2301.00001`, `2301.00001v2`, `hep-th/9901001`), arXiv's `arXiv:` "Cite as" prefix, an `abs`/`pdf` URL (any scheme or none, with or without a `www.`/`export.` host label), and arXiv's own DataCite DOI (`10.48550/arXiv.2301.00001`). The version suffix is part of the identity: `2301.00001` means "whatever is current" and `2301.00001v2` means that revision, and the two cache separately.
+A **PubMed ID** is accepted anywhere a DOI is — the paper tools, the PDF pipeline, and the reference/citation graph. It is traded for the paper's DOI on first use and never becomes a cache key of its own, so `pmid:20079334` and `10.1016/j.cell.2009.11.006` are one paper with one `_canonical_id`, and that trade is free after the first call (the resolving request warms the work cache). Spell it `pmid:20079334`, as a `pubmed.ncbi.nlm.nih.gov` URL, or as a bare 7–8 digit run; shorter runs need the `pmid:` prefix, so a freeform `import_paper` label of a few digits keeps meaning what it did. This closes a round trip the server had left open: OpenCitations rows carry a `pmid` cross-reference, so `get_paper_citations` was handing back an identifier nothing accepted. OpenAlex is the resolver, so a paper it has not indexed does not resolve — and PMCIDs are not supported, OpenAlex having effectively no `pmcid` coverage.
+
+An arXiv ID is accepted in every spelling that names the same paper, so one paper never caches twice: bare (`2301.00001`, `2301.00001v2`, `hep-th/9901001`), arXiv's `arXiv:` "Cite as" prefix, an `abs`/`pdf`/`html` URL (any scheme or none, with or without a `www.`/`export.` host label), and arXiv's own DataCite DOI (`10.48550/arXiv.2301.00001`). The version suffix is part of the identity: `2301.00001` means "whatever is current" and `2301.00001v2` means that revision, and the two cache separately.
 
 | Tool | Description |
 |------|-------------|
@@ -225,6 +227,7 @@ API responses and downloaded files are cached under `.cache/`:
 .cache/
   openalex/works/          # OpenAlex work objects (JSON)
   openalex/authors/        # OpenAlex author objects (JSON)
+  openalex/pmids/          # PMID -> DOI mappings (JSON)
   arxiv/papers/            # arXiv paper entries (JSON)
   arxiv/pdfs/              # Downloaded PDFs
   arxiv/markdown/          # Converted markdown
@@ -257,7 +260,7 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 |----------|--------------|--------------|-----|
 | arxiv | 14d | 1h | New versions land under a new key; preprint IDs go live mid-session. |
 | biorxiv | 7d | 1h | `published_doi` appears asynchronously once a preprint is published. |
-| openalex (works, authors) | 30d | 24h | Citation counts, topics, h-index all drift. |
+| openalex (works, authors, pmids) | 30d | 24h | Citation counts, topics, h-index all drift. |
 | crossref | 30d | 24h | Reference lists grow as publishers re-deposit metadata. |
 | opencitations | 7d | 24h | The citation graph grows continuously. |
 | wikipedia | 30d | 24h | Articles change as they're edited. |

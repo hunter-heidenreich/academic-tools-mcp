@@ -23,6 +23,7 @@ from ..app import (
     not_converted_error,
     pdf_not_cached_error,
     read_markdown,
+    resolve_paper_identifier,
 )
 from ..download import openaccess, streaming
 from ..providers import acl, arxiv, biorxiv
@@ -53,7 +54,14 @@ async def _download_pdf_by_provider(
     replaced, so
     the next ``convert_paper`` re-runs. Markdown recorded ``"imported"`` is
     exempt unless ``force_refresh``: no converter can reproduce it.
+
+    A PMID is traded for its DOI before routing, so storage and metadata cannot
+    disagree about which paper it names.
     """
+    identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
+    if pmid_error is not None:
+        return pmid_error
+
     target = manual.resolve_target(identifier)
     ns = target["namespace"]
 
@@ -190,6 +198,10 @@ async def convert_paper(
         at the other mode, whose budget differs.
       - Anything else → non-retryable; the ``error`` string names the cause.
     """
+    identifier, pmid_error = await resolve_paper_identifier(identifier)
+    if pmid_error is not None:
+        return pmid_error
+
     target = manual.resolve_target(identifier)
     pdf = target["pdf_path"]
 
@@ -232,6 +244,10 @@ async def get_paper_sections(
     Errors: not yet converted → guidance to run convert_paper.
     Next step: get_paper_section(identifier, index_or_title).
     """
+    identifier, pmid_error = await resolve_paper_identifier(identifier)
+    if pmid_error is not None:
+        return pmid_error
+
     target = manual.resolve_target(identifier)
     sections_data = await papers.get_or_parse_sections(
         target["namespace"], target["canonical"], force_refresh=force_refresh

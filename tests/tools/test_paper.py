@@ -1234,3 +1234,148 @@ class TestBatchResolutionDisagreement:
         entry = result["papers"][0]
         assert entry["_input"] == "2301.00001"
         assert "Cannot resolve paper provider" in entry["error"]
+
+
+# ---------------------------------------------------------------------------
+# PMID resolution: one identity per paper, across every tool
+# ---------------------------------------------------------------------------
+
+
+def _stub_pmid(monkeypatch, mapping, *, work=None):
+    """Route ``resolve_pmid`` through *mapping* and answer ``get_work`` with *work*.
+
+    Patches the provider module object, which every importer shares — the seam
+    ``.claude/rules/server.md`` names, not a wrapper in ``app``.
+    """
+    calls: list[str] = []
+
+    async def fake_resolve_pmid(pmid, **kwargs):
+        calls.append(pmid)
+        return mapping
+
+    async def fake_get_work(doi, **kwargs):
+        return dict(work or {}, doi=f"https://doi.org/{doi}")
+
+    monkeypatch.setattr(openalex, "resolve_pmid", fake_resolve_pmid)
+    monkeypatch.setattr(openalex, "get_work", fake_get_work)
+    return calls
+
+
+class TestPmidRouting:
+    """A PMID is traded for its DOI before dispatch, so the two spellings of one
+    paper cannot acquire two cache identities or two ``_canonical_id`` values."""
+
+    @pytest.mark.asyncio
+    async def test_metadata_answers_under_the_doi(self, monkeypatch):
+        _stub_pmid(monkeypatch, {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"})
+
+        result = await server.get_paper_metadata("pmid:20079334")
+
+        assert result["_source"] == "openalex"
+        assert result["_canonical_id"] == "10.1234/x"
+
+    @pytest.mark.asyncio
+    async def test_pmid_and_doi_agree_on_canonical_id(self, monkeypatch):
+        _stub_pmid(monkeypatch, {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"})
+
+        via_pmid = await server.get_paper_metadata("20079334")
+        via_doi = await server.get_paper_metadata("10.1234/x")
+
+        assert via_pmid["_canonical_id"] == via_doi["_canonical_id"]
+
+    @pytest.mark.asyncio
+    async def test_metadata_surfaces_the_pmid_it_accepts(self, monkeypatch):
+        _stub_pmid(
+            monkeypatch,
+            {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"},
+            work={"ids": {"pmid": "https://pubmed.ncbi.nlm.nih.gov/20079334"}},
+        )
+
+        result = await server.get_paper_metadata("10.1234/x")
+
+        assert result["pmid"] == "20079334"
+
+    @pytest.mark.asyncio
+    async def test_metadata_pmid_is_null_when_openalex_has_none(self, monkeypatch):
+        _stub_pmid(monkeypatch, {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"})
+
+        result = await server.get_paper_metadata("10.1234/x")
+
+        assert result["pmid"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_doi_never_costs_a_pmid_lookup(self, monkeypatch):
+        calls = _stub_pmid(monkeypatch, {"doi": "10.1234/x", "openalex_id": "W1"})
+
+        async def fake_arxiv(arxiv_id, **kwargs):
+            return {"title": "T", "links": []}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
+
+        await server.get_paper_metadata("10.1234/x")
+        await server.get_paper_metadata("2301.00001v1")
+
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_pmid_carries_a_suggestion(self, monkeypatch):
+        _stub_pmid(monkeypatch, {"error": "No work found for PMID: 99999999", "not_found": True})
+
+        result = await server.get_paper_metadata("pmid:99999999")
+
+        assert result.get("not_found") is True
+        assert "suggestion" in result
+
+    @pytest.mark.asyncio
+    async def test_pmid_without_a_doi_is_an_error_not_an_invented_key(self, monkeypatch):
+        """These tools are DOI- or arXiv-keyed. Naming the OpenAlex id beats
+        minting a cache identity the paper would then be stuck with."""
+        _stub_pmid(monkeypatch, {"doi": None, "openalex_id": "https://openalex.org/W9"})
+
+        result = await server.get_paper_metadata("pmid:20079334")
+
+        assert result.get("not_found") is True
+        assert "W9" in result["error"]
+        assert "import_paper" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_batch_routes_a_pmid_and_echoes_the_input_spelling(self, monkeypatch):
+        """``_input`` is the caller's string, not the DOI it resolved to —
+        otherwise an agent cannot correlate the response back to its request."""
+        _stub_pmid(monkeypatch, {"doi": "10.1234/x", "openalex_id": "W1"})
+
+        async def fake_batch(dois, **kwargs):
+            return {d: {"id": "W1", "doi": f"https://doi.org/{d}", "title": "T"} for d in dois}
+
+        monkeypatch.setattr(openalex, "get_works_batch", fake_batch)
+
+        result = await server.get_papers_metadata(["pmid:20079334"])
+
+        assert result["papers"][0]["_input"] == "pmid:20079334"
+        assert result["papers"][0]["_canonical_id"] == "10.1234/x"
+
+    @pytest.mark.asyncio
+    async def test_authors_abstract_and_bibtex_take_a_pmid_too(self, monkeypatch):
+        """All four unified tools reach a provider through ``_fetch_source``,
+        which is what makes the substitution uniform rather than per-tool."""
+        _stub_pmid(
+            monkeypatch,
+            {"doi": "10.1234/x", "openalex_id": "W1"},
+            work={
+                "id": "https://openalex.org/W1",
+                "title": "A Great Work",
+                "publication_year": 2020,
+                "type": "article",
+                "authorships": [{"author": {"display_name": "Ada Lovelace", "id": "A1"}}],
+                "abstract_inverted_index": {"Hello": [0], "world": [1]},
+            },
+        )
+
+        authors = await server.get_paper_authors("pmid:20079334")
+        abstract = await server.get_paper_abstract("pmid:20079334")
+        bibtex = await server.get_paper_bibtex("pmid:20079334")
+
+        assert authors["authors"][0]["name"] == "Ada Lovelace"
+        assert abstract["abstract"] == "Hello world"
+        assert "Lovelace" in bibtex["bibtex"]
+        assert authors["_canonical_id"] == abstract["_canonical_id"] == "10.1234/x"

@@ -40,6 +40,18 @@ class TestNormalizeArxivId:
     def test_old_style_abs_url(self):
         assert arxiv.normalize_arxiv_id("https://arxiv.org/abs/hep-th/9901001") == "hep-th/9901001"
 
+    def test_html_url(self):
+        """arXiv's own rendering — the default landing page, so the spelling a
+        pasted browser tab carries. Unrecognised, it files the paper a second
+        time under ``manual``."""
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/html/2301.00001v2") == "2301.00001v2"
+
+    def test_old_style_html_url(self):
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/html/hep-th/9901001") == "hep-th/9901001"
+
+    def test_html_url_with_fragment(self):
+        assert arxiv.normalize_arxiv_id("https://arxiv.org/html/2301.00001#S3") == "2301.00001"
+
     def test_strips_whitespace(self):
         assert arxiv.normalize_arxiv_id("  2301.00001  ") == "2301.00001"
 

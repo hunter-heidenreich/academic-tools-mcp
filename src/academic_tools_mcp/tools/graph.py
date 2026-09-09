@@ -12,6 +12,7 @@ from ..app import (
     enrich_error,
     mcp,
     page_bounds,
+    resolve_paper_identifier,
 )
 from ..net import http
 from ..providers import crossref, opencitations
@@ -48,10 +49,27 @@ def _reject_non_doi(doi: str) -> dict[str, Any] | None:
         **http.not_found(f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only."),
         "suggestion": (
             "Pass a DOI (e.g. 10.1038/nature12373), in bare, doi: or "
-            "https://doi.org/ form. For an arXiv paper, call get_paper_metadata "
-            "first and use the doi field, or search_crossref_by_title to find one."
+            "https://doi.org/ form, or a PMID. For an arXiv paper, call "
+            "get_paper_metadata first and use the doi field, or "
+            "search_crossref_by_title to find one."
         ),
     }
+
+
+async def _resolve_doi(doi: str, *, force_refresh: bool) -> tuple[str, dict[str, Any] | None]:
+    """Canonical DOI for a graph call, or the error that ends it.
+
+    The one entry every graph tool takes, so the PMID trade and the DOI-only
+    rejection stay in one order for all four. Resolving first is what makes the
+    ``pmid`` these tools *hand out* on every OpenCitations row an identifier they
+    also accept — before this, a row with a ``pmid`` and no ``doi`` was a dead end.
+    """
+    doi, pmid_error = await resolve_paper_identifier(doi, force_refresh=force_refresh)
+    if pmid_error is not None:
+        return doi, pmid_error
+    if (bad := _reject_non_doi(doi)) is not None:
+        return doi, bad
+    return doinorm.canonical(doi), None
 
 
 def _source_error(result: dict[str, Any]) -> dict[str, Any]:
@@ -122,12 +140,13 @@ async def get_paper_references_count(
     ``suggestion`` the provider set; one source erroring still reports the other's
     count. The echoed ``doi`` is canonical, not the spelling you passed.
 
-    A non-DOI identifier is rejected locally, without a request, as
-    ``{error, not_found: true, suggestion}`` — the graph tools are DOI-only.
+    A PMID resolves to its DOI first; any other non-DOI identifier is rejected
+    locally, without a request, as ``{error, not_found: true, suggestion}`` — the
+    graph tools are DOI-only.
     """
-    if (bad := _reject_non_doi(doi)) is not None:
+    doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
+    if bad is not None:
         return bad
-    doi = doinorm.canonical(doi)
 
     cr_task = crossref.get_work(doi, force_refresh=force_refresh)
     oc_task = opencitations.get_references(doi, force_refresh=force_refresh)
@@ -250,9 +269,9 @@ async def get_paper_references(
     ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion``, and the
     top-level ``retryable`` is the disjunction of the two.
     """
-    if (bad := _reject_non_doi(doi)) is not None:
+    doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
+    if bad is not None:
         return bad
-    doi = doinorm.canonical(doi)
 
     if source == "crossref":
         work = await crossref.get_work(doi, force_refresh=force_refresh)
@@ -342,9 +361,9 @@ async def get_paper_citations_count(
     ``not_found: true`` on a definitive miss, including the local non-DOI
     rejection, which costs no request: the graph tools are DOI-only.
     """
-    if (bad := _reject_non_doi(doi)) is not None:
+    doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
+    if bad is not None:
         return bad
-    doi = doinorm.canonical(doi)
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
@@ -380,9 +399,9 @@ async def get_paper_citations(
     ``not_found: true`` on a definitive miss, including the local non-DOI
     rejection, which costs no request.
     """
-    if (bad := _reject_non_doi(doi)) is not None:
+    doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
+    if bad is not None:
         return bad
-    doi = doinorm.canonical(doi)
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:

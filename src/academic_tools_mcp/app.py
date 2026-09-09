@@ -14,8 +14,8 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from . import corpus, manual
-from .net import clients
-from .providers import acl
+from .net import clients, http
+from .providers import acl, openalex
 from .store import cache, stems
 
 _T = TypeVar("_T")
@@ -43,9 +43,12 @@ mcp = FastMCP(
     instructions=(
         "Academic paper research: OpenAlex, arXiv, bioRxiv/medRxiv, Crossref, "
         "OpenCitations, ACL Anthology, Wikipedia.\n\n"
-        "get_paper_metadata / _authors / _abstract / _bibtex take an arXiv ID "
-        "or any DOI and route to the right provider; each response tags "
-        "`_source`. Batch many identifiers with get_papers_metadata.\n\n"
+        "get_paper_metadata / _authors / _abstract / _bibtex take an arXiv ID, "
+        "any DOI, or a PMID and route to the right provider; each response tags "
+        "`_source`. A PMID resolves to the paper's DOI first, so it works "
+        "everywhere a DOI does — including the graph tools, whose OpenCitations "
+        "rows hand PMIDs back. Batch many identifiers with "
+        "get_papers_metadata.\n\n"
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
         "get_paper_section, all auto-detecting the provider. download_pdf "
         "handles arXiv/bioRxiv/ACL; other DOIs need allow_oa_url=True (fetches "
@@ -67,7 +70,12 @@ mcp = FastMCP(
 
 DOI = Annotated[
     str,
-    Field(description="Paper DOI. Full URL, doi:-prefixed, or bare (10.1234/example)."),
+    Field(
+        description="Paper DOI. Full URL, doi:-prefixed, or bare (10.1234/example). "
+        "A PMID (pmid:20079334, a pubmed.ncbi.nlm.nih.gov URL, or a bare 7-8 "
+        "digit run) is accepted too and resolves to the paper's DOI first — so a "
+        "`pmid` from an OpenCitations row pastes straight back in."
+    ),
 ]
 
 AUTHOR_ID = Annotated[
@@ -80,11 +88,13 @@ PAPER_ID = Annotated[
     Field(
         description="Paper identifier — bare, doi:-prefixed, or a full URL. "
         "Auto-routed by shape: arXiv ID (2301.00001, hep-th/9901001), "
-        "bioRxiv/medRxiv DOI (10.1101/...), ACL DOI (10.18653/v1/...), or any "
-        "other DOI. Pipeline and markdown tools (download_pdf, convert_paper, "
-        "import_paper, get_paper_sections, get_paper_section, find_in_paper) "
-        "also take a freeform label for a manually imported file; metadata "
-        "tools require a shape above."
+        "bioRxiv/medRxiv DOI (10.1101/...), ACL DOI (10.18653/v1/...), any "
+        "other DOI, or a PubMed ID (pmid:20079334, a pubmed.ncbi.nlm.nih.gov "
+        "URL, or a bare 7-8 digit run) — a PMID is traded for the paper's DOI, "
+        "so both spell one identity. Pipeline and markdown tools (download_pdf, "
+        "convert_paper, import_paper, get_paper_sections, get_paper_section, "
+        "find_in_paper) also take a freeform label for a manually imported "
+        "file; metadata tools require a shape above."
     ),
 ]
 
@@ -145,6 +155,49 @@ def enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
     return result
 
 
+async def resolve_paper_identifier(
+    identifier: str, *, force_refresh: bool = False
+) -> tuple[str, dict[str, Any] | None]:
+    """Trade a PMID for its DOI; pass every other identifier through untouched.
+
+    Returns ``(identifier, None)`` or ``(identifier, error)``. **The one place a
+    PMID is resolved**, so every tool spells the substitution the same way and no
+    paper acquires a second cache identity — a PMID is never a storage key, and
+    what the tools below see is always the DOI.
+
+    Sits here rather than in ``manual.resolve_target`` because resolution is a
+    network call and that dispatcher is pure and synchronous; it is above
+    ``providers`` in ``_LAYERS``, and three tool modules need it.
+    """
+    if not openalex.is_pmid(identifier):
+        return identifier, None
+
+    resolved = await openalex.resolve_pmid(identifier, force_refresh=force_refresh)
+    if "error" in resolved:
+        return identifier, enrich_error(
+            resolved,
+            "Check the PMID on pubmed.ncbi.nlm.nih.gov, or pass the paper's DOI "
+            "directly. Only papers OpenAlex has indexed resolve by PMID.",
+        )
+
+    doi = resolved.get("doi")
+    if not doi:
+        # A real record with no DOI: every tool below is DOI- or arXiv-keyed, so
+        # naming the OpenAlex id beats inventing a key the cache would then own.
+        return identifier, {
+            **http.not_found(
+                f"OpenAlex indexes PMID {openalex.normalize_pmid(identifier)} "
+                f"({resolved.get('openalex_id')}) without a DOI, and these tools "
+                "are DOI-keyed."
+            ),
+            "suggestion": (
+                "Fetch the PDF yourself and call import_paper with a label of "
+                "your choosing to read the full text."
+            ),
+        }
+    return doi, None
+
+
 async def read_markdown(
     identifier: str, scan: Callable[[str], _T]
 ) -> tuple[manual.Target, _T] | dict[str, Any]:
@@ -154,7 +207,14 @@ async def read_markdown(
     home for the two reads outside ``papers.sections_lock`` (``get_paper_section``,
     ``find_in_paper``), so their guards can't drift: off the event loop, explicit
     UTF-8, ``FileNotFoundError`` degraded — a cascade can unlink mid-read.
+
+    A PMID is traded for its DOI here too, so it names the same artifact these
+    tools' siblings converted rather than a second one.
     """
+    identifier, pmid_error = await resolve_paper_identifier(identifier)
+    if pmid_error is not None:
+        return pmid_error
+
     target = manual.resolve_target(identifier)
     md_path = stems.markdown_path(target["namespace"], target["canonical"])
 
