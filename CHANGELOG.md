@@ -143,6 +143,12 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`README.md` claimed every error response carries a `suggestion` field.** An
+  identifier no provider claims returns `{error}` alone, with the guidance in
+  the message — the same overstatement corrected in the four paper tools'
+  docstrings. Also: `get_wikipedia_summary`'s documented key set omitted
+  `pageid`, and `get_papers_metadata` was described as batching per 50
+  identifiers when it chunks only the ones that miss the cache. ([#112])
 - **Four tool docstrings promised a `suggestion` key the unknown-identifier
   error never carries.** `get_paper_metadata` / `_authors` / `_abstract` /
   `_bibtex` all said an unresolvable identifier returns `{error, suggestion}`;
@@ -2761,3 +2767,4 @@ grouped by milestone rather than per commit.
 [#107]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/107
 [#108]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/108
 [#110]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/110
+[#112]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/112
