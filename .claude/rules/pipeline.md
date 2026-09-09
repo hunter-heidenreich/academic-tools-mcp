@@ -7,85 +7,136 @@ paths:
 
 # PDF + content pipeline
 
+**How each function works is in its own docstring**, and `papers/__init__.py`
+states the three-module split. This file covers only the cross-module invariants
+and the edits that look safe and aren't.
+
 ## Layout
 
-Three modules, and the split is load-bearing, not cosmetic:
+Artifact *naming* lives one layer down, in **`store/stems.py`**
+(`.claude/rules/store.md`) — it depends only on `cache` + stdlib.
+**Invariant: no module under `providers/` imports `papers`**; three of them reach
+`stems` directly, and that is the whole reason it sits outside the pipeline. The
+placement is what enforces it — `store/` sits below `providers/`, and there is no
+converter in it to reach. `tests/test_layering.py` fails if a provider reaches
+`papers` at all.
 
-- **`papers/sections.py`** — pure markdown structure. No filesystem, no cache, no asyncio.
-- **`papers/index.py`** — the on-disk section index and the per-paper lock.
-- **`papers/convert.py`** — converter subprocesses and the global conversion gate.
-
-Artifact *naming* is the fourth piece and it lives one layer down, in **`store/stems.py`** (`.claude/rules/store.md`) — it depends only on `cache` + stdlib, so a provider that needs to name a PDF does not import a converter. **Invariant: no module under `providers/` imports `papers`** — three of them reach `stems` directly, and that is the whole reason it sits outside the pipeline. The placement is what enforces it: `store/` sits below `providers/`, and there is no converter in it to reach. Moving `safe_stem` up into `papers` re-opens that edge, and `tests/test_layering.py` fails if a provider reaches `papers` at all.
-
-`papers/__init__.py` re-exports the public surface of its three submodules, and **deliberately not `stems`**. **Invariant: a module has one import name.** A facade that re-exports part of `stems` gives it two — a caller reaches `safe_stem` through `papers` and `pdf_path`, `list_dir`, `sections_key_for_stem` through `stems`, in the same file, because those three are the ones a facade cannot carry (`pdf_path` would shadow each provider's own one-argument `pdf_path`). **Patch the owning submodule, never the facade** — it re-exports by value, so `monkeypatch.setattr(papers, "_section_locks", ...)` rebinds an alias nothing reads.
+**Invariant: a module has one import name.** `papers/__init__.py` re-exports its
+three submodules and deliberately not `stems`. **Patch the owning submodule,
+never the facade** — it re-exports by value, so
+`monkeypatch.setattr(papers, "_section_locks", ...)` rebinds an alias nothing reads.
 
 ## papers/convert.py
 
-### Converter command
-
-- **Placeholders are substituted `shlex.quote`d, so templates carry bare `{input}` / `{output_dir}` / `{python}`** — a template that quotes them itself double-quotes an already-quoted value and breaks the path. That quoting is the trust boundary: a canonical-derived path cannot inject into the `bash -c` command.
-- **A malformed template surfaces as `{error, retryable: False}`, never a raised exception.** Every way `str.format` can fail on operator text becomes `ConverterTemplateError` — the set is open, not the three it is tempting to enumerate (`{outputdir}` → `KeyError`, `{0}` → `IndexError`, `{input` → `ValueError`, `{input.x}` → `AttributeError`, `{input[x]}` → `TypeError`, an absurd width spec → `MemoryError`), and none of them is an `OSError`. **Do not re-narrow the `except`**, and keep **both** builders inside their caller's `try`, on the fast path too.
-- `_resolve_convert_timeout()` reads `PDF_CONVERT_TIMEOUT` through `config.number`, which owns the disable vocabulary. It passes `on_nonpositive="disable"` — unlike `MAX_PDF_BYTES`, a non-positive timeout is a second way to say "off" rather than a typo.
-
-### `_run_command` — the one subprocess driver
-
-Both modes spawn through it, so a change to the cancellation or timeout discipline cannot land in one and miss the other. It returns `_Completed | _SpawnFailed | _TimedOut`; **what a mode says about an outcome stays with that mode**, because the messages differ and so does how the two streams are combined. Don't push the error dicts into the driver to "finish" the DRY — that is where the two genuinely disagree.
-
-### Full conversion — `convert_pdf()`
-
-- **Global single-conversion lock** (`_global_convert_lock`): at most one PDF→markdown subprocess across the whole server. A second concurrent caller gets a structured `busy` error immediately rather than queueing — a caller that wanted to wait could have waited itself.
-- The already-converted early-return is **not** under that lock, so agents keep reading sections of converted papers while a different one converts.
-- Spawned with `start_new_session=True` so a timeout can `os.killpg(SIGKILL)` the whole process tree — the converter, not just the bash wrapper.
-- **Two candidate passes, one ordering.** `_shallowest_first` governs both: a file named after the PDF stem beats any other `.md`, and within each pass shallowest-then-alphabetical wins (so MinerU's `<stem>/{auto,ocr,txt}/<stem>.md` resolves to `auto`). Two passes with two orderings is the bug this shape prevents — a plain path sort silently inverts the depth rule depending on how the subdirectory happens to be named.
-- Converter output goes to a fresh `mkdtemp` dir (`_make_extraction_dir`, removed in a `finally` on every exit path) — never a predictable `/tmp/pdf-convert-<canonical>` path, which invites symlink/pre-creation attacks and cross-instance collision.
-- **Cancellation kills the tree, then re-raises** (in `_run_command`) — never swallowed, never turned into an error payload. Neither caller's `finally` signals the child, so a converter would otherwise keep pinning CPU/GPU with its output dir deleted underneath it.
-- **Never merge stderr into stdout** (`2>&1`): full mode appends stderr *last* so a chatty converter can't push the real error out of the truncated tail, and fast mode captures stdout as the document. That is why the driver hands both streams back rather than combining them.
-- **The full-conversion write path holds only the global lock, not `sections_lock`.** That is why `store_markdown_and_index` may not re-read the file to checksum it (see `store/stems.py` § Checksums above); it is the one markdown writer outside the per-paper lock discipline.
-- Markdown lands under `.cache/<namespace>/markdown/`. The cached-markdown early-return re-reads under the per-paper sections lock and treats a file unlinked in the gap as a cache miss rather than raising. **`drop_derived()` is the only markdown unlinker, and every caller holds that lock** — `convert_pdf`'s own `force_refresh` branch, and `tools/pipeline`'s `download_pdf` and `import_paper` cascades. The download cascade first asks `recorded_conversion_mode()` — the named read for "may I replace this markdown?", so the tool layer never reaches into the sections cache itself — and skips an `"imported"` entry unless `force_refresh` was requested: converter output is regenerable, an operator's own file is not. It drops the markdown and the section index together: dropping one leaves a reader matching a checksum against bytes that no longer exist. Best-effort, so a file that can't be unlinked still loses its index and re-parses. Don't unlink markdown anywhere else.
-
-### Fast conversion — `convert_pdf(..., mode="fast")`
-
-A lightweight, **degraded** fallback (`_convert_fast()`): plain text, no tables, equations, figures, or headings.
-
-- Backend from `PDF_FAST_CONVERTER` (`pdftotext` default; `pymupdf` via the `[fast]` extra, routed through `fast_extract.py`), timeout from `PDF_FAST_CONVERT_TIMEOUT`.
-- **Contract for every fast backend: document text to stdout, diagnostics to stderr, non-zero exit on failure.** `_convert_fast` captures stdout as the document, so anything logged there corrupts it. `fast_extract.py` is the bundled pymupdf runner — a module rather than an inline `python -c` so `{python}` resolves it against the env where the optional `[fast]` extra is installed.
-- Runs **outside** `_global_convert_lock`, so it never queues behind a heavy conversion and can never return `busy`. Serialisation is per-paper via `sections_lock`, re-checking the markdown cache before spawning so two concurrent fast calls don't both spawn.
-- Writes the **same cache slot** as the full path, so a later `mode="full"` + `force_refresh` upgrades it. Both modes share `_finalize_markdown()`, which post-processes converter output and then delegates to `store_markdown_and_index()`.
+- **Placeholder substitution is `shlex.quote`d, and that quoting is the trust
+  boundary**: a canonical-derived path cannot inject into the `bash -c` command.
+  Templates therefore carry bare `{input}` / `{output_dir}` / `{python}`.
+- **The `ConverterTemplateError` `except` set is open, not the three it is
+  tempting to enumerate. Do not re-narrow it**, and keep both builders inside
+  their caller's `try`, on the fast path too.
+- **Two candidate passes, one ordering.** `_shallowest_first` governs both.
+  Two passes with two orderings is the bug this shape prevents — a plain path
+  sort silently inverts the depth rule depending on how the subdirectory happens
+  to be named.
+- **`_run_command` is the one subprocess driver**, so cancellation and timeout
+  discipline cannot land in one mode and miss the other. But **what a mode says
+  about an outcome stays with that mode** — don't push the error dicts into the
+  driver to "finish" the DRY. That is where the two genuinely disagree.
+- **The full-conversion write path holds only the global lock, not
+  `sections_lock`.** That is why `store_markdown_and_index` may not re-read the
+  file to checksum it (`.claude/rules/store.md` § Checksums). It is the one
+  markdown writer outside the per-paper lock discipline.
+- **`drop_derived()` is the only markdown unlinker, and every caller holds
+  `sections_lock`** — `convert_pdf`'s `force_refresh` branch, and
+  `tools/pipeline`'s `download_pdf` and `import_paper` cascades. The download
+  cascade asks `recorded_conversion_mode()` first — the named read for "may I
+  replace this markdown?", so the tool layer never reaches into the sections
+  cache itself. It drops markdown and section index *together*: dropping one
+  leaves a reader matching a checksum against bytes that no longer exist.
+  **Don't unlink markdown anywhere else.**
 
 ### The sections-cache entry
 
-Two sites write one: `store_markdown_and_index()` (both conversion modes via `_finalize_markdown()`, and `manual.import_markdown` directly) and `_reparse_sections_locked()`. **`_convert_fast`'s cached-markdown branch delegates to the latter rather than assembling a third.** (The response *envelope* both cached branches return has its own single home, `_cached_response` — that is the shape an agent sees, not the entry on disk.) That is not tidiness: a local `recorded_mode or "fast"` stamps an entry predating the field — `null`, meaning nobody knows — as degraded, and writes that claim to disk permanently, while `convert_pdf`'s cached branch answers `null` for the identical state.
+**Invariant: every entry carries all four of `sections`, `sections_detected`,
+`markdown_checksum`, `conversion_mode`**, and both readers subscript rather than
+default. A missing `sections_detected` costs a re-parse; a *wrong* one is
+reported to the agent as truth — the exact reading `sections_note` exists to
+prevent. A new writer goes through `store_markdown_and_index`.
 
-**Invariant: every entry carries all four of `sections`, `sections_detected`, `markdown_checksum`, `conversion_mode`.** All four are read back: `get_paper_sections` returns the first three to the agent and `recorded_conversion_mode` the fourth, which is why the two readers subscript rather than default. A new writer goes through `store_markdown_and_index`. A missing `sections_detected` costs a re-parse (the entry is treated as stale, and a file read plus a regex pass is cheaper than a guess); a *wrong* one is reported to the agent as truth — the exact reading `sections_note` exists to prevent.
-
-`conversion_mode` is provenance — `_reparse_sections_locked` must preserve a recorded mode, since a re-parse produces no new evidence about what converted the file. The agent-facing value vocabulary is in `.claude/rules/server.md`.
-
-**Post-processing is the caller's, not the writer's.** `_finalize_markdown` rstrips lines and rewrites `![cap](path)` → `![cap]()` because a converter's image paths point into an extraction dir deleted on return. `import_markdown` passes its markdown through verbatim — that file is the operator's own text and its links may resolve. (The verbatim-import side is pinned; the converter-side rstrip and image rewrite are unguarded.)
+**`_convert_fast`'s cached-markdown branch delegates to
+`_reparse_sections_locked` rather than assembling a third writer.** Not
+tidiness: a local `recorded_mode or "fast"` stamps an entry predating the field
+— `null`, meaning nobody knows — as degraded, and writes that claim to disk
+permanently, while `convert_pdf`'s cached branch answers `null` for the identical
+state.
 
 ### Sections and in-paper search
 
-- Section indices are cached under `.cache/<namespace>/sections/`.
-- **`_scan()` is the only heading scan.** `section_boundaries`, `has_detected_sections`, `parse_sections`, `parse_sections_and_detect`, `find_in_markdown`, `get_section_content` and `corpus.search` all reach it. A private copy that drops the empty-section filter names a section the reader's index doesn't have; one that returns a title instead of an index dead-ends on "Ambiguous section title".
-- **`_SECTION_LEVELS` is the policy, and `first_section_heading()` is how another module asks about it.** `corpus._extract_title` delegates the *function* rather than re-spelling `level <= 2` — the levels constant is private, so there is nothing to copy. It is not `section_boundaries(md)[0].title`, which is `"Preamble"` for the pre-heading span. It answers a different question from `section_at_offset`: a title-page H1 with no body is dropped from the section index but is still the right name for a hit.
-- **`Section.body(lines)` is the one body recipe.** `find_in_markdown` and `get_section_content` slice through it, which is what makes a hit's `char_offset` an offset into the text the reader returns. Two hand-spelled `"\n".join(lines[s:e]).strip()` cannot be relied on to stay equal.
-- **Title lookup folds diacritics only as a fallback.** `_match_section_title` runs the exact lowercased substring pass first and the `textnorm.fold` pass only when it returns nothing, so folding can widen a miss into a hit (`"Resume"` → `"Résumé"`) but can never turn a query that already resolves into an "Ambiguous section title" error. Fold both passes unconditionally and a paper carrying both spellings stops resolving either.
-- **Per-paper sections lock** (`_section_locks`, keyed by `(namespace, canonical)`) serialises concurrent re-parse attempts on one paper. The dict is an `OrderedDict` capped at `_SECTION_LOCKS_MAX`, evicting least-recently-used first; currently-held locks are skipped on eviction, so mutual exclusion can't be silently dropped out from under a writer. **Invariant: the map is the sole owner of a lock across an await.** Every caller writes `async with sections_lock(...)` as one expression, and `Lock.acquire` on an uncontended lock returns without yielding — that is the whole reason eviction cannot race a caller. Bind the lock to a variable, await something, *then* enter it, and the key can be evicted and recreated, handing two callers two different `Lock` objects.
-- `find_in_markdown` returns `(hits, truncated)` — `truncated` is what lets `find_in_paper` say "more matches exist" instead of silently capping at `max_results`. With `normalize=True` it matches folded text but slices `char_offset` / `match` / `snippet` from the original via `textnorm.fold_with_map` + `textnorm.original_span`, so a chained `get_paper_section` still lands on the match.
-- `char_offset` is computed against the same `"\n".join(lines[s:e]).strip()` recipe `get_section_content` uses, so an agent chains straight into `get_paper_section(identifier, section_index, offset=char_offset)` with no further bookkeeping.
+- **`_scan()` is the only heading scan**, reached by `section_boundaries`,
+  `has_detected_sections`, `parse_sections`, `parse_sections_and_detect`,
+  `find_in_markdown`, `get_section_content` and `corpus.search`. A private copy
+  that drops the empty-section filter names a section the reader's index doesn't
+  have; one that returns a title instead of an index dead-ends on "Ambiguous
+  section title".
+- **`first_section_heading()` answers a different question from
+  `section_at_offset`**, and both differ from `section_boundaries(md)[0].title`
+  (which is `"Preamble"` for the pre-heading span). A title-page H1 with no body
+  is dropped from the section index but is still the right name for a hit.
+  `corpus._extract_title` delegates the function rather than re-spelling
+  `level <= 2` — the levels constant is private, so there is nothing to copy.
+- **`Section.body(lines)` is the one body recipe**, which is what makes a hit's
+  `char_offset` an offset into the text the reader returns. Two hand-spelled
+  `"\n".join(lines[s:e]).strip()` cannot be relied on to stay equal.
+- **Title lookup folds diacritics only as a fallback.** Exact lowercased
+  substring pass first, `textnorm.fold` only when it returns nothing — so folding
+  can widen a miss into a hit (`"Resume"` → `"Résumé"`) but can never turn a
+  query that already resolves into an "Ambiguous section title" error. **Fold
+  both passes unconditionally and a paper carrying both spellings stops resolving
+  either.**
+- **Invariant: the `_section_locks` map is the sole owner of a lock across an
+  await.** Every caller writes `async with sections_lock(...)` as one expression,
+  and `Lock.acquire` on an uncontended lock returns without yielding — that is
+  the whole reason eviction cannot race a caller. Bind the lock to a variable,
+  await something, *then* enter it, and the key can be evicted and recreated,
+  handing two callers two different `Lock` objects.
 
 ## manual.py
 
-Manual PDF/markdown import for local files, plus the two identifier dispatchers.
-
-- **Provider-aware routing for PDF storage** — `resolve_target()` walks `_ROUTES`, an ordered tuple of `(claims, namespace, canonical_key, pdf_path)` per provider, and stores PDFs/markdown directly in the claiming provider's cache namespace, so native pipeline tools find them with no duplicates. Unrecognised identifiers fall back to the `manual` namespace. **The order is load-bearing**: an arXiv id is not a DOI, an ACL DOI is one, and the generic-DOI fallback is last. It returns a `Target` TypedDict (`namespace`, `canonical`, `pdf_path: Path`), so the ~10 call sites that subscript it are type-checked and `pdf_path` stays a `Path` rather than decaying to `Any`.
-  - **The arXiv shape test is `arxiv.is_arxiv_id`**, which both `resolve_target` and `resolve_metadata_source` call — storage and metadata must not disagree about which ids are arXiv's. It lives in the provider beside `biorxiv.is_biorxiv_doi` and `acl.is_acl_doi`, so this module routes on three predicates of the same shape and owns none of them.
-  - **Invariant: an id's routing does not depend on how it was typed.** `arxiv.is_arxiv_id` tests the *canonical* id, so case, the `arXiv:` prefix, an abs/pdf URL (any scheme, `www.`/`export.` host) and arXiv's `10.48550/arXiv.` DOI are all resolved before the shape is looked at; the old-style archive class carries `.` (`math.GT/0309136`, `cond-mat.stat-mech/0501001`) — those ids are dotted and vary in case upstream — (`.claude/rules/providers.md` § arxiv.py). An id the test rejects still gets a canonical key identical to arXiv's, so it lands in `manual` and the *same paper* caches, downloads and converts twice. `manual.migrate_misrouted_arxiv()` re-files what a narrower test left behind; it runs at startup beside `stems.migrate_legacy_stems`, is idempotent and best-effort, and moves across namespaces — so unlike that sweep it must create the destination namespace dir, which `cache.cache_dir` does not. **It renames as it moves.** `_misrouted_arxiv_id` inverts `safe_stem` (restore the slashes, then `unquote`, over three candidates — none, the leading one, all of them — since the stem alone doesn't say which `_` were slashes, and a URL spelling carries one per slash), **asks the router** rather than matching a shape of its own — the criterion is exactly "`resolve_target` would file this elsewhere now", so the sweep cannot drift from the routing it exists to catch up with — and returns the recovered *key*, which is what names the destination. Reusing the source filename holds only where the legacy `manual` key equalled the arXiv one: that key is `doinorm.canonical`, which strips `doi:` and not `arXiv:`, so `arxiv%3A2301.00001` would land in a namespace that only ever looks for `2301.00001`. A moved markdown's `manual` section index is dropped (the index is namespaced, so nothing would read it again) and re-parses under `arxiv`. **Deliberately not `corpus._filename_to_canonical`**, despite being the same shape of operation: that one repairs the slash with each namespace's own *anchored* grammar, which is right for a stem that namespace wrote and wrong here — these stems carry an `arXiv:` prefix the legacy `manual` key kept, and `_ARXIV_OLDSTYLE_STEM_RE` (`^archive_number$`) can never match one. Sharing the grammar makes the sweep miss the prefixed spellings it exists for. **Invariant: the sweep's candidate set must cover every spelling the router claims** — one the router learns and the sweep doesn't strands that paper's artifacts in `manual` for good. **And `is_arxiv_id` cannot adjudicate a restored slash**: `safe_stem` percent-encodes `/` to `_` but leaves a literal `_` alone, so a freeform label reads back identically to the arXiv id it would have come from (`hep-th_9901001` is both, and the archive grammar is loose enough that `thesis_1234567` is too). Hence two outcomes rather than one — a candidate needing no repair, or a stem naming arXiv outright (`_ARXIV_MARKER`), is exclusively arXiv's and is **moved**; anything a label could have written is **linked**, one inode under both keys, so neither reading loses its file. Only a moved markdown drops the `manual` section index; a linked one is still there to be read under that key. A filesystem without hard links takes the skip path, like any other `OSError`.
-- **Metadata dispatch** — `resolve_metadata_source()` returns the `MetadataSource` literal `"arxiv" | "biorxiv" | "openalex"`, or `None` so tools can surface a clear error. **It is derived from `resolve_target`**, not a second pass over the shapes: the namespace maps through `_METADATA_SOURCE_BY_NAMESPACE`, and only the `manual` namespace re-tests the key (a publisher DOI is OpenAlex's, a label is nobody's). Two parallel if-chains here is the bug this shape prevents — ACL is the one namespace that changes hands, its PDFs from the Anthology and its metadata from OpenAlex.
-- **The identifier a response echoes is the canonical cache key**, not the caller's spelling — `target["canonical"]`, so `arXiv:2301.00001v2` comes back as `2301.00001v2` and a DOI comes back folded. It is the key the file is filed under, so an agent can route on it. A blank identifier (`""`, whitespace, a bare `doi:`) is rejected by `_identifier_error`: it keys the empty string, which `safe_stem` maps to an empty stem, so the paper caches as `.pdf` / `.md` and every later blank import is served the first one as `cached`.
-- **The force_refresh cascade is `papers.drop_derived`**, not a local unlink — see `papers.py` above. `import_local_pdf` calls it whenever it lands a PDF over an existing one.
-- **Atomic writes only** — `import_local_pdf` → `atomic.copy`, `import_markdown` → `papers.store_markdown_and_index` → `atomic.write_text`; never `shutil.copy2` / `write_text` straight to the destination (`.claude/rules/store.md`). Every markdown read and write is explicit UTF-8, the cached-hit re-read included.
-- **Both import functions stay synchronous; the async boundary is the tool layer.** `tools/pipeline.import_paper` wraps each in `asyncio.to_thread` — an arbitrarily large copy or parse run inline stalls every concurrent tool call — and holds `papers.sections_lock` across **both** branches, since each replaces the markdown + section-index pair `convert_pdf` and the `force_refresh` cascade mutate under it.
-- **`force_refresh`.** Both `import_local_pdf` and `import_markdown` take a keyword-only `force_refresh=False`. Default returns an existing cached file as `cached: True`; `force_refresh=True` (or replacing an existing PDF) rewrites it. The cascade condition is `existed or force_refresh`, so any forced import — including a first-ever one — runs `papers.drop_derived()` and returns `cascaded_invalidated: ["markdown", "sections"]`, mirroring the `download_pdf` cascade in `tools/pipeline.py`. The cached-hit branch returns `streaming.cached_hit(dest)` decorated with `identifier` / `namespace`; the freshness rule and the check-then-`stat` race it absorbs live in `.claude/rules/download.md` and must not be re-implemented here.
-- Module deliberately does **not** download arbitrary URLs — agents fetch non-native PDFs themselves and hand the local file to `import_paper`.
-
-Manual imports intentionally have no BibTeX generation — the manual pipeline has no structured metadata. When the identifier is a DOI, chain into `get_paper_bibtex` (which dispatches to OpenAlex for arbitrary DOIs).
+- **`_ROUTES` order is load-bearing**: an arXiv id is not a DOI, an ACL DOI is
+  one, and the generic-DOI fallback is last.
+- **The arXiv shape test is `arxiv.is_arxiv_id`**, called by both
+  `resolve_target` and `resolve_metadata_source` — storage and metadata must not
+  disagree about which ids are arXiv's. This module routes on three predicates of
+  the same shape (`is_arxiv_id`, `biorxiv.is_biorxiv_doi`, `acl.is_acl_doi`) and
+  owns none of them.
+- **`resolve_metadata_source` is derived from `resolve_target`**, not a second
+  pass over the shapes. Two parallel if-chains is the bug this shape prevents —
+  ACL is the one namespace that changes hands, its PDFs from the Anthology and
+  its metadata from OpenAlex.
+- **An id `is_arxiv_id` rejects still gets a canonical key identical to arXiv's**,
+  so it lands in `manual` and the same paper caches, downloads and converts twice.
+  `migrate_misrouted_arxiv()` re-files what a narrower test left behind.
+  Two invariants govern it:
+  - **The sweep's candidate set must cover every spelling the router claims** —
+    one the router learns and the sweep doesn't strands that paper's artifacts in
+    `manual` for good. It **asks the router** rather than matching a shape of its
+    own, so it cannot drift from the routing it exists to catch up with.
+  - **It returns the recovered *key*, not the source filename.** The legacy
+    `manual` key is `doinorm.canonical`, which strips `doi:` and not `arXiv:`, so
+    reusing the filename would land `arxiv%3A2301.00001` in a namespace that only
+    ever looks for `2301.00001`.
+  Deliberately **not** `corpus._filename_to_canonical`: that one repairs the
+  slash with each namespace's own *anchored* grammar, which can never match a
+  stem carrying the `arXiv:` prefix the legacy `manual` key kept.
+- **Both import functions stay synchronous; the async boundary is the tool
+  layer.** `tools/pipeline.import_paper` wraps each in `asyncio.to_thread` — an
+  arbitrarily large copy or parse run inline stalls every concurrent tool call —
+  and holds `papers.sections_lock` across **both** branches, since each replaces
+  the markdown + section-index pair `convert_pdf` and the cascade mutate under it.
+- **Atomic writes only** — never `shutil.copy2` or `write_text` straight to the
+  destination (`.claude/rules/store.md`).
+- **This module deliberately does not download arbitrary URLs.** Agents fetch
+  non-native PDFs themselves and hand the local file to `import_paper`.
+- **Manual imports intentionally have no BibTeX generation** — the manual
+  pipeline has no structured metadata. When the identifier is a DOI, chain into
+  `get_paper_bibtex`.

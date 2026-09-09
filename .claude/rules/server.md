@@ -3,127 +3,215 @@ paths:
   - "src/academic_tools_mcp/server.py"
   - "src/academic_tools_mcp/app.py"
   - "src/academic_tools_mcp/tools/*.py"
-  - "src/academic_tools_mcp/bibtex.py"
 ---
 
-# server, tools, and BibTeX
+# server and tools
 
-**Per-tool parameters and response keys live in the `@mcp.tool` docstrings**, which are also what agents receive as the tool description — `grep -rn '@mcp.tool' src/academic_tools_mcp/tools/` for the roster. This file covers only what no single docstring can: the wiring between modules, and the invariants that span tools.
+**Per-tool parameters and response keys live in the `@mcp.tool` docstrings**,
+which are also what agents receive as the tool description —
+`grep -rn '@mcp.tool' src/academic_tools_mcp/tools/` for the roster. This file
+covers only what no single docstring can: the wiring between modules, and the
+invariants that span tools.
 
 ## Layout: `app.py` + `tools/` + thin `server.py`
 
-`app.py`'s docstring states the one-way edge (it never imports `tools`). The rule it doesn't state: **a helper needed by two tool modules moves into `app.py`** rather than being imported across them — `tools/paper.py` importing from `tools/search.py` is the violation to catch, not the cycle.
+`app.py` never imports `tools`. The rule that follows and isn't stated there:
+**a helper needed by two tool modules moves into `app.py`** rather than being
+imported across them — `tools/paper.py` importing from `tools/search.py` is the
+violation to catch, not the cycle.
 
-Tool modules call providers directly (`crossref.get_work(...)`, `openalex.get_work(...)`) and tests monkeypatch the provider. **Don't add a passthrough wrapper in `app` to create a patch point** — patch the provider instead; a wrapper that exists only as a test seam is dead weight the moment nothing patches it.
+**Don't add a passthrough wrapper in `app` to create a patch point.** Tool
+modules call providers directly and tests monkeypatch the provider; a wrapper
+that exists only as a test seam is dead weight the moment nothing patches it.
 
-**A new field on a paper response has more than one formatter to reach.** `_format_metadata_by_source` covers `get_paper_metadata` and `get_papers_metadata`'s *singleton* closure; the batch closure calls `_format_openalex_metadata` directly, so a field added only to the shared helper silently misses every batched OpenAlex DOI.
+**A new field on a paper response has more than one formatter to reach.**
+`_format_metadata_by_source` covers `get_paper_metadata` and
+`get_papers_metadata`'s *singleton* closure; the batch closure calls
+`_format_openalex_metadata` directly, so a field added only to the shared helper
+silently misses every batched OpenAlex DOI.
 
-## `server.py` — re-exports and the debug gate
+## `server.py` — re-exports
 
-Adding a tool to a `tools/*.py` module registers it with FastMCP (the decorator runs on import), but it is not reachable as `server.<name>` until you add it to `server.py`'s import list **and** `__all__` — the test suite drives every tool that way and monkeypatches providers as `server.<provider>`.
+**Invariant: `__all__` holds tool callables, the provider modules and `mcp` —
+never a tool module's internals.** A test that needs `_format_crossref_metadata`
+or `_download_pdf_by_provider` imports `tools.paper` / `tools.pipeline` directly.
+Re-exporting one gives a private helper a second import name and puts an
+underscore in the list that *defines* the module's public surface.
 
-**Invariant: `__all__` holds tool callables, the provider modules and `mcp` — never a tool module's internals.** A test that needs `_format_crossref_metadata` or `_download_pdf_by_provider` imports `tools.paper` / `tools.pipeline` directly. Re-exporting one gives a private helper a second import name (the rule `.claude/rules/pipeline.md` states for `papers/__init__.py`) and puts an underscore in the list that *defines* the module's public surface. Nothing is lost by importing the owning module: `monkeypatch.setattr(server.arxiv, ...)` mutates the provider *module object*, which every importer shares, so a provider stub reaches a helper called through `tools.<group>` exactly as it did through `server`.
-
-`_DEBUG_TOOLS_ENABLED` is read from `config.flag("ENABLE_DEBUG_TOOLS")` **at import**, so the gate needs a restart, and `get_server_stats` is defined *inside* the `if` — an agent must never be able to observe cache/throttle state. Don't hoist the definition out and gate registration instead.
+Nothing is lost by importing the owning module:
+`monkeypatch.setattr(server.arxiv, ...)` mutates the provider *module object*,
+which every importer shares, so a provider stub reaches a helper called through
+`tools.<group>` exactly as it did through `server`.
 
 ## Cross-tool response contracts
 
 These hold across several tools, so changing one tool alone breaks the set.
 
-- **`_source` and `_canonical_id` on every paper-family response.** All four dispatch through `manual.resolve_metadata_source()` and there is deliberately **no lowest-common-denominator normalisation** — agents branch on `_source` for provider-specific fields, so the three shared tags (`arxiv` / `biorxiv` / `openalex`) must mean the same thing in all four. `crossref` and `openalex_via_biorxiv` are `get_paper_metadata`-only, because `fallback_crossref` and `follow_published` are parameters of that one tool.
-- **Search-list shape.** Every search tool reports `result_count` (= `len(results)`, what this call returned). `search_arxiv` and `search_crossref_by_title` additionally carry `total_results`, which must be the provider's own upstream count (`opensearch:totalResults`, `message.total-results`), never `len(results)` — that is what tells an agent more exist beyond the page. `search_wikipedia` / `search_cached_papers` have no upstream total and report only `result_count`; `find_in_paper` reports `truncated` instead. Every search tool owes the agent *some* "more exist" signal — pick one of the three, don't ship a tool with none.
-- **`page_institutions` / `page_institution_count` appear on every `get_paper_authors` branch** — populated for OpenAlex (from the current page only, so the page cap holds), empty for arxiv/biorxiv. The shape stays symmetric so paginating agents never feature-detect.
-- **Every response key a tool returns is named in its `@mcp.tool` docstring.** The docstring *is* the agent's tool description, so a key it omits is a key no agent will look for — `_canonical_id` and the OpenAlex `pdf_url` were both invisible that way. Add a key, add it to the docstring in the same edit.
-- **A docstring does not restate its own parameters.** The `Annotated` `Field` descriptions ship to the agent beside it, so a docstring paragraph re-explaining `mode` or `force_refresh` is duplicated in the agent's context, not just in the file — and the two spellings then drift. Parameter semantics live in the `app.py` alias (`CONVERT_MODE` names the trade the two modes make, not the tool docstring; the timeout settings are named where an agent can act on them, in `_convert_suggestion`); the docstring carries what no single parameter owns: the tool's job, its response keys, its error shapes, the next step.
-- **No cache filesystem path crosses the MCP boundary.** `download_pdf`, `convert_paper` (success *and* error paths) and `import_paper` filter their result through `_strip_internal_paths`; a new response key holding a path must be added to `_INTERNAL_PATH_KEYS`. The helper filters key *names*, so it is only as correct as that tuple is current — the property that guards it is stated over response *values* against `cache.CACHE_ROOT`. Agents drive the pipeline by identifier, not by reading files.
-- **Every error a pipeline tool returns carries a `suggestion`.** `net/http`'s error vocabulary is a retry verdict, not advice, and the providers add none, so the tool layer is where a download failure learns that `import_paper` exists. `enrich_error` fills a gap and never overwrites — a provider that shipped its own advice (`openaccess`) keeps it.
-
-## `follow_published` and the batch path
-
-`get_paper_metadata(..., follow_published=True)` chains a bioRxiv paper with a `published_doi` to `openalex.get_work(published_doi)` and returns the journal record as `_source: "openalex_via_biorxiv"`, `_canonical_id` set to the journal DOI, plus a `preprint_doi` field.
-
-The `followed_published` flag is the part to keep consistent: `_format_biorxiv_metadata` sets it via a keyword-only param, `_format_openalex_via_biorxiv` sets it unconditionally, and it stays **absent** when no chain was attempted (`follow_published=False`, or no `published_doi`) and on the batch path — so the default response shape is unchanged. A fallback to the preprint record (OpenAlex hasn't indexed the journal version yet) carries `followed_published: False`, making the lag explicit rather than silent; a *transient* chain failure additionally carries `published_lookup_retryable: True`, distinguishing "not indexed" from "lookup blipped".
-
-**That tag reads `net/http`'s verdict, never the absence of another key.** The error vocabulary is three-state — `retryable: True`, `not_found: True`, and an unclassified 4xx carrying neither — so `retryable is True` is the only test that means "a retry might work". Inverting `not_found` collapses three states into two and sends an agent back at a call that cannot succeed. `openaccess._resolve_and_download` holds the same rule from the other side.
-
-`get_papers_metadata` groups identifiers by source, fans arXiv / bioRxiv out as concurrent singletons, and routes OpenAlex DOIs through `openalex.get_works_batch` — one HTTP call per `_BATCH_CHUNK_SIZE` *uncached* DOIs. Each entry mirrors the `get_paper_metadata` payload exactly plus an `_input` field carrying the original identifier, so an agent can correlate input to output.
+- **Every response echoes the canonical cache key, not the caller's spelling.**
+  `_canonical_id` for the paper family, `doi` for the graph tools,
+  `target["canonical"]` for `find_in_paper`. One markdown file, one identity — so
+  `10.1234/X`, `doi:10.1234/x` and the resolver URL, already one cache key, also
+  correlate to one value across calls.
+- **`_source` carries no lowest-common-denominator normalisation.** Agents branch
+  on it for provider-specific fields, so the three shared tags (`arxiv` /
+  `biorxiv` / `openalex`) must mean the same thing in all four paper tools.
+  `crossref` and `openalex_via_biorxiv` are `get_paper_metadata`-only, because
+  `fallback_crossref` and `follow_published` are parameters of that one tool.
+- **Every search tool owes the agent *some* "more exist" signal** —
+  `total_results` (the provider's own upstream count, never `len(results)`),
+  `result_count` alone where there is no upstream total, or `truncated`. Pick one
+  of the three; don't ship a tool with none.
+- **Response-shape keys stay symmetric across branches** so paginating agents
+  never feature-detect — `page_institutions` / `page_institution_count` are
+  emitted empty for arxiv/biorxiv rather than omitted.
+- **Every response key a tool returns is named in its `@mcp.tool` docstring.**
+  The docstring *is* the agent's tool description, so a key it omits is a key no
+  agent will look for. Add a key, add it to the docstring in the same edit.
+- **A docstring does not restate its own parameters.** The `Annotated` `Field`
+  descriptions ship to the agent beside it, so a docstring paragraph re-explaining
+  `mode` or `force_refresh` is duplicated in the agent's context, not just in the
+  file — and the two spellings then drift. Parameter semantics live in the
+  `app.py` alias; the docstring carries what no single parameter owns: the tool's
+  job, its response keys, its error shapes, the next step.
+- **No cache filesystem path crosses the MCP boundary.** `download_pdf`,
+  `convert_paper` (success *and* error paths) and `import_paper` filter their
+  result through `_strip_internal_paths`; **a new response key holding a path must
+  be added to `_INTERNAL_PATH_KEYS`.** The helper filters key *names*, so it is
+  only as correct as that tuple is current. Agents drive the pipeline by
+  identifier, not by reading files.
+- **Every error a pipeline tool returns carries a `suggestion`.** `net/http`'s
+  error vocabulary is a retry verdict, not advice, and the providers add none, so
+  the tool layer is where a download failure learns that `import_paper` exists.
+  `enrich_error` fills a gap and never overwrites — a provider that shipped its
+  own advice (`openaccess`) keeps it.
+- **One suggestion per cause; the residual asserts none.** `_convert_suggestion`
+  and `_UNINDEXABLE_REASONS` both hold this. A single catch-all contradicts the
+  `error` string it rides beside: "the PDF is corrupted, do not retry" sends the
+  agent to abandon a paper `mode="full"` converts, and a timeout must point at
+  the *other* mode, in both directions.
+- **Verdicts read `net/http`'s three-state vocabulary, never the absence of
+  another key** (`.claude/rules/net.md`). `retryable is True` is the only test
+  that means "a retry might work"; inverting `not_found` collapses three states
+  into two and sends an agent back at a call that cannot succeed. This binds
+  `follow_published`'s `published_lookup_retryable`, `search_arxiv`'s
+  rewrite-vs-wait branch, and every graph error.
 
 ## `force_refresh` cascade semantics
 
-Stage-specific, and the cascade rules are the subtle part:
+Stage-specific, and the cascade rule is the subtle part:
 
-- `download_pdf` — re-downloads and atomically replaces the cached PDF. **The cascade is keyed on what happened, not on what the caller asked for**: whenever new bytes land (`cached is False` — `is False`, never falsiness, since an absent flag is not a claim of freshness), `_download_pdf_by_provider` unlinks the cached markdown, invalidates the section index, and tags the response `cascaded_invalidated: ["markdown", "sections"]`. A cache hit does not cascade (the markdown is still consistent); a *failed* refresh does not either, keeping the preserved PDF and its markdown consistent. `force_refresh` is **not** part of the condition — a PDF that was evicted and refilled leaves markdown describing a file that is gone. **The one exception is `conversion_mode == "imported"`**: no converter can reproduce an operator's own markdown, so an implicit cascade must not destroy it, and the tool asks `papers.recorded_conversion_mode` (under the same lock) rather than reaching into the sections cache itself. An explicit `force_refresh=True` still replaces it — that is what the flag means.
-- `convert_paper` — drops both cached markdown and section index so the converter subprocess re-runs.
-- `get_paper_sections` — drops just the section index so the next read re-parses markdown. It also **echoes `conversion_mode`**, because its own `sections_note` tells the agent to re-convert a `fast` extraction and the agent cannot act on that from the rest of the response. It is the one key here that is legitimately null; `sections` and `sections_detected` are subscripted, since `_reparse_sections_locked` treats an entry missing either as stale.
-- `import_paper` — same PDF cascade via `papers.drop_derived`; the MCP layer additionally slims the markdown branch to `section_count`, so the agent calls `get_paper_sections` for the full index.
+**The `download_pdf` cascade is keyed on what happened, not on what the caller
+asked for.** Whenever new bytes land — `cached is False`, `is False` and never
+falsiness, since an absent flag is not a claim of freshness — the cached markdown
+and section index are dropped. `force_refresh` is **not** part of the condition:
+a PDF that was evicted and refilled would otherwise leave markdown describing a
+file that is gone. A cache hit does not cascade (the markdown is still
+consistent); a *failed* refresh does not either, keeping the preserved PDF and
+its markdown consistent.
 
-`sections_note` is what stops `sections_detected: false` being read as "this paper has one section" — the distinction matters most on the largest documents, where every 100 KB+ single-section paper in a real corpus turned out to be a headingless thesis and blind paging is the worst available strategy. It is emitted with `conversion_mode`, which is what the note tells the agent to act on.
+**The one exception is `conversion_mode == "imported"`**: no converter can
+reproduce an operator's own markdown, so an implicit cascade must not destroy it.
+An explicit `force_refresh=True` still replaces it — that is what the flag means.
 
-`get_paper_section` reads the markdown file directly with no derived cache, so it has no `force_refresh`. **Every markdown read is off the event loop (`asyncio.to_thread`) and explicit UTF-8** — `get_paper_section`, `find_in_paper`, `papers._reparse_sections_locked`, `manual.import_markdown`. The two tools that read *outside* the lock (`get_paper_section`, `find_in_paper`) additionally catch `FileNotFoundError` and degrade to the shared "not converted" error, because a concurrent cascade can unlink between their `exists()` check and the read; `_reparse_sections_locked` instead relies on holding `papers.sections_lock`, which every unlinker also takes. Don't drop either guard. `get_paper_section` also carries an `anthropic/maxResultSizeChars` meta pinned to `SECTION_HARNESS_CAP`, the same constant `SECTION_MAX_CHARS` is capped at.
+`sections_note` is what stops `sections_detected: false` being read as "this
+paper has one section". The distinction matters most on the largest documents,
+where every 100 KB+ single-section paper in a real corpus turned out to be a
+headingless thesis and blind paging is the worst available strategy.
 
-Streaming, the size cap, and the download protocol belong to `streaming` — see `.claude/rules/download.md`.
+**Every markdown read is off the event loop (`asyncio.to_thread`) and explicit
+UTF-8**, and `app.read_markdown` is the one home for a read taken *outside*
+`papers.sections_lock` — `find_in_paper` and `get_paper_section` both go through
+it, so its three guards can't drift apart: off the loop, explicit UTF-8, and
+`FileNotFoundError` degrading to the shared "not converted" error for the cascade
+that unlinks between the `exists()` check and the read. `_reparse_sections_locked`
+instead relies on holding the lock, which every unlinker also takes. Don't drop
+either guard.
 
-## Conversion modes and error shapes
+## Conversion modes
 
-`CONVERT_MODE` stays `Literal["full", "fast"]`: `"imported"` is provenance you can *receive* (a pre-converted file handed to `import_paper`), not a backend you can request. `null` appears only for papers converted before the field existed. Both modes write the same cache slot, so a later `mode="full"` + `force_refresh` upgrades a fast conversion.
+**`CONVERT_MODE` stays `Literal["full", "fast"]`.** `"imported"` is provenance
+you can *receive* — a pre-converted file handed to `import_paper` — not a backend
+you can request. `null` appears only for papers converted before the field existed.
 
-**Invariant: every `convert_pdf` error carries `retryable` and `conversion_mode`, plus `pdf_size_mb` once the PDF has been sized** — the same "an agent never feature-detects" rule the success shape holds. On an error `conversion_mode` names *the mode that failed*, not the provenance of any markdown (nothing was produced): `{timed_out: True, conversion_mode: "fast"}` tells an agent a fast retry is pointless. Two deliberate exceptions, both because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`, and an unknown `mode` is rejected with no `conversion_mode`, since the requested value is not in the published vocabulary.
-
-Beyond that shape, the branches are distinguished by what the suggestion should tell the agent to do next. **`_convert_suggestion` picks one per cause and the residual asserts none** — the same rule `_UNINDEXABLE_REASONS` holds in `tools/search.py`. A single catch-all contradicts the `error` string it rides beside: `convert.py` tells a fast-mode timeout to raise `PDF_FAST_CONVERT_TIMEOUT`, and "the PDF is corrupted, do not retry" sends the agent to abandon a paper `mode="full"` converts. A timeout points at the *other* mode, in both directions.
-
-- A missing or unusable PDF short-circuits before `papers.convert_pdf` into `app.pdf_not_cached_error` — `{error, suggestion}` with **no `retryable` key**. `convert_pdf`'s own guard, for direct library callers, names no cache path: `_strip_internal_paths` drops path-valued *keys*, not a path inside an `error` string.
-- Converter crash / empty output → `{error, retryable: False, conversion_mode, pdf_size_mb}`. In fast mode the spawn-failure suggestion points at poppler-utils or the `[fast]` extra.
-- Timeout → adds `timed_out: True, timeout_seconds`. On a **full-mode** timeout the suggestion points at retrying with `mode="fast"`.
-- Another conversion in flight → `{error, retryable: True, busy: True, in_progress: {...}, conversion_mode: "full", pdf_size_mb}`, **full mode only** — fast mode runs outside the global lock and can never produce it. The busy suggestion also offers `mode="fast"`.
+**Invariant: every `convert_pdf` error carries `retryable` and `conversion_mode`,
+plus `pdf_size_mb` once the PDF has been sized.** Two deliberate exceptions, both
+because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`
+(nothing was tried), and an unknown `mode` is rejected with no `conversion_mode`
+(the requested value is not in the published vocabulary).
 
 ## Reference / citation graph tools
 
-**`auto` is biased toward Crossref by `_CROSSREF_HYSTERESIS`, not a plain max.** Crossref entries carry structured author/title/year/journal metadata where OpenCitations returns bare DOI-to-DOI links, so it must win by a margin, not by a row or two. Do not "simplify" this to `oc_count > cr_count`.
-
-**`source="auto"` resolves on page 1 only** — `page > 1` with `auto` returns an error telling the agent to pin the `_source` from page 1. Re-surveying mid-walk could pick a different provider and silently shift `total` and the slice offsets. Pages 2..N should also drop `force_refresh` so they reuse the warmed cache.
-
-**The echoed `doi` is canonical, not the caller's spelling.** Each tool canonicalizes right after `_reject_non_doi` and echoes that, so `10.1234/X`, `doi:10.1234/x` and the resolver URL — one cache key already — also correlate to one value across calls. Same contract as the paper family's `_canonical_id`.
-
-**Crossref reference rows are type-checked, not just the list.** `crossref.get_work` returns the upstream `message` verbatim and `_message_of` only checks it is a dict, so `_crossref_refs` filters `reference` to dicts. It is the one list both the count tool and the page tool read, which is what stops the survey from sending an agent to page a source that then raises. `_format_crossref_reference` falls back to Crossref's own `key` when no recognized field matched, so a bookkeeping-only deposit never renders as a bare `{}`.
-
-**Every graph error carries a verdict.** Including the two the tool layer raises itself: `page > 1` with `auto` is `retryable: False` (re-issuing the identical call cannot help), and the both-sources-failed envelope carries a top-level `retryable` that is the disjunction of the nested ones.
-
-**A single-source failure is surfaced, not swallowed.** An errored source counts as `-1` so the survivor wins automatically. When exactly one failed, the response gains `partial_failure: {source, ...}` (built by `_source_error`) so a short or empty result isn't read as a confident "no references." Both failing → both error messages.
-
-All four graph tools thread `force_refresh` into every source they touch — both providers for the references pair, OpenCitations alone for the citations pair, which has no `source` parameter because OpenCitations is the only provider of incoming citations and a one-value knob is noise. Add one when a second source ships.
+- **`auto` is biased toward Crossref by `_CROSSREF_HYSTERESIS`, not a plain max.**
+  Crossref entries carry structured author/title/year/journal metadata where
+  OpenCitations returns bare DOI-to-DOI links, so it must win by a margin, not by
+  a row or two. **Do not "simplify" this to `oc_count > cr_count`.**
+- **Crossref reference rows are type-checked, not just the list.**
+  `crossref.get_work` returns the upstream `message` verbatim and `_message_of`
+  only checks it is a dict, so `_crossref_refs` filters `reference` to dicts. It
+  is the one list both the count tool and the page tool read, which is what stops
+  the survey from sending an agent to page a source that then raises.
+  `_format_crossref_reference` falls back to Crossref's own `key` when no
+  recognized field matched, so a bookkeeping-only deposit never renders as `{}`.
+- **A single-source failure is surfaced, not swallowed.** An errored source counts
+  as `-1` so the survivor wins automatically, and the response gains
+  `partial_failure` so a short or empty result isn't read as a confident "no
+  references". The both-sources-failed envelope carries a top-level `retryable`
+  that is the disjunction of the nested ones.
+- **The citations pair has no `source` parameter** because OpenCitations is the
+  only provider of incoming citations and a one-value knob is noise. Add one when
+  a second source ships.
 
 ## Pagination
 
-**`app.page_bounds` is the one home for the page/page_size arithmetic.** `tools/graph.py`'s `_page` and `get_paper_authors` both take their `start`/`end` from it, so they cannot drift on where a page begins or on the `has_more = end < total` rule. Only the arithmetic is shared — each tool keeps its own envelope keys (`total` + `doi` + a caller-named list key vs. `author_count` + `_canonical_id` + `authors`), because `_format_openalex_authors` slices inside a source-specific formatter. `get_paper_section` pages by character offset instead and shares none of this.
+**`app.page_bounds` is the one home for the page/page_size arithmetic.**
+`tools/graph._page` and `get_paper_authors` both take their `start`/`end` from
+it, so they cannot drift on where a page begins or on the `has_more = end < total`
+rule. Only the arithmetic is shared — each tool keeps its own envelope keys.
+`get_paper_section` pages by character offset and shares none of this.
 
-The bounds themselves are enforced at the MCP boundary by `PAGE` (`ge=1`) and `PAGE_SIZE` (`ge=1, le=50`), not in Python — an in-process caller can pass `page=0`. Don't add defensive clamping for inputs an agent cannot send; constrain the test domain instead.
+**Bounds are enforced at the MCP boundary** by `PAGE` (`ge=1`) and `PAGE_SIZE`
+(`ge=1, le=50`), not in Python — an in-process caller can pass `page=0`. Don't
+add defensive clamping for inputs an agent cannot send; constrain the test domain
+instead.
 
 ## Search tools
 
-- **Search hits warm the *provider's own* cache, not the dispatcher's.** `arxiv.search_papers` warms the arXiv namespace, so `search_arxiv` → `get_paper_metadata(arxiv_id)` really is free. `crossref.search_works` warms the Crossref namespace — but `manual.resolve_metadata_source()` sends every plain DOI to **OpenAlex**, so a `search_crossref_by_title` hit is free only for the reference tools and the `fallback_crossref` path, never for `get_paper_metadata`. Don't promise otherwise in a docstring, in `README.md`, or in `app.py`'s `instructions=` string.
-- **Date extraction is single-homed** in `app.crossref_date` / `_CROSSREF_DATE_KEYS` (the comment there says why `posted` is last). `paper._format_crossref_metadata` takes both elements, `search_crossref_by_title` takes `[0]`; don't add a second walker. `first_author`'s consortium-`name` fallback in `search_crossref_by_title` is the matching quirk.
-- **Nothing below a Crossref item is typed, so every read of one is shape-guarded.** `crossref.search_works` filters `items` to dicts and stops; the upstream `message` arrives verbatim below `_message_of`. `search_crossref_by_title` therefore takes `author` through `app.dict_list` and its `given`/`family`/`name` values through `isinstance`, and `crossref_date` shape-checks the date value, the `date-parts` list *and* its first element — not just null-checks them. **`author_count` counts the filtered list**, the one `_crossref_first_author` chose from, so the count and the name can never describe different lists. Same rule `graph._crossref_refs` holds for `reference` rows.
-- **`app.as_dict` / `dict_list` are the shared shape guards**, in `app.py` because `tools/paper.py` (the OpenAlex tree) and `tools/search.py` (Crossref hits) both need them and may not import each other.
-- **Search parameters bind to the provider's own constant, never a transcribed number**: `arxiv.MAX_SEARCH_RESULTS`, `crossref.MAX_SEARCH_ROWS`, `wikipedia.MAX_SEARCH_LIMIT`, `corpus.MAX_TOP_K` are the `le=` of their `Field`. A docstring that spells the cap out instead drifts the moment the provider moves it.
-- **`total_results` is an `int` on both tools that report it.** arXiv parses its own; Crossref omits `total-results` on some responses, so the tool defaults it to `0` — a key that means two things across the pair is a key an agent cannot branch on.
-- **A search error carries advice matching its verdict.** arXiv classifies a malformed query `retryable: False`; `search_arxiv` branches on `retryable is False` and tells the agent to rewrite rather than to wait out an outage. One suggestion per cause, the same rule `_convert_suggestion` and `_UNINDEXABLE_REASONS` hold. Never invert `not_found` to mean it.
-- **`find_in_paper` echoes `target["canonical"]`, not the caller's spelling** — the contract `_canonical_id` holds for the paper family and `doi` for the graph tools. One markdown file, one identity.
-- **`app.read_markdown` is the one home for a markdown read outside `papers.sections_lock`.** `find_in_paper` and `get_paper_section` both go through it, so the three guards can't drift apart: off the event loop, explicit UTF-8, and `FileNotFoundError` degrading to `not_converted_error` for the cascade that unlinks between the `exists()` check and the read.
-- **`unindexable_note` is built per-reason** from `corpus.unindexable()`'s `reason` field — it must never assert one cause for all of them, and `tests/tools/test_search_properties.py` pins `_UNINDEXABLE_REASONS`' keys equal to `corpus.UNINDEXABLE_REASONS` — each explanation is hand-written, so the key set is a duplicate CI keeps honest, not a derivation — which is what stops a reason added to the engine from silently falling through to the residual. The reported list is `_UNINDEXABLE_SAMPLE` entries beside an uncapped `unindexable_count`, and each entry carries the `canonical_id` the note tells the agent to hand to `find_in_paper` — a bare `stem` is not an identifier any tool resolves. Engine internals, including the CJK trade the docstring warns about, live in `.claude/rules/corpus.md`.
+- **Search hits warm the *provider's own* cache, not the dispatcher's.**
+  `arxiv.search_papers` warms the arXiv namespace, so `search_arxiv` →
+  `get_paper_metadata(arxiv_id)` really is free. `crossref.search_works` warms the
+  Crossref namespace — but `manual.resolve_metadata_source()` sends every plain
+  DOI to **OpenAlex**, so a `search_crossref_by_title` hit is free only for the
+  reference tools and the `fallback_crossref` path, never for
+  `get_paper_metadata`. This file is the authority; a docstring, `README.md` or
+  `app.py`'s `instructions=` string that says otherwise is the one to fix.
+- **Date extraction is single-homed** in `app.crossref_date` /
+  `_CROSSREF_DATE_KEYS`. `paper._format_crossref_metadata` takes both elements,
+  `search_crossref_by_title` takes `[0]`; don't add a second walker.
+- **Nothing below a Crossref item is typed, so every read of one is
+  shape-guarded** — `author` through `app.dict_list`, its `given`/`family`/`name`
+  values through `isinstance`, and `crossref_date` shape-checks the date value,
+  the `date-parts` list *and* its first element. **`author_count` counts the
+  filtered list**, the one `_crossref_first_author` chose from, so the count and
+  the name can never describe different lists.
+- **`app.as_dict` / `dict_list` are the shared shape guards**, in `app.py`
+  because `tools/paper.py` (the OpenAlex tree) and `tools/search.py` (Crossref
+  hits) both need them and may not import each other. **OpenAlex nulls are
+  load-bearing**: it emits `"author": null` / `"authorships": null` rather than
+  dropping the key, so no `.get(k, default)` alone is trusted.
+- **Search parameters bind to the provider's own constant, never a transcribed
+  number**: `arxiv.MAX_SEARCH_RESULTS`, `crossref.MAX_SEARCH_ROWS`,
+  `wikipedia.MAX_SEARCH_LIMIT`, `corpus.MAX_TOP_K` are the `le=` of their `Field`.
+  A docstring that spells the cap out instead drifts the moment the provider
+  moves it.
+- **`total_results` is an `int` on both tools that report it.** Crossref omits
+  `total-results` on some responses, so the tool defaults it to `0` — a key that
+  means two things across the pair is a key an agent cannot branch on.
+- **`_UNINDEXABLE_REASONS`' keys equal `corpus.UNINDEXABLE_REASONS`**, pinned in
+  CI. Each explanation is hand-written, so the key set is a duplicate CI keeps
+  honest rather than a derivation — which is what stops a reason added to the
+  engine falling through to the residual. Each reported entry carries the
+  `canonical_id` the note tells the agent to hand to `find_in_paper`; a bare
+  `stem` is not an identifier any tool resolves.
 
-## bibtex.py
-
-Three entry points, one per provider shape (`generate_bibtex` / `generate_arxiv_bibtex` / `generate_biorxiv_bibtex`); entry-type selection per source is in `get_paper_bibtex`'s docstring. All three share helpers for surname particles (`van`, `de la`, `von`, etc.) in citation keys, author formatting (`_format_names` + `_format_one_name`, parameterised by a `name_of` accessor so OpenAlex's nested `author.display_name` and arXiv/bioRxiv's flat `name` reuse one code path), key generation for the flat providers (`_flat_key`), and entry assembly (`_render_entry` — the single site that turns a `(name, value)` list into `@type{key, ...}`).
-
-Output-correctness contracts (so generated entries always compile):
-
-- **Citation keys are ASCII `[a-z0-9]`.** `_key_token` gates the word components (`_extract_last_name`, `_first_key_word`) and `_key_year` gates the year — digits or nothing, so a null or malformed upstream year drops out instead of printing `None` into the key. A new key component routes through one of the two.
-- **Every value reaching a field is escaped**, including the ones that look numeric: `biblio`'s volume / issue / pages arrive from Crossref as freeform strings and occasionally as numbers. `_escape_bibtex` treats field text as literal (braces stripped, whitespace runs collapsed — an Atom-wrapped `journal_ref` would otherwise split the one-field-per-line layout) and `_escape_doi` does not, because a DOI must stay resolvable, so braces are escaped rather than stripped. `_escape_doi` also guards the identifier-shaped fields, `eprint` and `primaryclass`. A URL inside `\url{}` takes neither: url.sty gives it verbatim catcodes, so `_url_field` percent-encodes the fatal characters instead — a backslash escape would land in the link target. Both are single-pass, never chained `str.replace`: escaping `\` first would emit braces a later brace-pass re-escapes.
-- **`_TYPE_MAP`'s keys are OpenAlex's `type` vocabulary, not Crossref's.** `type_crossref` no longer exists on the work object, so `proceedings-article` / `posted-content` / `monograph` can never arrive and must not be re-added as keys; a conference paper is `conference-paper`. Re-derive the list from `api.openalex.org/works?group_by=type` when adding a type, and let anything unlisted fall through to `@misc`. The preprint-only `eprint` / `howpublished` block keys on the *work type*, not on `@misc` — datasets and software land in `@misc` too.
-- **Titles are double-braced** (`_title_field`), so no `.bst` can case-fold `NaCl` to `nacl`.
-- **Surname particles have two detectors, and the split is deliberate.** `_PARTICLES` holds only the particles publishers *capitalize*; `_is_particle`'s case rule — BibTeX's own "a lowercase word before the last one is the von part" — covers the rest, gated on the surname being capitalized so an all-lowercase display name doesn't collapse into one particle run. Don't grow the wordlist to chase the long tail: in real OpenAlex records a capitalized `Du`, `Den`, `Bin`, `E.` or `I.` is a Chinese given name or an initial, not a particle, and the lowercase spellings (`da Costa`, `do Nascimento`, `ter Braak`) are already handled.
-- **`_TITLE_SKIP` is closed-class only**, English plus the articles, prepositions and conjunctions of the major publication languages, because OpenAlex carries the original-language title. `_first_key_word` keeps hyphenated and apostrophized compounds whole (`Pre-exposure` → `preexposure`) and strips a one-letter Romance elision (`L'exil` → `exil`); a wholly numeric token is skipped, a digit inside a word is not.
-- **Organisational authors are brace-wrapped.** `_format_one_name` detects consortium/collaboration names (`_ORG_RE`) and emits `{The ATLAS Collaboration}` so BibTeX treats them atomically instead of splitting off a fake surname.
-- **An arXiv DOI is recognised through the provider's grammar** (`_arxiv_eprint_from_doi` → `arxiv.is_arxiv_id` / `normalize_arxiv_id`, never a local copy of `arxiv._ARXIV_DOI_RE`), never by splitting on `/`: the id of an old-style work *contains* a slash (`10.48550/arXiv.hep-th/9901001`), and a DOI merely containing "arxiv" in its suffix is not an arXiv DOI. Any other preprint gets a `howpublished` URL built from the **normalized** DOI, falling back to the OpenAlex landing page, and omitted when there is neither — never a bare `\url{}`.
-- **OpenAlex nulls are load-bearing.** It emits `"author": null` / `"display_name": null` / `"authorships": null` rather than dropping the key, so every read is `or`-defaulted (`_author_display_name` is the accessor) and no `.get(k, default)` alone is trusted. **The same rule binds `tools/paper.py`**, which reads the same objects: `_fetch_singleton`'s guard checks only that a work is a dict carrying an `id`, so `_format_openalex_metadata`, `_format_openalex_authors` and `get_author` take every level of the tree through `paper.as_dict` / `paper.dict_list` — the named shape guards, as `crossref._message_of` and `graph._crossref_refs` are for theirs. Filtering rather than raising also keeps `author_count` and the page it describes counting the same objects.
-- **Cross-entry key disambiguation is out of scope.** These functions are stateless (one paper per call) and cannot see sibling entries, so two papers sharing author+year+title-word collide on one key. A caller concatenating many entries into a single `.bib` must deduplicate keys itself.
+Streaming, the size cap and the download protocol belong to `streaming` —
+`.claude/rules/download.md`. BibTeX generation is `.claude/rules/bibtex.md`.
