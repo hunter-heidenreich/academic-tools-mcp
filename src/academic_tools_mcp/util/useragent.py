@@ -4,8 +4,7 @@ Wikimedia, Crossref and OpenAlex all ask for the same shape::
 
     academic-tools-mcp/<version> (+<project url>; mailto:<contact>)
 
-The version is read from installed distribution metadata, never written as a
-literal.
+The version comes from installed distribution metadata, never a literal.
 """
 
 import re
@@ -15,10 +14,10 @@ from importlib.metadata import PackageNotFoundError, version
 _PROJECT_URL = "https://github.com/hunter-heidenreich/academic-tools-mcp"
 _DISTRIBUTION = "academic-tools-mcp"
 
-# Advertised when running from an uninstalled source tree; never gates behaviour.
+# Advertised from an uninstalled source tree; never gates behaviour.
 _UNKNOWN_VERSION = "0+unknown"
 
-# Anything outside printable ASCII, plus the parens that delimit the comment.
+# Outside printable ASCII, plus the parens that delimit the User-Agent comment.
 _UNSAFE_IN_MAILTO = re.compile(r"[^\x20-\x7e]|[()]")
 
 _MAILTO_PREFIX = "mailto:"
@@ -39,8 +38,8 @@ def package_version() -> str:
 def normalize_mailto(mailto: str | None) -> str | None:
     """Scrub an operator-supplied contact, or ``None`` if nothing survives.
 
-    Invariant: scrub before stripping the prefix, in a loop, as
-    ``doinorm.normalize`` does — scrubbing can reveal a prefix (``mail(to:x``).
+    Invariant: scrub before stripping the prefix, in a loop — scrubbing can
+    reveal one (``mail(to:x`` → ``mailto:x``), so the loop keeps it idempotent.
     """
     if not mailto:
         return None
@@ -51,7 +50,7 @@ def normalize_mailto(mailto: str | None) -> str | None:
 
 
 def build(mailto: str | None = None) -> str:
-    """Build the outbound User-Agent, appending a normalized contact if given."""
+    """Build the outbound User-Agent, appending a contact that survives ``normalize_mailto``."""
     contact = normalize_mailto(mailto)
     suffix = f"; {_MAILTO_PREFIX}{contact}" if contact else ""
     return f"{_DISTRIBUTION}/{package_version()} (+{_PROJECT_URL}{suffix})"

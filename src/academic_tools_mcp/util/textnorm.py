@@ -15,7 +15,7 @@ _SEGMENT_RE = re.compile(r"[\x00-\x7f]+|[^\x00-\x7f]+")
 
 
 def fold(text: str) -> str:
-    """NFKD-fold ``text`` and strip combining marks. Case is left untouched."""
+    """NFKD-normalize ``text`` and drop combining marks. Case is left untouched."""
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
@@ -33,18 +33,17 @@ def lower_with_map(text: str, *, fold: bool = False) -> tuple[str, list[int]]:
 def _transform_with_map(text: str, *, fold_marks: bool, lower: bool) -> tuple[str, list[int]]:
     """Transform ``text``, plus each output char's index in the ORIGINAL string.
 
-    ``index_map`` has length ``len(transformed) + 1``; ``[-1]`` is ``len(text)``,
-    the sentinel that lets a match ending at the end of ``transformed`` reach the
-    end of ``text``. ``original_span`` reads it.
+    ``index_map`` has length ``len(transformed) + 1``; its ``len(text)`` sentinel
+    lets a match ending at the end of ``transformed`` reach the end of ``text``.
 
-    The string is always the *whole-string* transform. ``str.lower()`` is
-    context-sensitive at a word-final Greek sigma, so lowercasing character by
-    character would emit a string the tokeniser never produces and lose the
-    match. Only the map is built per ORIGINAL character — that is what absorbs
-    the length changes: a combining mark contributes no entry, "ﬁ" contributes
-    two pointing at one index, 'İ' lowercases to two chars. The two halves stay
-    in step because per-character and whole-string transforms always agree in
-    *length*; that is pinned by property test, not asserted here.
+    The string is always the *whole-string* transform, because ``str.lower()`` is
+    context-sensitive at a word-final Greek sigma and per-character lowercasing
+    would emit a string the tokeniser never produces, losing the match. Only the
+    map is per ORIGINAL character, which absorbs the length changes: a folded
+    combining mark contributes no entry, "ﬁ" two entries at one index, 'İ'
+    lowercases to two chars. The halves stay in step because per-character and
+    whole-string transforms always agree in *length*, pinned by property test
+    rather than asserted here.
     """
     folded = fold(text) if fold_marks else text
     transformed = folded.lower() if lower else folded
@@ -70,11 +69,10 @@ def _transform_with_map(text: str, *, fold_marks: bool, lower: bool) -> tuple[st
 def original_span(index_map: list[int], start: int, end: int) -> tuple[int, int]:
     """Original ``[lo, hi)`` covering the transformed span ``[start, end)``.
 
-    Indexing the map twice is not enough: a span ending inside one character's
-    expansion (the "f" of a folded "ﬁ") resolves both ends to the same index and
-    slices to nothing, hence the widening. ``index_map[end]`` still wins when
-    larger — it is the entry that swallows trailing combining marks, so "cafe"
-    against a decomposed "café" keeps its accent.
+    Two lookups are not enough: a span ending inside a character's expansion (the
+    "f" of a folded "ﬁ") gives both ends one index and slices to nothing, hence
+    the widening. ``index_map[end]`` still wins when larger — it swallows trailing
+    combining marks, so "cafe" against a decomposed "café" keeps its accent.
     """
     lo = index_map[start]
     if end <= start:
