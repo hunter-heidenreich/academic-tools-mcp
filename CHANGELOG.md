@@ -30,9 +30,27 @@ grouped by milestone rather than per commit.
 - **`get_paper_metadata` reports an OpenAlex work's `pmid`**, as bare digits
   (null when OpenAlex has none), closing the round trip in both directions.
   Batched results carry it too. ([#115])
+- **`fallback_crossref` reaches all four paper tools, not just
+  `get_paper_metadata`.** A DOI Crossref had indexed and OpenAlex had not gave
+  you a title and a venue but no authors, abstract or BibTeX — on a server whose
+  stated purpose includes generating BibTeX. `get_paper_authors`,
+  `get_paper_abstract` and `get_paper_bibtex` now take the flag too, on the same
+  terms: opt-in, a definitive OpenAlex 404, and OpenAlex-routed DOIs only. What
+  Crossref cannot supply is null rather than absent — a Crossref abstract is its
+  JATS deposit rendered to plain text, and many records carry none. ([#116])
 
 ### Fixed
 
+- **A transient Crossref failure inside `fallback_crossref` is no longer
+  swallowed.** The agent asked for the fallback and got back only OpenAlex's
+  `not_found`, with no way to tell that Crossref had been tried and might work on
+  a retry. The error now carries `crossref_fallback_retryable: true`, mirroring
+  `published_lookup_retryable`. ([#116])
+- **A Crossref-sourced `@phdthesis` carries its `school`.** Crossref deposits
+  `institution` as a list of *objects*, not the list of strings `title` and
+  `container-title` carry, so reading it alike dropped the field from every
+  dissertation. A non-string `publisher` is now dropped rather than stringified
+  into the entry. ([#116])
 - **`arxiv.org/html/...` URLs route to arXiv.** `/abs/` and `/pdf/` matched but
   `/html/` did not, though it has been the default landing page for new papers
   since late 2023 — the spelling a pasted browser tab carries. Unrecognised,
@@ -1715,3 +1733,4 @@ say which.
 [#110]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/110
 [#112]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/112
 [#115]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/115
+[#116]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/116

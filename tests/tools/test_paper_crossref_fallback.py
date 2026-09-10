@@ -11,7 +11,7 @@ fields are null on the fallback response.
 import pytest
 
 from academic_tools_mcp import server
-from academic_tools_mcp.providers import crossref, openalex
+from academic_tools_mcp.providers import arxiv, biorxiv, crossref, openalex
 from academic_tools_mcp.tools import paper
 
 
@@ -292,3 +292,275 @@ class TestFallbackHonoursForceRefresh:
         await server.get_paper_metadata("10.1234/x", fallback_crossref=True)
 
         assert seen["force_refresh"] is False
+
+
+# A fuller Crossref work: the fields authors / abstract / BibTeX actually read.
+_CROSSREF_FULL = {
+    "DOI": "10.1162/tacl_a_99999",
+    "title": ["A Brand New Paper Not Yet In OpenAlex"],
+    "container-title": ["Transactions of the ACL"],
+    "type": "journal-article",
+    "issued": {"date-parts": [[2026, 5]]},
+    "volume": "14",
+    "issue": "3",
+    "page": "270-273",
+    "publisher": "MIT Press",
+    "abstract": "<jats:title>Abstract</jats:title><jats:p>We show &amp; prove it.</jats:p>",
+    "author": [
+        {"given": "Ada", "family": "Lovelace", "sequence": "first"},
+        {
+            "given": "Ludwig",
+            "family": "van Beethoven",
+            "sequence": "additional",
+            "affiliation": [{"name": "Bonn"}],
+        },
+        {"name": "The Consortium", "sequence": "additional"},
+    ],
+}
+
+
+def _stub_404_then_crossref(monkeypatch, work=None):
+    """OpenAlex answers a definitive 404; Crossref answers with *work*."""
+
+    async def fake_openalex(doi, **kwargs):
+        return _openalex_404(doi)
+
+    async def fake_crossref(doi, **kwargs):
+        return dict(work if work is not None else _CROSSREF_FULL)
+
+    monkeypatch.setattr(openalex, "get_work", fake_openalex)
+    monkeypatch.setattr(crossref, "get_work", fake_crossref)
+
+
+class TestFallbackReachesAllFourTools:
+    """The asymmetry this closes: `fallback_crossref` used to be
+    get_paper_metadata's alone, so a DOI Crossref had indexed and OpenAlex had
+    not gave you a title and venue but no authors, abstract or BibTeX — on a
+    server whose stated purpose includes generating BibTeX.
+    """
+
+    @pytest.mark.asyncio
+    async def test_authors_page_matches_the_openalex_shape(self, monkeypatch):
+        """Keys stay symmetric across branches so a paginating agent never
+        feature-detects; the Crossref-only nulls are explicit, not omitted."""
+        _stub_404_then_crossref(monkeypatch)
+
+        result = await server.get_paper_authors(
+            "10.1162/tacl_a_99999", fallback_crossref=True, page_size=2
+        )
+
+        assert result["_source"] == "crossref"
+        assert result["_canonical_id"] == "10.1162/tacl_a_99999"
+        assert result["author_count"] == 3
+        assert result["has_more"] is True
+        assert [a["name"] for a in result["authors"]] == ["Ada Lovelace", "Ludwig van Beethoven"]
+        assert result["authors"][0]["position"] == "first"
+        assert result["authors"][0]["openalex_id"] is None
+        assert result["authors"][0]["is_corresponding"] is None
+        # Crossref's per-author affiliation is real, unlike arXiv/bioRxiv's.
+        assert result["page_institutions"] == ["Bonn"]
+        assert result["page_institution_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_authors_second_page_slices_in_memory(self, monkeypatch):
+        _stub_404_then_crossref(monkeypatch)
+
+        result = await server.get_paper_authors(
+            "10.1162/tacl_a_99999", fallback_crossref=True, page=2, page_size=2
+        )
+
+        # An organisation author has `name`, not given/family.
+        assert [a["name"] for a in result["authors"]] == ["The Consortium"]
+        assert result["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_abstract_renders_jats_to_plain_text(self, monkeypatch):
+        """Crossref deposits markup, so the raw value is not something an agent
+        can read — and the `<jats:title>Abstract</jats:title>` labelling the
+        field is not part of the abstract."""
+        _stub_404_then_crossref(monkeypatch)
+
+        result = await server.get_paper_abstract("10.1162/tacl_a_99999", fallback_crossref=True)
+
+        assert result["_source"] == "crossref"
+        assert result["title"] == "A Brand New Paper Not Yet In OpenAlex"
+        assert result["abstract"] == "We show & prove it."
+
+    @pytest.mark.asyncio
+    async def test_abstract_is_null_when_crossref_has_none(self, monkeypatch):
+        """Most Crossref records carry no abstract. That is a real answer with
+        the key present, not a missing key an agent has to feature-detect."""
+        _stub_404_then_crossref(monkeypatch, work=_CROSSREF_WORK)
+
+        result = await server.get_paper_abstract("10.1162/tacl_a_99999", fallback_crossref=True)
+
+        assert result["_source"] == "crossref"
+        assert result["abstract"] is None
+
+    @pytest.mark.asyncio
+    async def test_bibtex_uses_crossrefs_own_type_vocabulary(self, monkeypatch):
+        """`journal-article` is a Crossref spelling `_TYPE_MAP` does not carry;
+        reading it through the OpenAlex map would silently yield @misc."""
+        _stub_404_then_crossref(monkeypatch)
+
+        result = await server.get_paper_bibtex("10.1162/tacl_a_99999", fallback_crossref=True)
+        entry = result["bibtex"]
+
+        assert result["_source"] == "crossref"
+        assert entry.startswith("@article{lovelace2026brand,")
+        assert "author={Lovelace, Ada and van Beethoven, Ludwig and {The Consortium}}" in entry
+        assert "journal={Transactions of the ACL}" in entry
+        assert "volume={14}" in entry
+        assert "number={3}" in entry
+        # A single Crossref `page` string becomes a BibTeX range.
+        assert "pages={270--273}" in entry
+        assert "year={2026}" in entry
+        assert "publisher={MIT Press}" in entry
+        # `_escape_doi` escapes rather than drops, so the DOI stays resolvable.
+        assert r"doi={10.1162/tacl\_a\_99999}" in entry
+
+    @pytest.mark.asyncio
+    async def test_every_tool_still_errors_without_the_flag(self, monkeypatch):
+        """The default must not change: the fallback stays opt-in on all four."""
+        _stub_404_then_crossref(monkeypatch)
+
+        for call in (
+            server.get_paper_metadata("10.1162/tacl_a_99999"),
+            server.get_paper_authors("10.1162/tacl_a_99999"),
+            server.get_paper_abstract("10.1162/tacl_a_99999"),
+            server.get_paper_bibtex("10.1162/tacl_a_99999"),
+        ):
+            result = await call
+            assert result.get("_source") != "crossref"
+            assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_a_transient_openalex_error_never_reaches_crossref(self, monkeypatch):
+        """The precondition is a *definitive* 404. A 5xx means OpenAlex may still
+        have the paper, so answering from Crossref would silently downgrade it."""
+
+        async def fake_openalex(doi, **kwargs):
+            return {"error": "OpenAlex unavailable", "retryable": True}
+
+        async def boom(*args, **kwargs):
+            raise AssertionError("a transient OpenAlex error must not trigger the fallback")
+
+        monkeypatch.setattr(openalex, "get_work", fake_openalex)
+        monkeypatch.setattr(crossref, "get_work", boom)
+
+        for call in (
+            server.get_paper_authors("10.1162/tacl_a_99999", fallback_crossref=True),
+            server.get_paper_abstract("10.1162/tacl_a_99999", fallback_crossref=True),
+            server.get_paper_bibtex("10.1162/tacl_a_99999", fallback_crossref=True),
+        ):
+            result = await call
+            assert result["retryable"] is True
+
+
+class TestFallbackFailureIsNotSwallowed:
+    """An agent that asked for the fallback and got only OpenAlex's `not_found`
+    cannot tell that Crossref was tried and failed transiently — the same
+    three-state discipline `published_lookup_retryable` exists for.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transient_crossref_failure_is_reported(self, monkeypatch):
+        async def fake_openalex(doi, **kwargs):
+            return _openalex_404(doi)
+
+        async def fake_crossref(doi, **kwargs):
+            return {"error": "Crossref unavailable", "retryable": True}
+
+        monkeypatch.setattr(openalex, "get_work", fake_openalex)
+        monkeypatch.setattr(crossref, "get_work", fake_crossref)
+
+        for call in (
+            server.get_paper_metadata("10.1162/tacl_a_99999", fallback_crossref=True),
+            server.get_paper_authors("10.1162/tacl_a_99999", fallback_crossref=True),
+            server.get_paper_abstract("10.1162/tacl_a_99999", fallback_crossref=True),
+            server.get_paper_bibtex("10.1162/tacl_a_99999", fallback_crossref=True),
+        ):
+            result = await call
+            assert result["not_found"] is True
+            assert result["crossref_fallback_retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_definitive_crossref_miss_carries_no_retry_hint(self, monkeypatch):
+        """Neither index has it. `crossref_fallback_retryable` would send the
+        agent back at a call that cannot succeed."""
+
+        async def fake_openalex(doi, **kwargs):
+            return _openalex_404(doi)
+
+        async def fake_crossref(doi, **kwargs):
+            return {"error": "not in Crossref", "not_found": True}
+
+        monkeypatch.setattr(openalex, "get_work", fake_openalex)
+        monkeypatch.setattr(crossref, "get_work", fake_crossref)
+
+        result = await server.get_paper_bibtex("10.1162/tacl_a_99999", fallback_crossref=True)
+
+        assert result["not_found"] is True
+        assert "crossref_fallback_retryable" not in result
+
+
+class TestFallbackIsOpenalexOnly:
+    """`fallback_crossref` reaches OpenAlex-routed DOIs and nothing else.
+
+    arXiv and bioRxiv flag their own misses `not_found` too, so a gate built
+    from that flag alone claims them: an arXiv id would reach `get_work` as if
+    it were a DOI, and a bioRxiv miss would come back tagged `crossref`, since
+    Crossref does index `10.1101` DOIs. That is not what the parameter says it
+    does, and an agent branching on `_source` would be told the wrong provider.
+    """
+
+    @staticmethod
+    def _recording_crossref(monkeypatch):
+        calls: list[str] = []
+
+        async def fake_get_work(doi, **kwargs):
+            calls.append(doi)
+            return dict(_CROSSREF_WORK)
+
+        monkeypatch.setattr(crossref, "get_work", fake_get_work)
+        return calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool",
+        ["get_paper_metadata", "get_paper_authors", "get_paper_abstract", "get_paper_bibtex"],
+    )
+    async def test_an_arxiv_miss_never_reaches_crossref(self, monkeypatch, tool):
+        """An arXiv id is not a DOI — consulting Crossref spends a request on nothing."""
+
+        async def fake_arxiv(arxiv_id, **kwargs):
+            return {"error": f"No paper found for arXiv ID: {arxiv_id}", "not_found": True}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
+        calls = self._recording_crossref(monkeypatch)
+
+        result = await getattr(server, tool)("2301.99999", fallback_crossref=True)
+
+        assert calls == []
+        assert result["not_found"] is True
+        assert "crossref_fallback_retryable" not in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tool",
+        ["get_paper_metadata", "get_paper_authors", "get_paper_abstract", "get_paper_bibtex"],
+    )
+    async def test_a_biorxiv_miss_is_not_answered_by_crossref(self, monkeypatch, tool):
+        """Crossref indexes 10.1101 DOIs, so this one would silently succeed."""
+
+        async def fake_biorxiv(doi, **kwargs):
+            return {"error": f"No paper found for DOI: {doi}", "not_found": True}
+
+        monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv)
+        calls = self._recording_crossref(monkeypatch)
+
+        result = await getattr(server, tool)("10.1101/2026.01.01.999999", fallback_crossref=True)
+
+        assert calls == []
+        assert result.get("_source") != "crossref"
+        assert result["not_found"] is True

@@ -1021,3 +1021,174 @@ class TestNamesEmptiedByEscaping:
             )
         )
         assert "author={Doe, Jane}" in bib
+
+
+class TestGenerateCrossrefBibtex:
+    """The fourth generator, reading Crossref's own type vocabulary.
+
+    Its riskiest property is the one a shared map would break: `journal-article`
+    and `proceedings-article` are spellings `_TYPE_MAP` does not carry, so
+    reading them through the OpenAlex map yields @misc for every real paper.
+    """
+
+    @pytest.mark.parametrize(
+        ("crossref_type", "entry_type"),
+        [
+            ("journal-article", "article"),
+            ("proceedings-article", "inproceedings"),
+            ("book-chapter", "incollection"),
+            ("book-section", "incollection"),
+            ("monograph", "book"),
+            ("edited-book", "book"),
+            ("dissertation", "phdthesis"),
+            ("report", "techreport"),
+            ("posted-content", "misc"),
+            ("dataset", "misc"),
+            # Unlisted, and OpenAlex's own spellings, all fall through to @misc.
+            ("journal-issue", "misc"),
+            ("conference-paper", "misc"),
+            ("preprint", "misc"),
+            (None, "misc"),
+            (123, "misc"),
+        ],
+    )
+    def test_entry_type_comes_from_crossrefs_vocabulary(self, crossref_type, entry_type):
+        work = {"type": crossref_type, "title": ["A Study"], "DOI": "10.1234/x"}
+        assert bibtex.generate_crossref_bibtex(work, year=2020).startswith(f"@{entry_type}{{")
+
+    def test_venue_field_follows_the_entry_type(self):
+        base = {"title": ["T"], "container-title": ["Nature"], "DOI": "10.1234/x"}
+        article = bibtex.generate_crossref_bibtex({**base, "type": "journal-article"}, year=2020)
+        proc = bibtex.generate_crossref_bibtex({**base, "type": "proceedings-article"}, year=2020)
+        assert "journal={Nature}" in article
+        assert "booktitle={Nature}" in proc
+
+    def test_thesis_takes_its_school_from_institution(self):
+        """Crossref's real shape: a list of objects, not the strings elsewhere.
+
+        `title` and `container-title` are lists of strings, so a reader that
+        treats `institution` alike drops every dissertation's `school`.
+        """
+        work = {
+            "type": "dissertation",
+            "title": ["T"],
+            "institution": [{"name": "MIT", "place": ["Cambridge, MA"]}],
+        }
+        assert "school={MIT}" in bibtex.generate_crossref_bibtex(work, year=2020)
+
+    @pytest.mark.parametrize(
+        ("institution", "expected"),
+        [
+            ("MIT", "school={MIT}"),
+            ([{"place": ["Cambridge"]}, {"name": "MIT"}], "school={MIT}"),
+            ([{"name": 7}], None),
+            ([], None),
+            (None, None),
+        ],
+    )
+    def test_a_wrong_shaped_institution_drops_the_field_rather_than_raising(
+        self, institution, expected
+    ):
+        """Nothing below a Crossref `message` is typed, and `_escape_bibtex` raises."""
+        work = {"type": "dissertation", "title": ["T"], "institution": institution}
+        out = bibtex.generate_crossref_bibtex(work, year=2020)
+        if expected is None:
+            assert "school=" not in out
+        else:
+            assert expected in out
+
+    def test_a_non_string_publisher_is_dropped_rather_than_stringified(self):
+        """`str(publisher)` would print a Python repr into the entry."""
+        work = {"type": "report", "title": ["T"], "publisher": {"name": "NIST"}}
+        out = bibtex.generate_crossref_bibtex(work, year=2020)
+        assert "publisher=" not in out
+        assert "institution=" not in out
+
+    @pytest.mark.parametrize(
+        ("page", "expected"),
+        [
+            ("270-273", "pages={270--273}"),
+            ("270–273", "pages={270--273}"),
+            ("270 - 273", "pages={270--273}"),
+            # A single page and an article number are ranges of nothing.
+            ("e1234", "pages={e1234}"),
+            ("42", "pages={42}"),
+        ],
+    )
+    def test_page_string_becomes_a_bibtex_range(self, page, expected):
+        work = {"type": "journal-article", "title": ["T"], "page": page}
+        assert expected in bibtex.generate_crossref_bibtex(work, year=2020)
+
+    @pytest.mark.parametrize("page", ["", "   ", None, 42])
+    def test_no_pages_field_for_a_missing_or_wrong_shaped_page(self, page):
+        work = {"type": "journal-article", "title": ["T"], "page": page}
+        assert "pages=" not in bibtex.generate_crossref_bibtex(work, year=2020)
+
+    def test_report_names_its_institution_from_the_venue_or_publisher(self):
+        """A techreport's issuer is a `container-title` for some deposits and a
+        `publisher` for others; either alone leaves the entry unattributed."""
+        by_venue = {"type": "report", "title": ["T"], "container-title": ["NBER Working Papers"]}
+        by_publisher = {"type": "report", "title": ["T"], "publisher": "NBER"}
+        assert "institution={NBER Working Papers}" in bibtex.generate_crossref_bibtex(
+            by_venue, year=2020
+        )
+        assert "institution={NBER}" in bibtex.generate_crossref_bibtex(by_publisher, year=2020)
+
+    def test_preprint_gets_a_locator_since_it_has_no_venue(self):
+        work = {"type": "posted-content", "title": ["T"], "DOI": "10.1101/2024.01.01.123"}
+        entry = bibtex.generate_crossref_bibtex(work, year=2024)
+        assert r"howpublished={\url{https://doi.org/10.1101/2024.01.01.123}}" in entry
+
+    def test_an_arxiv_preprint_gets_eprint_not_a_url(self):
+        work = {"type": "posted-content", "title": ["T"], "DOI": "10.48550/arXiv.2301.00001"}
+        entry = bibtex.generate_crossref_bibtex(work, year=2023)
+        assert "eprint={2301.00001}" in entry
+        assert "archiveprefix={arXiv}" in entry
+        assert "howpublished" not in entry
+
+    def test_a_non_preprint_gets_no_locator(self):
+        """Same rule as `generate_bibtex`: the block keys on the work type."""
+        work = {"type": "journal-article", "title": ["T"], "DOI": "10.1234/x"}
+        assert "howpublished" not in bibtex.generate_crossref_bibtex(work, year=2020)
+
+    def test_key_falls_back_when_there_is_no_author_or_year(self):
+        work = {"type": "journal-article", "title": ["The Study of Things"]}
+        assert bibtex.generate_crossref_bibtex(work, year=None).startswith("@article{unknownstudy,")
+
+    @pytest.mark.parametrize("year", [None, "", "abc", "20x0", float("nan")])
+    def test_a_non_numeric_year_drops_out_rather_than_printing(self, year):
+        """`_key_year` gates the key and the field alike — keys stay [a-z0-9]."""
+        entry = bibtex.generate_crossref_bibtex(
+            {"type": "journal-article", "title": ["T"]}, year=year
+        )
+        assert "year=" not in entry
+        assert "None" not in entry
+
+    @pytest.mark.parametrize(
+        "work",
+        [
+            {},
+            {"title": "A bare string, not a list"},
+            {"title": [None, 42], "author": "not a list", "DOI": 42},
+            {"author": [None, "x", {"given": "Ada"}], "container-title": []},
+            {"volume": 14, "issue": 3, "publisher": 99},
+        ],
+    )
+    def test_a_wrong_shaped_record_degrades_instead_of_raising(self, work):
+        """Nothing below a Crossref `message` is typed, and this reads it directly."""
+        entry = bibtex.generate_crossref_bibtex(work, year=2020)
+        assert entry.startswith("@misc{")
+        assert entry.endswith("}")
+
+    def test_every_field_value_is_escaped(self):
+        work = {
+            "type": "journal-article",
+            "title": ["Cost & Effect: 50% of $X"],
+            "container-title": ["Journal of C_S"],
+            "publisher": "A&M",
+            "author": [{"given": "A&B", "family": "C_D"}],
+        }
+        entry = bibtex.generate_crossref_bibtex(work, year=2020)
+        assert r"\&" in entry and r"\%" in entry and r"\$" in entry and r"\_" in entry
+        # An unescaped special would be the only bare one left.
+        assert " & " not in entry

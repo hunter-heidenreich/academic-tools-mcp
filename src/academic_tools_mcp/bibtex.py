@@ -4,7 +4,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from .providers import arxiv
+from .providers import arxiv, crossref
 from .util import doinorm
 from .util.textnorm import fold
 
@@ -425,6 +425,126 @@ def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
         fields.append(("publisher", f"{{{server_name}}}"))
         if doi:
             fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
+            fields.append(_url_field(f"https://doi.org/{doi}"))
+
+    return _render_entry(entry_type, key, fields)
+
+
+# Crossref's `type` vocabulary. **Do not merge with `_TYPE_MAP`** — that one is
+# OpenAlex's, and a map keyed by both would answer for spellings its source never
+# emits. Re-derive: `api.crossref.org/types`.
+_CROSSREF_TYPE_MAP: dict[str, str] = {
+    "journal-article": "article",
+    "proceedings-article": "inproceedings",
+    "book": "book",
+    "monograph": "book",
+    "edited-book": "book",
+    "reference-book": "book",
+    "book-chapter": "incollection",
+    "book-section": "incollection",
+    "book-part": "incollection",
+    "reference-entry": "incollection",
+    "dissertation": "phdthesis",
+    "report": "techreport",
+    "report-component": "techreport",
+    "posted-content": "misc",
+    "dataset": "misc",
+    "component": "misc",
+    "peer-review": "misc",
+    "standard": "misc",
+    "other": "misc",
+}
+
+_CROSSREF_PREPRINT_TYPE = "posted-content"
+
+# A page range as BibTeX wants it: `270-273` / `270–273` -> `270--273`. Only a
+# range between two runs, so a single page and an article number are untouched.
+_PAGE_RANGE_RE = re.compile(r"^(\S+?)\s*[-\u2013\u2014]\s*(\S+)$")
+
+
+def _crossref_first(value: Any) -> str:
+    """First element of a Crossref list-valued field (`title`, `container-title`), or ``""``.
+
+    Shape-guarded, not annotation-trusted: this feeds ``_escape_bibtex``, which
+    raises on the non-string an untyped ``message`` can hold.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return next((v for v in value if isinstance(v, str) and v), "")
+    return ""
+
+
+def _crossref_pages(work: dict[str, Any]) -> str:
+    """Crossref's single ``page`` string as a BibTeX range."""
+    page = work.get("page")
+    if not isinstance(page, str) or not page.strip():
+        return ""
+    escaped = _escape_bibtex(page)
+    if m := _PAGE_RANGE_RE.match(escaped):
+        return f"{m.group(1)}--{m.group(2)}"
+    return escaped
+
+
+def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
+    """Generate a BibTeX entry from a Crossref work object (the response ``message``).
+
+    The fourth generator, for the DOIs Crossref has indexed and OpenAlex has not.
+    ``year`` is an argument rather than read here: the date walk is single-homed
+    in ``app.crossref_date``, a layer above this module.
+    """
+    work_type = work.get("type")
+    entry_type = _CROSSREF_TYPE_MAP.get(work_type, "misc") if isinstance(work_type, str) else "misc"
+
+    authors_raw = work.get("author")
+    authors_list = authors_raw if isinstance(authors_raw, list) else []
+    title = _crossref_first(work.get("title"))
+    first_name = crossref.author_name(authors_list[0]) if authors_list else ""
+    year_token = _key_year(year)
+    key = f"{_extract_last_name(first_name) if first_name else 'unknown'}"
+    key += f"{year_token}{_first_key_word(title)}"
+
+    doi = doinorm.normalize(work.get("DOI") or "" if isinstance(work.get("DOI"), str) else "")
+    venue = _crossref_first(work.get("container-title"))
+    # Guarded once: it feeds two fields, and `_escape_bibtex` raises on a non-string.
+    publisher = work["publisher"] if isinstance(work.get("publisher"), str) else ""
+
+    fields: list[tuple[str, str]] = [_title_field(title)]
+    if authors := _format_names(authors_list, crossref.author_name):
+        fields.append(("author", f"{{{authors}}}"))
+
+    if entry_type == "article" and venue:
+        fields.append(("journal", f"{{{_escape_bibtex(venue)}}}"))
+    elif entry_type in ("inproceedings", "incollection") and venue:
+        fields.append(("booktitle", f"{{{_escape_bibtex(venue)}}}"))
+    elif entry_type == "phdthesis" and (
+        school := crossref.institution_name(work.get("institution"))
+    ):
+        fields.append(("school", f"{{{_escape_bibtex(school)}}}"))
+    elif entry_type == "techreport" and (issuer := venue or publisher):
+        fields.append(("institution", f"{{{_escape_bibtex(issuer)}}}"))
+
+    # Crossref's volume/issue are freeform strings; escaped like any other value.
+    if isinstance(volume := work.get("volume"), str) and volume:
+        fields.append(("volume", f"{{{_escape_bibtex(volume)}}}"))
+    if isinstance(issue := work.get("issue"), str) and issue:
+        fields.append(("number", f"{{{_escape_bibtex(issue)}}}"))
+    if pages := _crossref_pages(work):
+        fields.append(("pages", f"{{{pages}}}"))
+    if year_token:
+        fields.append(("year", f"{{{year_token}}}"))
+    if publisher:
+        fields.append(("publisher", f"{{{_escape_bibtex(publisher)}}}"))
+    if doi:
+        fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
+
+    # Keys on the work type, as `generate_bibtex` does: a preprint has no venue,
+    # so a locator is the only thing that makes the entry findable.
+    if work_type == _CROSSREF_PREPRINT_TYPE:
+        if eprint := _arxiv_eprint_from_doi(doi):
+            fields.append(("eprint", f"{{{_escape_doi(eprint)}}}"))
+            fields.append(("archiveprefix", "{arXiv}"))
+        elif doi:
             fields.append(_url_field(f"https://doi.org/{doi}"))
 
     return _render_entry(entry_type, key, fields)

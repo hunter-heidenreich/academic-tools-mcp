@@ -1,6 +1,8 @@
 """Crossref client. Title search and metadata, with a tighter pace for search."""
 
 import asyncio
+import html
+import re
 import time
 from typing import Any
 from urllib.parse import quote
@@ -130,6 +132,68 @@ async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
 def canonical_doi(doi: str) -> str:
     """Return a canonical lowercase DOI string for cache keying."""
     return doinorm.canonical(doi)
+
+
+def author_name(author: Any) -> str:
+    """``"First Last"`` from a Crossref author entry, or its organisation ``name``.
+
+    Crossref splits a personal name into ``given``/``family`` where OpenAlex and
+    arXiv give one string. Rejoining is this module's business, so ``bibtex``'s
+    surname rule and ``get_paper_authors``' name field cannot disagree about a
+    name. ``Any``, not ``dict``: the entries come from untyped JSON.
+    """
+    if not isinstance(author, dict):
+        return ""
+    given = author.get("given")
+    family = author.get("family")
+    if isinstance(family, str) and family:
+        return f"{given} {family}".strip() if isinstance(given, str) and given else family
+    name = author.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def institution_name(institution: Any) -> str:
+    """The awarding institution's name from a Crossref ``institution`` value, or ``""``.
+
+    Crossref deposits it as a *list of objects* (``[{"name": ..., "place": [...]}]``),
+    not the list of strings ``title`` and ``container-title`` carry — read alike,
+    every dissertation loses its ``school``. ``Any``, not ``dict``: untyped JSON,
+    and some deposits carry a bare string.
+    """
+    if isinstance(institution, list):
+        # First *named* entry: a place-only entry ahead of it is a real deposit.
+        return next((found for entry in institution if (found := institution_name(entry))), "")
+    if isinstance(institution, str):
+        return institution
+    if not isinstance(institution, dict):
+        return ""
+    name = institution.get("name")
+    return name if isinstance(name, str) else ""
+
+
+# Crossref deposits an abstract as a JATS fragment, so it is markup, not text.
+_JATS_TAG_RE = re.compile(r"<[^>]*>")
+# A structured abstract's section titles are content ("Background", "Methods"),
+# but a lone leading "Abstract" title is the label of the field itself.
+_JATS_LABEL_RE = re.compile(r"^\s*abstract[\s:]+", re.IGNORECASE)
+
+
+def abstract_text(work: dict[str, Any]) -> str | None:
+    """A Crossref work's abstract as plain text, or ``None``.
+
+    The counterpart of ``openalex.reconstruct_abstract``: what the provider
+    stores is not what an agent can read. Crossref deposits JATS, so tags are
+    stripped, entities unescaped and whitespace collapsed — a structured
+    abstract keeps its section titles, but the ``<jats:title>Abstract</jats:title>``
+    labelling the field is dropped. Shape-guarded: the ``message`` arrives
+    verbatim from untyped JSON.
+    """
+    raw = work.get("abstract")
+    if not isinstance(raw, str) or not raw:
+        return None
+    text = " ".join(html.unescape(_JATS_TAG_RE.sub(" ", raw)).split())
+    text = _JATS_LABEL_RE.sub("", text, count=1)
+    return text or None
 
 
 # ---------------------------------------------------------------------------

@@ -53,10 +53,15 @@ These hold across several tools, so changing one tool alone breaks the set.
   `10.1234/X`, `doi:10.1234/x` and the resolver URL, already one cache key, also
   correlate to one value across calls.
 - **`_source` carries no lowest-common-denominator normalisation.** Agents branch
-  on it for provider-specific fields, so the three shared tags (`arxiv` /
-  `biorxiv` / `openalex`) must mean the same thing in all four paper tools.
-  `crossref` and `openalex_via_biorxiv` are `get_paper_metadata`-only, because
-  `fallback_crossref` and `follow_published` are parameters of that one tool.
+  on it for provider-specific fields, so the four shared tags (`arxiv` /
+  `biorxiv` / `openalex` / `crossref`) must mean the same thing in all four paper
+  tools — `fallback_crossref` is a parameter of each, and a paper reachable
+  through one must be reachable through all of them. `openalex_via_biorxiv` is
+  still `get_paper_metadata`-only, `follow_published` being that one tool's.
+  **The fallback's whole precondition lives once**, in `paper._crossref_fallback`
+  — the opt-in flag, the definitive 404 *and* `source == "openalex"`. A tool that
+  spells any of it itself is how the four start disagreeing about which papers
+  Crossref answers for.
 - **Every search tool owes the agent *some* "more exist" signal** —
   `total_results` (the provider's own upstream count, never `len(results)`),
   `result_count` alone where there is no upstream total, or `truncated`. Pick one
@@ -186,7 +191,8 @@ instead.
   `app.py`'s `instructions=` string that says otherwise is the one to fix.
 - **Date extraction is single-homed** in `app.crossref_date` /
   `_CROSSREF_DATE_KEYS`. `paper._format_crossref_metadata` takes both elements,
-  `search_crossref_by_title` takes `[0]`; don't add a second walker.
+  `search_crossref_by_title` and `get_paper_bibtex` take `[0]`; don't add a
+  second walker.
 - **Nothing below a Crossref item is typed, so every read of one is
   shape-guarded** — `author` through `app.dict_list`, its `given`/`family`/`name`
   values through `isinstance`, and `crossref_date` shape-checks the date value,

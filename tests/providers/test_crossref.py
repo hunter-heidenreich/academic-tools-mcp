@@ -877,3 +877,103 @@ def test_the_requested_path_round_trips_to_the_bare_doi(monkeypatch, doi):
     assert "#" not in tail
     assert "?" not in tail
     assert unquote(tail) == doinorm.normalize(doi)
+
+
+class TestAuthorName:
+    """The Crossref name shape, single-homed here so `bibtex`'s surname rule and
+    `get_paper_authors`' name field cannot disagree about one name."""
+
+    @pytest.mark.parametrize(
+        ("author", "expected"),
+        [
+            ({"given": "Ada", "family": "Lovelace"}, "Ada Lovelace"),
+            ({"family": "Lovelace"}, "Lovelace"),
+            ({"given": "Ada", "family": "van Beethoven"}, "Ada van Beethoven"),
+            # An organisation deposits a single `name`.
+            ({"name": "The Consortium"}, "The Consortium"),
+            # A `family` wins over a stray `name`.
+            ({"family": "Lovelace", "name": "Org"}, "Lovelace"),
+            # Untyped JSON: every wrong shape degrades to "", never raises.
+            ({}, ""),
+            ({"given": "Ada"}, ""),
+            ({"family": 42}, ""),
+            ({"family": ""}, ""),
+            ({"given": 42, "family": "Lovelace"}, "Lovelace"),
+            ({"name": 42}, ""),
+            (None, ""),
+            ("not a dict", ""),
+            ([], ""),
+        ],
+    )
+    def test_name_shapes(self, author, expected):
+        assert crossref.author_name(author) == expected
+
+
+class TestAbstractText:
+    """Crossref deposits JATS markup, so the stored value is not readable text.
+
+    The counterpart of `openalex.reconstruct_abstract`, and here for the same
+    reason: rendering the provider's storage format is the provider's business.
+    """
+
+    def test_strips_tags_unescapes_entities_and_collapses_whitespace(self):
+        raw = "<jats:p>Since  the\n outbreak &amp; onwards, a &lt;large&gt; number.</jats:p>"
+        assert crossref.abstract_text({"abstract": raw}) == (
+            "Since the outbreak & onwards, a <large> number."
+        )
+
+    def test_drops_the_label_but_keeps_a_structured_abstracts_sections(self):
+        """`<jats:title>Abstract</jats:title>` names the field; `Background`
+        names a section and is part of the text."""
+        labelled = "<jats:title>Abstract</jats:title><jats:p>Body.</jats:p>"
+        structured = (
+            "<jats:sec><jats:title>Background</jats:title><jats:p>Body.</jats:p></jats:sec>"
+        )
+        assert crossref.abstract_text({"abstract": labelled}) == "Body."
+        assert crossref.abstract_text({"abstract": structured}) == "Background Body."
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            None,
+            "",
+            42,
+            [],
+            {"nested": "dict"},
+            # Markup with no text is not an abstract.
+            "<jats:p></jats:p>",
+            "   ",
+        ],
+    )
+    def test_absent_or_wrong_shaped_returns_none(self, raw):
+        assert crossref.abstract_text({"abstract": raw}) is None
+
+    def test_missing_key_returns_none(self):
+        assert crossref.abstract_text({}) is None
+
+
+class TestInstitutionName:
+    """`institution` is a list of *objects*, unlike the string lists beside it.
+
+    A reader that treats it like `title` or `container-title` silently drops
+    every dissertation's awarding school, which is why the accessor lives here
+    rather than being open-coded by `bibtex`.
+    """
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ([{"name": "MIT", "place": ["Cambridge, MA"]}], "MIT"),
+            ({"name": "MIT"}, "MIT"),
+            ("MIT", "MIT"),
+            # Some deposits carry a place-only entry ahead of the named one.
+            ([{"place": ["Cambridge"]}, {"name": "MIT"}], "MIT"),
+            ([], ""),
+            ([{"name": 7}], ""),
+            ({"place": ["Cambridge"]}, ""),
+            (None, ""),
+            (7, ""),
+        ],
+    )
+    def test_pulls_the_name_out_of_every_shape_crossref_deposits(self, value, expected):
+        assert crossref.institution_name(value) == expected

@@ -9,11 +9,12 @@ paths:
 output-correctness contracts that span them — the rules that keep a generated
 entry compiling.
 
-Three entry points, one per provider shape (`generate_bibtex` /
-`generate_arxiv_bibtex` / `generate_biorxiv_bibtex`); entry-type selection per
-source is in `get_paper_bibtex`'s docstring. Author formatting is parameterised
-by a `name_of` accessor, so OpenAlex's nested `author.display_name` and
-arXiv/bioRxiv's flat `name` reuse one code path.
+Four entry points, one per provider shape (`generate_bibtex` /
+`generate_arxiv_bibtex` / `generate_biorxiv_bibtex` / `generate_crossref_bibtex`);
+entry-type selection per source is in `get_paper_bibtex`'s docstring. Author
+formatting is parameterised by a `name_of` accessor, so OpenAlex's nested
+`author.display_name`, arXiv/bioRxiv's flat `name` and Crossref's
+`given`/`family` (rejoined by `crossref.author_name`) reuse one code path.
 
 ## Escaping and keys
 
@@ -40,11 +41,12 @@ arXiv/bioRxiv's flat `name` reuse one code path.
 
 - **Invariant: `_TYPE_MAP`'s keys are OpenAlex's `type` vocabulary, not
   Crossref's.** A conference paper is `conference-paper`; `proceedings-article`,
-  `posted-content` and `monograph` are Crossref spellings and must not be added
-  as keys. Re-derive the list from `api.openalex.org/works?group_by=type` when
-  adding a type, and let anything unlisted fall through to `@misc`. The
-  preprint-only `eprint` / `howpublished` block keys on the *work type*, not on
-  `@misc` — datasets and software land in `@misc` too.
+  `posted-content` and `monograph` are Crossref spellings and belong in
+  `_CROSSREF_TYPE_MAP`, which `generate_crossref_bibtex` reads — **never merge
+  the two.** Re-derive from `api.openalex.org/works?group_by=type` and
+  `api.crossref.org/types` when adding a type, and let anything unlisted fall
+  through to `@misc`. The preprint-only `eprint` / `howpublished` block keys on
+  the *work type*, not on `@misc` — datasets and software land in `@misc` too.
 - **Surname particles have two detectors, and the split is deliberate.**
   `_PARTICLES` holds only the particles publishers *capitalize*; `_is_particle`'s
   case rule — BibTeX's own "a lowercase word before the last one is the von part"
@@ -66,6 +68,10 @@ arXiv/bioRxiv's flat `name` reuse one code path.
   suffix is not an arXiv DOI. Any other preprint gets a `howpublished` URL built
   from the **normalized** DOI, falling back to the OpenAlex landing page, and
   omitted when there is neither — never a bare `\url{}`.
+- **A Crossref record's field shapes are not uniform**, and each one's accessor
+  is `providers/crossref`'s. `title` and `container-title` are lists of
+  *strings*, `institution` a list of *objects* — so `school` reads through
+  `crossref.institution_name`, never the string-list accessor beside it.
 - **OpenAlex nulls are load-bearing.** It emits `"author": null` /
   `"display_name": null` / `"authorships": null` rather than dropping the key, so
   every read is `or`-defaulted and no `.get(k, default)` alone is trusted. The
