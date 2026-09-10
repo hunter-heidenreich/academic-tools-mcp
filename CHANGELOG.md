@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`get_paper_metadata` reports `cited_by_count`.** The number was already on
+  every cached OpenAlex work and already surfaced by `search_openalex`, so a
+  search hit carried a citation count that the full record then dropped — and
+  the only other source of one, `get_paper_citations_count`, is an OpenCitations
+  index whose zero means "no edges here" rather than "uncited". Costs no
+  request. Batched results and the `follow_published` journal version carry it
+  too; under `fallback_crossref` it is Crossref's own `is-referenced-by-count`,
+  which differs from OpenAlex's tally. ([#122])
 - **OpenAlex's credit budget is tracked and honoured.** OpenAlex meters credits
   per ~24h window (measured: 1000 anonymous, 10000 with `OPENALEX_API_KEY`) and
   advertises the balance in `X-RateLimit-*`; the server read none of it, so the
@@ -1774,3 +1782,4 @@ say which.
 [#119]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/119
 [#120]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/120
 [#121]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/121
+[#122]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/122
