@@ -8,6 +8,8 @@ agent skip feature-detection, ``get_author``, and the batch branches of
 ``get_papers_metadata``.
 """
 
+from typing import ClassVar
+
 import pytest
 
 from academic_tools_mcp import manual, server
@@ -1396,3 +1398,76 @@ class TestPmidRouting:
         assert abstract["abstract"] == "Hello world"
         assert "Lovelace" in bibtex["bibtex"]
         assert authors["_canonical_id"] == abstract["_canonical_id"] == "10.1234/x"
+
+
+class TestCitedByCountReachesEveryOpenalexPath:
+    """The batch closure bypasses the dispatcher, so a field can reach one path only."""
+
+    WORK: ClassVar[dict] = {"id": "W1", "doi": "https://doi.org/10.1234/x", "cited_by_count": 84352}
+
+    @pytest.mark.asyncio
+    async def test_the_single_tool_carries_it(self, monkeypatch):
+        async def fake(doi, **kwargs):
+            return self.WORK
+
+        monkeypatch.setattr(openalex, "get_work", fake)
+
+        assert (await server.get_paper_metadata("10.1234/x"))["cited_by_count"] == 84352
+
+    @pytest.mark.asyncio
+    async def test_the_batch_carries_it(self, monkeypatch):
+        async def fake_batch(dois, *, force_refresh=False):
+            return {openalex.canonical_doi(d): self.WORK for d in dois}
+
+        monkeypatch.setattr(openalex, "get_works_batch", fake_batch)
+
+        papers = (await server.get_papers_metadata(identifiers=["10.1234/x"]))["papers"]
+        assert papers[0]["cited_by_count"] == 84352
+
+    @pytest.mark.asyncio
+    async def test_the_followed_journal_version_carries_it(self, monkeypatch):
+        async def fake_biorxiv(doi, **kwargs):
+            return {"doi": "10.1101/x", "published_doi": "10.1234/x"}
+
+        async def fake_openalex(doi, **kwargs):
+            return self.WORK
+
+        monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv)
+        monkeypatch.setattr(openalex, "get_work", fake_openalex)
+
+        result = await server.get_paper_metadata("10.1101/x", follow_published=True)
+        assert result["_source"] == "openalex_via_biorxiv"
+        assert result["cited_by_count"] == 84352
+
+    @pytest.mark.asyncio
+    async def test_a_work_without_the_field_reports_null(self, monkeypatch):
+        async def fake(doi, **kwargs):
+            return {"id": "W1"}
+
+        monkeypatch.setattr(openalex, "get_work", fake)
+
+        assert (await server.get_paper_metadata("10.1234/x"))["cited_by_count"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_three_paths_agree_on_the_key_set(self, monkeypatch):
+        """The symmetry the batch closure can silently break."""
+
+        async def fake_work(doi, **kwargs):
+            return self.WORK
+
+        async def fake_batch(dois, *, force_refresh=False):
+            return {openalex.canonical_doi(d): self.WORK for d in dois}
+
+        async def fake_biorxiv(doi, **kwargs):
+            return {"doi": "10.1101/x", "published_doi": "10.1234/x"}
+
+        monkeypatch.setattr(openalex, "get_work", fake_work)
+        monkeypatch.setattr(openalex, "get_works_batch", fake_batch)
+        monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv)
+
+        single = await server.get_paper_metadata("10.1234/x")
+        batched = (await server.get_papers_metadata(identifiers=["10.1234/x"]))["papers"][0]
+        followed = await server.get_paper_metadata("10.1101/x", follow_published=True)
+
+        assert set(single) == set(batched) - {"_input"}
+        assert set(single) <= set(followed)

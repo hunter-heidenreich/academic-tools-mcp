@@ -564,3 +564,20 @@ class TestFallbackIsOpenalexOnly:
         assert calls == []
         assert result.get("_source") != "crossref"
         assert result["not_found"] is True
+
+
+class TestCrossrefCitedByCount:
+    """Crossref keeps the same number under its own name, `is-referenced-by-count`."""
+
+    def test_reads_crossrefs_own_counter(self):
+        work = {"title": ["X"], "is-referenced-by-count": 868}
+        assert paper._format_crossref_metadata(work, "10.1/x")["cited_by_count"] == 868
+
+    def test_absent_is_none(self):
+        assert paper._format_crossref_metadata({"title": ["X"]}, "10.1/x")["cited_by_count"] is None
+
+    @pytest.mark.parametrize("value", ["868", None, {}, [], 8.5])
+    def test_a_non_int_degrades_to_none(self, value):
+        """Nothing below a Crossref item is typed, so the value is guarded, not trusted."""
+        work = {"title": ["X"], "is-referenced-by-count": value}
+        assert paper._format_crossref_metadata(work, "10.1/x")["cited_by_count"] is None

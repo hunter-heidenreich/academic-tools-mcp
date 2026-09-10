@@ -182,6 +182,7 @@ def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) ->
         "type": work.get("type"),
         "language": work.get("language"),
         "venue": source_obj.get("display_name"),
+        "cited_by_count": work.get("cited_by_count"),
         "is_oa": oa.get("is_oa"),
         "oa_status": oa.get("oa_status"),
         "oa_url": oa.get("oa_url"),
@@ -206,6 +207,8 @@ def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) ->
     pdf_url always null.
     """
     year, date = crossref_date(work)
+    # Crossref's own name for the same number; int-guarded, the value is untyped JSON.
+    cited_by = work.get("is-referenced-by-count")
     return {
         "_source": "crossref",
         "_canonical_id": canonical_id,
@@ -216,6 +219,7 @@ def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) ->
         "type": work.get("type"),
         "language": work.get("language"),
         "venue": unwrap_first(work.get("container-title")),
+        "cited_by_count": cited_by if isinstance(cited_by, int) else None,
         "is_oa": None,
         "oa_status": None,
         "oa_url": None,
@@ -334,13 +338,15 @@ async def get_paper_metadata(
         ``published_lookup_retryable=True`` if that lookup failed transiently
         (5xx/429/timeout); both absent when no chain was attempted.
       - openalex: title, doi, pmid, publication_year, publication_date, type,
-        language, venue, is_oa, oa_status, oa_url, pdf_url. ``pmid`` is bare
-        digits (null when OpenAlex has none) and is itself an accepted identifier.
+        language, venue, cited_by_count, is_oa, oa_status, oa_url, pdf_url.
+        ``pmid`` is bare digits (null when OpenAlex has none) and is itself an
+        accepted identifier; ``cited_by_count`` drifts with time.
       - openalex_via_biorxiv (``follow_published`` reached the journal version):
         openalex's fields plus preprint_doi and ``followed_published=True``,
         ``_canonical_id`` being the journal DOI.
       - crossref (``fallback_crossref`` after an OpenAlex 404): openalex's fields
         with is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
+        ``cited_by_count`` is Crossref's own tally, which differs from OpenAlex's.
 
     A PMID dispatches as its DOI, so ``_source`` is ``openalex`` and
     ``_canonical_id`` the DOI whichever of the two you passed.
