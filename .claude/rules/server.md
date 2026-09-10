@@ -58,14 +58,10 @@ These hold across several tools, so changing one tool alone breaks the set.
   tools — `fallback_crossref` is a parameter of each, and a paper reachable
   through one must be reachable through all of them. `openalex_via_biorxiv` is
   still `get_paper_metadata`-only, `follow_published` being that one tool's.
-  **The fallback's precondition and opt-in gate live once**, in
-  `paper._crossref_fallback`; a tool that spells them itself is how the four
-  start disagreeing about which papers Crossref answers for. **`source` is part
-  of that precondition, not decoration**: arXiv and bioRxiv flag their own misses
-  `not_found` too, so a gate built from that flag alone sends an arXiv id to
-  `crossref.get_work` as if it were a DOI and answers a bioRxiv miss with
-  `_source: "crossref"` — Crossref indexes `10.1101` DOIs. The fallback is
-  OpenAlex-routed DOIs only, exactly as `FALLBACK_CROSSREF` says.
+  **The fallback's whole precondition lives once**, in `paper._crossref_fallback`
+  — the opt-in flag, the definitive 404 *and* `source == "openalex"`. A tool that
+  spells any of it itself is how the four start disagreeing about which papers
+  Crossref answers for.
 - **Every search tool owes the agent *some* "more exist" signal** —
   `total_results` (the provider's own upstream count, never `len(results)`),
   `result_count` alone where there is no upstream total, or `truncated`. Pick one
@@ -195,14 +191,8 @@ instead.
   `app.py`'s `instructions=` string that says otherwise is the one to fix.
 - **Date extraction is single-homed** in `app.crossref_date` /
   `_CROSSREF_DATE_KEYS`. `paper._format_crossref_metadata` takes both elements,
-  `search_crossref_by_title` takes `[0]`, and `get_paper_bibtex` passes `[0]`
-  **into** `bibtex.generate_crossref_bibtex` — `bibtex` sits below `app`, so the
-  year is an argument there rather than a second walker. Don't add one.
-- **A Crossref record's own shape is `providers/crossref`'s**, not a reader's:
-  `author_name` rejoins `given`/`family` and `abstract_text` renders JATS to
-  plain text, so `bibtex`'s surname rule and `get_paper_authors`' name field read
-  one accessor. This mirrors `openalex.reconstruct_abstract` living in *its*
-  provider.
+  `search_crossref_by_title` and `get_paper_bibtex` take `[0]`; don't add a
+  second walker.
 - **Nothing below a Crossref item is typed, so every read of one is
   shape-guarded** — `author` through `app.dict_list`, its `given`/`family`/`name`
   values through `isinstance`, and `crossref_date` shape-checks the date value,

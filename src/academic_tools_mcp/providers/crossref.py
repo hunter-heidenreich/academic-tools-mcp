@@ -138,11 +138,9 @@ def author_name(author: Any) -> str:
     """``"First Last"`` from a Crossref author entry, or its organisation ``name``.
 
     Crossref splits a personal name into ``given``/``family`` where OpenAlex and
-    arXiv give one string. Rejoining is this module's business — the name shape is
-    the provider's — so ``bibtex``'s surname rule and ``get_paper_authors``' name
-    field read one accessor and cannot disagree about a name.
-
-    ``Any``, not ``dict``: the entries come from untyped JSON.
+    arXiv give one string. Rejoining is this module's business, so ``bibtex``'s
+    surname rule and ``get_paper_authors``' name field cannot disagree about a
+    name. ``Any``, not ``dict``: the entries come from untyped JSON.
     """
     if not isinstance(author, dict):
         return ""
@@ -158,13 +156,9 @@ def institution_name(institution: Any) -> str:
     """The awarding institution's name from a Crossref ``institution`` value, or ``""``.
 
     Crossref deposits it as a *list of objects* (``[{"name": ..., "place": [...]}]``),
-    not the list of strings ``title`` and ``container-title`` carry — so a reader
-    that treats the two alike silently drops every dissertation's ``school``.
-    Sibling of :func:`author_name`, and here for the same reason: the record's
-    shape is this module's business.
-
-    ``Any``, not ``dict``: the value comes from untyped JSON, and a bare string
-    is accepted since some deposits carry one.
+    not the list of strings ``title`` and ``container-title`` carry — read alike,
+    every dissertation loses its ``school``. ``Any``, not ``dict``: untyped JSON,
+    and some deposits carry a bare string.
     """
     if isinstance(institution, list):
         # First *named* entry: a place-only entry ahead of it is a real deposit.
@@ -187,15 +181,12 @@ _JATS_LABEL_RE = re.compile(r"^\s*abstract[\s:]+", re.IGNORECASE)
 def abstract_text(work: dict[str, Any]) -> str | None:
     """A Crossref work's abstract as plain text, or ``None``.
 
-    The counterpart of ``openalex.reconstruct_abstract``, and here for the same
-    reason: what the provider stores is not what an agent can read. Crossref
-    deposits JATS markup, so the tags are stripped, entities unescaped and
-    whitespace collapsed — a structured abstract's own section titles survive as
-    text, while the ``<jats:title>Abstract</jats:title>`` labelling the field is
-    dropped.
-
-    ``Any``, not ``str``: the value comes from untyped JSON, and the ``message``
-    this reads arrives verbatim.
+    The counterpart of ``openalex.reconstruct_abstract``: what the provider
+    stores is not what an agent can read. Crossref deposits JATS, so tags are
+    stripped, entities unescaped and whitespace collapsed — a structured
+    abstract keeps its section titles, but the ``<jats:title>Abstract</jats:title>``
+    labelling the field is dropped. Shape-guarded: the ``message`` arrives
+    verbatim from untyped JSON.
     """
     raw = work.get("abstract")
     if not isinstance(raw, str) or not raw:

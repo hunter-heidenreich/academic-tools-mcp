@@ -430,11 +430,9 @@ def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     return _render_entry(entry_type, key, fields)
 
 
-# Crossref's `type` vocabulary, deliberately its own map. **Do not merge with
-# `_TYPE_MAP`**: `proceedings-article`, `posted-content` and `monograph` are
-# Crossref spellings, `conference-paper` and `preprint` are OpenAlex's, and one
-# map keyed by both would answer for a vocabulary its source never emits.
-# Re-derive: `api.crossref.org/types`.
+# Crossref's `type` vocabulary. **Do not merge with `_TYPE_MAP`** — that one is
+# OpenAlex's, and a map keyed by both would answer for spellings its source never
+# emits. Re-derive: `api.crossref.org/types`.
 _CROSSREF_TYPE_MAP: dict[str, str] = {
     "journal-article": "article",
     "proceedings-article": "inproceedings",
@@ -449,7 +447,6 @@ _CROSSREF_TYPE_MAP: dict[str, str] = {
     "dissertation": "phdthesis",
     "report": "techreport",
     "report-component": "techreport",
-    # Crossref's preprint type, and the one `_CROSSREF_PREPRINT_TYPE` keys on.
     "posted-content": "misc",
     "dataset": "misc",
     "component": "misc",
@@ -468,9 +465,8 @@ _PAGE_RANGE_RE = re.compile(r"^(\S+?)\s*[-\u2013\u2014]\s*(\S+)$")
 def _crossref_first(value: Any) -> str:
     """First element of a Crossref list-valued field (`title`, `container-title`), or ``""``.
 
-    Shape-guarded rather than annotation-trusted: nothing below a Crossref
-    ``message`` is typed, and this feeds ``_escape_bibtex``, which would raise on
-    a non-string.
+    Shape-guarded, not annotation-trusted: this feeds ``_escape_bibtex``, which
+    raises on the non-string an untyped ``message`` can hold.
     """
     if isinstance(value, str):
         return value
@@ -494,11 +490,8 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
     """Generate a BibTeX entry from a Crossref work object (the response ``message``).
 
     The fourth generator, for the DOIs Crossref has indexed and OpenAlex has not.
-    ``year`` is passed in rather than read here: the date walk is single-homed in
-    ``app.crossref_date``, which sits a layer above this module.
-
-    Entry type comes from ``_CROSSREF_TYPE_MAP``, never ``_TYPE_MAP`` — the two
-    vocabularies are different and only their source can say which applies.
+    ``year`` is an argument rather than read here: the date walk is single-homed
+    in ``app.crossref_date``, a layer above this module.
     """
     work_type = work.get("type")
     entry_type = _CROSSREF_TYPE_MAP.get(work_type, "misc") if isinstance(work_type, str) else "misc"
@@ -513,8 +506,7 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
 
     doi = doinorm.normalize(work.get("DOI") or "" if isinstance(work.get("DOI"), str) else "")
     venue = _crossref_first(work.get("container-title"))
-    # Guarded once: `publisher` feeds two fields, and `_escape_bibtex` raises on a
-    # non-string, which nothing below a Crossref `message` rules out.
+    # Guarded once: it feeds two fields, and `_escape_bibtex` raises on a non-string.
     publisher = work["publisher"] if isinstance(work.get("publisher"), str) else ""
 
     fields: list[tuple[str, str]] = [_title_field(title)]
@@ -525,8 +517,6 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
         fields.append(("journal", f"{{{_escape_bibtex(venue)}}}"))
     elif entry_type in ("inproceedings", "incollection") and venue:
         fields.append(("booktitle", f"{{{_escape_bibtex(venue)}}}"))
-    # `institution` is a list of *objects*, not the list of strings `title` and
-    # `container-title` carry, so it needs the provider's own accessor.
     elif entry_type == "phdthesis" and (
         school := crossref.institution_name(work.get("institution"))
     ):
@@ -548,8 +538,8 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
     if doi:
         fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
 
-    # Keys on the Crossref type, mirroring `generate_bibtex`: a preprint has no
-    # venue, so a locator is the only thing that makes the entry findable.
+    # Keys on the work type, as `generate_bibtex` does: a preprint has no venue,
+    # so a locator is the only thing that makes the entry findable.
     if work_type == _CROSSREF_PREPRINT_TYPE:
         if eprint := _arxiv_eprint_from_doi(doi):
             fields.append(("eprint", f"{{{_escape_doi(eprint)}}}"))

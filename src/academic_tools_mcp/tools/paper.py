@@ -234,21 +234,12 @@ async def _crossref_fallback(
     """The Crossref work to answer with, and whether the attempt failed transiently.
 
     ``(work, False)`` on a hit, ``(None, retryable)`` otherwise. One home for the
-    opt-in gate, the ``not_found`` precondition **and the OpenAlex-only rule**, so
-    the four paper tools cannot disagree about when Crossref is consulted — a DOI
-    Crossref has indexed and OpenAlex has not is the same paper to all of them.
+    whole precondition — opt-in flag, definitive 404, OpenAlex-routed only — so
+    the four paper tools cannot disagree about when Crossref is consulted.
 
-    ``source`` is load-bearing, not decoration: arXiv and bioRxiv flag their own
-    misses ``not_found`` too, so without it an arXiv id reaches ``get_work`` as a
-    DOI and a bioRxiv miss comes back tagged ``crossref`` — Crossref indexes
-    ``10.1101`` DOIs. This fallback is what ``FALLBACK_CROSSREF`` says it is:
-    OpenAlex-routed DOIs only.
-
-    Keyed off ``canonical_id``, not the caller's spelling: by here a PMID has
-    already been traded for its DOI, and Crossref is DOI-only.
-
-    ``force_refresh`` threads through: this path is for brand-new DOIs, where
-    staleness is likeliest.
+    ``source`` is load-bearing: arXiv and bioRxiv flag their own misses
+    ``not_found`` too, and Crossref indexes ``10.1101`` DOIs. Keyed off
+    ``canonical_id``, a PMID having already been traded for its DOI.
     """
     if not (fallback_crossref and source == "openalex" and canonical_id and obj.get("not_found")):
         return None, False
@@ -273,15 +264,11 @@ def _provider_error(
 def _format_crossref_authors(work: dict[str, Any], start: int, end: int) -> dict[str, Any]:
     """One page of Crossref authors, in ``_format_openalex_authors``' shape.
 
-    Crossref splits a personal name into ``given``/``family`` and carries a per-
-    author ``affiliation`` list, so ``institutions`` is real here — unlike
-    arXiv/bioRxiv — but is usually empty because most publishers do not deposit it.
-    ``page_institutions`` / ``page_institution_count`` are emitted either way, so a
-    paginating agent never feature-detects.
-
-    ``author_count`` counts the **filtered** list, the one the page was sliced
-    from: nothing below a Crossref item is typed, and a count over the raw list
-    would describe a list the names do not come from.
+    ``institutions`` is real here — Crossref carries a per-author ``affiliation``
+    — but usually empty, since most publishers do not deposit it; the
+    ``page_institutions`` keys are emitted either way, so a paginating agent
+    never feature-detects. ``author_count`` counts the **filtered** list the page
+    was sliced from, never the raw one.
     """
     all_authors = dict_list(work.get("author"))
     page_authors: list[dict[str, Any]] = []
@@ -360,10 +347,10 @@ async def get_paper_metadata(
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    when ``fallback_crossref`` was asked for and Crossref itself failed
-    transiently. Siblings get_paper_authors / _abstract / _bibtex share this
-    dispatch, the cached object and ``fallback_crossref``. For many identifiers
-    at once, use get_papers_metadata.
+    if the fallback's own Crossref call failed transiently. Siblings
+    get_paper_authors / _abstract / _bibtex share this dispatch, the cached
+    object and ``fallback_crossref``. For many identifiers at once, use
+    get_papers_metadata.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
@@ -563,16 +550,14 @@ async def get_paper_authors(
         institutions}]; page_institutions / page_institution_count cover the current
         page only (dedupe across pages for a global view). openalex_id chains into
         get_author.
-      - crossref (``fallback_crossref`` after an OpenAlex 404): the same author
-        keys, with openalex_id and is_corresponding always null and position
-        carrying Crossref's ``sequence`` ("first" / "additional"). institutions
-        come from Crossref's per-author affiliation, which most publishers do not
-        deposit — usually empty, hence page_institutions usually empty too.
+      - crossref (``fallback_crossref`` after an OpenAlex 404): the same keys,
+        with openalex_id and is_corresponding null and position carrying
+        Crossref's ``sequence`` ("first" / "additional"). institutions come from
+        its per-author affiliation, which most publishers omit — usually empty.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    when ``fallback_crossref`` was asked for and Crossref itself failed
-    transiently.
+    if the fallback's own Crossref call failed transiently.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
@@ -637,14 +622,12 @@ async def get_paper_abstract(
     Returns ``{_source, _canonical_id, title, abstract}``; ``abstract`` is null
     when the source has none. OpenAlex abstracts are reconstructed from an
     inverted index — not byte-identical to the publisher's. A crossref abstract
-    (``fallback_crossref`` after an OpenAlex 404) is JATS markup rendered to plain
-    text: a structured abstract keeps its section titles as words, and many
-    Crossref records carry no abstract at all.
+    (``fallback_crossref`` after an OpenAlex 404) is JATS rendered to plain text,
+    section titles included; many Crossref records carry none at all.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    when ``fallback_crossref`` was asked for and Crossref itself failed
-    transiently.
+    if the fallback's own Crossref call failed transiently.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
@@ -701,8 +684,7 @@ async def get_paper_bibtex(
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    when ``fallback_crossref`` was asked for and Crossref itself failed
-    transiently.
+    if the fallback's own Crossref call failed transiently.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
@@ -712,8 +694,6 @@ async def get_paper_bibtex(
         source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
     )
     if cr is not None:
-        # The date walk is single-homed in `app.crossref_date`, which `bibtex`
-        # sits below — hence the year in, rather than a second walker there.
         return {
             "_source": "crossref",
             "_canonical_id": canonical_id,

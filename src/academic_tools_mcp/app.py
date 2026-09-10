@@ -326,13 +326,11 @@ FALLBACK_CROSSREF = Annotated[
         description=(
             "When OpenAlex returns a definitive 404 for a DOI (not a transient "
             "5xx/429/timeout), fall back to Crossref, which often indexes new "
-            "DOIs sooner. The response carries _source='crossref' in the same "
-            "shape its OpenAlex counterpart would have; per-tool nulls are in "
-            "each docstring. Accepted by all four paper tools, so a paper "
-            "reachable through one is reachable through all of them. Only "
-            "affects DOIs routed to OpenAlex. If Crossref itself fails "
-            "transiently the OpenAlex error comes back with "
-            "crossref_fallback_retryable: true."
+            "DOIs sooner. Accepted by all four paper tools. The response "
+            "carries _source='crossref' in the shape its OpenAlex counterpart "
+            "would have; per-tool nulls are in each docstring. Only affects "
+            "DOIs routed to OpenAlex. If Crossref itself fails transiently, "
+            "the OpenAlex error carries crossref_fallback_retryable: true."
         ),
     ),
 ]
