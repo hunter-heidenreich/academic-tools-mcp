@@ -7,6 +7,7 @@ error contract, and ``find_in_paper``.
 import pytest
 
 from academic_tools_mcp import manual, server
+from academic_tools_mcp.app import SEARCH_YEAR_MAX, SEARCH_YEAR_MIN
 from academic_tools_mcp.providers import arxiv, crossref, openalex
 from academic_tools_mcp.store import cache, stems
 
@@ -682,3 +683,31 @@ class TestSearchOpenalex:
         await server.search_openalex("deep learning", year=2020, max_results=25)
 
         assert seen == {"query": "deep learning", "year": 2020, "rows": 25}
+
+
+class TestSearchYearBounds:
+    """Both search tools declare a generous publication-year range.
+
+    `ge`/`le` are enforced at the MCP boundary, not in Python, so this
+    constrains the test domain to the edges rather than asserting a rejection
+    an in-process caller never sees (`.claude/rules/server.md` § Pagination).
+    The bound exists to turn a pasted identifier or a negative into a schema
+    error instead of an upstream 400.
+    """
+
+    @pytest.mark.parametrize("tool", ["search_crossref_by_title", "search_openalex"])
+    @pytest.mark.parametrize("year", [SEARCH_YEAR_MIN, 1665, 2026, SEARCH_YEAR_MAX])
+    @pytest.mark.asyncio
+    async def test_the_whole_declared_range_reaches_the_provider(self, monkeypatch, tool, year):
+        """1665 is the Philosophical Transactions' first volume — both indexes carry it."""
+        seen = {}
+
+        async def fake(query, *, year=None, rows=10):
+            seen["year"] = year
+            return {"items": [], "total_results": 0}
+
+        monkeypatch.setattr(crossref, "search_works", fake)
+        monkeypatch.setattr(openalex, "search_works", fake)
+
+        await getattr(server, tool)("anything", year=year)
+        assert seen["year"] == year

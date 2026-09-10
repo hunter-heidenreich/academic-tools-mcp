@@ -49,6 +49,17 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`search_openalex` and `search_crossref_by_title` bound their `year`.** Both
+  passed it straight into an upstream filter, so a negative, a zero or a pasted
+  identifier became a 400 the agent had to interpret. Now a schema error at the
+  boundary, over a range generous enough for any real scholarship. ([#119])
+- **The arXiv startup sweep no longer strands an imported paper's provenance.**
+  `migrate_misrouted_arxiv` moved a paper's markdown but left its section index
+  behind, so the index re-derived at the new key with `conversion_mode` null —
+  and null is not `"imported"`, the marker that keeps `download_pdf`'s cascade
+  from deleting markdown no converter can reproduce. The next download that
+  landed new bytes silently deleted an operator's own file. The index now rides
+  along, as it already did for `refile_pmid_stems`. ([#119])
 - **A transient Crossref failure inside `fallback_crossref` is no longer
   swallowed.** The agent asked for the fallback and got back only OpenAlex's
   `not_found`, with no way to tell that Crossref had been tried and might work on
@@ -1743,3 +1754,4 @@ say which.
 [#115]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/115
 [#116]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/116
 [#117]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/117
+[#119]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/119

@@ -13,6 +13,8 @@ from ..app import (
     FIND_MAX_RESULTS,
     FORCE_REFRESH,
     PAPER_ID,
+    SEARCH_YEAR_MAX,
+    SEARCH_YEAR_MIN,
     as_dict,
     crossref_date,
     dict_list,
@@ -129,7 +131,11 @@ async def search_crossref_by_title(
     ],
     year: Annotated[
         int | None,
-        Field(description="Publication year to filter results. Optional but recommended."),
+        Field(
+            description="Publication year to filter results. Optional but recommended.",
+            ge=SEARCH_YEAR_MIN,
+            le=SEARCH_YEAR_MAX,
+        ),
     ] = None,
     max_results: Annotated[
         int,
@@ -202,7 +208,11 @@ async def search_openalex(
     ],
     year: Annotated[
         int | None,
-        Field(description="Publication year to filter results. Optional."),
+        Field(
+            description="Publication year to filter results. Optional.",
+            ge=SEARCH_YEAR_MIN,
+            le=SEARCH_YEAR_MAX,
+        ),
     ] = None,
     max_results: Annotated[
         int,

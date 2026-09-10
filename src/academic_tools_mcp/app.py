@@ -120,6 +120,13 @@ SECTION_MAX_CHARS = Annotated[
 ]
 
 
+# A publication-year filter, bounded generously rather than precisely: the job is
+# to reject a negative, a zero or a pasted identifier before it costs an upstream
+# 400, not to claim the real range of either index.
+SEARCH_YEAR_MIN = 1000
+SEARCH_YEAR_MAX = 2100
+
+
 # Single-homed: every "run the pipeline first" suggestion quotes this chain.
 PIPELINE_CHAIN = "download_pdf → convert_paper → get_paper_sections → get_paper_section"
 
