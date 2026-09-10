@@ -49,6 +49,10 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`search_openalex` and `search_crossref_by_title` bound their `year`.** Both
+  passed it straight into an upstream filter, so a negative, a zero or a pasted
+  identifier became a 400 the agent had to interpret. Now a schema error at the
+  boundary, over a range generous enough for any real scholarship. ([#118])
 - **The arXiv startup sweep no longer strands an imported paper's provenance.**
   `migrate_misrouted_arxiv` moved a paper's markdown but left its section index
   behind, so the index re-derived at the new key with `conversion_mode` null —
