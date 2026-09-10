@@ -7,7 +7,7 @@ error contract, and ``find_in_paper``.
 import pytest
 
 from academic_tools_mcp import manual, server
-from academic_tools_mcp.providers import arxiv, crossref
+from academic_tools_mcp.providers import arxiv, crossref, openalex
 from academic_tools_mcp.store import cache, stems
 
 # ---------------------------------------------------------------------------
@@ -541,3 +541,144 @@ class TestFindInPaper:
         capped = await server.find_in_paper("2301.00004", "dropout", max_results=2)
         assert capped["result_count"] == 2
         assert capped["truncated"] is True
+
+
+class TestSearchOpenalex:
+    """The broad discovery tool: OpenAlex is the primary metadata provider and
+    was the only one with no search of its own.
+    """
+
+    @staticmethod
+    def _work(doi="https://doi.org/10.1234/x", **over):
+        return {
+            "id": "https://openalex.org/W1",
+            "doi": doi,
+            "title": "A Great Work",
+            "publication_year": 2020,
+            "cited_by_count": 42,
+            "open_access": {"is_oa": True},
+            "authorships": [
+                {"author": {"display_name": "Ada Lovelace"}},
+                {"author": {"display_name": "Alan Turing"}},
+            ],
+            **over,
+        }
+
+    def _stub(self, monkeypatch, response):
+        async def fake_search(query, **kwargs):
+            return response
+
+        monkeypatch.setattr(openalex, "search_works", fake_search)
+
+    @pytest.mark.asyncio
+    async def test_returns_the_slim_triage_shape(self, monkeypatch):
+        self._stub(monkeypatch, {"items": [self._work()], "total_results": 4242})
+
+        result = await server.search_openalex("attention")
+
+        assert result["total_results"] == 4242
+        assert result["result_count"] == 1
+        assert result["results"] == [
+            {
+                "doi": "10.1234/x",
+                "openalex_id": "https://openalex.org/W1",
+                "title": "A Great Work",
+                "first_author": "Ada Lovelace",
+                "author_count": 2,
+                "publication_year": 2020,
+                "cited_by_count": 42,
+                "is_oa": True,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_doi_is_bare_so_it_chains_straight_back_in(self, monkeypatch):
+        """OpenAlex returns a resolver URL; handing that on makes the agent
+        normalize it before every follow-up call."""
+        self._stub(monkeypatch, {"items": [self._work()], "total_results": 1})
+
+        result = await server.search_openalex("q")
+
+        assert result["results"][0]["doi"] == "10.1234/x"
+
+    @pytest.mark.asyncio
+    async def test_a_work_without_a_doi_still_carries_its_openalex_id(self, monkeypatch):
+        self._stub(monkeypatch, {"items": [self._work(doi=None)], "total_results": 1})
+
+        hit = (await server.search_openalex("q"))["results"][0]
+
+        assert hit["doi"] is None
+        assert hit["openalex_id"] == "https://openalex.org/W1"
+
+    @pytest.mark.asyncio
+    async def test_the_author_list_is_omitted_but_counted(self, monkeypatch):
+        """A consortium paper would otherwise balloon the triage response."""
+        many = [{"author": {"display_name": f"A{i}"}} for i in range(3000)]
+        self._stub(monkeypatch, {"items": [self._work(authorships=many)], "total_results": 1})
+
+        hit = (await server.search_openalex("q"))["results"][0]
+
+        assert hit["author_count"] == 3000
+        assert "authors" not in hit
+
+    @pytest.mark.parametrize(
+        ("work", "author_count"),
+        [
+            ({"id": "W1"}, 0),
+            ({"id": "W1", "authorships": None}, 0),
+            # A non-dict entry is not an authorship, so it is not counted.
+            ({"id": "W1", "authorships": ["not a dict"]}, 0),
+            # A real authorship with a null author *is* one: the count follows
+            # the filtered list the name was picked from.
+            ({"id": "W1", "authorships": [{"author": None}]}, 1),
+            ({"id": "W1", "doi": 42, "open_access": "not a dict"}, 0),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_sparse_or_wrong_shaped_hit_degrades_instead_of_raising(
+        self, monkeypatch, work, author_count
+    ):
+        """OpenAlex nulls are load-bearing: it emits `"authorships": null` rather
+        than dropping the key, so no `.get(k, default)` alone is trusted."""
+        self._stub(monkeypatch, {"items": [work], "total_results": 1})
+
+        hit = (await server.search_openalex("q"))["results"][0]
+
+        assert hit["doi"] is None
+        assert hit["first_author"] is None
+        assert hit["author_count"] == author_count
+        assert hit["is_oa"] is None
+
+    @pytest.mark.asyncio
+    async def test_total_results_is_an_int_when_openalex_omits_its_count(self, monkeypatch):
+        """The key means the same thing on every search tool, so an agent can
+        branch on it without feature-detecting per tool."""
+        self._stub(monkeypatch, {"items": [], "total_results": None})
+
+        result = await server.search_openalex("q")
+
+        assert result["total_results"] == 0
+        assert result["result_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_an_error_gains_a_suggestion(self, monkeypatch):
+        self._stub(monkeypatch, {"error": "OpenAlex unavailable", "retryable": True})
+
+        result = await server.search_openalex("q")
+
+        assert result["retryable"] is True
+        assert "suggestion" in result
+
+    @pytest.mark.asyncio
+    async def test_query_year_and_cap_reach_the_provider(self, monkeypatch):
+        seen = {}
+
+        async def fake_search(query, **kwargs):
+            seen.update(query=query, **kwargs)
+            return {"items": [], "total_results": 0}
+
+        monkeypatch.setattr(openalex, "search_works", fake_search)
+
+        await server.search_openalex("deep learning", year=2020, max_results=25)
+
+        assert seen == {"query": "deep learning", "year": 2020, "rows": 25}

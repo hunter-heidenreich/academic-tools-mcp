@@ -30,6 +30,14 @@ grouped by milestone rather than per commit.
 - **`get_paper_metadata` reports an OpenAlex work's `pmid`**, as bare digits
   (null when OpenAlex has none), closing the round trip in both directions.
   Batched results carry it too. ([#115])
+- **`search_openalex`, free-text search across all of OpenAlex.** The primary
+  metadata provider was the only one with no search of its own, so discovery was
+  `search_arxiv` (preprints, field-scoped) and `search_crossref_by_title`
+  (bibliographic match) — neither of which answers "what has been written about
+  X". Returns the same slim triage envelope as its siblings, plus
+  `cited_by_count` and `is_oa`. Unlike a Crossref hit, **every hit is free to
+  chain**: it warms `openalex/works` under the very key `get_paper_metadata`
+  reads. ([#117])
 - **`fallback_crossref` reaches all four paper tools, not just
   `get_paper_metadata`.** A DOI Crossref had indexed and OpenAlex had not gave
   you a title and a venue but no authors, abstract or BibTeX — on a server whose
@@ -1734,3 +1742,4 @@ say which.
 [#112]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/112
 [#115]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/115
 [#116]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/116
+[#117]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/117

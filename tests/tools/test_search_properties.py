@@ -33,7 +33,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from academic_tools_mcp import corpus, manual, server
-from academic_tools_mcp.providers import arxiv, crossref, wikipedia
+from academic_tools_mcp.providers import arxiv, crossref, openalex, wikipedia
 from academic_tools_mcp.store import stems
 from academic_tools_mcp.tools import search
 from tests.test_corpus_properties import identifiers
@@ -95,6 +95,32 @@ def _serve_arxiv(monkeypatch: pytest.MonkeyPatch, entries: list[Any], total: Any
     monkeypatch.setattr(arxiv, "search_papers", fake)
 
 
+# The domain the MCP boundary admits for the OpenAlex search.
+_openalex_max = st.integers(min_value=1, max_value=openalex.MAX_SEARCH_RESULTS)
+
+# An OpenAlex work as the search returns one: every field a `null` the tool must
+# survive, since OpenAlex emits nulls rather than dropping keys.
+_openalex_items = st.fixed_dictionaries(
+    {},
+    optional={
+        "id": _json_values,
+        "doi": _json_values,
+        "title": _json_values,
+        "publication_year": _json_values,
+        "cited_by_count": _json_values,
+        "open_access": _json_values,
+        "authorships": _json_values,
+    },
+)
+
+
+def _serve_openalex(monkeypatch: pytest.MonkeyPatch, items: list[Any], total: Any = 7) -> None:
+    async def fake(query: str, *, year: int | None = None, rows: int = 10) -> dict[str, Any]:
+        return {"items": [i for i in items if isinstance(i, dict)], "total_results": total}
+
+    monkeypatch.setattr(openalex, "search_works", fake)
+
+
 def _serve_error(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> None:
     async def fake(query: str, max_results: int = 10) -> dict[str, Any]:
         return dict(payload)
@@ -105,6 +131,39 @@ def _serve_error(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> No
 # ---------------------------------------------------------------------------
 # The provider seam
 # ---------------------------------------------------------------------------
+
+
+@_SETTINGS
+@given(items=st.lists(_openalex_items, max_size=5), rows=_openalex_max)
+def test_any_openalex_payload_triages_without_raising(
+    monkeypatch: pytest.MonkeyPatch, items: list[Any], rows: int
+) -> None:
+    """Whatever hangs off an OpenAlex work, the agent gets a triage list.
+
+    OpenAlex nulls are load-bearing — it emits `"authorships": null` rather than
+    dropping the key — so no `.get(k, default)` alone is trusted, and every field
+    here is a value the tool must survive rather than raise on.
+    """
+    _serve_openalex(monkeypatch, items)
+
+    result = asyncio.run(server.search_openalex("anything", max_results=rows))
+
+    dict_items = [i for i in items if isinstance(i, dict)]
+    assert result["result_count"] == len(dict_items) == len(result["results"])
+    for hit in result["results"]:
+        assert set(hit) == {
+            "doi",
+            "openalex_id",
+            "title",
+            "first_author",
+            "author_count",
+            "publication_year",
+            "cited_by_count",
+            "is_oa",
+        }
+        # The two an agent chains on: a DOI is bare or absent, never a URL.
+        assert hit["doi"] is None or not hit["doi"].lower().startswith("http")
+        assert isinstance(hit["author_count"], int)
 
 
 @_SETTINGS
@@ -260,6 +319,7 @@ def test_every_search_tool_reports_result_count_and_a_more_exist_signal(
     """
     _serve_crossref(monkeypatch, items)
     _serve_arxiv(monkeypatch, entries)
+    _serve_openalex(monkeypatch, items)
 
     async def fake_wiki(query: str, limit: int = 5) -> dict[str, Any]:
         return {"results": [{"title": t, "url": f"https://x/{t}"} for t in titles]}
@@ -268,16 +328,18 @@ def test_every_search_tool_reports_result_count_and_a_more_exist_signal(
 
     ax = asyncio.run(server.search_arxiv("anything"))
     cr = asyncio.run(server.search_crossref_by_title("anything"))
+    oa = asyncio.run(server.search_openalex("anything"))
     wk = asyncio.run(server.search_wikipedia("anything"))
 
-    for response in (ax, cr, wk):
+    for response in (ax, cr, oa, wk):
         assert response["result_count"] == len(response["results"])
 
-    # The pair with an upstream count reports it, and it is an int on both --
-    # Crossref omits `total-results` on some responses.
-    assert set(ax) == set(cr) == {"total_results", "result_count", "results"}
+    # The three with an upstream count report it, and it is an int on all of
+    # them -- Crossref and OpenAlex both omit their count on some responses.
+    assert set(ax) == set(cr) == set(oa) == {"total_results", "result_count", "results"}
     assert isinstance(ax["total_results"], int)
     assert isinstance(cr["total_results"], int)
+    assert isinstance(oa["total_results"], int)
     # Wikipedia has no upstream total and must not invent one.
     assert set(wk) == {"query", "result_count", "results"}
 

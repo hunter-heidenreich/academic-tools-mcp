@@ -116,6 +116,7 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 | Tool | Description |
 |------|-------------|
 | `search_arxiv` | Search arXiv with field prefixes (`ti:`, `au:`, `abs:`, `cat:`) and boolean operators |
+| `search_openalex` | Free-text search across all of OpenAlex, matched on title, abstract and fulltext. The broadest discovery tool here — use it when you have a topic rather than a title. Each hit warms the cache `get_paper_metadata` reads, so the follow-up is free |
 
 ### Authors
 
@@ -298,7 +299,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
   ├── bibtex.py        BibTeX generation
   ├── fast_extract.py  bundled pymupdf text extractor (a `python -m` target)
   │
-  ├── tools/         21 @mcp.tool functions, split by job
+  ├── tools/         22 @mcp.tool functions, split by job
   │                    paper.py     metadata / authors / abstract / bibtex
   │                    pipeline.py  download → convert → sections → section
   │                    graph.py     references and citations

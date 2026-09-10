@@ -13,6 +13,7 @@ from ..app import (
     FIND_MAX_RESULTS,
     FORCE_REFRESH,
     PAPER_ID,
+    as_dict,
     crossref_date,
     dict_list,
     enrich_error,
@@ -20,7 +21,8 @@ from ..app import (
     read_markdown,
     unwrap_first,
 )
-from ..providers import arxiv, crossref, wikipedia
+from ..providers import arxiv, crossref, openalex, wikipedia
+from ..util import doinorm
 
 
 def _first_author_name(paper: dict[str, Any]) -> str | None:
@@ -176,6 +178,87 @@ async def search_crossref_by_title(
 
     return {
         # Crossref sometimes omits `total-results`; the key must mean what it does in search_arxiv.
+        "total_results": response.get("total_results") or 0,
+        "result_count": len(results),
+        "results": results,
+    }
+
+
+def _openalex_first_author(work: dict[str, Any]) -> str | None:
+    """The first OpenAlex authorship's display name, or None."""
+    authorships = dict_list(work.get("authorships"))
+    return as_dict(authorships[0].get("author")).get("display_name") if authorships else None
+
+
+@mcp.tool
+async def search_openalex(
+    query: Annotated[
+        str,
+        Field(
+            description="Free-text query, matched against title, abstract and "
+            "fulltext. Plain words, not a field syntax — for field-scoped "
+            "queries use search_arxiv."
+        ),
+    ],
+    year: Annotated[
+        int | None,
+        Field(description="Publication year to filter results. Optional."),
+    ] = None,
+    max_results: Annotated[
+        int,
+        Field(
+            description=f"Maximum results to return (1-{openalex.MAX_SEARCH_RESULTS}).",
+            ge=1,
+            le=openalex.MAX_SEARCH_RESULTS,
+        ),
+    ] = 10,
+) -> dict[str, Any]:
+    """Search all of OpenAlex by free text. Returns a slim triage list.
+
+    The broadest discovery tool here — every discipline, where search_arxiv is
+    preprints only and search_crossref_by_title matches bibliographically rather
+    than on content. Use it when you have a topic rather than a title.
+
+    Returns ``{total_results, result_count, results: [{doi, openalex_id, title,
+    first_author, author_count, publication_year, cited_by_count, is_oa}, ...]}``.
+    ``total_results`` is OpenAlex's own match count, ``result_count`` what this
+    call returned. ``doi`` is null for the works OpenAlex indexes without one;
+    ``openalex_id`` is always present. The author list is omitted so consortium
+    papers can't balloon the response.
+
+    Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
+    parse failure.
+
+    Chain get_paper_metadata(doi) for the full record: unlike a
+    search_crossref_by_title hit, every hit here is already in the cache it
+    reads, so the follow-up costs no request.
+    """
+    response = await openalex.search_works(query, year=year, rows=max_results)
+    if "error" in response:
+        return enrich_error(
+            response,
+            "Retry if OpenAlex is temporarily unavailable, or broaden the query — "
+            "it matches words, not a field syntax.",
+        )
+
+    results = []
+    for work in response.get("items", []):
+        authorships = dict_list(work.get("authorships"))
+        results.append(
+            {
+                "doi": doinorm.normalize(work["doi"]) if isinstance(work.get("doi"), str) else None,
+                "openalex_id": work.get("id"),
+                "title": work.get("title"),
+                "first_author": _openalex_first_author(work),
+                "author_count": len(authorships),
+                "publication_year": work.get("publication_year"),
+                "cited_by_count": work.get("cited_by_count"),
+                "is_oa": as_dict(work.get("open_access")).get("is_oa"),
+            }
+        )
+
+    return {
+        # An int on every search tool that reports it, so agents can branch on it.
         "total_results": response.get("total_results") or 0,
         "result_count": len(results),
         "results": results,

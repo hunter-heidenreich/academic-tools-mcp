@@ -1135,3 +1135,156 @@ class TestResolvePmid:
         second = await openalex.resolve_pmid("20079334")
         assert second["doi"] == "10.1234/x"
         assert len(requests) == 2
+
+
+class TestSearchWorks:
+    @pytest.mark.asyncio
+    async def test_returns_items_and_the_upstream_count(self, monkeypatch):
+        _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 4242}, "results": [_work_response("10.1234/a")]},
+        )
+
+        result = await openalex.search_works("attention")
+
+        assert result["total_results"] == 4242
+        assert [w["doi"] for w in result["items"]] == ["https://doi.org/10.1234/a"]
+
+    @pytest.mark.asyncio
+    async def test_a_hit_is_free_to_chain_into_get_work(self, monkeypatch):
+        """The reason this tool exists as more than reach: unlike a Crossref hit,
+        an OpenAlex hit lands under the key `get_paper_metadata` actually reads."""
+        requests = _stub_json_responses(
+            monkeypatch, {"meta": {"count": 1}, "results": [_work_response("10.1234/a")]}
+        )
+
+        await openalex.search_works("attention")
+        work = await openalex.get_work("10.1234/a")
+
+        assert work["id"] == "https://openalex.org/W1"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_warms_under_the_canonical_key_stripping_the_resolver_prefix(self, monkeypatch):
+        """A response DOI is a resolver URL; warming it verbatim would key a
+        paper nothing later looks up."""
+        _stub_json_responses(
+            monkeypatch, {"meta": {"count": 1}, "results": [_work_response("10.1234/MiXeD")]}
+        )
+
+        await openalex.search_works("q")
+
+        assert cache.get(openalex.NAMESPACE, "works", "10.1234/mixed", max_age_seconds=3600)
+
+    @pytest.mark.asyncio
+    async def test_sends_the_query_the_cap_and_the_year_filter(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_works("deep learning", year=2020, rows=999)
+
+        params = parse_qs(requests[0].url.query.decode())
+        assert params["search"] == ["deep learning"]
+        assert params["per-page"] == [str(openalex.MAX_SEARCH_RESULTS)]
+        assert params["filter"] == ["publication_year:2020"]
+
+    @pytest.mark.asyncio
+    async def test_no_filter_without_a_year(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_works("q")
+
+        assert "filter" not in parse_qs(requests[0].url.query.decode())
+
+    @pytest.mark.asyncio
+    async def test_does_not_project_the_response(self, monkeypatch):
+        """`select=` would warm the works cache with partial records, poisoning
+        every reader of that key."""
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_works("q")
+
+        assert "select" not in parse_qs(requests[0].url.query.decode())
+
+    @pytest.mark.asyncio
+    async def test_rows_floor_is_one(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_works("q", rows=0)
+
+        assert parse_qs(requests[0].url.query.decode())["per-page"] == ["1"]
+
+    @pytest.mark.asyncio
+    async def test_a_hit_without_a_doi_is_returned_but_not_warmed(self, monkeypatch):
+        """OpenAlex indexes works with no DOI. They are real results; there is
+        just no DOI key to file them under."""
+        _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [{"id": "https://openalex.org/W9", "doi": None}]},
+        )
+
+        result = await openalex.search_works("q")
+
+        assert len(result["items"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_non_dict_rows_are_dropped_not_passed_on(self, monkeypatch):
+        _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 3}, "results": ["nope", None, _work_response("10.1234/a")]},
+        )
+
+        result = await openalex.search_works("q")
+
+        assert len(result["items"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_missing_count_is_null_not_a_local_length(self, monkeypatch):
+        """`total_results` means "how many exist upstream". Substituting
+        len(results) tells a paginating agent there is nothing more."""
+        _stub_json_responses(
+            monkeypatch, {"results": [_work_response()], "meta": {"count": "many"}}
+        )
+
+        assert (await openalex.search_works("q"))["total_results"] is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            _BAD_JSON,
+            # A wrong shape must be an error, never an empty result set: "no
+            # papers match" ends the agent's search.
+            ["not", "a", "dict"],
+            {"meta": {"count": 1}},
+            {"meta": {"count": 1}, "results": "not a list"},
+            {"results": None},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_wrong_shape_is_an_error_not_zero_results(self, monkeypatch, payload):
+        _stub_json_responses(monkeypatch, payload)
+
+        result = await openalex.search_works("q")
+
+        assert "error" in result
+        assert "items" not in result
+
+    @pytest.mark.asyncio
+    async def test_http_failure_carries_the_shared_error_contract(self, monkeypatch):
+        _stub_json_responses(monkeypatch, _Resp(503))
+
+        result = await openalex.search_works("q")
+
+        assert "error" in result
+        assert result.get("retryable") is True
+
+    @pytest.mark.asyncio
+    async def test_a_search_is_never_cached(self, monkeypatch):
+        """Ad-hoc queries; only the hits are worth keeping."""
+        requests = _stub_json_responses(
+            monkeypatch, {"meta": {"count": 1}, "results": [_work_response()]}
+        )
+
+        await openalex.search_works("q")
+        await openalex.search_works("q")
+
+        assert len(requests) == 2
