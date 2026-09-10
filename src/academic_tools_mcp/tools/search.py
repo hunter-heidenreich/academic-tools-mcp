@@ -275,6 +275,88 @@ async def search_openalex(
     }
 
 
+def _last_known_institution(author: dict[str, Any]) -> str | None:
+    """The first of an OpenAlex author's last-known institutions, or None.
+
+    Singular where ``get_author`` returns the whole list: enough to tell two
+    same-named people apart, and no shared helper between the two tools.
+    """
+    for inst in dict_list(author.get("last_known_institutions")):
+        if isinstance(name := inst.get("display_name"), str) and name:
+            return name
+    return None
+
+
+@mcp.tool
+async def search_authors(
+    query: Annotated[
+        str,
+        Field(
+            description="Author name to search for, e.g. 'Yoshua Bengio'. "
+            "Plain text, not a field syntax.",
+            min_length=1,
+        ),
+    ],
+    max_results: Annotated[
+        int,
+        Field(
+            description=f"Maximum results to return (1-{openalex.MAX_SEARCH_RESULTS}).",
+            ge=1,
+            le=openalex.MAX_SEARCH_RESULTS,
+        ),
+    ] = 10,
+) -> dict[str, Any]:
+    """Find an author by name on OpenAlex. Returns a slim triage list.
+
+    The way into the author tools: get_author needs an ID only
+    get_paper_authors could otherwise give you.
+
+    Returns ``{total_results, result_count, results: [{openalex_id, name,
+    orcid, last_known_institution, works_count, cited_by_count, h_index},
+    ...]}``. ``total_results`` is OpenAlex's own match count, ``result_count``
+    what this call returned. Every field but ``openalex_id`` may be null.
+
+    **One name is often several records** — OpenAlex disambiguates imperfectly.
+    Pick on ``works_count`` / ``cited_by_count`` / ``last_known_institution``,
+    preferring the one with an ``orcid``.
+
+    Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
+    parse failure.
+
+    Chain get_author(``openalex_id``, not ``orcid``) for affiliation history and
+    top topics; every hit warms the cache it reads, so that call is free.
+    """
+    response = await openalex.search_authors(query, rows=max_results)
+    if "error" in response:
+        return enrich_error(
+            response,
+            "Retry if OpenAlex is temporarily unavailable, or try a different "
+            "spelling — this matches names, not affiliations or topics.",
+        )
+
+    results = [
+        {
+            "openalex_id": author.get("id"),
+            "name": author.get("display_name"),
+            # Verbatim: OpenAlex returns the full https://orcid.org/... URL,
+            # the one spelling get_author resolves.
+            "orcid": author.get("orcid"),
+            "last_known_institution": _last_known_institution(author),
+            "works_count": author.get("works_count"),
+            "cited_by_count": author.get("cited_by_count"),
+            "h_index": as_dict(author.get("summary_stats")).get("h_index"),
+        }
+        for author in response.get("items", [])
+    ]
+
+    return {
+        # An int on every search tool that reports it, so agents can branch on it.
+        "total_results": response.get("total_results") or 0,
+        "result_count": len(results),
+        "results": results,
+    }
+
+
 @mcp.tool
 async def find_in_paper(
     identifier: PAPER_ID,

@@ -17,6 +17,15 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`search_authors`, the way into the author tools.** `get_author` took an
+  OpenAlex author ID or an ORCID URL, and both came from one place —
+  `get_paper_authors` — so "who is this person, what is their h-index" meant
+  finding one of their papers first. Works had three discovery tools; authors
+  had none. Returns the same slim triage envelope as its siblings, plus the
+  counts and institution that tell apart the several records one name often
+  matches. **Every hit is free to chain**: it warms `openalex/authors` under the
+  very key `get_author` reads. Chain `openalex_id`, not `orcid` — only the full
+  `https://orcid.org/...` spelling resolves. ([#120])
 - **A PMID is an identifier this server accepts, not just one it hands out.**
   Every OpenCitations row carries a `pmid` cross-reference, so a citing row with
   a `pmid` and no `doi` was a dead end. `pmid:20079334`, a
@@ -1755,3 +1764,4 @@ say which.
 [#116]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/116
 [#117]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/117
 [#119]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/119
+[#120]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/120

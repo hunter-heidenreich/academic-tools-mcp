@@ -1288,3 +1288,187 @@ class TestSearchWorks:
         await openalex.search_works("q")
 
         assert len(requests) == 2
+
+
+class TestSearchAuthors:
+    """The author-side twin of `TestSearchWorks`; the warm key is what makes
+    chaining a hit into `get_author` free.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_items_and_the_upstream_count(self, monkeypatch):
+        _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 91}, "results": [_author_response()]},
+        )
+
+        result = await openalex.search_authors("Jane Doe")
+
+        assert result["total_results"] == 91
+        assert [a["display_name"] for a in result["items"]] == ["Jane Doe"]
+
+    @pytest.mark.asyncio
+    async def test_a_hit_is_free_to_chain_into_get_author(self, monkeypatch):
+        """The hit lands under the very key `get_author` reads."""
+        requests = _stub_json_responses(
+            monkeypatch, {"meta": {"count": 1}, "results": [_author_response("A1")]}
+        )
+
+        await openalex.search_authors("Jane Doe")
+        author = await openalex.get_author("A1")
+
+        assert author["display_name"] == "Jane Doe"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_warms_under_the_canonical_key_stripping_the_url_prefix(self, monkeypatch):
+        """A response id is a URL; warmed verbatim it keys nothing."""
+        _stub_json_responses(
+            monkeypatch, {"meta": {"count": 1}, "results": [_author_response("A5086198262")]}
+        )
+
+        await openalex.search_authors("q")
+
+        assert cache.get(openalex.NAMESPACE, "authors", "a5086198262", max_age_seconds=3600)
+
+    @pytest.mark.asyncio
+    async def test_sends_the_query_and_the_cap(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_authors("Yoshua Bengio", rows=999)
+
+        params = parse_qs(requests[0].url.query.decode())
+        assert params["search"] == ["Yoshua Bengio"]
+        assert params["per-page"] == [str(openalex.MAX_SEARCH_RESULTS)]
+
+    @pytest.mark.asyncio
+    async def test_hits_the_authors_collection_not_works(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_authors("q")
+
+        assert _path_of(requests[0]) == "/authors"
+
+    @pytest.mark.asyncio
+    async def test_never_sends_a_year_filter(self, monkeypatch):
+        """A year does not narrow a person: no filter branch at all."""
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_authors("q")
+
+        assert "filter" not in parse_qs(requests[0].url.query.decode())
+
+    @pytest.mark.asyncio
+    async def test_does_not_project_the_response(self, monkeypatch):
+        """A projected record would poison the key it warms."""
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_authors("q")
+
+        assert "select" not in parse_qs(requests[0].url.query.decode())
+
+    @pytest.mark.parametrize("rows", [1, openalex.MAX_SEARCH_RESULTS])
+    @pytest.mark.asyncio
+    async def test_a_row_count_at_or_under_the_cap_is_sent_as_asked(self, monkeypatch, rows):
+        """Exactly at the cap must pass through; only past it clamps."""
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_authors("q", rows=rows)
+
+        assert parse_qs(requests[0].url.query.decode())["per-page"] == [str(rows)]
+
+    @pytest.mark.parametrize("rows", [0, -5])
+    @pytest.mark.asyncio
+    async def test_a_non_positive_row_count_floors_at_one(self, monkeypatch, rows):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_authors("q", rows=rows)
+
+        assert parse_qs(requests[0].url.query.decode())["per-page"] == ["1"]
+
+    @pytest.mark.asyncio
+    async def test_no_matches_is_an_empty_list_not_an_error(self, monkeypatch):
+        """A name nobody bears is a real answer, unlike a wrong shape."""
+        _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        result = await openalex.search_authors("zzzqqqxxnotanauthor")
+
+        assert result == {"items": [], "total_results": 0}
+
+    @pytest.mark.parametrize(
+        "bad_id",
+        [None, 42, "", "   "],
+        ids=["missing", "not-a-str", "empty", "blank"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_record_without_a_usable_id_is_skipped_not_raised_on(self, monkeypatch, bad_id):
+        """The loop runs outside the `try`, so an unguarded id escapes."""
+        record = {**_author_response(), "id": bad_id}
+        if bad_id is None:
+            del record["id"]
+        _stub_json_responses(monkeypatch, {"meta": {"count": 1}, "results": [record]})
+
+        result = await openalex.search_authors("q")
+
+        # Still returned to the caller; only the cache warm is skipped.
+        assert result["items"] == [record]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            _BAD_JSON,
+            [],
+            "not a dict",
+            {"meta": {"count": 1}},
+            {"meta": {"count": 1}, "results": "not a list"},
+        ],
+        ids=["bad-json", "list-body", "str-body", "no-results", "results-not-a-list"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_wrong_shape_is_an_error_not_zero_results(self, monkeypatch, payload):
+        """Reported as "no matches", a wrong shape ends the agent's search."""
+        _stub_json_responses(monkeypatch, payload)
+
+        result = await openalex.search_authors("q")
+
+        assert "error" in result
+        assert "items" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_non_dict_entry_is_dropped(self, monkeypatch):
+        _stub_json_responses(
+            monkeypatch, {"meta": {"count": 2}, "results": ["not a dict", _author_response()]}
+        )
+
+        result = await openalex.search_authors("q")
+
+        assert [a["display_name"] for a in result["items"]] == ["Jane Doe"]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_meta_count_is_none_not_a_crash(self, monkeypatch):
+        _stub_json_responses(monkeypatch, {"results": [_author_response()]})
+
+        result = await openalex.search_authors("q")
+
+        assert result["total_results"] is None
+
+    @pytest.mark.asyncio
+    async def test_http_failure_carries_the_shared_error_contract(self, monkeypatch):
+        _stub_json_responses(monkeypatch, _Resp(503))
+
+        result = await openalex.search_authors("q")
+
+        assert "error" in result
+        assert result.get("retryable") is True
+
+    @pytest.mark.asyncio
+    async def test_a_search_is_never_cached(self, monkeypatch):
+        """Ad-hoc queries; only the hits are worth keeping."""
+        requests = _stub_json_responses(
+            monkeypatch, {"meta": {"count": 1}, "results": [_author_response()]}
+        )
+
+        await openalex.search_authors("q")
+        await openalex.search_authors("q")
+
+        assert len(requests) == 2

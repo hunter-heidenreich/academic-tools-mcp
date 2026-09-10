@@ -122,9 +122,12 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 
 | Tool | Description |
 |------|-------------|
+| `search_authors` | Find an author by name. Returns the several records one name often matches, with h-index, works/citation counts and a current institution to tell them apart. Each hit warms the cache `get_author` reads, so the profile is free |
 | `get_author` | Name, ORCID, institutions (current + historical with years), h-index, i10-index, works/citation counts, top topics |
 
-Accepts OpenAlex author IDs (from `get_paper_authors`) or ORCIDs.
+`get_author` accepts OpenAlex author IDs (from `get_paper_authors` or
+`search_authors`) or ORCID URLs. Chain a search hit on its `openalex_id`, not
+its `orcid` — only the full `https://orcid.org/...` spelling resolves.
 
 ### PDF pipeline (unified)
 
@@ -299,11 +302,12 @@ server.py            thin entry: re-exports mcp + tools, registers the
   ├── bibtex.py        BibTeX generation
   ├── fast_extract.py  bundled pymupdf text extractor (a `python -m` target)
   │
-  ├── tools/         22 @mcp.tool functions, split by job
+  ├── tools/         23 @mcp.tool functions, split by job
   │                    paper.py     metadata / authors / abstract / bibtex
   │                    pipeline.py  download → convert → sections → section
   │                    graph.py     references and citations
-  │                    search.py    arXiv / Crossref / Wikipedia / local corpus
+  │                    search.py    arXiv / OpenAlex / Crossref / Wikipedia /
+  │                                 local corpus
   │
   ├── providers/     seven API clients, all the same shape
   │                    openalex.py  arxiv.py     biorxiv.py   crossref.py

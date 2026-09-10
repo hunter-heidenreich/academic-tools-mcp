@@ -63,7 +63,9 @@ mcp = FastMCP(
         "search_openalex is the broad topic search and its hits are free to "
         "chain; search_arxiv the field-scoped preprint one; "
         "search_crossref_by_title finds a DOI from a title, and warms the "
-        "reference tools rather than get_paper_metadata.\n\n"
+        "reference tools rather than get_paper_metadata. search_authors is the "
+        "way into get_author when you have a person rather than one of their "
+        "papers; chain its hits on openalex_id.\n\n"
         "Failures return {error, suggestion?}; transient ones (5xx, 429, "
         "timeout) carry retry hints."
     ),

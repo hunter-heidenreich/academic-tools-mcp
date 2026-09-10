@@ -711,3 +711,179 @@ class TestSearchYearBounds:
 
         await getattr(server, tool)("anything", year=year)
         assert seen["year"] == year
+
+
+class TestSearchAuthors:
+    """Pins the triage shape and the chain handle: `openalex_id`, never the
+    unnormalized `orcid`.
+    """
+
+    @staticmethod
+    def _author(**over):
+        return {
+            "id": "https://openalex.org/A1",
+            "display_name": "Ada Lovelace",
+            "orcid": "https://orcid.org/0000-0002-9322-3515",
+            "works_count": 42,
+            "cited_by_count": 1701,
+            "summary_stats": {"h_index": 19, "i10_index": 25},
+            "last_known_institutions": [{"display_name": "MIT", "country_code": "US"}],
+            **over,
+        }
+
+    def _stub(self, monkeypatch, response):
+        async def fake_search(query, **kwargs):
+            return response
+
+        monkeypatch.setattr(openalex, "search_authors", fake_search)
+
+    @pytest.mark.asyncio
+    async def test_returns_the_slim_triage_shape(self, monkeypatch):
+        self._stub(monkeypatch, {"items": [self._author()], "total_results": 91})
+
+        result = await server.search_authors("Ada Lovelace")
+
+        assert result["total_results"] == 91
+        assert result["result_count"] == 1
+        assert result["results"] == [
+            {
+                "openalex_id": "https://openalex.org/A1",
+                "name": "Ada Lovelace",
+                "orcid": "https://orcid.org/0000-0002-9322-3515",
+                "last_known_institution": "MIT",
+                "works_count": 42,
+                "cited_by_count": 1701,
+                "h_index": 19,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_hit_is_slimmer_than_get_author_on_purpose(self, monkeypatch):
+        """Keeping get_author's fields out is what keeps the two independent."""
+        self._stub(monkeypatch, {"items": [self._author()], "total_results": 1})
+
+        hit = (await server.search_authors("q"))["results"][0]
+
+        for absent in ("affiliations", "top_topics", "current_institutions", "i10_index"):
+            assert absent not in hit
+
+    @pytest.mark.asyncio
+    async def test_the_orcid_passes_through_verbatim(self, monkeypatch):
+        """ORCIDs are not normalized, so only OpenAlex's own spelling resolves."""
+        spelling = "http://orcid.org/0000-0002-9322-3515"
+        self._stub(monkeypatch, {"items": [self._author(orcid=spelling)], "total_results": 1})
+
+        hit = (await server.search_authors("q"))["results"][0]
+
+        assert hit["orcid"] == spelling
+
+    @pytest.mark.asyncio
+    async def test_a_nameless_institution_does_not_mask_a_named_one(self, monkeypatch):
+        self._stub(
+            monkeypatch,
+            {
+                "items": [self._author(last_known_institutions=[{}, {"display_name": "Mila"}])],
+                "total_results": 1,
+            },
+        )
+
+        hit = (await server.search_authors("q"))["results"][0]
+
+        assert hit["last_known_institution"] == "Mila"
+
+    @pytest.mark.parametrize(
+        "author",
+        [
+            {"id": "A1"},
+            {"id": "A1", "summary_stats": None},
+            {"id": "A1", "summary_stats": "not a dict"},
+            {"id": "A1", "last_known_institutions": None},
+            {"id": "A1", "last_known_institutions": []},
+            {"id": "A1", "last_known_institutions": ["not a dict"]},
+            {"id": "A1", "last_known_institutions": [{"display_name": None}]},
+            {"id": "A1", "last_known_institutions": [{"display_name": ""}]},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_sparse_or_wrong_shaped_hit_degrades_instead_of_raising(
+        self, monkeypatch, author
+    ):
+        """OpenAlex emits explicit nulls rather than dropping a key, so every
+        field here is a value the tool must survive rather than raise on."""
+        self._stub(monkeypatch, {"items": [author], "total_results": 1})
+
+        hit = (await server.search_authors("q"))["results"][0]
+
+        assert hit["h_index"] is None
+        assert hit["last_known_institution"] is None
+        assert set(hit) == {
+            "openalex_id",
+            "name",
+            "orcid",
+            "last_known_institution",
+            "works_count",
+            "cited_by_count",
+            "h_index",
+        }
+
+    @pytest.mark.asyncio
+    async def test_no_matches_is_an_empty_list(self, monkeypatch):
+        self._stub(monkeypatch, {"items": [], "total_results": 0})
+
+        result = await server.search_authors("zzzqqqxxnotanauthor")
+
+        assert result == {"total_results": 0, "result_count": 0, "results": []}
+
+    @pytest.mark.asyncio
+    async def test_a_missing_upstream_total_still_reports_an_int(self, monkeypatch):
+        """One meaning across the family, or agents cannot branch on it."""
+        self._stub(monkeypatch, {"items": [self._author()], "total_results": None})
+
+        result = await server.search_authors("q")
+
+        assert result["total_results"] == 0
+
+    @pytest.mark.asyncio
+    async def test_an_error_is_enriched_and_keeps_the_provider_verdict(self, monkeypatch):
+        self._stub(monkeypatch, {"error": "OpenAlex is unavailable", "retryable": True})
+
+        result = await server.search_authors("q")
+
+        assert result["retryable"] is True
+        assert "suggestion" in result
+        assert "results" not in result
+        assert "result_count" not in result
+
+    @pytest.mark.asyncio
+    async def test_threads_the_query_and_the_row_count(self, monkeypatch):
+        seen = {}
+
+        async def fake_search(query, *, rows=10):
+            seen.update(query=query, rows=rows)
+            return {"items": [], "total_results": 0}
+
+        monkeypatch.setattr(openalex, "search_authors", fake_search)
+
+        await server.search_authors("Ada Lovelace", max_results=25)
+
+        assert seen == {"query": "Ada Lovelace", "rows": 25}
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_ten_rows(self, monkeypatch):
+        seen = []
+
+        async def fake_search(query, *, rows=10):
+            seen.append(rows)
+            return {"items": [], "total_results": 0}
+
+        monkeypatch.setattr(openalex, "search_authors", fake_search)
+
+        await server.search_authors("q")
+
+        assert seen == [10]
+
+    @pytest.mark.asyncio
+    async def test_the_bound_is_the_provider_constant(self):
+        # The cap belongs to openalex, not to a number transcribed here.
+        field = server.search_authors.__annotations__["max_results"].__metadata__[0]
+        assert field.metadata[1].le == openalex.MAX_SEARCH_RESULTS
