@@ -386,11 +386,8 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
     The list is not cached (ad-hoc queries), but each hit with a DOI warms the
     works cache, exactly as ``crossref.search_works`` does.
 
-    **No ``select=``, deliberately.** A projected work is a partial object, and
-    warming ``works`` with one would poison every reader of that key. The full
-    records cost bytes on the wire that never leave this process, and buy a hit
-    that ``get_paper_metadata`` really can answer for free — which a Crossref hit
-    cannot, every plain DOI routing to OpenAlex.
+    **No ``select=``, deliberately**: a projected work would poison the ``works``
+    key it warms. The unread bytes never leave this process.
     """
     params = _build_params()
     params["search"] = query
@@ -417,9 +414,8 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
     items = [item for item in results if isinstance(item, dict)]
 
     for item in items:
-        # ``_canonical_from_response_doi`` handles the resolver prefix a response
-        # DOI carries; a non-string reaches ``doinorm`` and raises AttributeError,
-        # which no ``except`` here catches.
+        # Strips the resolver prefix a response DOI carries, and shape-guards:
+        # this runs outside the ``try`` above.
         if canonical := _canonical_from_response_doi(item.get("doi")):
             cache.warm(NAMESPACE, "works", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
 

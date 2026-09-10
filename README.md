@@ -116,7 +116,7 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 | Tool | Description |
 |------|-------------|
 | `search_arxiv` | Search arXiv with field prefixes (`ti:`, `au:`, `abs:`, `cat:`) and boolean operators |
-| `search_openalex` | Free-text search across all of OpenAlex — every discipline, matched on title, abstract and fulltext. The broadest discovery tool here: use it when you have a topic rather than a title. Each hit warms the cache `get_paper_metadata` reads, so the follow-up costs no request. |
+| `search_openalex` | Free-text search across all of OpenAlex, matched on title, abstract and fulltext. The broadest discovery tool here — use it when you have a topic rather than a title. Each hit warms the cache `get_paper_metadata` reads, so the follow-up is free |
 
 ### Authors
 

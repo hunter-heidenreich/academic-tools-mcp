@@ -215,24 +215,23 @@ async def search_openalex(
 ) -> dict[str, Any]:
     """Search all of OpenAlex by free text. Returns a slim triage list.
 
-    The broadest discovery tool here: OpenAlex indexes every discipline, where
-    search_arxiv is preprints only and search_crossref_by_title matches
-    bibliographically rather than on content. Use it when you have a topic rather
-    than a title or an author.
+    The broadest discovery tool here — every discipline, where search_arxiv is
+    preprints only and search_crossref_by_title matches bibliographically rather
+    than on content. Use it when you have a topic rather than a title.
 
     Returns ``{total_results, result_count, results: [{doi, openalex_id, title,
     first_author, author_count, publication_year, cited_by_count, is_oa}, ...]}``.
-    ``total_results`` is OpenAlex's own match count and ``result_count`` what this
-    call returned — a larger ``total_results`` means more exist. ``doi`` is null
-    for the works OpenAlex indexes without one; ``openalex_id`` is always present.
-    The author list is omitted so consortium papers can't balloon the response.
+    ``total_results`` is OpenAlex's own match count, ``result_count`` what this
+    call returned. ``doi`` is null for the works OpenAlex indexes without one;
+    ``openalex_id`` is always present. The author list is omitted so consortium
+    papers can't balloon the response.
 
     Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
     parse failure.
 
-    Call get_paper_metadata(doi) for the full record — unlike a
-    search_crossref_by_title hit, every hit here is already in the cache
-    get_paper_metadata reads, so the follow-up costs no request.
+    Chain get_paper_metadata(doi) for the full record: unlike a
+    search_crossref_by_title hit, every hit here is already in the cache it
+    reads, so the follow-up costs no request.
     """
     response = await openalex.search_works(query, year=year, rows=max_results)
     if "error" in response:

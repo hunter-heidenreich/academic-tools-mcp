@@ -37,9 +37,7 @@ grouped by milestone rather than per commit.
   X". Returns the same slim triage envelope as its siblings, plus
   `cited_by_count` and `is_oa`. Unlike a Crossref hit, **every hit is free to
   chain**: it warms `openalex/works` under the very key `get_paper_metadata`
-  reads, which is why the request deliberately sends no `select=` — a projected
-  work is a partial object, and warming that key with one would poison every
-  reader of it. ([#117])
+  reads. ([#117])
 - **`fallback_crossref` reaches all four paper tools, not just
   `get_paper_metadata`.** A DOI Crossref had indexed and OpenAlex had not gave
   you a title and a venue but no authors, abstract or BibTeX — on a server whose
