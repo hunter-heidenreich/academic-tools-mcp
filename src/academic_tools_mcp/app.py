@@ -82,7 +82,10 @@ DOI = Annotated[
 
 AUTHOR_ID = Annotated[
     str,
-    Field(description="OpenAlex author ID (A5023888391) or ORCID URL."),
+    Field(
+        description="OpenAlex author ID (A5023888391) or an ORCID in any "
+        "spelling — bare (0000-0002-1825-0097), orcid:-prefixed, or an orcid.org URL."
+    ),
 ]
 
 PAPER_ID = Annotated[

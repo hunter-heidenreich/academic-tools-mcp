@@ -11,7 +11,7 @@ import httpx
 from ..net import clients, http, stats
 from ..net.throttle import Throttle
 from ..store import cache, singleflight
-from ..util import config, doinorm, useragent
+from ..util import config, doinorm, orcidnorm, useragent
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
@@ -121,16 +121,25 @@ _OPENALEX_URL_RE = re.compile(
 
 
 def _normalize_author_id(author_id: str) -> str:
-    """Normalize an author identifier for the API path.
+    """Normalize an author identifier to its bare form.
 
     A bare OpenAlex ID (``A5023888391``), any openalex.org URL
-    ``_OPENALEX_URL_RE`` covers, or an ORCID URL — which passes through
-    verbatim, that being the spelling OpenAlex itself resolves.
+    ``_OPENALEX_URL_RE`` covers, or any ORCID spelling ``orcidnorm`` folds.
     """
     author_id = author_id.strip()
     if m := _OPENALEX_URL_RE.match(author_id):
         return m.group(1)
+    if orcidnorm.looks_like_orcid(author_id):
+        return orcidnorm.normalize(author_id)
     return author_id
+
+
+def _author_path_id(author_id: str) -> str:
+    """The encoded path segment OpenAlex resolves; a bare ORCID 404s, so it takes ``orcid:``."""
+    bare = _normalize_author_id(author_id)
+    if orcidnorm.looks_like_orcid(bare):
+        return f"orcid:{quote(bare, safe='')}"
+    return quote(bare, safe="")
 
 
 def canonical_author_id(author_id: str) -> str:
@@ -295,14 +304,12 @@ async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str
     canonical = canonical_author_id(author_id)
 
     async def _fetch() -> dict[str, Any]:
-        # Percent-encode so reserved characters can't split the path; ``:`` and ``/``
-        # stay literal, keeping the ORCID-URL spelling OpenAlex resolves byte-identical.
         bare_id = _normalize_author_id(author_id)
-        api_id = quote(bare_id, safe=":/")
+        # Neither shape holds a `/`, which `quote(safe="")` would hide from the URL guard.
         return await _fetch_singleton(
             entity="authors",
-            url=f"{OPENALEX_BASE_URL}/authors/{api_id}",
-            bare=bare_id,
+            url=f"{OPENALEX_BASE_URL}/authors/{_author_path_id(author_id)}",
+            bare="" if "/" in bare_id else bare_id,
             canonical=canonical,
             not_found_error=f"No author found for ID: {author_id}",
         )

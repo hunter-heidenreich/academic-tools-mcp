@@ -24,9 +24,8 @@ the other failure — they sum the bound and pin the lifespan.
   `openalex._fetch_singleton` test the bare identifier (a `doi:` scheme prefix
   keeps the last segment non-empty); `biorxiv.get_paper` tests for an empty
   segment anywhere, since its identifier sits mid-path. **Deliberately not folded
-  in here** — an empty segment is legal in `openalex.get_author`'s URL-shaped
-  identifier, which `safe=":/"` exists to preserve, so "no empty segments" is
-  per-provider policy, not a shared rule. This is the one home for that argument;
+  in here** — `biorxiv`'s identifier sits mid-path where the others sit last, so
+  "no empty segments" is per-provider policy, not a shared rule. This is the one home for that argument;
   a provider section states only what its own shortened path lands on.
 - **The three-state error vocabulary.** `retryable: True` (transient),
   `not_found: True` (definitive), and an unclassified 4xx carrying neither.

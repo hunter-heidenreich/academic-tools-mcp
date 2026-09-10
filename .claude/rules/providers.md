@@ -44,10 +44,10 @@ Two things the shape does not make obvious:
   so the check and the comprehension it protects stay one thought.
 - **A wrong shape is an error, never an empty result set.** Reported as "no
   matches", it ends the agent's search instead of prompting a retry.
-- **`safe=` is per-provider policy, not a default.** `openalex.get_author` uses
-  `safe=":/"` so the ORCID-URL spelling OpenAlex resolves survives byte-identical;
-  `acl.pdf_url` and `wikipedia` use `safe=""` because their identifiers have no
-  path structure, so a stray `/` is an escape. The request-side guard that
+- **`safe=` is per-provider policy, not a default.** `openalex.get_work` keeps
+  `safe='/'` because a DOI's own slash is structure; every other identifier here
+  (`get_author`, `acl.pdf_url`, `wikipedia`) has none, so `safe=""` and a stray
+  `/` is an escape. A scheme prefix — `doi:`, `orcid:` — is added outside `quote`. The request-side guard that
   `quote` cannot be, and the second check each provider owes on top of it, are in
   `.claude/rules/net.md` § `addresses_a_record` — this file does not restate it.
 - **Every negative-cached error carries `not_found: True`, built by
@@ -66,17 +66,14 @@ download trust boundary — `streaming.cached_download` does not wrap its `fetch
 `try`), and `search_authors`' warm key (its loop runs after the `try` too). Each
 type-checks and degrades — to `None` / `""`, or to skipping that record's warm.
 
-**Only the `https://orcid.org/...` spelling is both resolvable and a stable
-key.** `canonical_author_id` folds every openalex.org spelling onto the bare ID
-but merely lowercases anything else, so the two URL forms, `orcid:0000-…` and a
-bare `0000-…` are four `authors` keys for one person. Hence an ORCID is handed
-back verbatim and never rebuilt. Widening the canonicaliser is a data migration.
+**An ORCID is a key and a path, and they differ.** `canonical_author_id` folds
+every spelling to the bare form; the request rebuilds `orcid:<bare>`, which is
+what OpenAlex resolves — a bare ORCID 404s. Widening the fold was a silent
+re-key: old entries are unreachable, not wrong, and the `authors` TTL reaps them.
 
-**`get_author` needs the request-side guard in reverse.** An empty author id
-*does* leave a trailing slash, and `safe=":/"` means its identifier may
-legitimately contain empty segments (`https://orcid.org/...`), so only the
-trailing-segment rule is safe there — not the bare-identifier check
-`_fetch_singleton` applies to a DOI.
+**`get_author` refuses a separator itself.** `quote(safe="")` escapes a `/`,
+which hides a traversal from `addresses_a_record`; neither shape contains one, so
+the bare id is checked before the URL is built.
 
 **A batch miss is negative-cached only when the response accounted for itself**:
 every returned record attributable to a DOI we asked for, **and `meta.count` not

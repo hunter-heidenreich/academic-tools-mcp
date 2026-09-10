@@ -168,9 +168,20 @@ class TestNormalizeAuthorId:
         for the same reason: these are the forms pasted citations hold."""
         assert _normalize_author_id(spelling) == "A5023888391"
 
-    def test_orcid_url_passthrough(self):
-        orcid = "https://orcid.org/0000-0001-6187-6610"
-        assert _normalize_author_id(orcid) == orcid
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "https://orcid.org/0000-0001-6187-6610",
+            "http://orcid.org/0000-0001-6187-6610",
+            "https://www.orcid.org/0000-0001-6187-6610",
+            "orcid.org/0000-0001-6187-6610",
+            "orcid:0000-0001-6187-6610",
+            "ORCID:0000-0001-6187-6610",
+            "  0000-0001-6187-6610  ",
+        ],
+    )
+    def test_every_orcid_spelling_folds_to_the_bare_form(self, spelling):
+        assert _normalize_author_id(spelling) == "0000-0001-6187-6610"
 
     def test_unrecognised_string_is_returned_stripped(self):
         assert _normalize_author_id("  not-an-id  ") == "not-an-id"
@@ -196,10 +207,22 @@ class TestCanonicalAuthorId:
         }
         assert keys == {"a5023888391"}
 
-    def test_orcid_lowercased(self):
-        assert (
-            canonical_author_id("https://orcid.org/0000-0001-6187-6610")
-            == "https://orcid.org/0000-0001-6187-6610"
+    def test_every_orcid_spelling_is_one_key(self):
+        keys = {
+            canonical_author_id(s)
+            for s in (
+                "https://orcid.org/0000-0001-6187-6610",
+                "http://orcid.org/0000-0001-6187-6610",
+                "orcid:0000-0001-6187-6610",
+                "0000-0001-6187-6610",
+            )
+        }
+        assert keys == {"0000-0001-6187-6610"}
+
+    def test_the_check_character_is_folded(self):
+        """OpenAlex resolves either case, so folding cannot cost a lookup."""
+        assert canonical_author_id("0000-0003-3293-488X") == canonical_author_id(
+            "0000-0003-3293-488x"
         )
 
 
@@ -595,15 +618,42 @@ class TestGetAuthorIdEncoding:
         assert result["not_found"] is True
         assert requests == [], "a dot-segment id must not be spent upstream"
 
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "https://orcid.org/0000-0001-6187-6610",
+            "orcid:0000-0001-6187-6610",
+            "0000-0001-6187-6610",
+        ],
+    )
     @pytest.mark.asyncio
-    async def test_an_orcid_url_survives_byte_identical(self, monkeypatch):
-        """``safe=":/"`` — the ORCID-URL spelling is the one OpenAlex itself
-        resolves, so escaping its scheme would break the lookup."""
+    async def test_an_orcid_is_requested_with_the_prefix_openalex_resolves(
+        self, monkeypatch, spelling
+    ):
+        """A bare ORCID 404s upstream; `orcid:` is the form that resolves."""
+        requests = _stub_json_responses(monkeypatch, _author_response())
+
+        await openalex.get_author(spelling)
+
+        assert _path_of(requests[0]) == "/authors/orcid:0000-0001-6187-6610"
+
+    @pytest.mark.asyncio
+    async def test_every_orcid_spelling_shares_one_cached_fetch(self, monkeypatch):
         requests = _stub_json_responses(monkeypatch, _author_response())
 
         await openalex.get_author("https://orcid.org/0000-0001-6187-6610")
+        await openalex.get_author("orcid:0000-0001-6187-6610")
+        await openalex.get_author("0000-0001-6187-6610")
 
-        assert _path_of(requests[0]) == "/authors/https://orcid.org/0000-0001-6187-6610"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_openalex_id_takes_no_prefix(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _author_response())
+
+        await openalex.get_author("A5023888391")
+
+        assert _path_of(requests[0]) == "/authors/A5023888391"
 
 
 # ---------------------------------------------------------------------------

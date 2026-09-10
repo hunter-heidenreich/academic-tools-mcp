@@ -126,8 +126,8 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 | `get_author` | Name, ORCID, institutions (current + historical with years), h-index, i10-index, works/citation counts, top topics |
 
 `get_author` accepts OpenAlex author IDs (from `get_paper_authors` or
-`search_authors`) or ORCID URLs. Chain a search hit on its `openalex_id`, not
-its `orcid` — only the full `https://orcid.org/...` spelling resolves.
+`search_authors`) and ORCIDs in every spelling — bare, `orcid:`-prefixed, or an
+`orcid.org` URL — all of which resolve to one cached author.
 
 ### PDF pipeline (unified)
 
