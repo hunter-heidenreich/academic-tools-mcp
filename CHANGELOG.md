@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`get_paper_citations_count` cross-checks OpenCitations against OpenAlex.**
+  An OpenCitations `count: 0` cannot distinguish "never indexed" from "indexed,
+  uncited", and for incoming citations there was nothing to check it against —
+  the README told you to cross-check with no way to. It now returns
+  `{doi, count, sources: {opencitations, openalex}}`, adopting the shape
+  `get_paper_references_count` already uses. **`count` stays OpenCitations'** and
+  is null when that source failed: it is the number `get_paper_citations` pages,
+  which OpenAlex cannot serve. ([#124])
 - **`get_paper_metadata` reports `cited_by_count`.** The number was already on
   every cached OpenAlex work and already surfaced by `search_openalex`, so a
   search hit carried a citation count that the full record then dropped — and
@@ -1791,3 +1799,4 @@ say which.
 [#121]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/121
 [#122]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/122
 [#123]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/123
+[#124]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/124
