@@ -432,9 +432,8 @@ async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
     The list is not cached (ad-hoc queries), but each hit warms the ``authors``
     cache under the key ``get_author`` reads, so chaining one costs no request.
 
-    **No ``select=``, deliberately**, exactly as in ``search_works``: a projected
-    author would poison the ``authors`` key it warms. No year filter either —
-    a publication year does not narrow a person.
+    **No ``select=``**, as in ``search_works``: a projected author would poison
+    the ``authors`` key it warms. No year filter — it does not narrow a person.
     """
     params = _build_params()
     params["search"] = query
@@ -459,14 +458,11 @@ async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
     items = [item for item in results if isinstance(item, dict)]
 
     for item in items:
-        # `id` is untyped JSON and `canonical_author_id` strips it, so the guard
-        # runs here: this is outside the ``try`` above, and `AttributeError` is
-        # in neither error tuple.
+        # Shape-guarded before `canonical_author_id` strips it: this runs
+        # outside the ``try`` above.
         raw_id = item.get("id")
-        if not isinstance(raw_id, str) or not raw_id.strip():
-            continue
-        canonical = canonical_author_id(raw_id)
-        cache.warm(NAMESPACE, "authors", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if isinstance(raw_id, str) and (canonical := canonical_author_id(raw_id)):
+            cache.warm(NAMESPACE, "authors", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
 
     meta = data.get("meta")
     count = meta.get("count") if isinstance(meta, dict) else None

@@ -714,9 +714,8 @@ class TestSearchYearBounds:
 
 
 class TestSearchAuthors:
-    """`get_author` took an ID only `get_paper_authors` could hand you, so a
-    person you had not already reached through one of their papers was
-    unreachable. These pin the triage shape and the chain handle.
+    """Pins the triage shape and the chain handle: `openalex_id`, never the
+    unnormalized `orcid`.
     """
 
     @staticmethod
@@ -760,8 +759,7 @@ class TestSearchAuthors:
 
     @pytest.mark.asyncio
     async def test_the_hit_is_slimmer_than_get_author_on_purpose(self, monkeypatch):
-        """The affiliation history and top topics are get_author's job. Keeping
-        them out is what lets the two projections stay independent."""
+        """Keeping get_author's fields out is what keeps the two independent."""
         self._stub(monkeypatch, {"items": [self._author()], "total_results": 1})
 
         hit = (await server.search_authors("q"))["results"][0]
@@ -771,9 +769,7 @@ class TestSearchAuthors:
 
     @pytest.mark.asyncio
     async def test_the_orcid_passes_through_verbatim(self, monkeypatch):
-        """`canonical_author_id` does not normalize an ORCID, so only OpenAlex's
-        own https://orcid.org/... spelling resolves. Rewriting it here would hand
-        the agent a value get_author cannot use."""
+        """ORCIDs are not normalized, so only OpenAlex's own spelling resolves."""
         spelling = "http://orcid.org/0000-0002-9322-3515"
         self._stub(monkeypatch, {"items": [self._author(orcid=spelling)], "total_results": 1})
 
@@ -840,8 +836,7 @@ class TestSearchAuthors:
 
     @pytest.mark.asyncio
     async def test_a_missing_upstream_total_still_reports_an_int(self, monkeypatch):
-        """`total_results` means one thing across the search family or agents
-        cannot branch on it."""
+        """One meaning across the family, or agents cannot branch on it."""
         self._stub(monkeypatch, {"items": [self._author()], "total_results": None})
 
         result = await server.search_authors("q")

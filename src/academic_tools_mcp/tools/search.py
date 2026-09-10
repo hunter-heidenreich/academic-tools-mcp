@@ -278,10 +278,8 @@ async def search_openalex(
 def _last_known_institution(author: dict[str, Any]) -> str | None:
     """The first of an OpenAlex author's last-known institutions, or None.
 
-    Singular where ``get_author`` returns the whole list plus the affiliation
-    history: a triage hit needs just enough to tell two same-named people apart.
-    OpenAlex emits ``last_known_institutions: null`` outright, so ``dict_list``
-    rather than a ``.get`` default.
+    Singular where ``get_author`` returns the whole list: enough to tell two
+    same-named people apart, and no shared helper between the two tools.
     """
     for inst in dict_list(author.get("last_known_institutions")):
         if isinstance(name := inst.get("display_name"), str) and name:
@@ -310,26 +308,23 @@ async def search_authors(
 ) -> dict[str, Any]:
     """Find an author by name on OpenAlex. Returns a slim triage list.
 
-    The entry point to the author tools: get_author needs an OpenAlex ID or an
-    ORCID URL, which otherwise only get_paper_authors can give you. Use this
-    when you have a person rather than one of their papers.
+    The way into the author tools: get_author needs an ID only
+    get_paper_authors could otherwise give you.
 
     Returns ``{total_results, result_count, results: [{openalex_id, name,
     orcid, last_known_institution, works_count, cited_by_count, h_index},
     ...]}``. ``total_results`` is OpenAlex's own match count, ``result_count``
     what this call returned. Every field but ``openalex_id`` may be null.
 
-    **One name is often several records** — OpenAlex disambiguates imperfectly,
-    so a common name returns near-duplicate profiles that split one person's
-    works. Pick between them on ``works_count`` / ``cited_by_count`` /
-    ``last_known_institution``, and prefer the one carrying an ``orcid``.
+    **One name is often several records** — OpenAlex disambiguates imperfectly.
+    Pick on ``works_count`` / ``cited_by_count`` / ``last_known_institution``,
+    preferring the one with an ``orcid``.
 
     Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
     parse failure.
 
-    Chain get_author(openalex_id) for the full profile — affiliation history and
-    top topics. Every hit warms the cache that tool reads, so the follow-up
-    costs no request. Chain on ``openalex_id``, not ``orcid``.
+    Chain get_author(``openalex_id``, not ``orcid``) for affiliation history and
+    top topics; every hit warms the cache it reads, so that call is free.
     """
     response = await openalex.search_authors(query, rows=max_results)
     if "error" in response:

@@ -122,19 +122,12 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 
 | Tool | Description |
 |------|-------------|
-| `search_authors` | Find an author by name — returns everyone who shares it, with h-index, works/citation counts and one current institution to tell them apart. Each hit warms the cache `get_author` reads, so the profile costs no request |
+| `search_authors` | Find an author by name. Returns the several records one name often matches, with h-index, works/citation counts and a current institution to tell them apart. Each hit warms the cache `get_author` reads, so the profile is free |
 | `get_author` | Name, ORCID, institutions (current + historical with years), h-index, i10-index, works/citation counts, top topics |
 
 `get_author` accepts OpenAlex author IDs (from `get_paper_authors` or
-`search_authors`) or ORCID URLs. Chain a `search_authors` hit on its
-`openalex_id`, not its `orcid`: the ORCID is OpenAlex's value verbatim, for
-citation and disambiguation, and only the full `https://orcid.org/...` spelling
-resolves.
-
-One name is often several OpenAlex records — the index disambiguates
-imperfectly, and it mangles diacritics (see [Known upstream
-limitations](#known-upstream-limitations)), so try both spellings of a name
-before concluding someone is absent.
+`search_authors`) or ORCID URLs. Chain a search hit on its `openalex_id`, not
+its `orcid` — only the full `https://orcid.org/...` spelling resolves.
 
 ### PDF pipeline (unified)
 

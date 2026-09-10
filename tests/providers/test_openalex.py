@@ -1291,9 +1291,8 @@ class TestSearchWorks:
 
 
 class TestSearchAuthors:
-    """`get_author` needed an ID the caller already had, so an author who had not
-    been reached through `get_paper_authors` was unreachable. This is the lookup
-    that closes that, and the cache-warming is what makes chaining it free.
+    """The author-side twin of `TestSearchWorks`; the warm key is what makes
+    chaining a hit into `get_author` free.
     """
 
     @pytest.mark.asyncio
@@ -1310,8 +1309,7 @@ class TestSearchAuthors:
 
     @pytest.mark.asyncio
     async def test_a_hit_is_free_to_chain_into_get_author(self, monkeypatch):
-        """The reason this tool exists as more than reach: the hit lands under the
-        very key `get_author` reads, so the follow-up costs no request."""
+        """The hit lands under the very key `get_author` reads."""
         requests = _stub_json_responses(
             monkeypatch, {"meta": {"count": 1}, "results": [_author_response("A1")]}
         )
@@ -1324,8 +1322,7 @@ class TestSearchAuthors:
 
     @pytest.mark.asyncio
     async def test_warms_under_the_canonical_key_stripping_the_url_prefix(self, monkeypatch):
-        """A response id is an openalex.org URL; warming it verbatim would key an
-        author nothing later looks up."""
+        """A response id is a URL; warmed verbatim it keys nothing."""
         _stub_json_responses(
             monkeypatch, {"meta": {"count": 1}, "results": [_author_response("A5086198262")]}
         )
@@ -1354,8 +1351,7 @@ class TestSearchAuthors:
 
     @pytest.mark.asyncio
     async def test_never_sends_a_year_filter(self, monkeypatch):
-        """A publication year does not narrow a person, so unlike `search_works`
-        there is no filter branch at all."""
+        """A year does not narrow a person: no filter branch at all."""
         requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
 
         await openalex.search_authors("q")
@@ -1364,8 +1360,7 @@ class TestSearchAuthors:
 
     @pytest.mark.asyncio
     async def test_does_not_project_the_response(self, monkeypatch):
-        """`select=` would warm the authors cache with partial records, poisoning
-        every later `get_author` for those ids."""
+        """A projected record would poison the key it warms."""
         requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
 
         await openalex.search_authors("q")
@@ -1407,8 +1402,7 @@ class TestSearchAuthors:
     )
     @pytest.mark.asyncio
     async def test_a_record_without_a_usable_id_is_skipped_not_raised_on(self, monkeypatch, bad_id):
-        """`canonical_author_id` strips its argument, and this loop runs outside
-        the request's `try` — an unguarded id escapes the provider entirely."""
+        """The loop runs outside the `try`, so an unguarded id escapes."""
         record = {**_author_response(), "id": bad_id}
         if bad_id is None:
             del record["id"]
