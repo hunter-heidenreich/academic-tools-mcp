@@ -661,3 +661,97 @@ def test_error_dict_survives_an_unread_streaming_body():
 
     assert "403" in result["error"]
     assert "not read" in result["error"]
+
+
+class TestQuotaHeaders:
+    """OpenAlex meters credits per window; `record_quota` is what sees it."""
+
+    def test_records_the_advertised_budget(self):
+        http.record_quota(
+            "openalex",
+            _response(
+                200,
+                {
+                    "x-ratelimit-limit": "1000",
+                    "x-ratelimit-remaining": "962",
+                    "x-ratelimit-reset": "80163",
+                },
+            ),
+        )
+
+        row = stats.snapshot()["providers"]["openalex"]["quota"]
+        assert (row["limit"], row["remaining"]) == (1000, 962)
+
+    def test_a_response_without_the_headers_records_nothing(self):
+        http.record_quota("arxiv", _response(200))
+
+        assert "quota" not in stats.snapshot()["providers"].get("arxiv", {})
+
+    @pytest.mark.parametrize("raw", ["", "   ", "not-a-number", "nan", "inf"])
+    def test_a_malformed_value_is_ignored(self, raw):
+        http.record_quota("openalex", _response(200, {"x-ratelimit-remaining": raw}))
+
+        assert "quota" not in stats.snapshot()["providers"].get("openalex", {})
+
+    def test_a_partial_advertisement_still_records(self):
+        http.record_quota("openalex", _response(200, {"x-ratelimit-remaining": "0"}))
+
+        row = stats.snapshot()["providers"]["openalex"]["quota"]
+        assert row["remaining"] == 0
+        assert row["limit"] is None
+
+    @pytest.fixture(autouse=True)
+    def _patch_sleep(self, monkeypatch):
+        async def fake_sleep(seconds):
+            return None
+
+        monkeypatch.setattr(http.asyncio, "sleep", fake_sleep)
+
+    @pytest.mark.asyncio
+    async def test_get_with_retry_records_from_every_response(self):
+        """Including a 429 it retries past — that is where the budget matters most."""
+        client = _FakeClient(
+            [
+                _response(429, {"x-ratelimit-remaining": "5"}),
+                _response(200, {"x-ratelimit-remaining": "4"}),
+            ]
+        )
+
+        await http.get_with_retry(client, "https://example.com/api", provider="openalex")
+
+        assert stats.snapshot()["providers"]["openalex"]["quota"]["remaining"] == 4
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_records_nothing(self):
+        client = _FakeClient([httpx.ConnectError("boom"), httpx.ConnectError("boom")])
+
+        with pytest.raises(httpx.ConnectError):
+            await http.get_with_retry(client, "https://example.com/api", provider="openalex")
+
+        assert "quota" not in stats.snapshot()["providers"].get("openalex", {})
+
+
+class TestQuotaExhaustedErrorDict:
+    """A spent budget must read as retryable-but-not-soon."""
+
+    def test_carries_the_verdict_and_the_flag(self):
+        result = http.error_dict("ignored", http.QuotaExhaustedError("OpenAlex", 80000.0, 1000))
+
+        assert result["retryable"] is True
+        assert result["quota_exhausted"] is True
+        assert "OpenAlex" in result["error"]
+
+    def test_the_wait_is_not_clamped_to_the_retry_ceiling(self):
+        """A refill is hours out; reporting the 10-minute cap invites a retry loop."""
+        result = http.error_dict("x", http.QuotaExhaustedError("OpenAlex", 80000.0, 1000))
+
+        assert result["retry_after_seconds"] == 80000.0
+        assert result["retry_after_seconds"] > http._MAX_RETRY_AFTER_SECONDS
+
+    def test_an_unknown_limit_is_omitted_from_the_message(self):
+        result = http.error_dict("x", http.QuotaExhaustedError("OpenAlex", 10.0, None))
+
+        assert "(limit" not in result["error"]
+
+    def test_it_is_in_the_except_tuple(self):
+        assert http.QuotaExhaustedError in http.HTTPX_ERRORS

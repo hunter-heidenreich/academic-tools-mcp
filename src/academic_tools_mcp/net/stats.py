@@ -11,8 +11,10 @@ from an ``asyncio.to_thread`` worker can be lost.
 """
 
 import sys
+import time
 from collections import defaultdict
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..util import config
@@ -22,6 +24,24 @@ if TYPE_CHECKING:
 
 _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
+
+@dataclass(frozen=True)
+class Quota:
+    """A provider's last advertised budget. ``deadline`` is monotonic; all fields optional."""
+
+    limit: int | None
+    remaining: int | None
+    deadline: float | None
+
+    def blocked_for(self, now: float) -> float | None:
+        """Seconds until refill when spent, else None. No deadline never blocks."""
+        if self.remaining is None or self.remaining > 0 or self.deadline is None:
+            return None
+        return remaining if (remaining := self.deadline - now) > 0 else None
+
+
+_quotas: dict[str, Quota] = {}
+
 # The package root, not `net.`: `throttles()` scans the whole package, so a
 # narrower prefix silently samples no provider at all.
 _PACKAGE_PREFIX = f"{__name__.split('.', 1)[0]}."
@@ -30,6 +50,24 @@ _PACKAGE_PREFIX = f"{__name__.split('.', 1)[0]}."
 def incr(provider: str, metric: str) -> None:
     """Increment a per-provider counter."""
     _counters[provider][metric] += 1
+
+
+def record_quota(
+    provider: str, *, limit: int | None, remaining: int | None, reset_seconds: float | None
+) -> None:
+    """Store the budget a response advertised. ``reset_seconds`` is seconds-until-refill."""
+    if limit is None and remaining is None:
+        return
+    deadline = None if reset_seconds is None else time.monotonic() + reset_seconds
+    _quotas[provider] = Quota(limit=limit, remaining=remaining, deadline=deadline)
+
+
+def quota_refusal(provider: str) -> tuple[float, int | None] | None:
+    """``(seconds_to_wait, limit)`` when the budget is spent, else None."""
+    quota = _quotas.get(provider)
+    if quota is None or (wait := quota.blocked_for(time.monotonic())) is None:
+        return None
+    return wait, quota.limit
 
 
 def debug_requests_enabled() -> bool:
@@ -98,15 +136,26 @@ def snapshot() -> dict[str, Any]:
     ``reset()``; ``in_flight`` is sampled live and summed over every
     ``Throttle`` in the namespace. Rows are copies, so mutating the result
     cannot corrupt the counters.
+
+    ``quota`` appears only where a provider advertises one, as
+    ``{limit, remaining, resets_in_seconds}``.
     """
-    out: dict[str, dict[str, int]] = {
-        provider: dict(metrics) for provider, metrics in list(_counters.items())
-    }
+    out: dict[str, Any] = {provider: dict(metrics) for provider, metrics in list(_counters.items())}
 
     for throttle in throttles():
         # Summed, not assigned: a namespace may own more than one throttle.
         row = out.setdefault(throttle.namespace, {})
         row["in_flight"] = row.get("in_flight", 0) + throttle.pending
+
+    now = time.monotonic()
+    for provider, quota in list(_quotas.items()):
+        # An interval, not the monotonic deadline, which means nothing outside this process.
+        resets_in = None if quota.deadline is None else max(0.0, quota.deadline - now)
+        out.setdefault(provider, {})["quota"] = {
+            "limit": quota.limit,
+            "remaining": quota.remaining,
+            "resets_in_seconds": resets_in,
+        }
 
     return {
         "providers": out,
@@ -115,5 +164,6 @@ def snapshot() -> dict[str, Any]:
 
 
 def reset() -> None:
-    """Drop every counter row; the throttles' ``in_flight`` is untouched. Safe at runtime."""
+    """Drop every counter and quota row; the throttles' ``in_flight`` is untouched."""
     _counters.clear()
+    _quotas.clear()

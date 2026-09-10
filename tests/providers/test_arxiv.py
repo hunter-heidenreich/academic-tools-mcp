@@ -1,6 +1,7 @@
 import asyncio
 import time
 import xml.etree.ElementTree as ET
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -319,6 +320,7 @@ class TestGetPaperSingleFlight:
         class StubResponse:
             text = atom_xml
             status_code = 200
+            headers: ClassVar[dict[str, str]] = {}
 
             def raise_for_status(self):
                 pass
@@ -372,6 +374,7 @@ class TestGetPaperSingleFlight:
         class StubResponse:
             text = not_found_atom
             status_code = 200
+            headers: ClassVar[dict[str, str]] = {}
 
             def raise_for_status(self):
                 pass
@@ -434,6 +437,7 @@ class TestGetPaperSingleFlight:
         class StubResponse:
             text = atom_xml
             status_code = 200
+            headers: ClassVar[dict[str, str]] = {}
 
             def raise_for_status(self):
                 pass
@@ -509,6 +513,7 @@ class TestGetPaperSingleFlight:
                     {
                         "text": _atom(aid),
                         "status_code": 200,
+                        "headers": {},
                         "raise_for_status": lambda self: None,
                     },
                 )()
@@ -764,6 +769,7 @@ class TestVersionedIdentity:
             def __init__(self, text):
                 self.text = text
                 self.status_code = 200
+                self.headers: dict[str, str] = {}
 
             def raise_for_status(self):
                 pass
