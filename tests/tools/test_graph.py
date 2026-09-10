@@ -9,6 +9,16 @@ import pytest
 from academic_tools_mcp import server
 from academic_tools_mcp.providers import crossref, openalex, opencitations
 
+
+def _stub_openalex_work(monkeypatch, work=None):
+    """The citations survey reads OpenAlex too; most tests only care about the other source."""
+
+    async def fake(doi, **kwargs):
+        return {"id": "W1", "cited_by_count": 0} if work is None else work
+
+    monkeypatch.setattr(openalex, "get_work", fake)
+
+
 # ---------------------------------------------------------------------------
 # get_paper_references: source="auto" picks the bigger provider
 # ---------------------------------------------------------------------------
@@ -259,6 +269,7 @@ class TestGraphToolsRejectNonDois:
         monkeypatch.setattr(crossref, "get_work", boom)
         monkeypatch.setattr(opencitations, "get_references", boom)
         monkeypatch.setattr(opencitations, "get_citations", boom)
+        monkeypatch.setattr(openalex, "get_work", boom)
 
     @pytest.mark.parametrize(
         "identifier", ["2301.00001", "hep-th/9901001", "my-paper-2024", "", "10.123/x"]
@@ -283,6 +294,7 @@ class TestGraphToolsRejectNonDois:
             return {"count": 7}
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        _stub_openalex_work(monkeypatch)
 
         result = await server.get_paper_citations_count("https://doi.org/10.1234/x")
         assert result["count"] == 7
@@ -314,6 +326,7 @@ class TestGraphToolsAcceptPmids:
             return {"count": 7}
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        _stub_openalex_work(monkeypatch)
 
         result = await server.get_paper_citations_count(spelling)
 
@@ -676,6 +689,7 @@ class TestGraphEchoesACanonicalDoi:
         monkeypatch.setattr(crossref, "get_work", fake_cr)
         monkeypatch.setattr(opencitations, "get_references", fake_oc)
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        _stub_openalex_work(monkeypatch)
 
     @pytest.mark.parametrize(
         "spelling",
@@ -774,19 +788,29 @@ class TestGraphForceRefreshThreading:
         assert seen == {source: True}
 
     @pytest.mark.asyncio
-    async def test_both_citation_tools_refresh_opencitations(self, monkeypatch):
+    async def test_both_citation_tools_refresh_every_source(self, monkeypatch):
         seen = []
 
         async def fake_oc(doi, *, force_refresh=False):
-            seen.append(force_refresh)
+            seen.append(("opencitations", force_refresh))
             return {"citations": [], "count": 0}
 
+        async def fake_oa(doi, *, force_refresh=False):
+            seen.append(("openalex", force_refresh))
+            return {"id": "W1", "cited_by_count": 0}
+
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        monkeypatch.setattr(openalex, "get_work", fake_oa)
 
         await server.get_paper_citations_count("10.1234/x", force_refresh=True)
         await server.get_paper_citations("10.1234/x", force_refresh=True)
 
-        assert seen == [True, True]
+        # The count tool surveys both; the page tool reads OpenCitations alone.
+        assert sorted(seen) == [
+            ("openalex", True),
+            ("opencitations", True),
+            ("opencitations", True),
+        ]
 
 
 class TestGraphSingleSourceErrors:
@@ -807,28 +831,33 @@ class TestGraphSingleSourceErrors:
         assert "references" not in result
 
     @pytest.mark.asyncio
-    async def test_the_count_tool_surfaces_its_error_with_a_suggestion(self, monkeypatch):
+    async def test_the_citations_count_reports_a_failure_per_source(self, monkeypatch):
+        """A survey has a survivor, so one source dying is not the whole answer."""
+
         async def fake_oc(doi, **kwargs):
             return {"error": "OpenCitations 503", "retryable": True}
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        _stub_openalex_work(monkeypatch, {"id": "W1", "cited_by_count": 42})
 
         result = await server.get_paper_citations_count("10.1234/x")
 
-        assert result["retryable"] is True
-        assert "suggestion" in result
-        assert "count" not in result
+        assert result["sources"]["opencitations"]["retryable"] is True
+        assert result["sources"]["openalex"] == {"count": 42}
+        # Null, not 0: `count` is what get_paper_citations pages, and it failed.
+        assert result["count"] is None
 
     @pytest.mark.asyncio
-    async def test_a_providers_own_suggestion_is_not_overwritten(self, monkeypatch):
+    async def test_a_providers_own_suggestion_is_forwarded(self, monkeypatch):
         async def fake_oc(doi, **kwargs):
             return {"error": "nope", "suggestion": "Do this instead."}
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        _stub_openalex_work(monkeypatch)
 
         result = await server.get_paper_citations_count("10.1234/x")
 
-        assert result["suggestion"] == "Do this instead."
+        assert result["sources"]["opencitations"]["suggestion"] == "Do this instead."
 
 
 class TestPartialFailureBothDirections:
@@ -962,6 +991,7 @@ class TestCitationsDispatch:
             return {"citations": []}
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        _stub_openalex_work(monkeypatch)
 
         result = await server.get_paper_citations_count("10.1234/x")
         assert result["count"] == 0
@@ -1056,3 +1086,108 @@ class TestSourceErrorForwarding:
         # And each forwarded key survives the projection intact.
         for err in produced:
             assert graph._source_error(err) == err
+
+
+class TestCitationsCountSurvey:
+    """An OpenCitations zero cannot distinguish "unindexed" from "uncited"; the
+    OpenAlex tally beside it is what tells an agent which it is reading.
+    """
+
+    @staticmethod
+    def _stub(monkeypatch, *, oc, oa):
+        async def fake_oc(doi, **kwargs):
+            return oc
+
+        async def fake_oa(doi, **kwargs):
+            return oa
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        monkeypatch.setattr(openalex, "get_work", fake_oa)
+
+    @pytest.mark.asyncio
+    async def test_reports_both_sources(self, monkeypatch):
+        self._stub(
+            monkeypatch,
+            oc={"citations": [], "count": 0},
+            oa={"id": "W1", "cited_by_count": 84352},
+        )
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["sources"] == {
+            "opencitations": {"count": 0},
+            "openalex": {"count": 84352},
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_top_level_count_stays_opencitations(self, monkeypatch):
+        """It is the number get_paper_citations pages; OpenAlex cannot serve those
+        rows, so reporting its larger tally here would send an agent to page a
+        list that is empty."""
+        self._stub(
+            monkeypatch,
+            oc={"citations": [], "count": 3},
+            oa={"id": "W1", "cited_by_count": 84352},
+        )
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["count"] == 3
+
+        async def fake_oc(doi, **kwargs):
+            return {"citations": [{"doi": f"10.9/{i}"} for i in range(3)], "count": 3}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        page = await server.get_paper_citations("10.1234/x")
+
+        assert page["total"] == result["count"]
+
+    @pytest.mark.asyncio
+    async def test_an_openalex_failure_leaves_the_pageable_count_intact(self, monkeypatch):
+        self._stub(
+            monkeypatch,
+            oc={"citations": [], "count": 5},
+            oa={"error": "No work found", "not_found": True},
+        )
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["count"] == 5
+        assert result["sources"]["openalex"]["not_found"] is True
+        assert result["sources"]["opencitations"] == {"count": 5}
+
+    @pytest.mark.parametrize("value", [None, "84352", {}, []])
+    @pytest.mark.asyncio
+    async def test_a_non_int_tally_degrades_to_none(self, monkeypatch, value):
+        """`cited_by_count` is untyped JSON, so it is guarded rather than trusted."""
+        self._stub(
+            monkeypatch,
+            oc={"citations": [], "count": 0},
+            oa={"id": "W1", "cited_by_count": value},
+        )
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["sources"]["openalex"] == {"count": None}
+
+    @pytest.mark.asyncio
+    async def test_both_failing_still_reports_per_source(self, monkeypatch):
+        """Mirrors get_paper_references_count: the survey has no whole-response error."""
+        self._stub(
+            monkeypatch,
+            oc={"error": "OpenCitations 503", "retryable": True},
+            oa={"error": "OpenAlex 503", "retryable": True},
+        )
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["count"] is None
+        assert result["sources"]["opencitations"]["retryable"] is True
+        assert result["sources"]["openalex"]["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_page_tool_gained_no_source_parameter(self):
+        """OpenAlex reports a count but cannot page the citing works."""
+        import inspect
+
+        assert "source" not in inspect.signature(server.get_paper_citations).parameters

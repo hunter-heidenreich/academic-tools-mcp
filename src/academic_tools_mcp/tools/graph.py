@@ -15,7 +15,7 @@ from ..app import (
     resolve_paper_identifier,
 )
 from ..net import http
-from ..providers import crossref, opencitations
+from ..providers import crossref, openalex, opencitations
 from ..util import doinorm
 
 # Auto-selection bias: OpenCitations rows are bare DOI links where Crossref's
@@ -163,6 +163,12 @@ async def get_paper_references_count(
         sources["opencitations"] = {"count": oc_result.get("count", 0)}
 
     return {"doi": doi, "sources": sources}
+
+
+def _openalex_cited_by(work: dict[str, Any]) -> int | None:
+    """An OpenAlex work's citation tally, int-guarded — the value is untyped JSON."""
+    count = work.get("cited_by_count")
+    return count if isinstance(count, int) else None
 
 
 def _page(
@@ -347,27 +353,48 @@ async def get_paper_references(
 async def get_paper_citations_count(
     doi: DOI, force_refresh: FORCE_REFRESH = False
 ) -> dict[str, Any]:
-    """Count incoming citations (papers that cite this work) via OpenCitations.
+    """Survey incoming-citation coverage across OpenCitations and OpenAlex.
 
-    Returns ``{doi, count}``, the echoed ``doi`` canonical rather than the spelling
-    you passed. ``count: 0`` means "no edges in this index", not "nothing cites this
-    work" — OpenCitations answers an unindexed DOI and one with zero edges alike.
-    It is the only source of incoming citations (no Crossref equivalent), so there
-    is no source survey — call this, then page with get_paper_citations.
+    Both are read in parallel. An OpenCitations ``count: 0`` means "no edges in
+    this index", not "nothing cites this work" — it answers an unindexed DOI and
+    one with zero edges alike — so OpenAlex's tally is the cross-check that tells
+    the two apart. They routinely disagree by thousands; neither is a correction
+    of the other.
 
-    Errors: ``{error, suggestion}`` plus the provider's verdict — ``retryable``
-    (with ``retry_after_seconds`` when advertised) on a transient failure,
-    ``not_found: true`` on a definitive miss, including the local non-DOI
-    rejection, which costs no request: the graph tools are DOI-only.
+    Returns ``{doi, count, sources: {opencitations: {count} | error, openalex:
+    {count} | error}}``, the echoed ``doi`` canonical rather than the spelling you
+    passed. **``count`` is OpenCitations'**, and null when it failed: it is the
+    number get_paper_citations pages, which OpenAlex cannot serve. An error object
+    carries ``error`` plus whichever of ``retryable``, ``retry_after_seconds``,
+    ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion`` the
+    provider set; one source failing still reports the other's count.
+
+    A PMID resolves to its DOI first; any other non-DOI identifier is rejected
+    locally, without a request, as ``{error, not_found: true, suggestion}``.
     """
     doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
     if bad is not None:
         return bad
 
-    data = await opencitations.get_citations(doi, force_refresh=force_refresh)
-    if "error" in data:
-        return enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
-    return {"doi": doi, "count": data.get("count", 0)}
+    oc_data, oa_work = await asyncio.gather(
+        opencitations.get_citations(doi, force_refresh=force_refresh),
+        openalex.get_work(doi, force_refresh=force_refresh),
+    )
+
+    sources: dict[str, dict[str, Any]] = {}
+    count = None
+    if "error" in oc_data:
+        sources["opencitations"] = _source_error(oc_data)
+    else:
+        count = oc_data.get("count", 0)
+        sources["opencitations"] = {"count": count}
+
+    if "error" in oa_work:
+        sources["openalex"] = _source_error(oa_work)
+    else:
+        sources["openalex"] = {"count": _openalex_cited_by(oa_work)}
+
+    return {"doi": doi, "count": count, "sources": sources}
 
 
 @mcp.tool
@@ -387,11 +414,12 @@ async def get_paper_citations(
     a citing DOI into get_paper_metadata for that. ``total: 0`` means "no edges in
     this index", not "nothing cites this work".
 
-    Call get_paper_citations_count first for the total. OpenCitations is the only
-    index of incoming citations, so there is no ``source`` parameter and no
-    ``sources`` envelope (unlike get_paper_references); one would return if a
-    second source ships. Omit ``force_refresh`` when paginating so pages 2..N
-    reuse the cache page 1 warmed.
+    Call get_paper_citations_count first for the total, and to cross-check it
+    against OpenAlex. **No ``source`` parameter**: OpenAlex reports a citation
+    count but cannot page the citing works — that needs its own paginated fetch
+    (see CHANGELOG) — so OpenCitations remains the only index this tool pages.
+    Omit ``force_refresh`` when paginating so pages 2..N reuse the cache page 1
+    warmed.
 
     Errors: ``{error, suggestion}`` plus the provider's verdict — ``retryable``
     (with ``retry_after_seconds`` when advertised) on a transient failure,

@@ -162,9 +162,10 @@ because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`
   `partial_failure` so a short or empty result isn't read as a confident "no
   references". The both-sources-failed envelope carries a top-level `retryable`
   that is the disjunction of the nested ones.
-- **The citations pair has no `source` parameter** because OpenCitations is the
-  only provider of incoming citations and a one-value knob is noise. Add one when
-  a second source ships.
+- **The citations *count* surveys two sources; the *page* tool has no `source`.**
+  OpenAlex cross-checks a count it cannot page. So `count` stays OpenCitations' —
+  the number `get_paper_citations` slices, null when that source failed; the
+  larger tally there would send an agent to page an empty list.
 
 ## Pagination
 
