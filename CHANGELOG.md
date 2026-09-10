@@ -13,7 +13,7 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
-## [Unreleased]
+## [2026.09.10] — 2026-09-10
 
 ### Added
 
@@ -80,6 +80,18 @@ grouped by milestone rather than per commit.
   Crossref cannot supply is null rather than absent — a Crossref abstract is its
   JATS deposit rendered to plain text, and many records carry none. ([#116])
 
+### Changed
+
+- **A bare 7–8 digit identifier is now read as a PMID.** Shorter runs are
+  unchanged, so a freeform `import_paper(file, "1234")` label still routes to
+  `manual`. An **existing** 7–8 digit label is not stranded: the first call that
+  resolves it re-files its cached PDF and markdown onto the DOI stem, carrying
+  the section index across so an imported file keeps the `"imported"` marker
+  that exempts it from `download_pdf`'s cascade. A bare-digit stem is *linked*
+  rather than moved — a freeform label could have written it — so the original
+  reading survives too. This cannot be a startup sweep: the destination is the
+  paper's DOI, which only a network lookup knows. ([#115])
+
 ### Fixed
 
 - **Every ORCID spelling is one author.** `canonical_author_id` only lowercased
@@ -122,17 +134,6 @@ grouped by milestone rather than per commit.
   `get_paper_sections`, `get_paper_section` and `find_in_paper` all resolve away
   — an import no tool could read back, under any spelling. ([#115])
 
-### Changed
-
-- **A bare 7–8 digit identifier is now read as a PMID.** Shorter runs are
-  unchanged, so a freeform `import_paper(file, "1234")` label still routes to
-  `manual`. An **existing** 7–8 digit label is not stranded: the first call that
-  resolves it re-files its cached PDF and markdown onto the DOI stem, carrying
-  the section index across so an imported file keeps the `"imported"` marker
-  that exempts it from `download_pdf`'s cascade. A bare-digit stem is *linked*
-  rather than moved — a freeform label could have written it — so the original
-  reading survives too. This cannot be a startup sweep: the destination is the
-  paper's DOI, which only a network lookup knows. ([#115])
 ## [2026.09.08] — 2026-09-08
 
 The largest release so far: a review pass over every provider, the PDF
@@ -1696,6 +1697,7 @@ say which.
 - Configurable external PDF converter, env-based API configuration
   (mailto / keys), MIT license, and a public-facing README.
 
+[2026.09.10]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.08...v2026.09.10
 [2026.09.08]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.04...v2026.09.08
 [2026.09.04]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.06.04...v2026.09.04
 [2026.06.04]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.05.31...v2026.06.04
