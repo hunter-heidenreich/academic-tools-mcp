@@ -19,7 +19,7 @@ The graph tools hold this for `doi` and the paper family for `_canonical_id`.
 
 The **envelope** seam is family-wide but was only ever asserted pairwise.
 `.claude/rules/server.md` requires every search tool to report `result_count`
-and to owe the agent some "more exist" signal; nothing checked all five at once,
+and to owe the agent some "more exist" signal; nothing checked all six at once,
 so a tool could ship with none.
 """
 
@@ -121,6 +121,30 @@ def _serve_openalex(monkeypatch: pytest.MonkeyPatch, items: list[Any], total: An
     monkeypatch.setattr(openalex, "search_works", fake)
 
 
+# An OpenAlex author as the search returns one, on the same all-nulls terms.
+_openalex_authors = st.fixed_dictionaries(
+    {},
+    optional={
+        "id": _json_values,
+        "display_name": _json_values,
+        "orcid": _json_values,
+        "works_count": _json_values,
+        "cited_by_count": _json_values,
+        "summary_stats": _json_values,
+        "last_known_institutions": _json_values,
+    },
+)
+
+
+def _serve_openalex_authors(
+    monkeypatch: pytest.MonkeyPatch, items: list[Any], total: Any = 7
+) -> None:
+    async def fake(query: str, *, rows: int = 10) -> dict[str, Any]:
+        return {"items": [i for i in items if isinstance(i, dict)], "total_results": total}
+
+    monkeypatch.setattr(openalex, "search_authors", fake)
+
+
 def _serve_error(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> None:
     async def fake(query: str, max_results: int = 10) -> dict[str, Any]:
         return dict(payload)
@@ -164,6 +188,38 @@ def test_any_openalex_payload_triages_without_raising(
         # The two an agent chains on: a DOI is bare or absent, never a URL.
         assert hit["doi"] is None or not hit["doi"].lower().startswith("http")
         assert isinstance(hit["author_count"], int)
+
+
+@_SETTINGS
+@given(items=st.lists(_openalex_authors, max_size=5), rows=_openalex_max)
+def test_any_openalex_author_payload_triages_without_raising(
+    monkeypatch: pytest.MonkeyPatch, items: list[Any], rows: int
+) -> None:
+    """Whatever hangs off an OpenAlex author, the agent gets a triage list.
+
+    Same load-bearing-nulls rule as the works search: `last_known_institutions`
+    arrives as an explicit `null` on an author with no current affiliation.
+    """
+    _serve_openalex_authors(monkeypatch, items)
+
+    result = asyncio.run(server.search_authors("anything", max_results=rows))
+
+    dict_items = [i for i in items if isinstance(i, dict)]
+    assert result["result_count"] == len(dict_items) == len(result["results"])
+    for hit in result["results"]:
+        assert set(hit) == {
+            "openalex_id",
+            "name",
+            "orcid",
+            "last_known_institution",
+            "works_count",
+            "cited_by_count",
+            "h_index",
+        }
+        # The one derived field: a name was found or there is none.
+        assert hit["last_known_institution"] is None or isinstance(
+            hit["last_known_institution"], str
+        )
 
 
 @_SETTINGS
@@ -320,6 +376,7 @@ def test_every_search_tool_reports_result_count_and_a_more_exist_signal(
     _serve_crossref(monkeypatch, items)
     _serve_arxiv(monkeypatch, entries)
     _serve_openalex(monkeypatch, items)
+    _serve_openalex_authors(monkeypatch, items)
 
     async def fake_wiki(query: str, limit: int = 5) -> dict[str, Any]:
         return {"results": [{"title": t, "url": f"https://x/{t}"} for t in titles]}
@@ -329,17 +386,29 @@ def test_every_search_tool_reports_result_count_and_a_more_exist_signal(
     ax = asyncio.run(server.search_arxiv("anything"))
     cr = asyncio.run(server.search_crossref_by_title("anything"))
     oa = asyncio.run(server.search_openalex("anything"))
+    au = asyncio.run(server.search_authors("anything"))
     wk = asyncio.run(server.search_wikipedia("anything"))
 
-    for response in (ax, cr, oa, wk):
+    for response in (ax, cr, oa, au, wk):
         assert response["result_count"] == len(response["results"])
 
-    # The three with an upstream count report it, and it is an int on all of
+    # The four with an upstream count report it, and it is an int on all of
     # them -- Crossref and OpenAlex both omit their count on some responses.
-    assert set(ax) == set(cr) == set(oa) == {"total_results", "result_count", "results"}
+    assert (
+        set(ax)
+        == set(cr)
+        == set(oa)
+        == set(au)
+        == {
+            "total_results",
+            "result_count",
+            "results",
+        }
+    )
     assert isinstance(ax["total_results"], int)
     assert isinstance(cr["total_results"], int)
     assert isinstance(oa["total_results"], int)
+    assert isinstance(au["total_results"], int)
     # Wikipedia has no upstream total and must not invent one.
     assert set(wk) == {"query", "result_count", "results"}
 

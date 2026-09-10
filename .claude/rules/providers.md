@@ -57,13 +57,26 @@ Two things the shape does not make obvious:
 
 ## openalex.py
 
-**Guards reach the elements, not just the top-level object.** Three values come
+**Guards reach the elements, not just the top-level object.** Four values come
 from untyped JSON and are consumed where nothing above catches an
 `AttributeError`/`TypeError`: `best_pdf_url`'s sub-objects and URLs (the OA
 download trust boundary — `streaming.cached_download` does not wrap its `fetch`),
 `_canonical_from_response_doi`'s argument (it runs *after* the batch request's
-`try` has closed), and `reconstruct_abstract`'s index (`get_paper_abstract` has
-no `try`). Each takes `Any`, type-checks, and degrades to `None` / `""`.
+`try` has closed), `reconstruct_abstract`'s index (`get_paper_abstract` has
+no `try`), and `search_authors`' warm key — its loop also runs after the `try`
+closes, and `canonical_author_id` calls `.strip()`. The first three take `Any`,
+type-check, and degrade to `None` / `""`; the fourth skips warming that record
+rather than keying it wrong.
+
+**Only the `https://orcid.org/...` spelling is both resolvable and a stable
+key.** `canonical_author_id` folds every openalex.org spelling onto the bare ID
+but merely lowercases anything else, so the `https://` form, the `http://` form,
+`orcid:0000-…` and a bare `0000-…` are four distinct `authors` keys for one
+person, and only the `https://` one resolves upstream. Hence `search_authors`
+hands the agent `openalex_id` as the chain handle and passes `orcid` through
+**verbatim** — a
+rewrite here would either miss the key the search just warmed or file the same
+author twice. Widening the canonicaliser is a data migration, not a fix.
 
 **`get_author` needs the request-side guard in reverse.** An empty author id
 *does* leave a trailing slash, and `safe=":/"` means its identifier may

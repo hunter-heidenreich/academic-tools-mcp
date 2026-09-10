@@ -424,6 +424,55 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
     return {"items": items, "total_results": count if isinstance(count, int) else None}
 
 
+async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
+    """Search OpenAlex authors by name.
+
+    Returns ``{"items": [...], "total_results": N | None}`` — dict-shaped hits
+    only — or ``{"error": ...}`` on transport/HTTP failure or a wrong-shape body.
+    The list is not cached (ad-hoc queries), but each hit warms the ``authors``
+    cache under the key ``get_author`` reads, so chaining one costs no request.
+
+    **No ``select=``, deliberately**, exactly as in ``search_works``: a projected
+    author would poison the ``authors`` key it warms. No year filter either —
+    a publication year does not narrow a person.
+    """
+    params = _build_params()
+    params["search"] = query
+    params["per-page"] = str(min(max(rows, 1), MAX_SEARCH_RESULTS))
+
+    try:
+        response = await _throttled_get(f"{OPENALEX_BASE_URL}/authors", params=params)
+        response.raise_for_status()
+        data = response.json()
+    except _PARSE_ERRORS:
+        return _parse_error_dict()
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(LABEL, e)
+
+    # A wrong shape here either raises out of the provider or reads as an empty
+    # result set, and "no such person" ends the agent's search.
+    if not isinstance(data, dict):
+        return _parse_error_dict()
+    results = data.get("results")
+    if not isinstance(results, list):
+        return _parse_error_dict()
+    items = [item for item in results if isinstance(item, dict)]
+
+    for item in items:
+        # `id` is untyped JSON and `canonical_author_id` strips it, so the guard
+        # runs here: this is outside the ``try`` above, and `AttributeError` is
+        # in neither error tuple.
+        raw_id = item.get("id")
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            continue
+        canonical = canonical_author_id(raw_id)
+        cache.warm(NAMESPACE, "authors", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
+
+    meta = data.get("meta")
+    count = meta.get("count") if isinstance(meta, dict) else None
+    return {"items": items, "total_results": count if isinstance(count, int) else None}
+
+
 async def _fetch_chunk(
     chunk: list[str],
     *,
