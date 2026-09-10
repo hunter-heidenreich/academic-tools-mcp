@@ -74,6 +74,14 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Every ORCID spelling is one author.** `canonical_author_id` only lowercased
+  an ORCID, so the two URL forms, `orcid:0000-…` and a bare `0000-…` were four
+  cache entries for one person — and only `https://orcid.org/…` resolved, so the
+  other three failed upstream while `README.md` advertised "ORCIDs". A new
+  `util/orcidnorm.py` folds all four for the key, including the check character
+  (OpenAlex resolves `…488X` and `…488x` alike), and the request rebuilds
+  `orcid:<bare>`. No migration: keys are hashed, so old entries are unreachable
+  rather than wrong and the `authors` TTL reaps them. ([#123])
 - **`search_openalex` and `search_crossref_by_title` bound their `year`.** Both
   passed it straight into an upstream filter, so a negative, a zero or a pasted
   identifier became a 400 the agent had to interpret. Now a schema error at the
@@ -117,7 +125,6 @@ grouped by milestone rather than per commit.
   rather than moved — a freeform label could have written it — so the original
   reading survives too. This cannot be a startup sweep: the destination is the
   paper's DOI, which only a network lookup knows. ([#115])
-
 ## [2026.09.08] — 2026-09-08
 
 The largest release so far: a review pass over every provider, the PDF
@@ -1783,3 +1790,4 @@ say which.
 [#120]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/120
 [#121]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/121
 [#122]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/122
+[#123]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/123

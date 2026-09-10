@@ -737,12 +737,14 @@ async def get_author(
     ``cited_by_count`` / ``h_index`` drift with time.
 
     Errors: not found / bad ID → ``{error, suggestion}`` pointing at
-    get_paper_authors or ORCID URLs.
+    get_paper_authors or an ORCID.
     """
     author = await openalex.get_author(author_id, force_refresh=force_refresh)
     if "error" in author:
         return enrich_error(
-            author, "Use an OpenAlex author ID (from get_paper_authors) or an ORCID URL."
+            author,
+            "Use an OpenAlex author ID (from get_paper_authors or search_authors), "
+            "or an ORCID in any spelling.",
         )
 
     stats = as_dict(author.get("summary_stats"))

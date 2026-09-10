@@ -114,6 +114,7 @@ agent never receives a raw provider response.
 | Counters | `net/stats.py` | `net.md` |
 | Config | `util/config.py` | `util.md` |
 | DOI normalization | `doinorm.normalize` / `canonical` / `looks_like_doi` | `util.md` |
+| ORCID normalization | `orcidnorm.normalize` / `canonical` / `looks_like_orcid` | `util.md` |
 | Outbound User-Agent | `useragent.headers` | `util.md` |
 | Page arithmetic | `app.page_bounds` | `server.md` |
 | Markdown read outside the lock | `app.read_markdown` | `server.md` |
