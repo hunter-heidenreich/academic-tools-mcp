@@ -1198,6 +1198,36 @@ class TestMigrateMisroutedArxiv:
         assert cache.get("manual", "sections", stems.sections_key(canonical)) is None
         assert stems.markdown_path("arxiv", "2301.00001").exists()
 
+    def test_a_refiled_markdown_keeps_its_imported_marker(self, misrouted):
+        """The index rides along, or a hand-written paper is cascaded away.
+
+        Re-deriving at the new key resets ``conversion_mode`` to null, and null
+        is not ``"imported"`` — so the next ``download_pdf`` that lands new bytes
+        deletes markdown no converter can reproduce.
+        """
+        from academic_tools_mcp import papers
+
+        canonical = "arxiv:2301.00001"
+        md_path = stems.markdown_path("manual", canonical)
+        papers.store_markdown_and_index("manual", canonical, md_path, "# T", "imported")
+
+        manual.migrate_misrouted_arxiv()
+
+        assert papers.recorded_conversion_mode("arxiv", "2301.00001") == "imported"
+
+    def test_a_linked_markdown_carries_its_index_and_keeps_it(self, misrouted):
+        """A linked file is readable under both names, so both keep an entry."""
+        from academic_tools_mcp import papers
+
+        canonical = "cond-mat.stat-mech/0501001"
+        md_path = stems.markdown_path("manual", canonical)
+        papers.store_markdown_and_index("manual", canonical, md_path, "# T", "imported")
+
+        manual.migrate_misrouted_arxiv()
+
+        assert papers.recorded_conversion_mode("manual", canonical) == "imported"
+        assert papers.recorded_conversion_mode("arxiv", canonical) == "imported"
+
 
 class TestRefilePmidStems:
     """An import filed under a PMID spelling is re-filed onto the DOI stem.

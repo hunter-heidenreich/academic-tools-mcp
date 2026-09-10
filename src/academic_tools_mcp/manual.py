@@ -114,26 +114,37 @@ def migrate_misrouted_arxiv() -> int:
 
     Renames as it goes: the legacy ``manual`` key kept an ``arXiv:`` prefix the
     arXiv key drops. Idempotent and best-effort, once at startup. Returns files
-    re-filed, linked as well as moved; only a moved markdown orphans its
-    ``manual`` section index.
+    re-filed, linked as well as moved.
+
+    A re-filed markdown carries its section index to the new key, as
+    :func:`refile_pmid_stems` does: re-deriving would reset ``conversion_mode``,
+    and an operator's own markdown would lose the ``"imported"`` marker that
+    keeps ``tools/pipeline``'s download cascade from deleting it.
     """
     refiled = 0
     for entity in ("pdfs", "markdown"):
         target_dir = cache.cache_dir(arxiv.NAMESPACE, entity)
         for path in stems.list_dir(cache.cache_dir(NAMESPACE, entity)):
-            outcome = _refile_misrouted_arxiv(path, target_dir)
-            if outcome is None:
+            claim = _refile_misrouted_arxiv(path, target_dir)
+            if claim is None:
                 continue
+            recovered, outcome = claim
             refiled += 1
-            if entity == "markdown" and outcome == "moved":
+            if entity != "markdown":
+                continue
+            # Before the invalidate: the entry it carries is the one being dropped.
+            papers.rekey_sections(NAMESPACE, path.stem, arxiv.NAMESPACE, recovered)
+            if outcome == "moved":
                 cache.invalidate(NAMESPACE, "sections", stems.sections_key_for_stem(path.stem))
     return refiled
 
 
-def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> RefileOutcome | None:
+def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> tuple[str, RefileOutcome] | None:
     """Re-file one arXiv-shaped ``manual`` file into *target_dir*, under its arXiv stem.
 
-    ``None`` for anything left where it is.
+    Returns the recovered arXiv key and how it was placed, or ``None`` for
+    anything left where it is. The caller needs the key, not just the outcome:
+    it is the destination the section index is carried to.
     """
     claim = _misrouted_arxiv_id(path.stem)
     if claim is None:
@@ -141,7 +152,7 @@ def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> RefileOutcome | Non
     recovered, outcome = claim
 
     target = target_dir / (stems.safe_stem(recovered) + path.suffix)
-    return outcome if _place(path, target, outcome) else None
+    return claim if _place(path, target, outcome) else None
 
 
 def _place(path: Path, target: Path, outcome: RefileOutcome) -> bool:
