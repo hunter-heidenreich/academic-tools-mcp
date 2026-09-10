@@ -550,3 +550,72 @@ async def test_age_sweep_keeps_an_entry_that_can_still_produce_a_wait():
         pass
 
     assert "live.example" in t._last_start
+
+
+class TestQuotaGate:
+    """The refusal that costs no request: a spent budget fails before the caps."""
+
+    @staticmethod
+    def _throttle() -> Throttle:
+        return Throttle(namespace="openalex", label="OpenAlex", max_concurrent=4, min_gap_seconds=0)
+
+    @pytest.mark.asyncio
+    async def test_a_spent_budget_refuses_before_any_request(self):
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+
+        with pytest.raises(http.QuotaExhaustedError) as excinfo:
+            async with self._throttle().slot("https://api.openalex.org/works"):
+                pytest.fail("the slot must not admit a caller with no budget")
+
+        assert excinfo.value.provider == "OpenAlex"
+        assert excinfo.value.limit == 1000
+
+    @pytest.mark.asyncio
+    async def test_remaining_budget_admits_the_caller(self):
+        stats.record_quota("openalex", limit=1000, remaining=1, reset_seconds=100.0)
+
+        async with self._throttle().slot("https://api.openalex.org/works"):
+            pass
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_advertises_nothing_is_unaffected(self):
+        async with Throttle(
+            namespace="arxiv", label="arXiv", max_concurrent=1, min_gap_seconds=0
+        ).slot("https://export.arxiv.org/api/query"):
+            pass
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_is_counted_and_costs_no_http_call(self):
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+
+        with pytest.raises(http.QuotaExhaustedError):
+            async with self._throttle().slot("https://api.openalex.org/works"):
+                pass
+
+        row = stats.snapshot()["providers"]["openalex"]
+        assert row["quota_refusals"] == 1
+        assert "http_calls" not in row
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_does_not_leak_a_pending_slot(self):
+        """Raised before `pending += 1`, so it cannot also exhaust the burst cap."""
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+        throttle = self._throttle()
+
+        for _ in range(10):
+            with pytest.raises(http.QuotaExhaustedError):
+                async with throttle.slot("https://api.openalex.org/works"):
+                    pass
+
+        assert throttle.pending == 0
+
+    @pytest.mark.asyncio
+    async def test_quota_outranks_the_burst_cap(self):
+        """Both would refuse; the quota verdict is the one an agent can act on."""
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+        throttle = self._throttle()
+        throttle.pending = throttle.max_pending
+
+        with pytest.raises(http.QuotaExhaustedError):
+            async with throttle.slot("https://api.openalex.org/works"):
+                pass

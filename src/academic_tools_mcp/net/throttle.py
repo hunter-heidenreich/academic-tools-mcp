@@ -8,11 +8,12 @@ construction.
 
 Gating order (see ``slot``):
 
-1. **Burst cap** — ``pending >= max_pending`` raises ``LocalBackpressureError``
+1. **Quota** — a spent budget raises ``QuotaExhaustedError``; waiting cannot help.
+2. **Burst cap** — ``pending >= max_pending`` raises ``LocalBackpressureError``
    before any sem/lock acquisition, so a fan-out fails fast instead of
    silently queueing.
-2. **Concurrency cap** — ``asyncio.Semaphore(max_concurrent)``.
-3. **Inter-start gap** — a lock held only to compute and reserve this caller's
+3. **Concurrency cap** — ``asyncio.Semaphore(max_concurrent)``.
+4. **Inter-start gap** — a lock held only to compute and reserve this caller's
    start, pacing *starts* (not durations) by ``min_gap_seconds``; the sleep and
    the GET happen outside it.
 
@@ -113,6 +114,9 @@ class Throttle:
         (one slot, one request); ``get`` passes ``False`` so ``get_with_retry``
         counts the attempts it makes.
         """
+        if (refusal := stats.quota_refusal(self.namespace)) is not None:
+            stats.incr(self.namespace, "quota_refusals")
+            raise http.QuotaExhaustedError(self.label, *refusal)
         if self.pending >= self.max_pending:
             stats.incr(self.namespace, "backpressure_refusals")
             raise http.LocalBackpressureError(

@@ -77,6 +77,12 @@ fixture must also call.
 
 ## net/stats.py
 
+- **A quota is observed, never assumed.** Only OpenAlex sends `X-RateLimit-*`, so
+  no header, no deadline and an elapsed deadline all read as *proceed* — refusing
+  on ignorance would strand every provider that publishes nothing.
+- **`_quota_dict`'s `retry_after_seconds` escapes `_MAX_RETRY_AFTER_SECONDS`.**
+  That ceiling bounds a sleep, and a quota refusal never sleeps; clamping an
+  hours-away refill to 10 minutes advertises a retry that cannot succeed.
 - **`env_file` rides the `ENABLE_DEBUG_TOOLS` gate**, so exposing it changes no
   agent-facing surface — a config path is operator data.
 - **`DEBUG_REQUESTS` is re-read per call**, through `config.flag`, so it flips

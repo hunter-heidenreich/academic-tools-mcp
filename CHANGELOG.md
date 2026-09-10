@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **OpenAlex's credit budget is tracked and honoured.** OpenAlex meters credits
+  per ~24h window (measured: 1000 anonymous, 10000 with `OPENALEX_API_KEY`) and
+  advertises the balance in `X-RateLimit-*`; the server read none of it, so the
+  only feedback on a spent budget was upstream failure. The throttle now refuses
+  **ahead of its burst and concurrency caps** once the budget is spent — costing
+  no request, and carrying `quota_exhausted: true` with the seconds until
+  refill. Operators see `quota` per provider in `get_server_stats`; a provider
+  that advertises nothing is unaffected. ([#121])
 - **`search_authors`, the way into the author tools.** `get_author` took an
   OpenAlex author ID or an ORCID URL, and both came from one place —
   `get_paper_authors` — so "who is this person, what is their h-index" meant
@@ -1765,3 +1773,4 @@ say which.
 [#117]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/117
 [#119]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/119
 [#120]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/120
+[#121]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/121

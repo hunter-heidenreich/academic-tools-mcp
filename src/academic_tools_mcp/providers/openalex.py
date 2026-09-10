@@ -28,10 +28,10 @@ def _parse_error_dict() -> dict[str, Any]:
     return http.parse_error_dict(LABEL)
 
 
-# The gap paces us at OpenAlex's documented 10 req/sec, so a fan-out can't burn the
-# daily budget in seconds; the concurrency cap lets a reference-graph traversal run
-# lookups in parallel (OpenAlex documents no concurrency limit); the burst cap, as with
-# every other provider, gives a stacked caller feedback instead of silent queueing.
+# The gap paces us at OpenAlex's documented 10 req/sec; the concurrency cap lets a
+# reference-graph traversal run lookups in parallel (OpenAlex documents no concurrency
+# limit); the burst cap, as with every other provider, gives a stacked caller feedback
+# instead of silent queueing. Pace is not budget — the credit ceiling is `net/stats`'.
 _MAX_CONCURRENT = 4
 _MIN_REQUEST_GAP = 0.1
 _MAX_PENDING = 5

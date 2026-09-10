@@ -59,6 +59,17 @@ class LocalBackpressureError(Exception):
         super().__init__(f"{provider}: {pending} requests already queued (cap {max_pending})")
 
 
+class QuotaExhaustedError(Exception):
+    """Raised when a provider's advertised budget is spent."""
+
+    def __init__(self, provider: str, retry_after_seconds: float, limit: int | None) -> None:
+        """Record which provider is out of budget, and when it refills."""
+        self.provider = provider
+        self.retry_after_seconds = retry_after_seconds
+        self.limit = limit
+        super().__init__(f"{provider}: rate-limit budget exhausted (limit {limit})")
+
+
 # The except tuple every client wraps its request block in — and the roster of
 # what a client must handle, so redundant entries stay listed.
 HTTPX_ERRORS = (
@@ -66,6 +77,7 @@ HTTPX_ERRORS = (
     httpx.TimeoutException,  # a RequestError subclass; its own failure mode
     httpx.RequestError,
     LocalBackpressureError,  # a local refusal reaches the agent as an upstream one
+    QuotaExhaustedError,  # the other local refusal, on a much longer clock
 )
 
 
@@ -158,6 +170,45 @@ def _retry_after_from_http_date(raw: str) -> float | None:
     return (when - datetime.now(UTC)).total_seconds()
 
 
+def _header_number(response: httpx.Response, name: str) -> float | None:
+    """One numeric response header, or None if absent, malformed or non-finite."""
+    raw = (response.headers.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def record_quota(provider: str, response: httpx.Response) -> None:
+    """File the ``X-RateLimit-*`` budget a response advertised. ``reset`` is a duration."""
+    limit = _header_number(response, "x-ratelimit-limit")
+    remaining = _header_number(response, "x-ratelimit-remaining")
+    stats.record_quota(
+        provider,
+        limit=None if limit is None else int(limit),
+        remaining=None if remaining is None else int(remaining),
+        reset_seconds=_header_number(response, "x-ratelimit-reset"),
+    )
+
+
+def _quota_dict(provider: str, exc: QuotaExhaustedError) -> dict[str, Any]:
+    """Structured local refusal for a spent budget. ``retry_after_seconds`` is unclamped."""
+    wait = exc.retry_after_seconds
+    return {
+        "error": (
+            f"{exc.provider} rate-limit budget exhausted"
+            f"{'' if exc.limit is None else f' (limit {exc.limit})'}. "
+            f"Refused locally, before spending a request. Retry in ≥{wait:.0f}s."
+        ),
+        "retryable": True,
+        "quota_exhausted": True,
+        "retry_after_seconds": wait,
+    }
+
+
 def _backpressure_dict(provider: str, exc: LocalBackpressureError) -> dict[str, Any]:
     """Structured local refusal, carrying both remediations.
 
@@ -194,6 +245,8 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     ``retryable: False``. ``retry_after_seconds`` rides along on any transient status the
     server advertises one for, clamped to ``_MAX_RETRY_AFTER_SECONDS``.
     """
+    if isinstance(exc, QuotaExhaustedError):
+        return _quota_dict(provider, exc)
     if isinstance(exc, LocalBackpressureError):
         return _backpressure_dict(provider, exc)
     if isinstance(exc, httpx.HTTPStatusError):
@@ -279,6 +332,10 @@ async def get_with_retry(
                 stats.incr(provider, "http_retries")
             await asyncio.sleep(effective_backoff)
             continue
+
+        if provider is not None:
+            # Every response, including a 429 — where the budget matters most.
+            record_quota(provider, response)
 
         if attempt >= max_attempts:
             return response

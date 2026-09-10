@@ -391,3 +391,84 @@ class TestDebugRequests:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err == ""
+
+
+class TestQuota:
+    """The budget no pacing can stretch, and what lets the throttle refuse early."""
+
+    def test_records_and_reports_a_budget(self):
+        stats.record_quota("openalex", limit=1000, remaining=962, reset_seconds=80163.0)
+
+        row = stats.snapshot()["providers"]["openalex"]["quota"]
+
+        assert row["limit"] == 1000
+        assert row["remaining"] == 962
+        assert row["resets_in_seconds"] == pytest.approx(80163.0, abs=5)
+
+    def test_a_provider_advertising_nothing_records_nothing(self):
+        """An all-null row would claim a budget nobody published."""
+        stats.record_quota("arxiv", limit=None, remaining=None, reset_seconds=None)
+
+        assert "quota" not in stats.snapshot()["providers"].get("arxiv", {})
+        assert stats.quota_refusal("arxiv") is None
+
+    def test_a_later_response_replaces_the_earlier_budget(self):
+        stats.record_quota("openalex", limit=1000, remaining=500, reset_seconds=100.0)
+        stats.record_quota("openalex", limit=1000, remaining=499, reset_seconds=99.0)
+
+        assert stats.snapshot()["providers"]["openalex"]["quota"]["remaining"] == 499
+
+    def test_remaining_credit_does_not_refuse(self):
+        stats.record_quota("openalex", limit=1000, remaining=1, reset_seconds=100.0)
+
+        assert stats.quota_refusal("openalex") is None
+
+    def test_a_spent_budget_refuses_until_it_refills(self):
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+
+        refusal = stats.quota_refusal("openalex")
+
+        assert refusal is not None
+        wait, limit = refusal
+        assert 0 < wait <= 100.0
+        assert limit == 1000
+
+    def test_an_elapsed_deadline_stops_refusing(self):
+        """The refusal must lift itself, or one window bricks the provider."""
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=-1.0)
+
+        assert stats.quota_refusal("openalex") is None
+
+    def test_a_spent_budget_with_no_refill_instant_does_not_refuse(self):
+        """No deadline means the refusal could never lift, so it must not start."""
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=None)
+
+        assert stats.quota_refusal("openalex") is None
+        assert stats.snapshot()["providers"]["openalex"]["quota"]["resets_in_seconds"] is None
+
+    def test_an_unseen_provider_never_refuses(self):
+        assert stats.quota_refusal("never-heard-of-it") is None
+
+    def test_reset_drops_the_quota(self):
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+
+        stats.reset()
+
+        assert stats.quota_refusal("openalex") is None
+        assert "quota" not in stats.snapshot()["providers"].get("openalex", {})
+
+    def test_a_quota_row_coexists_with_counters(self):
+        stats.incr("openalex", "http_calls")
+        stats.record_quota("openalex", limit=1000, remaining=962, reset_seconds=100.0)
+
+        row = stats.snapshot()["providers"]["openalex"]
+
+        assert row["http_calls"] == 1
+        assert row["quota"]["remaining"] == 962
+
+    def test_resets_in_seconds_never_goes_negative(self):
+        stats.record_quota("openalex", limit=1000, remaining=5, reset_seconds=-30.0)
+
+        row = stats.snapshot()["providers"]["openalex"]["quota"]
+
+        assert row["resets_in_seconds"] == 0.0

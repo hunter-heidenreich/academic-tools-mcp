@@ -44,7 +44,7 @@ All configuration is via environment variables in `.env`. Nothing is required to
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENALEX_API_KEY` | No | Free API key from [openalex.org](https://openalex.org/settings/api) |
+| `OPENALEX_API_KEY` | No | Free API key from [openalex.org](https://openalex.org/settings/api). OpenAlex meters a credit budget per ~24h window; a key raises it 10× (measured 1000 → 10000). `OPENALEX_MAILTO` does not raise it |
 | `OPENALEX_MAILTO` | No | Your email — gets you into the [polite pool](https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication#the-polite-pool) (faster) |
 | `CROSSREF_MAILTO` | No | Your email — joins the Crossref [polite pool](https://www.crossref.org/documentation/retrieve-metadata/rest-api/). Not just a courtesy: the client picks its rate limits from whether this is set (10 req/sec singles / 3 search / 3 concurrent with it; 5 / 1 / 1 without). |
 | `ARXIV_MAILTO` | No | Your email, appended to the arXiv User-Agent. A descriptive agent is sent either way — arXiv's edge throttles generic library agents far harder. |
