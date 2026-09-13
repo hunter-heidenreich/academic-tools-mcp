@@ -23,6 +23,7 @@ grouped by milestone rather than per commit.
   was serving the file. A transient metadata failure now falls back to
   `https://arxiv.org/pdf/<id>`, version suffix kept, through the same rate-limit
   slot; a definitive not-found is still returned without touching the PDF host.
+  ([#126])
 
 ## [2026.09.10] — 2026-09-10
 
@@ -1813,3 +1814,4 @@ say which.
 [#122]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/122
 [#123]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/123
 [#124]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/124
+[#126]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/126
