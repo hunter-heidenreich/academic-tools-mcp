@@ -1213,9 +1213,14 @@ class TestDownloadPdfMetadataBranches:
         assert cache.get_negative(arxiv.NAMESPACE, "downloads", canonical) is not None
 
     @pytest.mark.asyncio
-    async def test_a_metadata_error_is_returned_untouched(self, tmp_path, monkeypatch):
-        """A transient metadata failure must not be recorded as a download failure."""
+    async def test_a_transient_failure_on_both_hosts_is_not_negative_cached(
+        self, tmp_path, monkeypatch
+    ):
+        """A transient metadata failure must not be recorded as a download failure,
+        even once the direct-URL fallback has failed transiently too."""
+        from academic_tools_mcp.net import clients
         from academic_tools_mcp.store import cache
+        from tests.helpers.download_fakes import streaming_client
 
         _reset_throttle(monkeypatch, tmp_path)
 
@@ -1223,6 +1228,9 @@ class TestDownloadPdfMetadataBranches:
             return {"error": "arXiv server error (HTTP 503).", "retryable": True}
 
         monkeypatch.setattr(arxiv, "get_paper", fake_get_paper)
+        monkeypatch.setattr(
+            clients, "get_client", lambda *a, **kw: streaming_client(503, b"busy", "text/plain")
+        )
 
         result = await arxiv.download_pdf("2301.00001")
 
@@ -1256,6 +1264,157 @@ class TestDownloadPdfMetadataBranches:
 
         assert "error" not in result
         assert seen == [force]
+
+
+class TestDownloadPdfWithoutMetadata:
+    """Regression: every download failed while the export API was rate-limiting.
+
+    ``download_pdf`` resolved its URL only from ``get_paper``, so a 429 from
+    ``export.arxiv.org`` failed the download even while ``arxiv.org/pdf/<id>``
+    was serving the PDF. A transient metadata failure now falls back to that
+    URL; a definitive one still does not.
+    """
+
+    _PDF = b"%PDF-1.7 direct bytes"
+
+    @staticmethod
+    def _install(monkeypatch, tmp_path, metadata, *, pdf_status=200, pdf_body=_PDF):
+        """Stub the metadata GET with ``metadata`` (a response text, or an exception
+        to raise) and the PDF host with a real streamed response. Returns the
+        metadata call counter and the list of streamed requests."""
+        from academic_tools_mcp.net import clients
+        from tests.helpers.download_fakes import streaming_client
+
+        _reset_throttle(monkeypatch, tmp_path)
+        metadata_calls = [0]
+        pdf_requests: list[httpx.Request] = []
+
+        async def fake_throttled_get(url, **_kwargs):
+            metadata_calls[0] += 1
+            if isinstance(metadata, BaseException):
+                raise metadata
+            return httpx.Response(200, text=metadata, request=httpx.Request("GET", url))
+
+        monkeypatch.setattr(arxiv, "_throttled_get", fake_throttled_get)
+        monkeypatch.setattr(
+            clients,
+            "get_client",
+            lambda *a, **kw: streaming_client(
+                pdf_status, pdf_body, "application/pdf", requests=pdf_requests
+            ),
+        )
+        return metadata_calls, pdf_requests
+
+    @pytest.mark.asyncio
+    async def test_a_metadata_429_falls_back_to_the_pdf_host(self, tmp_path, monkeypatch):
+        metadata_calls, pdf_requests = self._install(monkeypatch, tmp_path, _http_status_error(429))
+
+        result = await arxiv.download_pdf("2301.00001")
+
+        assert "error" not in result, result
+        assert result["cached"] is False
+        assert metadata_calls[0] == 1
+        assert [str(r.url) for r in pdf_requests] == ["https://arxiv.org/pdf/2301.00001"]
+        assert arxiv.pdf_path("2301.00001").read_bytes() == self._PDF
+
+        # The file is the positive entry: the next call is a cache hit, no request.
+        again = await arxiv.download_pdf("2301.00001")
+        assert again["cached"] is True
+        assert len(pdf_requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_metadata_timeout_falls_back_to_the_pdf_host(self, tmp_path, monkeypatch):
+        _, pdf_requests = self._install(
+            monkeypatch, tmp_path, httpx.ReadTimeout("metadata API timed out")
+        )
+
+        result = await arxiv.download_pdf("2301.00001")
+
+        assert "error" not in result, result
+        assert [str(r.url) for r in pdf_requests] == ["https://arxiv.org/pdf/2301.00001"]
+
+    @pytest.mark.parametrize(
+        ("requested", "path"),
+        [
+            ("2301.00001v2", "2301.00001v2"),
+            ("arXiv:2301.00001v2", "2301.00001v2"),
+            # Case survives into the URL; only the cache key is folded.
+            ("math.GT/0309136", "math.GT/0309136"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_the_fallback_url_keeps_the_version_and_case(
+        self, tmp_path, monkeypatch, requested, path
+    ):
+        _, pdf_requests = self._install(monkeypatch, tmp_path, _http_status_error(503))
+
+        result = await arxiv.download_pdf(requested)
+
+        assert "error" not in result, result
+        assert [str(r.url) for r in pdf_requests] == [f"https://arxiv.org/pdf/{path}"]
+
+    @pytest.mark.asyncio
+    async def test_a_definitive_not_found_makes_no_fallback_request(self, tmp_path, monkeypatch):
+        """How an invalid id presents: 200 with an ``api/errors`` entry."""
+        _, pdf_requests = self._install(monkeypatch, tmp_path, _feed(_ERROR_ENTRY))
+
+        result = await arxiv.download_pdf("2301.99999")
+
+        assert result == {"error": "No paper found for arXiv ID: 2301.99999", "not_found": True}
+        assert pdf_requests == []
+
+    @pytest.mark.asyncio
+    async def test_an_unclassified_metadata_error_makes_no_fallback_request(
+        self, tmp_path, monkeypatch
+    ):
+        """Only ``retryable: True`` means a retry might work; a bare 400 carries neither flag."""
+        _, pdf_requests = self._install(monkeypatch, tmp_path, _http_status_error(400))
+
+        result = await arxiv.download_pdf("2301.00001")
+
+        assert "error" in result
+        assert result.get("retryable") is not True
+        assert pdf_requests == []
+
+    @pytest.mark.asyncio
+    async def test_an_id_outside_the_grammar_is_never_put_in_a_pdf_url(self, tmp_path, monkeypatch):
+        _, pdf_requests = self._install(monkeypatch, tmp_path, _http_status_error(429))
+
+        result = await arxiv.download_pdf("../../2301.00001")
+
+        assert result["retryable"] is True
+        assert pdf_requests == []
+
+    @pytest.mark.asyncio
+    async def test_a_fallback_404_is_negative_cached(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        _, pdf_requests = self._install(
+            monkeypatch, tmp_path, _http_status_error(429), pdf_status=404, pdf_body=b""
+        )
+
+        result = await arxiv.download_pdf("2301.00001")
+
+        assert result["retryable"] is False
+        canonical = arxiv.canonical_arxiv_id("2301.00001")
+        assert cache.get_negative(arxiv.NAMESPACE, "downloads", canonical) == result
+        assert len(pdf_requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_metadata_success_uses_the_entry_pdf_link(self, tmp_path, monkeypatch):
+        """The metadata-first path is unchanged: the entry's link, not the constructed URL."""
+        entry = _search_entry("2301.00001v3").replace(
+            "  </entry>",
+            '    <link title="pdf" href="https://arxiv.org/pdf/2301.00001v3" rel="related"/>\n'
+            "  </entry>",
+        )
+        metadata_calls, pdf_requests = self._install(monkeypatch, tmp_path, _feed(entry))
+
+        result = await arxiv.download_pdf("2301.00001")
+
+        assert "error" not in result, result
+        assert metadata_calls[0] == 1
+        assert [str(r.url) for r in pdf_requests] == ["https://arxiv.org/pdf/2301.00001v3"]
 
 
 # ---------------------------------------------------------------------------

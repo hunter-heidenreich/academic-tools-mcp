@@ -28,6 +28,9 @@ def _parse_error_dict() -> dict[str, Any]:
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
 NAMESPACE = "arxiv"
 
+# The PDF host's path for a bare id, versioned or not: what an entry's pdf link names.
+_PDF_URL_TEMPLATE = "https://arxiv.org/pdf/{}"
+
 # Agent-facing provider name; every site that names us reads it.
 LABEL = "arXiv"
 
@@ -399,6 +402,12 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     ``force_refresh=True`` re-downloads and atomically replaces the cached
     file, keeping the old one if the re-download fails. Streaming, the byte cap
     and the atomic rename are ``streaming.stream_to_file``'s.
+
+    The URL comes from the metadata record's pdf link. When that lookup fails
+    *transiently*, the PDF is streamed from ``arxiv.org/pdf/<id>`` instead: the
+    export API throttles independently of the PDF host, so a 429 there says
+    nothing about whether the PDF is being served. A definitive miss (or an
+    unclassified error) is returned as-is, with no request to the PDF host.
     """
     canonical = canonical_arxiv_id(arxiv_id)
     dest = stems.pdf_path(NAMESPACE, canonical)
@@ -406,14 +415,18 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
     async def _fetch() -> dict[str, Any]:
         # Threaded through: a stale record's link re-fetches the bytes we were told to replace.
         paper = await get_paper(arxiv_id, force_refresh=force_refresh)
+        pdf_url: str | None = None
         if "error" in paper:
-            return paper
-
-        pdf_url = None
-        for link in paper.get("links", []):
-            if link.get("title") == "pdf":
-                pdf_url = link["href"]
-                break
+            bare = normalize_arxiv_id(arxiv_id)
+            # Shape-gated: only a grammar-valid id is interpolated into the PDF host's path.
+            if paper.get("retryable") is not True or not _is_arxiv_shape(bare):
+                return paper
+            pdf_url = _PDF_URL_TEMPLATE.format(bare)
+        else:
+            for link in paper.get("links", []):
+                if link.get("title") == "pdf":
+                    pdf_url = link["href"]
+                    break
 
         if not pdf_url:
             # Definitive — this is how a withdrawn paper presents.
