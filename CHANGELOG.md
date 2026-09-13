@@ -13,6 +13,18 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
+## [Unreleased]
+
+### Fixed
+
+- **`download_pdf` fetches an arXiv PDF while the arXiv metadata API is
+  rate-limiting.** The PDF URL came only from the `export.arxiv.org` record, so
+  a 429 or timeout there failed every arXiv download even while `arxiv.org/pdf`
+  was serving the file. A transient metadata failure now falls back to
+  `https://arxiv.org/pdf/<id>`, version suffix kept, through the same rate-limit
+  slot; a definitive not-found is still returned without touching the PDF host.
+  ([#126])
+
 ## [2026.09.10] — 2026-09-10
 
 ### Added
@@ -1802,3 +1814,4 @@ say which.
 [#122]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/122
 [#123]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/123
 [#124]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/124
+[#126]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/126
