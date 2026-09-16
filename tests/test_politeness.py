@@ -20,7 +20,7 @@ import pytest
 import academic_tools_mcp
 from academic_tools_mcp.download import openaccess
 from academic_tools_mcp.net import http
-from academic_tools_mcp.providers import crossref, opencitations
+from academic_tools_mcp.providers import crossref, opencitations, paperswithcode
 
 
 def _discover_clients():
@@ -56,6 +56,7 @@ def test_every_client_module_was_discovered():
         "crossref",
         "openalex",
         "opencitations",
+        "paperswithcode",
         "wikipedia",
     } <= set(names)
     assert len(names) == len(set(names))
@@ -402,6 +403,17 @@ class TestOaDownloadPacesPerPublisher:
         # citations fetches overlap rather than serialise; below 2 they can't,
         # and above it we exceed what the comment claims to be conservative.
         assert opencitations._MAX_CONCURRENT == 2
+
+    def test_paperswithcode_stays_within_its_documented_allowances(self):
+        # Documented per IP: 120 req/min across the catalog, 60 req/min for list and
+        # search. The allowance is shared with the operator's own browser, so we claim
+        # at most 90% of each as a sustained rate, one request at a time, and never
+        # spend a retry into a 429.
+        assert paperswithcode._MIN_REQUEST_GAP >= 60.0 / (120 * 0.9) - 1e-9
+        assert paperswithcode._SEARCH_REQUEST_GAP >= 60.0 / (60 * 0.9) - 1e-9
+        assert paperswithcode._SEARCH_REQUEST_GAP > paperswithcode._MIN_REQUEST_GAP
+        assert paperswithcode._throttle.max_concurrent == 1
+        assert paperswithcode._throttle.retry_attempts == 1
 
     @pytest.mark.parametrize(
         ("name", "module"),

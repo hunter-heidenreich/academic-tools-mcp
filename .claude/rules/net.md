@@ -79,6 +79,13 @@ fixture must also call.
 - **A quota is observed, never assumed.** Only OpenAlex sends `X-RateLimit-*`, so
   no header, no deadline and an elapsed deadline all read as *proceed* — refusing
   on ignorance would strand every provider that publishes nothing.
+- **A 429 with a usable `Retry-After` is an observation too**, recorded by
+  `http.record_quota` as a spent budget until then when no `X-RateLimit-*` header
+  came with it (advertised headers win). `Throttle.slot` then refuses every
+  caller for that namespace locally. A retry already inside `get_with_retry`
+  holds its slot and is not refused — it sleeps at least as long. The lockout is
+  unclamped for the same reason `_quota_dict` is; a success response carrying no
+  headers never clears it early, since the deadline is its only exit.
 - **`_quota_dict`'s `retry_after_seconds` escapes `_MAX_RETRY_AFTER_SECONDS`.**
   That ceiling bounds a sleep, and a quota refusal never sleeps; clamping an
   hours-away refill to 10 minutes advertises a retry that cannot succeed.

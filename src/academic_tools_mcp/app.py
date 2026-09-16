@@ -42,7 +42,7 @@ mcp = FastMCP(
     lifespan=_lifespan,
     instructions=(
         "Academic paper research: OpenAlex, arXiv, bioRxiv/medRxiv, Crossref, "
-        "OpenCitations, ACL Anthology, Wikipedia.\n\n"
+        "OpenCitations, ACL Anthology, Wikipedia, Papers with Code.\n\n"
         "get_paper_metadata / _authors / _abstract / _bibtex take an arXiv ID, "
         "any DOI, or a PMID and route to the right provider; each response tags "
         "`_source`. A PMID works everywhere a DOI does, including the graph "
@@ -66,6 +66,13 @@ mcp = FastMCP(
         "reference tools rather than get_paper_metadata. search_authors is the "
         "way into get_author when you have a person rather than one of their "
         "papers; chain its hits on openalex_id.\n\n"
+        "Papers with Code (arXiv IDs only) adds what no other source has: "
+        "get_paper_code for repositories and HF artifacts, get_paper_catalog for "
+        "tasks, methods and best leaderboard ranks, get_paper_evaluations for every "
+        "reported result, get_pwc_task and get_benchmark_leaderboard for the "
+        "taxonomy and SOTA tables, search_paperswithcode to find a paper. Its rate "
+        "limit is per IP and tight: call sequentially, never fan out, and on "
+        "retry_after_seconds make no Papers with Code call until it passes.\n\n"
         "Failures return {error, suggestion?}; transient ones (5xx, 429, "
         "timeout) carry retry hints."
     ),

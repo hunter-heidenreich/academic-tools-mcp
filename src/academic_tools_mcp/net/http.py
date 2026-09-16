@@ -183,9 +183,21 @@ def _header_number(response: httpx.Response, name: str) -> float | None:
 
 
 def record_quota(provider: str, response: httpx.Response) -> None:
-    """File the ``X-RateLimit-*`` budget a response advertised. ``reset`` is a duration."""
+    """File the budget a response advertised. ``reset`` is a duration.
+
+    ``X-RateLimit-*`` headers win. Without them, a 429 carrying a usable ``Retry-After``
+    is itself the observation: the budget is spent until then, so every later call is
+    refused locally instead of spending another request into the same cooldown.
+    Unclamped, as ``_quota_dict`` is — the lockout never sleeps, so the ceiling on a
+    sleep has no business shortening it.
+    """
     limit = _header_number(response, "x-ratelimit-limit")
     remaining = _header_number(response, "x-ratelimit-remaining")
+    if limit is None and remaining is None and response.status_code == 429:
+        retry_after = _retry_after_seconds(response)
+        if retry_after is not None:
+            stats.record_quota(provider, limit=None, remaining=0, reset_seconds=retry_after)
+        return
     stats.record_quota(
         provider,
         limit=None if limit is None else int(limit),

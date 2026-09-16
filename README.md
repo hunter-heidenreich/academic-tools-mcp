@@ -2,7 +2,7 @@
 
 An [MCP](https://modelcontextprotocol.io/) server that gives LLM agents lean, focused tools for working with academic papers. Built on [FastMCP](https://github.com/jlowin/fastmcp).
 
-Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Download and read full paper PDFs section-by-section. Explore reference and citation graphs. Cross-reference with Wikipedia.
+Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Download and read full paper PDFs section-by-section. Explore reference and citation graphs. Find a paper's code, benchmark results and leaderboards on Papers with Code. Cross-reference with Wikipedia.
 
 ## Data Sources
 
@@ -15,6 +15,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [Crossref](https://www.crossref.org/) | Reference lists, title search / DOI discovery | Optional email (for polite pool) |
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
 | [Wikipedia](https://www.wikipedia.org/) | Article search, summaries | Optional email (for User-Agent) |
+| [Papers with Code](https://paperswithcode.co/) | Code repositories, tasks, methods, benchmark results and leaderboards, Hugging Face links (arXiv papers) | None |
 
 All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry honouring `Retry-After`, and definitive 404s are negative-cached (24h; 1h for arXiv/bioRxiv, whose identifiers go live mid-session) so retry-happy agents don't burn rate budget on guaranteed misses.
 
@@ -25,6 +26,7 @@ These are properties of the upstream providers rather than of this server, which
 - **Diacritics are dropped or mangled** in OpenAlex author names (`Alan Aspuru-Guzik` for `Alán Aspuru-Guzik`). Verify spellings against the publisher's page before quoting a name.
 - **Affiliations are current, not paper-time.** OpenAlex reports where an author works *now*, not where they were when the paper was published — the gap widens for older papers.
 - **A zero from OpenCitations is not a claim of absence.** OpenCitations answers a DOI it has never indexed and a DOI it indexed with zero edges identically — an empty list — so `get_paper_references(source="opencitations")` and `get_paper_citations` returning `total: 0` mean "no edges in this index", not "this paper has no references or citations". Cross-check against Crossref for references (`get_paper_references_count` reports both) and against OpenAlex for citations (`get_paper_citations_count` reports both).
+- **Papers with Code is an anonymous public beta, rate-limited per IP.** Its allowance (120 req/min, 60 for list and search) is shared with every browser and script on your network, so heavy browsing while an agent runs can still draw a 429; the server then refuses all Papers with Code calls locally until `Retry-After` passes. It carries no uptime promise, looks papers up by arXiv ID only, stops search pagination at page 100, and fills `hf_models`/`hf_datasets`/`hf_spaces` URL lists only for papers it catalogued from outside arXiv. Repository links, the `is_official` flag and leaderboard rows are community-curated — cite a result's source paper, not the leaderboard.
 - **Preprint and published author lists diverge.** arXiv and the published DOI can list different author sets for the same work. `get_paper_metadata(doi, follow_published=True)` chains a bioRxiv preprint to its journal version, but only once OpenAlex has indexed that version; until then the response carries `followed_published: false` so you can tell you are looking at preprint-era metadata.
 
 ## Setup
@@ -172,6 +174,21 @@ After importing a PDF, use the unified pipeline tools (`convert_paper` → `get_
 
 **Provider-aware routing**: if the identifier is an arXiv ID, bioRxiv DOI, or ACL DOI, the file is stored in that provider's cache namespace automatically. A subsequent `download_pdf("2301.00001")` will find an already-imported PDF — no duplicates.
 
+### Papers with Code
+
+| Tool | Description |
+|------|-------------|
+| `get_paper_code` | Linked code repositories (official first, then by stars, with the full count), project pages and Hugging Face artifacts |
+| `get_paper_catalog` | Tasks, methods, introduced benchmarks and frameworks, best leaderboard ranks, lineage, organizations, a machine-generated TL;DR, and authors' Hugging Face accounts |
+| `get_paper_evaluations` | Every benchmark result a paper reports — model, metrics, rank, parameter count, open/closed — one page at a time |
+| `get_pwc_task` | A task from the taxonomy, by slug, display name or ID, with paper / benchmark / evaluation counts |
+| `get_benchmark_leaderboard` | A benchmark's details (license, modalities, introducing paper) and its leaderboard, best rank first, optionally open models only |
+| `search_paperswithcode` | Keyword search over the catalog, optionally official-code-only or date-bounded |
+
+Every paper tool takes an arXiv ID in any spelling; a DOI is refused locally, with a suggestion to find the arXiv ID first. `get_paper_code` and `get_paper_catalog` read one cached record, so calling both costs one request.
+
+**The backend's limits are treated as hard.** Requests go out one at a time at no more than 90% of the documented sustained rates — about 0.56 s between any two requests and 1.1 s between list or search requests — never spending the documented burst allowance. Nothing is retried automatically, and nothing paginates on the agent's behalf. After a 429, every Papers with Code call is refused locally until `Retry-After` passes, returning `{error, retryable, quota_exhausted, retry_after_seconds}` without touching the network.
+
 ### Wikipedia
 
 | Tool | Description |
@@ -249,6 +266,11 @@ API responses and downloaded files are cached under `.cache/`:
   opencitations/references/# OpenCitations reference lists (JSON)
   opencitations/citations/ # OpenCitations citation lists (JSON)
   wikipedia/summaries/     # Wikipedia page summaries (JSON)
+  paperswithcode/papers/   # Papers with Code catalog records (JSON)
+  paperswithcode/evaluations/  # Evaluation / leaderboard pages (JSON)
+  paperswithcode/tasks/    # Tasks (JSON)
+  paperswithcode/datasets/ # Benchmarks (JSON)
+  paperswithcode/searches/ # Search result pages (JSON)
   <namespace>/downloads/_neg/  # Definitive PDF-download failures (TTL below)
   oa_download/downloads/   # Open-access fetch bookkeeping (the PDF itself is
                            #   filed under the routed provider's namespace)
@@ -270,6 +292,9 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 | crossref | 30d | 24h | Reference lists grow as publishers re-deposit metadata. |
 | opencitations | 7d | 24h | The citation graph grows continuously. |
 | wikipedia | 30d | 24h | Articles change as they're edited. |
+| paperswithcode (papers, evaluations, datasets) | 7d | 24h | Repository stars drift; leaderboards gain rows. |
+| paperswithcode (tasks) | 30d | 24h | The taxonomy is curated and slow-moving. |
+| paperswithcode (searches) | 1d | 24h | Results reorder as papers are ingested. |
 
 **PDF downloads** negative-cache definitive failures too, under a `downloads` entity in each provider's namespace: arxiv / biorxiv 1h (they render PDFs lazily, so a just-announced paper's PDF can 404 for minutes), acl_anthology and the open-access path 24h (static files — a 404 means a wrong ID or a closed-access paper). The PDF itself never expires.
 
@@ -302,16 +327,18 @@ server.py            thin entry: re-exports mcp + tools, registers the
   ├── bibtex.py        BibTeX generation
   ├── fast_extract.py  bundled pymupdf text extractor (a `python -m` target)
   │
-  ├── tools/         23 @mcp.tool functions, split by job
+  ├── tools/         29 @mcp.tool functions, split by job
   │                    paper.py     metadata / authors / abstract / bibtex
   │                    pipeline.py  download → convert → sections → section
   │                    graph.py     references and citations
   │                    search.py    arXiv / OpenAlex / Crossref / Wikipedia /
   │                                 local corpus
+  │                    catalog.py   Papers with Code: code, tasks, leaderboards
   │
-  ├── providers/     seven API clients, all the same shape
+  ├── providers/     eight API clients, all the same shape
   │                    openalex.py  arxiv.py     biorxiv.py   crossref.py
   │                    opencitations.py  wikipedia.py  acl.py
+  │                    paperswithcode.py
   │
   ├── papers/        PDF → markdown → sections
   │                    sections.py  markdown structure + search
@@ -349,7 +376,8 @@ server.py            thin entry: re-exports mcp + tools, registers the
 - **One API hit per entity.** All tools for a given DOI share one cached response. Concurrent same-key callers are coalesced by single-flight to one fetch.
 - **Per-provider concurrency, and per-host pacing where the host isn't fixed.** Each provider has its own concurrency cap (arxiv=1, per its single-connection rule; openalex=4; crossref resolved from config, see below) — multiple GETs run in flight up to the cap while a brief gap-lock enforces inter-start spacing. The open-access download path is the one client whose URLs are publisher CDNs rather than a single API, so it paces at 1 request/second **per host**: a reference walk through one journal resolves many DOIs to the same domain, and a global gap would either under-pace that or needlessly throttle unrelated publishers.
 - **Persistent connections, transparent retries.** Each provider holds one pooled `httpx.AsyncClient` so TCP+TLS handshakes are reused. Transient failures (5xx, 429, timeouts, network errors) get one in-process retry honouring `Retry-After` in either form RFC 9110 permits — delay-seconds or HTTP-date — capped at 10 minutes, before surfacing to the agent. arXiv retries twice instead of once: its edge returns 429/503 with no `Retry-After`, and a single retry tends to land in the same cooldown.
-- **Burst caps with structured backpressure.** Each provider refuses to stack more than 5 concurrent callers behind its rate-limit gap. The 6th gets `{error, retryable: True, backpressure: True}` immediately so the agent learns to slow down rather than waiting silently.
+- **A 429 is a budget observation.** A provider that sends no `X-RateLimit-*` headers still says its budget is spent when it answers 429 with `Retry-After`, so every later call to that provider is refused locally until then, rather than spending another request into the same cooldown. Papers with Code, whose per-IP allowance is shared with the operator's own browser, also takes no transparent retry at all.
+- **Burst caps with structured backpressure.** Each provider refuses to stack more than a handful of concurrent callers (5 for most, 3 for Papers with Code) behind its rate-limit gap. The next one gets `{error, retryable: True, backpressure: True}` immediately so the agent learns to slow down rather than waiting silently.
 - **Transient failures are flagged, not just described.** Every 429, 5xx, timeout and network error carries `retryable: True`, and `retry_after_seconds` whenever the server advertises `Retry-After` (either RFC 9110 form), so an agent can branch and pick a wait interval without parsing the message string.
 - **Negative caching for definitive 404s.** Known-bad identifiers are cached (24h; 1h for arXiv/bioRxiv) so retries don't burn rate budget — for PDF downloads as well as metadata, so a paper whose PDF 404s doesn't re-hit the upstream on every call. Transient errors are **not** cached: the classifier is an allowlist keyed on an explicit `retryable: False`, because an unclassified failure (a paywalled 403, say) carries no flag either way and a "not marked retryable" test would cache it for the full TTL.
 - **The rate we take follows the identity we send.** Crossref publishes two service tiers; the client picks its limits from whether `CROSSREF_MAILTO` is configured rather than assuming the polite tier. Every provider sends a descriptive `User-Agent` naming the project and its repository, with a contact address appended when one is set.
