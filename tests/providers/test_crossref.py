@@ -23,7 +23,7 @@ def _reset_crossref(monkeypatch, tmp_path=None):
     if tmp_path is not None:
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
     monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(crossref, "_SEARCH_REQUEST_GAP", 0.0)
+    monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", 0.0)
     monkeypatch.setattr(crossref, "_single_flight", singleflight.SingleFlight())
 
 
@@ -631,9 +631,9 @@ class TestSearchPacing:
 
     @pytest.mark.asyncio
     async def test_the_first_search_does_not_wait(self, tmp_path, monkeypatch):
-        """``_last_search_time`` starts at 0 as an "unset" sentinel."""
+        """A fresh gap has no last start, so nothing to wait out."""
         _reset_crossref(monkeypatch, tmp_path)
-        monkeypatch.setattr(crossref, "_SEARCH_REQUEST_GAP", 30.0)
+        monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", 30.0)
         crossref.reset_search_pacing()
         _stub_json_responses(monkeypatch, _search_response([]))
 
@@ -646,7 +646,7 @@ class TestSearchPacing:
     async def test_a_second_search_waits_out_the_gap(self, tmp_path, monkeypatch):
         _reset_crossref(monkeypatch, tmp_path)
         gap = 0.05
-        monkeypatch.setattr(crossref, "_SEARCH_REQUEST_GAP", gap)
+        monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", gap)
         crossref.reset_search_pacing()
         _stub_json_responses(monkeypatch, _search_response([]))
 
@@ -664,13 +664,13 @@ class TestSearchPacing:
         _stub_json_responses(monkeypatch, _search_response([]))
 
         await crossref.search_works("first")
-        assert crossref._last_search_time > 0
-        stale_lock = crossref._search_lock
+        assert crossref._search_gap._last_start is not None
+        stale_lock = crossref._search_gap._lock
 
         crossref.reset_search_pacing()
 
-        assert crossref._last_search_time == 0.0
-        assert crossref._search_lock is not stale_lock
+        assert crossref._search_gap._last_start is None
+        assert crossref._search_gap._lock is not stale_lock
 
 
 # ---------------------------------------------------------------------------

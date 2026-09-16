@@ -150,8 +150,9 @@ class TestPagedTools:
     async def test_paper_evaluations_drop_the_redundant_paper_fields(self, monkeypatch):
         _patch_paper(monkeypatch, _RECORD)
 
-        async def fake(arxiv_id, *, page, page_size, force_refresh):
-            return {"pwc_id": "755", "total_results": 3, "next_page": 2, "evaluations": [_ROW]}
+        async def fake(paper, *, page, page_size, force_refresh):
+            assert paper["pwc_id"] == "755"
+            return {"total_results": 3, "next_page": 2, "evaluations": [_ROW]}
 
         monkeypatch.setattr(paperswithcode, "get_paper_evaluations", fake)
 

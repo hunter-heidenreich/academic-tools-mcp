@@ -136,11 +136,11 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
     for throttle in stats.throttles():
         throttle.reset()
 
-    # Single-flight registries and crossref's search gate hang off the module,
-    # not the throttle, so they need the wider scan.
+    # Single-flight registries and the search gaps hang off the module, not the
+    # throttle, so they need the wider scan.
     for module in _imported_package_modules():
-        # Crossref paces search separately from singles (different upstream
-        # limit); its lock binds to the running event loop just as a
+        # crossref and paperswithcode pace search separately (a stricter upstream
+        # limit); a SubGap's lock binds to the running event loop just as a
         # Throttle's does, so it needs the same per-test rebuild.
         reset_search_pacing = getattr(module, "reset_search_pacing", None)
         if reset_search_pacing is not None:

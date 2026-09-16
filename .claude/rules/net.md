@@ -71,8 +71,10 @@ forever with no timeout, `max_pending=0` refuses every caller.
 Each provider keeps thin module-level wrappers (`_throttled_get`,
 `_request_slot`) that exist to preserve the test seams: tests monkeypatch those
 names, and override pacing via `mod._throttle.min_gap_seconds`. crossref and
-paperswithcode add `_throttled_search_get` with their own `reset_search_pacing()`,
-which the conftest fixture must also call.
+paperswithcode add a stricter `throttle.SubGap` for search (`_throttled_search_get`,
+paced via `mod._search_gap.min_gap_seconds`), reset through `reset_search_pacing()`,
+which the conftest fixture must also call. A `SubGap` answers to its throttle's quota
+and `max_pending` *before* it sleeps, so a queued search is refused, not stacked.
 
 ## net/stats.py
 

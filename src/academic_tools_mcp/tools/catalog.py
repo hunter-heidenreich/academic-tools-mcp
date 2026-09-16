@@ -233,7 +233,7 @@ async def get_paper_evaluations(
     if "error" in paper:
         return paper
     result = await paperswithcode.get_paper_evaluations(
-        arxiv_id, page=page, page_size=page_size, force_refresh=force_refresh
+        paper, page=page, page_size=page_size, force_refresh=force_refresh
     )
     if "error" in result:
         return _suggest(result, not_found="No evaluations on this page; try page=1.")

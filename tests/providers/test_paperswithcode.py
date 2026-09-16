@@ -1,5 +1,6 @@
 """Tests for the Papers with Code client: slugs, parsing, caching and politeness."""
 
+import asyncio
 import json
 from typing import Any
 
@@ -38,7 +39,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, *payloads: Any) -> list[httpx.Request
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(pwc._throttle, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(pwc, "_SEARCH_REQUEST_GAP", 0.0)
+    monkeypatch.setattr(pwc._search_gap, "min_gap_seconds", 0.0)
     monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
     return requests
 
@@ -112,6 +113,7 @@ class TestCanonicalSlug:
             ("machine-translation", "machine-translation"),
             ("WMT 2014 English->German (newstest2014)", "wmt-2014-english-german-newstest2014"),
             ("226", "226"),
+            ("Métodos Análisis", "metodos-analisis"),
             ("  ../..  ", ""),
         ],
     )
@@ -308,13 +310,13 @@ class TestRateLimits:
     @pytest.mark.asyncio
     async def test_list_endpoints_pass_the_search_gate(self, monkeypatch):
         _stub(monkeypatch, {"next_page": None, "results": []})
-        monkeypatch.setattr(pwc, "_SEARCH_REQUEST_GAP", 5.0)
+        monkeypatch.setattr(pwc._search_gap, "min_gap_seconds", 5.0)
         slept: list[float] = []
 
         async def fake_sleep(seconds):
             slept.append(seconds)
 
-        monkeypatch.setattr(pwc.asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
         await pwc.search("one")
         await pwc.search("two")
@@ -343,17 +345,20 @@ class TestRateLimits:
 # ---------------------------------------------------------------------------
 
 
+# A parsed ``get_paper`` record, as the evaluations tool hands it over.
+_RECORD = pwc._paper_of(_PAPER)
+
+
 class TestEvaluations:
     @pytest.mark.asyncio
-    async def test_resolves_the_numeric_id_then_pages(self, monkeypatch):
-        requests = _stub(monkeypatch, _PAPER, _EVALUATIONS)
+    async def test_pages_on_the_records_numeric_id(self, monkeypatch):
+        requests = _stub(monkeypatch, _EVALUATIONS)
 
-        result = await pwc.get_paper_evaluations("1706.03762", page=1, page_size=5)
+        result = await pwc.get_paper_evaluations(_RECORD, page=1, page_size=5)
 
-        assert requests[1].url.path == "/api/v1/evaluations/"
-        assert requests[1].url.params["paper_id"] == "755"
-        assert requests[1].url.params["page_size"] == "5"
-        assert result["pwc_id"] == "755"
+        assert requests[0].url.path == "/api/v1/evaluations/"
+        assert requests[0].url.params["paper_id"] == "755"
+        assert requests[0].url.params["page_size"] == "5"
         assert result["total_results"] == 3 and result["next_page"] == 2
         row = result["evaluations"][0]
         assert row["metrics"] == {"BLEU": "41.8"}
@@ -362,47 +367,38 @@ class TestEvaluations:
 
     @pytest.mark.asyncio
     async def test_a_cached_page_costs_nothing(self, monkeypatch):
-        requests = _stub(monkeypatch, _PAPER, _EVALUATIONS)
+        requests = _stub(monkeypatch, _EVALUATIONS)
 
-        await pwc.get_paper_evaluations("1706.03762")
-        await pwc.get_paper_evaluations("1706.03762")
+        await pwc.get_paper_evaluations(_RECORD)
+        await pwc.get_paper_evaluations(_RECORD)
 
-        assert len(requests) == 2
+        assert len(requests) == 1
 
     @pytest.mark.asyncio
     async def test_pages_cache_apart(self, monkeypatch):
-        requests = _stub(monkeypatch, _PAPER, _EVALUATIONS)
+        requests = _stub(monkeypatch, _EVALUATIONS)
 
-        await pwc.get_paper_evaluations("1706.03762", page=1)
-        await pwc.get_paper_evaluations("1706.03762", page=2)
+        await pwc.get_paper_evaluations(_RECORD, page=1)
+        await pwc.get_paper_evaluations(_RECORD, page=2)
 
-        assert len(requests) == 3
-
-    @pytest.mark.asyncio
-    async def test_a_paper_error_short_circuits(self, monkeypatch):
-        requests = _stub(monkeypatch, (404, {}))
-
-        result = await pwc.get_paper_evaluations("1706.03762")
-
-        assert result["not_found"] is True
-        assert len(requests) == 1
+        assert len(requests) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "body", [{"results": "x"}, {"results": [1, 2]}, [], {"count": 3}, _BAD_JSON]
     )
     async def test_a_wrong_shape_page_is_retryable(self, monkeypatch, body):
-        _stub(monkeypatch, _PAPER, body)
+        _stub(monkeypatch, body)
 
-        result = await pwc.get_paper_evaluations("1706.03762")
+        result = await pwc.get_paper_evaluations(_RECORD)
 
         assert result["retryable"] is True
 
     @pytest.mark.asyncio
     async def test_an_empty_page_is_a_real_answer(self, monkeypatch):
-        _stub(monkeypatch, _PAPER, {"count": 0, "next_page": None, "results": []})
+        _stub(monkeypatch, {"count": 0, "next_page": None, "results": []})
 
-        result = await pwc.get_paper_evaluations("1706.03762")
+        result = await pwc.get_paper_evaluations(_RECORD)
 
         assert result["evaluations"] == [] and result["total_results"] == 0
 

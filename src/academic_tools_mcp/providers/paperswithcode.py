@@ -5,10 +5,8 @@ Upstream is a beta and "not a bulk export service", so each public function fetc
 most one page; nothing paginates on the caller's behalf.
 """
 
-import asyncio
 import json
 import re
-import time
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
@@ -16,9 +14,9 @@ from urllib.parse import quote
 import httpx
 
 from ..net import clients, http
-from ..net.throttle import Throttle
+from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
-from ..util import useragent
+from ..util import textnorm, useragent
 from . import arxiv
 
 NAMESPACE = "paperswithcode"
@@ -88,31 +86,20 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
     return await _throttle.get(_get_client(), url, **kwargs)
 
 
-# A lock, not a second Throttle: a second semaphore would let list and detail calls
-# together exceed the catalog allowance they share.
-_search_lock = asyncio.Lock()
-_last_search_time = 0.0
+_search_gap = SubGap(_throttle, min_gap_seconds=_SEARCH_REQUEST_GAP)
 
 
 def reset_search_pacing() -> None:
-    """Rebuild the search lock and clear its timestamp (test seam, called by conftest)."""
-    global _search_lock, _last_search_time  # noqa: PLW0603 — process-wide search pacing state
-    _search_lock = asyncio.Lock()
-    _last_search_time = 0.0
+    """Reset the list-and-search gap (test seam, called by conftest)."""
+    _search_gap.reset()
 
 
 async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
     """GET at the list-and-search rate, then through the catalog slot.
 
-    For every collection endpoint (``/papers/search``, ``/evaluations/``), not just
-    search. Stamped before the catalog hand-off, with crossref's accepted drift.
+    For every collection endpoint (``/papers/search``, ``/evaluations/``), not just search.
     """
-    global _last_search_time  # noqa: PLW0603 — process-wide search pacing state
-    async with _search_lock:
-        elapsed = time.monotonic() - _last_search_time
-        if _last_search_time > 0 and elapsed < _SEARCH_REQUEST_GAP:
-            await asyncio.sleep(_SEARCH_REQUEST_GAP - elapsed)
-        _last_search_time = time.monotonic()
+    await _search_gap.wait()
     return await _throttled_get(url, **kwargs)
 
 
@@ -129,9 +116,10 @@ def canonical_slug(value: str) -> str:
 
     Upstream slugs lowercase the name and hyphenate each non-alphanumeric run, so
     ``WMT 2014 English->German (newstest2014)`` → ``wmt-2014-english-german-newstest2014``.
-    Slugs and numeric IDs pass through unchanged.
+    Diacritics fold to their base letter first (``Métodos`` → ``metodos``), as slugifiers
+    do, rather than splitting the word. Slugs and numeric IDs pass through unchanged.
     """
-    return _SLUG_SEPARATOR_RE.sub("-", value.lower()).strip("-")
+    return _SLUG_SEPARATOR_RE.sub("-", textnorm.fold(value).lower()).strip("-")
 
 
 # ---------------------------------------------------------------------------
@@ -518,7 +506,6 @@ def _parse_evaluation_page(data: Any) -> dict[str, Any] | None:
 
 async def _evaluation_page(
     *,
-    scope: str,
     params: dict[str, Any],
     page: int,
     page_size: int,
@@ -527,7 +514,7 @@ async def _evaluation_page(
 ) -> dict[str, Any]:
     """One cached page of ``/evaluations/``, keyed on its full query."""
     query = {**params, "page": page, "page_size": page_size}
-    canonical = f"{scope}|" + json.dumps(query, sort_keys=True)
+    canonical = json.dumps(query, sort_keys=True)
 
     async def _fetch() -> dict[str, Any]:
         return await _fetch_record(
@@ -553,33 +540,26 @@ async def _evaluation_page(
 
 
 async def get_paper_evaluations(
-    arxiv_id: str, *, page: int = 1, page_size: int = 10, force_refresh: bool = False
+    paper: dict[str, Any], *, page: int = 1, page_size: int = 10, force_refresh: bool = False
 ) -> dict[str, Any]:
     """One page of a paper's evaluation rows, most-benchmarked dataset first.
 
-    Returns ``{pwc_id, total_results, next_page, evaluations}``. The numeric ID comes
-    from the cached ``get_paper`` record; ``force_refresh`` refreshes only the page.
+    ``paper`` is a ``get_paper`` record, whose numeric ID the endpoint takes. Returns
+    ``{total_results, next_page, evaluations}``.
     """
-    paper = await get_paper(arxiv_id)
-    if "error" in paper:
-        return paper
-    pwc_id = paper["pwc_id"]
-    result = await _evaluation_page(
-        scope=f"paper:{pwc_id}",
-        params={"paper_id": pwc_id, "ordering": "-benchmark_popularity"},
+    return await _evaluation_page(
+        params={"paper_id": paper["pwc_id"], "ordering": "-benchmark_popularity"},
         page=page,
         page_size=page_size,
-        not_found_error=f"No evaluations page {page} for arXiv ID: {arxiv_id}",
+        not_found_error=f"No evaluations page {page} for: {paper['title']}",
         force_refresh=force_refresh,
     )
-    return result if "error" in result else {"pwc_id": pwc_id, **result}
 
 
 async def _get_singleton(
-    path: str,
+    entity: str,
     identifier: str,
     *,
-    entity: str,
     ttl: float,
     parse: Callable[[Any], dict[str, Any] | None],
     kind: str,
@@ -592,7 +572,7 @@ async def _get_singleton(
     async def _fetch() -> dict[str, Any]:
         # canonical_slug emits only [a-z0-9-], so the one path that escapes is an empty
         # slug, which would list the whole collection. Uncached: no request made.
-        url = f"{_BASE_URL}/{path}/{canonical}"
+        url = f"{_BASE_URL}/{entity}/{canonical}"
         if not canonical or not http.addresses_a_record(url):
             return http.not_found(not_found_error)
         return await _fetch_record(
@@ -620,7 +600,6 @@ async def get_task(task: str, *, force_refresh: bool = False) -> dict[str, Any]:
     return await _get_singleton(
         "tasks",
         task,
-        entity="tasks",
         ttl=_TASK_TTL_SECONDS,
         parse=_task_of,
         kind="task",
@@ -633,7 +612,6 @@ async def get_benchmark(benchmark: str, *, force_refresh: bool = False) -> dict[
     return await _get_singleton(
         "datasets",
         benchmark,
-        entity="datasets",
         ttl=_POSITIVE_TTL_SECONDS,
         parse=_dataset_of,
         kind="benchmark",
@@ -662,7 +640,6 @@ async def get_leaderboard(
     if is_open is not None:
         params["is_open"] = "true" if is_open else "false"
     result = await _evaluation_page(
-        scope=f"dataset:{dataset['benchmark_id']}",
         params=params,
         page=page,
         page_size=page_size,

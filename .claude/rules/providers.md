@@ -148,7 +148,7 @@ pads a partial date, and CrossRef/rest-api-doc#7 reports the fully-specified for
 dropping works whose deposited date is itself year-only — so spelling out
 `-01-01` / `-12-31` is a regression, not a hardening.
 
-**Accepted limitation:** the search gate stamps `_last_search_time` *before*
+**Accepted limitation:** the search gate stamps its start *before*
 handing off to the singles slot, so under mixed load a queued search can start
 later than its stamp and two searches land closer together than the gap.
 Reserving the instant the way `Throttle.slot` does needs a second `Throttle`,

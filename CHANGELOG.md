@@ -33,6 +33,10 @@ grouped by milestone rather than per commit.
   without `X-RateLimit-*` headers, every later call is refused without a request,
   returning `{quota_exhausted: true, retry_after_seconds}`, until that time passes.
   Previously each caller sent its own request into the same cooldown. ([#127])
+- **Crossref title search refuses a fan-out instead of queueing it.** Searches waiting
+  on the stricter search gap now count against the provider's queue cap, returning
+  `{backpressure: true}`, and a locked-out provider refuses them before the wait.
+  ([#127])
 
 ### Fixed
 
