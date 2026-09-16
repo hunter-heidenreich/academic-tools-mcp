@@ -1,4 +1,4 @@
-"""Tests for the Papers with Code client: identifiers, parsing, caching and politeness."""
+"""Tests for the Papers with Code client: slugs, parsing, caching and politeness."""
 
 import json
 from typing import Any
@@ -100,28 +100,11 @@ _EVALUATIONS = {
 
 
 # ---------------------------------------------------------------------------
-# Identifiers
+# canonical_slug
 # ---------------------------------------------------------------------------
 
 
-class TestIdentifiers:
-    @pytest.mark.parametrize(
-        ("spelling", "expected"),
-        [
-            ("1706.03762", "1706.03762"),
-            ("1706.03762v7", "1706.03762"),
-            ("arXiv:1706.03762", "1706.03762"),
-            ("https://arxiv.org/abs/1706.03762v2", "1706.03762"),
-            ("cs.DS/0610046v1", "cs.ds/0610046"),
-        ],
-    )
-    def test_every_spelling_folds_to_the_unversioned_key(self, spelling, expected):
-        assert pwc.canonical_arxiv_id(spelling) == expected
-
-    @pytest.mark.parametrize("doi", ["10.1234/example", "not an id", ""])
-    def test_a_non_arxiv_identifier_is_refused(self, doi):
-        assert pwc.is_arxiv_id(doi) is False
-
+class TestCanonicalSlug:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [

@@ -9,7 +9,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from ..app import FORCE_REFRESH, enrich_error, mcp
-from ..providers import paperswithcode
+from ..providers import arxiv, paperswithcode
 
 ARXIV_ID = Annotated[
     str,
@@ -69,13 +69,11 @@ def _suggest(result: dict[str, Any], *, not_found: str) -> dict[str, Any]:
 
 async def _paper(arxiv_id: str, force_refresh: bool) -> tuple[str, dict[str, Any]]:
     """The canonical ID, and the paper's record or an error with a suggestion."""
-    canonical = paperswithcode.canonical_arxiv_id(arxiv_id)
+    canonical = arxiv.base_arxiv_id(arxiv_id)
     paper = await paperswithcode.get_paper(arxiv_id, force_refresh=force_refresh)
     if "error" in paper:
         suggestion = (
-            _NOT_CATALOGUED_SUGGESTION
-            if paperswithcode.is_arxiv_id(arxiv_id)
-            else _NOT_ARXIV_SUGGESTION
+            _NOT_CATALOGUED_SUGGESTION if arxiv.is_arxiv_id(arxiv_id) else _NOT_ARXIV_SUGGESTION
         )
         _suggest(paper, not_found=suggestion)
     return canonical, paper
@@ -132,7 +130,7 @@ async def get_paper_code(
     ranked = _rank_repositories(repositories, max_repositories)
     return {
         "arxiv_id": canonical,
-        "pwc_url": paperswithcode.paper_page_url(canonical),
+        "pwc_url": paperswithcode.PAPER_PAGE_URL.format(canonical),
         "has_official_implementation": paper["has_official_implementation"],
         "repository_count": total,
         "repositories": ranked,
@@ -173,7 +171,7 @@ async def get_paper_catalog(
         return paper
     return {
         "arxiv_id": canonical,
-        "pwc_url": paperswithcode.paper_page_url(canonical),
+        "pwc_url": paperswithcode.PAPER_PAGE_URL.format(canonical),
         "title": paper["title"],
         "published": paper["published"],
         "tldr": paper["tldr"],

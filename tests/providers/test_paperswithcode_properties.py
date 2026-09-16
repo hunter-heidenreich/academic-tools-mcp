@@ -1,8 +1,8 @@
 """Property-based tests for the Papers with Code client.
 
-Three seams: the identifier folds (an arXiv ID and a task or benchmark name each
-become one cache key, and one URL segment that cannot escape its path), and the
-response side, where no upstream contract promises the body's shape.
+Two seams: the slug fold (a task or benchmark name becomes one cache key and one URL
+segment that cannot escape its path), and the response side, where no upstream
+contract promises the body's shape.
 """
 
 from __future__ import annotations
@@ -27,8 +27,6 @@ _json_values = st.recursive(
     max_leaves=8,
 )
 
-_new_ids = st.from_regex(r"\A\d{4}\.\d{4,5}\Z")
-
 
 @_SETTINGS
 @given(text=st.text(max_size=40))
@@ -37,17 +35,6 @@ def test_canonical_slug_is_idempotent_and_path_safe(text: str) -> None:
     assert pwc.canonical_slug(slug) == slug
     assert set(slug) <= set("abcdefghijklmnopqrstuvwxyz0123456789-")
     assert not slug.startswith("-") and not slug.endswith("-")
-
-
-@_SETTINGS
-@given(
-    base=_new_ids,
-    version=st.integers(min_value=1, max_value=20),
-    prefix=st.sampled_from(["", "arXiv:", "https://arxiv.org/abs/"]),
-)
-def test_every_arxiv_spelling_is_one_key(base: str, version: int, prefix: str) -> None:
-    assert pwc.canonical_arxiv_id(f"{prefix}{base}v{version}") == base
-    assert pwc.canonical_arxiv_id(base) == base
 
 
 @_SETTINGS

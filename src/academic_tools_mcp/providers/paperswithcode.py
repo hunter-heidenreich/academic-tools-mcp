@@ -28,7 +28,7 @@ LABEL = "Papers with Code"
 _BASE_URL = "https://paperswithcode.co/api/v1"
 
 # The public paper page, for a link the agent can hand a reader.
-_PAPER_PAGE_URL = "https://paperswithcode.co/paper/{}"
+PAPER_PAGE_URL = "https://paperswithcode.co/paper/{}"
 
 _PARSE_ERRORS = http.JSON_PARSE_ERRORS
 
@@ -121,20 +121,6 @@ async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
 # ---------------------------------------------------------------------------
 
 
-def is_arxiv_id(identifier: str) -> bool:
-    """Whether *identifier* is an arXiv ID, the only paper key upstream accepts."""
-    return arxiv.is_arxiv_id(identifier)
-
-
-def canonical_arxiv_id(identifier: str) -> str:
-    """The cache key: the lowercased arXiv ID without its version.
-
-    Unlike ``arxiv``'s key, which keeps the version: upstream has one record per paper
-    and answers every version with it.
-    """
-    return arxiv.base_arxiv_id(identifier)
-
-
 _SLUG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -146,11 +132,6 @@ def canonical_slug(value: str) -> str:
     Slugs and numeric IDs pass through unchanged.
     """
     return _SLUG_SEPARATOR_RE.sub("-", value.lower()).strip("-")
-
-
-def paper_page_url(arxiv_id: str) -> str:
-    """The public Papers with Code page for a paper."""
-    return _PAPER_PAGE_URL.format(arxiv_id)
 
 
 # ---------------------------------------------------------------------------
@@ -487,13 +468,14 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
 
     An uncatalogued paper is a negative-cached ``not_found``.
     """
-    canonical = canonical_arxiv_id(arxiv_id)
+    # Unversioned, unlike arxiv's own key: upstream has one record per paper.
+    canonical = arxiv.base_arxiv_id(arxiv_id)
     not_found_error = f"Papers with Code has no record for arXiv ID: {arxiv_id}"
 
     async def _fetch() -> dict[str, Any]:
         # The request-side shape check: nothing but an arXiv ID (never `..` or empty)
         # reaches the URL. Uncached, since no request was made.
-        if not is_arxiv_id(canonical):
+        if not arxiv.is_arxiv_id(canonical):
             return http.not_found(not_found_error)
         # The request keeps the caller's case (`math.GT/...`); safe="" keeps an
         # old-style ID's slash inside one path segment.
