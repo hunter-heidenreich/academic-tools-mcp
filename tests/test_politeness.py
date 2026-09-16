@@ -405,10 +405,9 @@ class TestOaDownloadPacesPerPublisher:
         assert opencitations._MAX_CONCURRENT == 2
 
     def test_paperswithcode_stays_within_its_documented_allowances(self):
-        # Documented per IP: 120 req/min across the catalog, 60 req/min for list and
-        # search. The allowance is shared with the operator's own browser, so we claim
-        # at most 90% of each as a sustained rate, one request at a time, and never
-        # spend a retry into a 429.
+        # Documented per IP: 120 req/min for the catalog, 60 for list and search. The
+        # operator's browser shares that allowance, so we take at most 90% of each,
+        # one request at a time, and never retry into a 429.
         assert paperswithcode._MIN_REQUEST_GAP >= 60.0 / (120 * 0.9) - 1e-9
         assert paperswithcode._SEARCH_REQUEST_GAP >= 60.0 / (60 * 0.9) - 1e-9
         assert paperswithcode._SEARCH_REQUEST_GAP > paperswithcode._MIN_REQUEST_GAP

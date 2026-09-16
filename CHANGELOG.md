@@ -17,25 +17,22 @@ grouped by milestone rather than per commit.
 
 ### Added
 
-- **Papers with Code is a provider.** Six tools read what no other source here
-  has: `get_paper_code` (linked repositories, official first, with stars, plus
-  Hugging Face artifacts), `get_paper_catalog` (tasks, methods, introduced
-  benchmarks, best leaderboard ranks, lineage), `get_paper_evaluations` (every
-  result a paper reports), `get_pwc_task`, `get_benchmark_leaderboard` and
-  `search_paperswithcode`. The API is an anonymous beta whose per-IP allowance is
-  shared with the operator's browser, so requests run one at a time at no more
-  than 90% of each documented sustained rate, are never retried automatically,
-  never paginate on the agent's behalf, and are cached. Papers are looked up by
-  arXiv ID only. ([#127])
+- **Papers with Code is a provider.** Six tools cover data no other source here
+  has: `get_paper_code` (repositories ranked official-first, Hugging Face
+  artifacts), `get_paper_catalog` (tasks, methods, introduced benchmarks, best
+  leaderboard ranks, lineage), `get_paper_evaluations` (every reported result),
+  `get_pwc_task`, `get_benchmark_leaderboard` and `search_paperswithcode`. Papers
+  are looked up by arXiv ID only. The API's per-IP rate limit is shared with the
+  operator's browser, so requests run one at a time at no more than 90% of each
+  documented rate, with no automatic retries or paging, and every response is
+  cached. ([#127])
 
 ### Changed
 
-- **A 429 with `Retry-After` locks its provider out locally.** For a provider that
-  advertises no `X-RateLimit-*` budget, the 429 is now recorded as one: every
-  later call to that provider is refused before any request, with
-  `{quota_exhausted: true, retry_after_seconds}`, until the advertised time
-  passes. Previously each caller spent its own request into the same cooldown.
-  ([#127])
+- **A 429 with `Retry-After` locks its provider out locally.** For a provider
+  without `X-RateLimit-*` headers, every later call is refused without a request,
+  returning `{quota_exhausted: true, retry_after_seconds}`, until that time passes.
+  Previously each caller sent its own request into the same cooldown. ([#127])
 
 ### Fixed
 

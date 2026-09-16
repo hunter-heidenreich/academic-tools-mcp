@@ -179,29 +179,26 @@ URL path segment, so the two cannot drift; its three folding rules and the
 
 ## paperswithcode.py
 
-**Upstream documents two per-IP allowances, and the operator's browser draws on
-both.** A catalog-wide one and a stricter one for every *collection* endpoint
-(search, `/evaluations/`, `/tasks/`, `/datasets/` lists) — not just search. So
-the module has crossref's two gates, and `_throttled_search_get` is right for
-any list URL, not only `/papers/search`. The gaps are derived from the documented
-rates times `_BUDGET_FRACTION`; don't hand-edit a gap without moving the
-derivation. `retry_attempts=1` is policy, not an oversight: a retry spends the
-operator's own allowance into a cooldown the 429 already announced.
+**Two per-IP allowances, both shared with the operator's browser**: one for the
+whole catalog, and a stricter one for every *collection* endpoint (`/papers/search`,
+`/evaluations/`, the `/tasks/` and `/datasets/` lists). So the module has crossref's
+two gates, and any list URL goes through `_throttled_search_get`. The gaps derive
+from the documented rates and `_BUDGET_FRACTION`; change the inputs, not the gaps.
+`retry_attempts=1` is deliberate: a retry spends the operator's allowance inside
+the cooldown a 429 just announced.
 
-**Papers are keyed by arXiv ID only**, unversioned — upstream answers any version
-with the one record, and has no DOI lookup. A non-arXiv identifier is refused
-before a URL exists; that shape test is the second request-side check.
-Task and benchmark lookups go through `canonical_slug`, whose output alphabet
-cannot shorten the path except to empty.
+**Papers are keyed by unversioned arXiv ID only**: upstream has one record per
+paper and no DOI lookup. The arXiv shape test, run before the URL is built, is the
+second request-side check. Task and benchmark slugs come from `canonical_slug`,
+whose alphabet can shorten the path only by being empty.
 
-**Nothing paginates on the caller's behalf, and search hits warm nothing** — a
-search hit is a summary, and under `get_paper`'s key it would poison every
-reader. Upstream's API is explicitly not a bulk-export service; a helper that
-walks `next_page` is the change to refuse.
+**Never paginate for the caller, and never warm from search.** A search hit is a
+partial record and would poison `get_paper`'s key. Upstream is explicitly not a
+bulk-export service, so refuse any helper that walks `next_page`.
 
-**Accepted limitation:** pacing cannot see the operator's browser traffic. Heavy
-browsing can still draw a 429; the net-layer lockout (`.claude/rules/net.md`
-§ `net/stats.py`) is what then stops the server adding to it.
+**Accepted limitation:** pacing cannot see the operator's browser traffic, which
+can still trigger a 429. The lockout in `.claude/rules/net.md` § `net/stats.py`
+then stops the server adding to it.
 
 ## acl.py
 

@@ -1,9 +1,8 @@
-"""Papers with Code client (paperswithcode.co). Anonymous, read-only JSON; keyed by arXiv ID.
+"""Papers with Code client (paperswithcode.co): anonymous read-only JSON, keyed by arXiv ID.
 
-The distinctive data — code repositories, tasks, methods, benchmarks and leaderboard
-rows — lives nowhere else this server reaches. The API is a public *beta* and
-explicitly "not a bulk export service", so every public function here fetches at most
-one upstream page and nothing paginates on the caller's behalf.
+Code repositories, tasks, methods and leaderboards — data no other provider here has.
+Upstream is a beta and "not a bulk export service", so each public function fetches at
+most one page; nothing paginates on the caller's behalf.
 """
 
 import asyncio
@@ -44,18 +43,16 @@ def _get_client() -> httpx.AsyncClient:
     return clients.get_client(NAMESPACE, headers=useragent.headers(), timeout=30.0)
 
 
-# Documented per-IP allowances: 120 req/min across the catalog, of which list and
-# search endpoints share a stricter 60 req/min. Both are claimed at 90%, as
-# *sustained* rates — the documented bursts are never spent, because the same IP's
-# browser traffic draws on them too. Sequential, as the docs ask: "Send requests
-# sequentially, cache results, and avoid parallel crawls."
+# Two documented per-IP allowances: the whole catalog, and a stricter one for list and
+# search endpoints. We take 90% of each as a sustained rate and never spend the bursts,
+# since the operator's browser shares the IP. Sequential, as upstream asks.
 _DOCUMENTED_CATALOG_PER_MINUTE = 120
 _DOCUMENTED_SEARCH_PER_MINUTE = 60
 _BUDGET_FRACTION = 0.9
 _MAX_CONCURRENT = 1
 _MIN_REQUEST_GAP = 60.0 / (_DOCUMENTED_CATALOG_PER_MINUTE * _BUDGET_FRACTION)
 _SEARCH_REQUEST_GAP = 60.0 / (_DOCUMENTED_SEARCH_PER_MINUTE * _BUDGET_FRACTION)
-# Small: at ~0.56s a start, a third queued caller already waits over a second.
+# Small: at this gap, a caller queued behind two others already waits over a second.
 _MAX_PENDING = 3
 
 _single_flight = singleflight.SingleFlight()
@@ -64,13 +61,11 @@ _single_flight = singleflight.SingleFlight()
 _POSITIVE_TTL_SECONDS = 7 * 86400.0
 # The task taxonomy is curated and slow-moving.
 _TASK_TTL_SECONDS = 30 * 86400.0
-# Search results reorder as papers are ingested — short, but long enough that a
-# re-asked query within a session costs nothing.
+# Results reorder as papers are ingested; a day still makes a repeated query free.
 _SEARCH_TTL_SECONDS = 86400.0
 
-# Exported so the tools' validation bounds aren't a second spelling of them.
-# MAX_PAGE is upstream's own cap on list pagination; MAX_PAGE_SIZE is ours, far
-# under upstream's 100, so one tool call stays one modest response.
+# Exported as the tools' validation bounds. MAX_PAGE is upstream's pagination cap;
+# MAX_PAGE_SIZE is ours, well under upstream's, to keep each response small.
 MAX_PAGE = 100
 MAX_PAGE_SIZE = 25
 # A popular paper links hundreds of repositories; the tool returns a ranked slice.
@@ -82,8 +77,8 @@ _throttle = Throttle(
     max_concurrent=_MAX_CONCURRENT,
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
-    # No transparent retry: the allowance is shared with the operator's browser, so a
-    # 429 is handed to the agent (with its Retry-After) rather than spent against again.
+    # No transparent retry: a retry spends the operator's shared allowance into the
+    # cooldown a 429 just announced. The agent gets Retry-After instead.
     retry_attempts=1,
 )
 
@@ -93,8 +88,8 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
     return await _throttle.get(_get_client(), url, **kwargs)
 
 
-# A lock, not a second Throttle — crossref's reasoning: a second semaphore would let
-# list and detail calls together exceed the one catalog allowance they share.
+# A lock, not a second Throttle: a second semaphore would let list and detail calls
+# together exceed the catalog allowance they share.
 _search_lock = asyncio.Lock()
 _last_search_time = 0.0
 
@@ -107,11 +102,10 @@ def reset_search_pacing() -> None:
 
 
 async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
-    """GET at the stricter list-and-search rate, then through the catalog slot.
+    """GET at the list-and-search rate, then through the catalog slot.
 
-    Every collection endpoint (``/papers/search``, ``/evaluations/``, ...) draws on
-    upstream's list allowance, not just search. Stamped before the catalog hand-off,
-    as crossref's is — the same accepted drift.
+    For every collection endpoint (``/papers/search``, ``/evaluations/``), not just
+    search. Stamped before the catalog hand-off, with crossref's accepted drift.
     """
     global _last_search_time  # noqa: PLW0603 — process-wide search pacing state
     async with _search_lock:
@@ -128,15 +122,15 @@ async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
 
 
 def is_arxiv_id(identifier: str) -> bool:
-    """Whether Papers with Code can be asked for *identifier* — arXiv's own shape test."""
+    """Whether *identifier* is an arXiv ID, the only paper key upstream accepts."""
     return arxiv.is_arxiv_id(identifier)
 
 
 def canonical_arxiv_id(identifier: str) -> str:
-    """The cache key: arXiv's unversioned, lowercased ID.
+    """The cache key: the lowercased arXiv ID without its version.
 
-    Unversioned, deliberately unlike ``arxiv``: a catalog record describes the paper,
-    not a revision, and upstream answers any version with the latest record.
+    Unlike ``arxiv``'s key, which keeps the version: upstream has one record per paper
+    and answers every version with it.
     """
     return arxiv.base_arxiv_id(identifier)
 
@@ -145,12 +139,11 @@ _SLUG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 
 
 def canonical_slug(value: str) -> str:
-    """Fold a task or benchmark name, slug or numeric ID into Papers with Code's slug form.
+    """Fold a task or benchmark name, slug or numeric ID to upstream's slug form. Idempotent.
 
-    Upstream slugs are the lowercased name with every non-alphanumeric run as one
-    hyphen, so a display name folds onto its slug: ``WMT 2014 English->German
-    (newstest2014)`` → ``wmt-2014-english-german-newstest2014``. A numeric ID and an
-    existing slug pass through unchanged. Idempotent.
+    Upstream slugs lowercase the name and hyphenate each non-alphanumeric run, so
+    ``WMT 2014 English->German (newstest2014)`` → ``wmt-2014-english-german-newstest2014``.
+    Slugs and numeric IDs pass through unchanged.
     """
     return _SLUG_SEPARATOR_RE.sub("-", value.lower()).strip("-")
 
@@ -163,9 +156,9 @@ def paper_page_url(arxiv_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Response parsing
 #
-# Nothing below the top level is typed, so every read degrades rather than raises:
-# ``AttributeError``/``TypeError`` are in neither ``_PARSE_ERRORS`` nor
-# ``HTTPX_ERRORS``. Only the top-level shape decides "wrong shape → retryable error".
+# Only the top-level shape can make a body a (retryable) parse error. Every nested read
+# degrades to None or [] instead of raising: AttributeError/TypeError would escape
+# both _PARSE_ERRORS and HTTPX_ERRORS.
 # ---------------------------------------------------------------------------
 
 
@@ -183,7 +176,7 @@ def _bool(value: Any) -> bool | None:
 
 
 def _id(value: Any) -> str | None:
-    """Upstream IDs are documented as strings; tolerate a bare integer too."""
+    """An ID as a string. Documented as one, but a bare integer is accepted too."""
     if isinstance(value, str) and value:
         return value
     return str(value) if _int(value) is not None else None
@@ -230,10 +223,10 @@ def _repository(raw: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _paper_of(data: Any) -> dict[str, Any] | None:
-    """The normalized catalog record for a paper, or ``None`` for a wrong-shape body.
+    """The normalized record for a paper, or ``None`` for a wrong-shape body.
 
-    A record needs an ``id`` and a ``title``; without them a 200 names nothing, and
-    caching it would serve that nothing for the full TTL.
+    ``id`` and ``title`` are required: a 200 without them would cache an empty record
+    for the full TTL.
     """
     if not isinstance(data, dict):
         return None
@@ -359,9 +352,9 @@ def _evaluation(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _page_of(data: Any) -> tuple[list[dict[str, Any]], int | None, int | None] | None:
-    """``(rows, count, next_page)`` from a paginated body, or ``None`` for a wrong shape.
+    """``(rows, count, next_page)``, or ``None`` for a wrong shape.
 
-    A non-empty ``results`` holding no objects is malformed, never "no results".
+    Non-empty ``results`` with no objects in it is malformed, not an empty page.
     """
     if not isinstance(data, dict):
         return None
@@ -393,7 +386,7 @@ def _task_of(data: Any) -> dict[str, Any] | None:
         "paper_count": _int(data.get("paper_count")),
         "benchmark_count": _int(data.get("benchmark_count")),
         "evaluation_count": _int(data.get("evaluation_count")),
-        # Editorial, and its element shape is undocumented: strings and objects pass.
+        # Element shape is undocumented; keep strings and objects.
         "research_trends": [
             trend for trend in _list(data.get("research_trends")) if isinstance(trend, (str, dict))
         ],
@@ -463,10 +456,10 @@ async def _fetch_record(
     params: dict[str, Any] | None = None,
     search_gate: bool = False,
 ) -> dict[str, Any]:
-    """One GET → parse → cache, the body every getter below shares.
+    """GET, parse and cache: the fetch body every getter below shares.
 
     ``parse`` returns the dict to cache, or ``None`` for a wrong shape (retryable,
-    uncached). A 404 is negative-cached under the same entity.
+    uncached). A 404 is negative-cached under ``entity``.
     """
     get = _throttled_search_get if search_gate else _throttled_get
     try:
@@ -490,21 +483,20 @@ async def _fetch_record(
 
 
 async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """The catalog record for an arXiv paper, repositories included.
+    """An arXiv paper's normalized record (``_paper_of``), repositories included.
 
-    Returns the normalized record (see ``_paper_of``) or an error; a paper upstream has
-    not catalogued is a negative-cached ``not_found``.
+    An uncatalogued paper is a negative-cached ``not_found``.
     """
     canonical = canonical_arxiv_id(arxiv_id)
     not_found_error = f"Papers with Code has no record for arXiv ID: {arxiv_id}"
 
     async def _fetch() -> dict[str, Any]:
-        # Refused before the URL exists: the shape test is the second check net.md asks
-        # for, and it also keeps a `..` or empty id off the wire. Uncached.
+        # The request-side shape check: nothing but an arXiv ID (never `..` or empty)
+        # reaches the URL. Uncached, since no request was made.
         if not is_arxiv_id(canonical):
             return http.not_found(not_found_error)
-        # Case-preserving for the request (`math.GT/...`); safe="" so an old-style id's
-        # slash stays inside its one segment.
+        # The request keeps the caller's case (`math.GT/...`); safe="" keeps an
+        # old-style ID's slash inside one path segment.
         bare = arxiv.strip_version(arxiv.normalize_arxiv_id(arxiv_id))
         url = f"{_BASE_URL}/papers/arxiv/{quote(bare, safe='')}"
         if not http.addresses_a_record(url):
@@ -581,11 +573,10 @@ async def _evaluation_page(
 async def get_paper_evaluations(
     arxiv_id: str, *, page: int = 1, page_size: int = 10, force_refresh: bool = False
 ) -> dict[str, Any]:
-    """One page of the leaderboard rows a paper reports, most-benchmarked first.
+    """One page of a paper's evaluation rows, most-benchmarked dataset first.
 
-    Returns ``{pwc_id, total_results, next_page, evaluations}``. The numeric paper ID
-    comes from ``get_paper``, whose cached record makes it free after the first call;
-    ``force_refresh`` refreshes the page, not that record.
+    Returns ``{pwc_id, total_results, next_page, evaluations}``. The numeric ID comes
+    from the cached ``get_paper`` record; ``force_refresh`` refreshes only the page.
     """
     paper = await get_paper(arxiv_id)
     if "error" in paper:
@@ -617,8 +608,8 @@ async def _get_singleton(
     not_found_error = f"Papers with Code has no {kind}: {identifier}"
 
     async def _fetch() -> dict[str, Any]:
-        # canonical_slug leaves only [a-z0-9-], so the one shortened path left is an
-        # empty slug, which would list the collection. Uncached — nothing spent.
+        # canonical_slug emits only [a-z0-9-], so the one path that escapes is an empty
+        # slug, which would list the whole collection. Uncached: no request made.
         url = f"{_BASE_URL}/{path}/{canonical}"
         if not canonical or not http.addresses_a_record(url):
             return http.not_found(not_found_error)
@@ -678,9 +669,9 @@ async def get_leaderboard(
 ) -> dict[str, Any]:
     """One page of a benchmark's leaderboard, best rank first.
 
-    Returns ``{benchmark, total_results, next_page, evaluations}``. Two requests on a
-    cold cache — the benchmark resolves to its numeric ID first — and ``force_refresh``
-    refreshes only the page.
+    Returns ``{benchmark, total_results, next_page, evaluations}``. A cold cache costs
+    two requests (benchmark to numeric ID, then the page); ``force_refresh`` refreshes
+    only the page.
     """
     dataset = await get_benchmark(benchmark)
     if "error" in dataset:
@@ -719,11 +710,10 @@ async def search(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> dict[str, Any]:
-    """One page of keyword search. Returns ``{next_page, results}``; upstream sends no total.
+    """One page of keyword search: ``{next_page, results}``. Upstream sends no total.
 
-    Hits are summaries, not catalog records, so they warm nothing — a partial record
-    under ``get_paper``'s key would poison every reader of it. The page itself is cached
-    briefly, keyed on the whole normalized query.
+    Hits are partial records, so they don't warm ``get_paper``'s cache, which they would
+    poison. The page is cached, keyed on the normalized query.
     """
     params: dict[str, Any] = {
         "q": " ".join(query.split()),

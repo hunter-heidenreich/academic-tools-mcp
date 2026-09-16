@@ -1,7 +1,7 @@
 """Papers with Code tools: code, catalog, evaluations, tasks, leaderboards, search.
 
-Provider-specific by design — none of this data has a counterpart in the unified paper
-tools, so it gets dedicated tools rather than a new ``_source``.
+Dedicated tools rather than a new ``_source``: none of this data has a counterpart in
+the unified paper tools.
 """
 
 from typing import Annotated, Any
@@ -14,10 +14,9 @@ from ..providers import paperswithcode
 ARXIV_ID = Annotated[
     str,
     Field(
-        description="arXiv ID in any spelling — bare (1706.03762, hep-th/9901001), "
-        "arXiv:-prefixed, or an arxiv.org URL; a version suffix is ignored. Papers "
-        "with Code keys on arXiv IDs only: for a DOI, get the arXiv ID from "
-        "get_paper_metadata or search_arxiv first."
+        description="arXiv ID: bare (1706.03762, hep-th/9901001), arXiv:-prefixed, "
+        "or an arxiv.org URL; any version suffix is ignored. DOIs are not accepted — "
+        "find the arXiv ID with get_paper_metadata or search_arxiv."
     ),
 ]
 
@@ -40,28 +39,28 @@ ISO_DATE = Annotated[
 ]
 
 _NOT_ARXIV_SUGGESTION = (
-    "Papers with Code looks papers up by arXiv ID only. For a DOI, call "
-    "get_paper_metadata or search_arxiv to find the paper's arXiv ID, then retry with it."
+    "Papers with Code takes arXiv IDs only. Find this paper's arXiv ID with "
+    "get_paper_metadata or search_arxiv, then retry."
 )
 _NOT_CATALOGUED_SUGGESTION = (
-    "Papers with Code has not catalogued this paper. Try search_paperswithcode with its "
-    "title; many papers have no Papers with Code record."
+    "Papers with Code has no record for this arXiv ID; many papers have none. "
+    "search_paperswithcode on the title can confirm."
 )
 
 
 def _suggest(result: dict[str, Any], *, not_found: str) -> dict[str, Any]:
-    """Attach the one suggestion that fits the error's verdict.
+    """Attach the suggestion matching the error's verdict.
 
-    A lockout and a 429 share advice: the allowance is per IP, so *any* Papers with Code
-    call before ``retry_after_seconds`` spends into the same cooldown.
+    A 429 and a local lockout get the same advice: the allowance is per IP, so any call
+    before ``retry_after_seconds`` lands in the same cooldown.
     """
     if result.get("not_found") is True:
         return enrich_error(result, not_found)
     if result.get("retryable") is True and "retry_after_seconds" in result:
         return enrich_error(
             result,
-            "Papers with Code is rate-limiting this IP. Make no Papers with Code call of "
-            "any kind until retry_after_seconds has passed.",
+            "Papers with Code is rate-limiting this IP. Make no Papers with Code "
+            "call until retry_after_seconds has passed.",
         )
     if result.get("retryable") is True:
         return enrich_error(result, "Transient Papers with Code failure — retry shortly.")
@@ -69,7 +68,7 @@ def _suggest(result: dict[str, Any], *, not_found: str) -> dict[str, Any]:
 
 
 async def _paper(arxiv_id: str, force_refresh: bool) -> tuple[str, dict[str, Any]]:
-    """The canonical ID and the cached catalog record (or a suggested error)."""
+    """The canonical ID, and the paper's record or an error with a suggestion."""
     canonical = paperswithcode.canonical_arxiv_id(arxiv_id)
     paper = await paperswithcode.get_paper(arxiv_id, force_refresh=force_refresh)
     if "error" in paper:
@@ -89,7 +88,7 @@ def _repository_rank(repo: dict[str, Any]) -> tuple[bool, bool, int]:
 
 
 def _rank_repositories(repositories: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    """The top *limit* repositories in agent-facing order. Stable for ties."""
+    """The first *limit* repositories by ``_repository_rank``; ties keep upstream order."""
     return sorted(repositories, key=_repository_rank)[:limit]
 
 
@@ -106,22 +105,22 @@ async def get_paper_code(
     ] = 10,
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """Code and artifacts linked to a paper on Papers with Code.
+    """Code and Hugging Face artifacts linked to a paper on Papers with Code.
 
     Returns ``{arxiv_id, pwc_url, has_official_implementation, repository_count,
     repositories: [{url, owner, name, stars, is_official}, ...], repositories_truncated,
     project_pages: [{url, is_official}, ...], hf_models, hf_datasets, hf_spaces,
-    hf_artifact_counts: {models, datasets, spaces}}``. ``repository_count`` is Papers
-    with Code's own total; ``repositories_truncated`` says more exist than were
-    returned. ``is_official`` is Papers with Code's flag, not a verified claim.
-    ``hf_*`` URL lists are typically populated only for non-arXiv papers; the counts
-    cover all. The echoed ``arxiv_id`` is canonical and unversioned.
+    hf_artifact_counts: {models, datasets, spaces}}``. ``repository_count`` is the full
+    total; ``repositories_truncated`` is true when more exist than were returned.
+    ``is_official`` is Papers with Code's label, not verified. The ``hf_*`` URL lists
+    are usually empty for arXiv papers, but ``hf_artifact_counts`` still counts them.
+    ``arxiv_id`` is echoed canonical, without version.
 
-    Errors: ``{error, suggestion}`` plus ``not_found: true`` for a paper not
-    catalogued or a non-arXiv identifier, or ``retryable: true`` (with
-    ``retry_after_seconds`` when rate-limited).
+    Errors: ``{error, suggestion}``, plus ``not_found: true`` for an uncatalogued paper
+    or a non-arXiv ID, or ``retryable: true`` (with ``retry_after_seconds`` when
+    rate-limited).
 
-    Shares one cached record with get_paper_catalog, so calling both costs one request.
+    get_paper_catalog reads the same cached record, so calling both costs one request.
     """
     canonical, paper = await _paper(arxiv_id, force_refresh)
     if "error" in paper:
@@ -160,9 +159,9 @@ async def get_paper_catalog(
     introduced_frameworks: [{name, slug}], leaderboard_ranks: [{benchmark,
     benchmark_slug, task_slug, rank, metric}], predecessors: [{arxiv_id, title}],
     successors: [{arxiv_id, title}]}``. ``tldr`` is machine-generated. ``hf_authors``
-    lists only authors linked to a Hugging Face account — use get_paper_authors for
-    the author list. ``leaderboard_ranks`` is the paper's best placements only; page
-    every row with get_paper_evaluations.
+    holds only authors with a Hugging Face account; get_paper_authors has the full
+    list. ``leaderboard_ranks`` holds only the best placements; get_paper_evaluations
+    pages every result.
 
     Errors: as get_paper_code.
 
@@ -197,7 +196,7 @@ def _page_envelope(result: dict[str, Any], page: int, page_size: int) -> dict[st
     return {
         "page": page,
         "page_size": page_size,
-        # An int, as on every tool that reports it; upstream always sends one here.
+        # Always an int, as on every tool that reports one.
         "total_results": result.get("total_results") or 0,
         "has_more": result.get("next_page") is not None,
     }
@@ -220,16 +219,17 @@ async def get_paper_evaluations(
 ) -> dict[str, Any]:
     """Every benchmark result a paper reports on Papers with Code, one page at a time.
 
-    Rows come most-benchmarked dataset first. Returns ``{arxiv_id, page, page_size,
-    total_results, has_more, evaluations: [{model, task, task_slug, benchmark,
+    Rows on the most-benchmarked datasets come first. Returns ``{arxiv_id, page,
+    page_size, total_results, has_more, evaluations: [{model, task, task_slug, benchmark,
     benchmark_slug, metrics: {name: value}, best_metric, rank, num_parameters,
     is_open, uses_additional_data, harness, evaluated_on, code_url, hf_model_url,
     source_url}, ...]}``. ``rank`` is the row's leaderboard position; ``metrics``
-    values are as upstream reports them (numbers or strings).
+    values may be numbers or strings, as upstream reports them.
 
     Errors: as get_paper_code.
 
-    Each page is one rate-limited request; read ``total_results`` before paging far.
+    Each uncached page costs a rate-limited request; check ``total_results`` before
+    paging far.
     """
     canonical, paper = await _paper(arxiv_id, False)
     if "error" in paper:
@@ -261,19 +261,19 @@ async def get_pwc_task(
 
     Returns ``{task_id, name, slug, description, keywords, parent_id, area_id, level,
     paper_count, benchmark_count, evaluation_count, research_trends}``. ``parent_id``
-    is another task's ID, passable back to this tool. ``research_trends`` is
-    editorial and its entries' shape is not fixed.
+    is another task's ID and can be passed back to this tool. ``research_trends`` is
+    editorial, with no fixed entry shape.
 
-    Errors: ``{error, suggestion}`` plus ``not_found: true`` for an unknown task, or
+    Errors: ``{error, suggestion}``, plus ``not_found: true`` for an unknown task or
     ``retryable: true`` (with ``retry_after_seconds`` when rate-limited).
 
-    Chain: find a paper's tasks with get_paper_catalog.
+    A paper's task slugs come from get_paper_catalog.
     """
     result = await paperswithcode.get_task(task, force_refresh=force_refresh)
     if "error" in result:
         return _suggest(
             result,
-            not_found="Unknown task. Take the exact slug from get_paper_catalog's tasks.",
+            not_found="Unknown task. Use a slug from get_paper_catalog's tasks.",
         )
     return result
 
@@ -303,13 +303,13 @@ async def get_benchmark_leaderboard(
     page_size, total_results, has_more, evaluations: [{model, task, task_slug, metrics,
     best_metric, rank, num_parameters, is_open, uses_additional_data, harness,
     evaluated_on, paper_title, paper_arxiv_id, code_url, hf_model_url, source_url},
-    ...]}``. A benchmark shared by several tasks interleaves their rows; group on
-    ``task_slug``. Leaderboards are community-curated — cite the row's paper, not the
-    leaderboard, for a claim.
+    ...]}``. A benchmark used by several tasks mixes their rows; group on
+    ``task_slug``. Leaderboards are community-curated: cite the row's paper, not the
+    leaderboard.
 
     Errors: as get_pwc_task.
 
-    A cold call costs two rate-limited requests (the benchmark, then the page).
+    An uncached call costs two rate-limited requests: the benchmark, then the page.
     """
     result = await paperswithcode.get_leaderboard(
         benchmark,
@@ -321,7 +321,7 @@ async def get_benchmark_leaderboard(
     if "error" in result:
         return _suggest(
             result,
-            not_found="Unknown benchmark or empty page. Take the exact slug from "
+            not_found="Unknown benchmark or empty page. Use a slug from "
             "get_paper_catalog's leaderboard_ranks or introduced_benchmarks.",
         )
     return {
@@ -349,16 +349,16 @@ async def search_paperswithcode(
 
     Returns ``{page, result_count, has_more, results: [{arxiv_id, title, first_author,
     author_count, published, has_official_implementation, repository_count}, ...]}``.
-    Upstream reports no total, so ``has_more`` is the "more exist" signal. ``arxiv_id``
-    is null for a paper catalogued from another source, which the other Papers with
-    Code tools cannot reach.
+    Upstream reports no total; ``has_more`` says whether another page exists.
+    ``arxiv_id`` is null for a paper not from arXiv, which the other Papers with Code
+    tools cannot look up.
 
     Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient failure
     (with ``retry_after_seconds`` when rate-limited).
 
-    Search runs on Papers with Code's tightest allowance: prefer one precise query to
-    many pages. Chain get_paper_code or get_paper_catalog on ``arxiv_id``; hits don't
-    warm their cache, so each follow-up costs a request.
+    Search has Papers with Code's tightest rate limit: prefer one precise query over
+    many pages. Chain get_paper_code or get_paper_catalog on ``arxiv_id``; each
+    follow-up costs a request, since hits are not cached as paper records.
     """
     result = await paperswithcode.search(
         query,

@@ -185,11 +185,10 @@ def _header_number(response: httpx.Response, name: str) -> float | None:
 def record_quota(provider: str, response: httpx.Response) -> None:
     """File the budget a response advertised. ``reset`` is a duration.
 
-    ``X-RateLimit-*`` headers win. Without them, a 429 carrying a usable ``Retry-After``
-    is itself the observation: the budget is spent until then, so every later call is
-    refused locally instead of spending another request into the same cooldown.
-    Unclamped, as ``_quota_dict`` is — the lockout never sleeps, so the ceiling on a
-    sleep has no business shortening it.
+    ``X-RateLimit-*`` headers win. Without them, a 429 with a usable ``Retry-After``
+    records the budget as spent until then, so later calls are refused locally rather
+    than sent into the same cooldown. Unclamped, like ``_quota_dict``: the lockout never
+    sleeps, so the sleep ceiling must not shorten it.
     """
     limit = _header_number(response, "x-ratelimit-limit")
     remaining = _header_number(response, "x-ratelimit-remaining")
