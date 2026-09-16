@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from academic_tools_mcp.net import http, stats
-from academic_tools_mcp.net.throttle import _MAX_TRACKED_HOSTS, Throttle
+from academic_tools_mcp.net.throttle import _MAX_TRACKED_HOSTS, SubGap, Throttle
 
 
 def _make(**overrides) -> Throttle:
@@ -619,3 +619,75 @@ class TestQuotaGate:
         with pytest.raises(http.QuotaExhaustedError):
             async with throttle.slot("https://api.openalex.org/works"):
                 pass
+
+
+class TestSubGap:
+    """The stricter per-class gap in front of a throttle: paced, and refused like it."""
+
+    @pytest.mark.asyncio
+    async def test_the_first_wait_is_free_and_the_second_waits_out_the_gap(self):
+        gap = SubGap(_make(), min_gap_seconds=0.05)
+
+        started = time.monotonic()
+        await gap.wait()
+        assert time.monotonic() - started < 0.05
+        await gap.wait()
+
+        assert time.monotonic() - started >= 0.05
+
+    @pytest.mark.asyncio
+    async def test_queued_callers_count_against_the_throttles_max_pending(self):
+        gap = SubGap(_make(max_pending=2), min_gap_seconds=10.0)
+        await gap.wait()  # stamps a start, so the next callers queue on the gap
+        first = asyncio.create_task(gap.wait())
+        second = asyncio.create_task(gap.wait())
+        await _until(lambda: gap.pending == 2)
+
+        with pytest.raises(http.LocalBackpressureError) as excinfo:
+            await gap.wait()
+
+        assert excinfo.value.max_pending == 2
+        assert excinfo.value.min_gap_seconds == 10.0
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+        assert gap.pending == 0
+
+    @pytest.mark.asyncio
+    async def test_a_spent_quota_refuses_without_sleeping_or_stamping(self, monkeypatch):
+        gap = SubGap(_make(), min_gap_seconds=10.0)
+        stats.record_quota("testprovider", limit=None, remaining=0, reset_seconds=100.0)
+        sleep = AsyncMock()
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        with pytest.raises(http.QuotaExhaustedError):
+            await gap.wait()
+
+        sleep.assert_not_awaited()
+        assert gap._last_start is None
+        assert gap.pending == 0
+
+    @pytest.mark.asyncio
+    async def test_a_quota_spent_while_queued_refuses_without_stamping(self):
+        gap = SubGap(_make(), min_gap_seconds=0.05)
+        await gap.wait()
+        stamped = gap._last_start
+        async with gap._lock:  # hold the gap so the next caller queues
+            waiter = asyncio.create_task(gap.wait())
+            await _until(lambda: gap.pending == 1)
+            stats.record_quota("testprovider", limit=None, remaining=0, reset_seconds=100.0)
+
+        with pytest.raises(http.QuotaExhaustedError):
+            await waiter
+        assert gap._last_start == stamped
+
+    @pytest.mark.asyncio
+    async def test_reset_clears_the_start_and_rebuilds_the_lock(self):
+        gap = SubGap(_make(), min_gap_seconds=0.05)
+        await gap.wait()
+        stale_lock = gap._lock
+
+        gap.reset()
+
+        assert gap._last_start is None
+        assert gap._lock is not stale_lock

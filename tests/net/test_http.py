@@ -731,6 +731,52 @@ class TestQuotaHeaders:
         assert "quota" not in stats.snapshot()["providers"].get("openalex", {})
 
 
+class TestRateLimitResponseAsQuota:
+    """A 429 without ``X-RateLimit-*`` headers is still an observation of a spent budget."""
+
+    def test_a_429_with_retry_after_locks_the_provider_out(self):
+        http.record_quota("paperswithcode", _response(429, {"retry-after": "30"}))
+
+        refusal = stats.quota_refusal("paperswithcode")
+        assert refusal is not None
+        wait, limit = refusal
+        assert 29 < wait <= 30
+        assert limit is None
+
+    def test_the_lockout_is_not_clamped_to_the_sleep_ceiling(self):
+        http.record_quota("paperswithcode", _response(429, {"retry-after": "3600"}))
+
+        wait, _ = stats.quota_refusal("paperswithcode")
+        assert wait > http._MAX_RETRY_AFTER_SECONDS
+
+    @pytest.mark.parametrize("headers", [{}, {"retry-after": "soon"}, {"retry-after": "0"}])
+    def test_a_429_without_a_usable_retry_after_records_nothing(self, headers):
+        http.record_quota("arxiv", _response(429, headers))
+
+        assert stats.quota_refusal("arxiv") is None
+
+    def test_a_non_429_retry_after_records_nothing(self):
+        http.record_quota("biorxiv", _response(503, {"retry-after": "30"}))
+
+        assert stats.quota_refusal("biorxiv") is None
+
+    def test_advertised_headers_win_over_the_429(self):
+        http.record_quota(
+            "openalex",
+            _response(429, {"retry-after": "30", "x-ratelimit-remaining": "7"}),
+        )
+
+        assert stats.quota_refusal("openalex") is None
+        assert stats.snapshot()["providers"]["openalex"]["quota"]["remaining"] == 7
+
+    def test_an_elapsed_lockout_proceeds(self, monkeypatch):
+        http.record_quota("paperswithcode", _response(429, {"retry-after": "1"}))
+        real = stats.time.monotonic
+        monkeypatch.setattr(stats.time, "monotonic", lambda: real() + 5)
+
+        assert stats.quota_refusal("paperswithcode") is None
+
+
 class TestQuotaExhaustedErrorDict:
     """A spent budget must read as retryable-but-not-soon."""
 

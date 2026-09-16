@@ -15,6 +15,29 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Added
+
+- **Papers with Code is a provider.** Six tools cover data no other source here
+  has: `get_paper_code` (repositories ranked official-first, Hugging Face
+  artifacts), `get_paper_catalog` (tasks, methods, introduced benchmarks, best
+  leaderboard ranks, lineage), `get_paper_evaluations` (every reported result),
+  `get_pwc_task`, `get_benchmark_leaderboard` and `search_paperswithcode`. Papers
+  are looked up by arXiv ID only. The API's per-IP rate limit is shared with the
+  operator's browser, so requests run one at a time at no more than 90% of each
+  documented rate, with no automatic retries or paging, and every response is
+  cached. ([#127])
+
+### Changed
+
+- **A 429 with `Retry-After` locks its provider out locally.** For a provider
+  without `X-RateLimit-*` headers, every later call is refused without a request,
+  returning `{quota_exhausted: true, retry_after_seconds}`, until that time passes.
+  Previously each caller sent its own request into the same cooldown. ([#127])
+- **Crossref title search refuses a fan-out instead of queueing it.** Searches waiting
+  on the stricter search gap now count against the provider's queue cap, returning
+  `{backpressure: true}`, and a locked-out provider refuses them before the wait.
+  ([#127])
+
 ### Fixed
 
 - **`download_pdf` fetches an arXiv PDF while the arXiv metadata API is
@@ -1815,3 +1838,4 @@ say which.
 [#123]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/123
 [#124]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/124
 [#126]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/126
+[#127]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/127

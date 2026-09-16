@@ -17,6 +17,10 @@ Gating order (see ``slot``):
    start, pacing *starts* (not durations) by ``min_gap_seconds``; the sleep and
    the GET happen outside it.
 
+A provider with a stricter limit for one class of request (crossref and Papers with
+Code search) puts a ``SubGap`` in front of the slot; it answers to the same quota and
+``max_pending``.
+
 ``slot`` is an async context manager, so a streaming PDF download holds it for
 the whole stream and its open connection counts against the concurrency cap.
 """
@@ -102,6 +106,25 @@ class Throttle:
         self._sem = asyncio.Semaphore(self.max_concurrent)
         self._lock = asyncio.Lock()
 
+    def admit(self, *, queued_ahead: int = 0, gap_seconds: float | None = None) -> None:
+        """Refuse a caller locally: a spent quota first, then a full queue.
+
+        ``queued_ahead`` counts callers waiting in front of this throttle (a ``SubGap``'s
+        queue), so they share its ``max_pending``; ``gap_seconds`` is the gap they wait on.
+        """
+        if (refusal := stats.quota_refusal(self.namespace)) is not None:
+            stats.incr(self.namespace, "quota_refusals")
+            raise http.QuotaExhaustedError(self.label, *refusal)
+        pending = self.pending + queued_ahead
+        if pending >= self.max_pending:
+            stats.incr(self.namespace, "backpressure_refusals")
+            raise http.LocalBackpressureError(
+                self.label,
+                pending,
+                self.max_pending,
+                self.min_gap_seconds if gap_seconds is None else gap_seconds,
+            )
+
     @contextlib.asynccontextmanager
     async def slot(self, url: str, *, count_request: bool = True) -> AsyncGenerator[None]:
         """Acquire the rate-limit slot for the lifetime of the with-block.
@@ -114,14 +137,7 @@ class Throttle:
         (one slot, one request); ``get`` passes ``False`` so ``get_with_retry``
         counts the attempts it makes.
         """
-        if (refusal := stats.quota_refusal(self.namespace)) is not None:
-            stats.incr(self.namespace, "quota_refusals")
-            raise http.QuotaExhaustedError(self.label, *refusal)
-        if self.pending >= self.max_pending:
-            stats.incr(self.namespace, "backpressure_refusals")
-            raise http.LocalBackpressureError(
-                self.label, self.pending, self.max_pending, self.min_gap_seconds
-            )
+        self.admit()
         self.pending += 1
         try:
             async with self._sem:
@@ -160,3 +176,45 @@ class Throttle:
                 provider=self.namespace,
                 **kwargs,
             )
+
+
+class SubGap:
+    """A stricter inter-start gap for one class of a provider's requests (e.g. search).
+
+    Waited out *before* the provider's ``Throttle`` slot. A gap, not a second
+    ``Throttle``: a second semaphore would let the two classes together exceed the
+    concurrency budget they share. Stamped before the hand-off to the slot, so a queued
+    request can start after its stamp — known, accepted drift.
+    """
+
+    def __init__(self, throttle: Throttle, *, min_gap_seconds: float) -> None:
+        """Bind to the throttle whose quota and ``max_pending`` this gap answers to."""
+        self.throttle = throttle
+        self.min_gap_seconds = max(0.0, min_gap_seconds)
+        self.reset()
+
+    def reset(self) -> None:
+        """Zero the queue and last start, and rebuild the loop-bound lock (as ``Throttle.reset``)."""
+        self.pending = 0
+        self._last_start: float | None = None
+        self._lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        """Wait out the gap, then return for the caller to take the throttle's slot.
+
+        Admission is checked on entry and again once the lock is held, so a full queue or
+        a quota spent while queued is refused without sleeping or stamping a start that
+        no request used.
+        """
+        self.throttle.admit(queued_ahead=self.pending, gap_seconds=self.min_gap_seconds)
+        self.pending += 1
+        try:
+            async with self._lock:
+                self.throttle.admit(gap_seconds=self.min_gap_seconds)
+                if self._last_start is not None:
+                    elapsed = time.monotonic() - self._last_start
+                    if elapsed < self.min_gap_seconds:
+                        await asyncio.sleep(self.min_gap_seconds - elapsed)
+                self._last_start = time.monotonic()
+        finally:
+            self.pending -= 1

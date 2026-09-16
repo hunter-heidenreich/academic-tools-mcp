@@ -148,7 +148,7 @@ pads a partial date, and CrossRef/rest-api-doc#7 reports the fully-specified for
 dropping works whose deposited date is itself year-only — so spelling out
 `-01-01` / `-12-31` is a regression, not a hardening.
 
-**Accepted limitation:** the search gate stamps `_last_search_time` *before*
+**Accepted limitation:** the search gate stamps its start *before*
 handing off to the singles slot, so under mixed load a queued search can start
 later than its stamp and two searches land closer together than the gap.
 Reserving the instant the way `Throttle.slot` does needs a second `Throttle`,
@@ -176,6 +176,29 @@ token: not a decision anyone made, and pinned by a test rather than relied on.
 grammar** — the only canonicalizer here that is. It is the cache key *and* the
 URL path segment, so the two cannot drift; its three folding rules and the
 `"ß".upper()` length trap are in its own docstring.
+
+## paperswithcode.py
+
+**Two per-IP allowances, both shared with the operator's browser**: one for the
+whole catalog, and a stricter one for every *collection* endpoint (`/papers/search`,
+`/evaluations/`, the `/tasks/` and `/datasets/` lists). So the module has crossref's
+two gates, and any list URL goes through `_throttled_search_get`. The gaps derive
+from the documented rates and `_BUDGET_FRACTION`; change the inputs, not the gaps.
+`retry_attempts=1` is deliberate: a retry spends the operator's allowance inside
+the cooldown a 429 just announced.
+
+**Papers are keyed by unversioned arXiv ID only**: upstream has one record per
+paper and no DOI lookup. The arXiv shape test, run before the URL is built, is the
+second request-side check. Task and benchmark slugs come from `canonical_slug`,
+whose alphabet can shorten the path only by being empty.
+
+**Never paginate for the caller, and never warm from search.** A search hit is a
+partial record and would poison `get_paper`'s key. Upstream is explicitly not a
+bulk-export service, so refuse any helper that walks `next_page`.
+
+**Accepted limitation:** pacing cannot see the operator's browser traffic, which
+can still trigger a 429. The lockout in `.claude/rules/net.md` § `net/stats.py`
+then stops the server adding to it.
 
 ## acl.py
 

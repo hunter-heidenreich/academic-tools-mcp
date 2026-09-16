@@ -1,16 +1,14 @@
 """Crossref client. Title search and metadata, with a tighter pace for search."""
 
-import asyncio
 import html
 import re
-import time
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
 from ..net import clients, http
-from ..net.throttle import Throttle
+from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
 from ..util import config, doinorm, useragent
 
@@ -92,35 +90,17 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
     return await _throttle.get(_get_client(), url, **kwargs)
 
 
-# A lock, not a second Throttle: a second semaphore would let searches and singles
-# together exceed Crossref's one concurrency budget.
-_search_lock = asyncio.Lock()
-_last_search_time = 0.0
+_search_gap = SubGap(_throttle, min_gap_seconds=_SEARCH_REQUEST_GAP)
 
 
 def reset_search_pacing() -> None:
-    """Rebuild the search lock and clear its timestamp (test seam).
-
-    Mirrors ``Throttle.reset``: a lock left from a previous event loop raises
-    "bound to a different event loop".
-    """
-    global _search_lock, _last_search_time  # noqa: PLW0603 — process-wide search pacing state
-    _search_lock = asyncio.Lock()
-    _last_search_time = 0.0
+    """Reset the search gap (test seam, called by conftest)."""
+    _search_gap.reset()
 
 
 async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
-    """GET at Crossref's tighter *search* rate.
-
-    Stamped before the singles hand-off, so a queued search can start after its stamp —
-    known, accepted drift.
-    """
-    global _last_search_time  # noqa: PLW0603 — process-wide search pacing state
-    async with _search_lock:
-        elapsed = time.monotonic() - _last_search_time
-        if _last_search_time > 0 and elapsed < _SEARCH_REQUEST_GAP:
-            await asyncio.sleep(_SEARCH_REQUEST_GAP - elapsed)
-        _last_search_time = time.monotonic()
+    """GET at Crossref's tighter *search* rate, then through the singles slot."""
+    await _search_gap.wait()
     return await _throttled_get(url, **kwargs)
 
 

@@ -10,7 +10,23 @@ from typing import Any
 
 from .app import mcp
 from .net import stats
-from .providers import arxiv, biorxiv, crossref, openalex, opencitations, wikipedia
+from .providers import (
+    arxiv,
+    biorxiv,
+    crossref,
+    openalex,
+    opencitations,
+    paperswithcode,
+    wikipedia,
+)
+from .tools.catalog import (
+    get_benchmark_leaderboard,
+    get_paper_catalog,
+    get_paper_code,
+    get_paper_evaluations,
+    get_pwc_task,
+    search_paperswithcode,
+)
 from .tools.graph import (
     get_paper_citations,
     get_paper_citations_count,
@@ -53,27 +69,34 @@ __all__ = [
     "download_pdf",
     "find_in_paper",
     "get_author",
+    "get_benchmark_leaderboard",
     "get_paper_abstract",
     "get_paper_authors",
     "get_paper_bibtex",
+    "get_paper_catalog",
     "get_paper_citations",
     "get_paper_citations_count",
+    "get_paper_code",
+    "get_paper_evaluations",
     "get_paper_metadata",
     "get_paper_references",
     "get_paper_references_count",
     "get_paper_section",
     "get_paper_sections",
     "get_papers_metadata",
+    "get_pwc_task",
     "get_wikipedia_summary",
     "import_paper",
     "mcp",
     "openalex",
     "opencitations",
+    "paperswithcode",
     "search_arxiv",
     "search_authors",
     "search_cached_papers",
     "search_crossref_by_title",
     "search_openalex",
+    "search_paperswithcode",
     "search_wikipedia",
     "wikipedia",
 ]

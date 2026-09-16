@@ -70,15 +70,24 @@ forever with no timeout, `max_pending=0` refuses every caller.
 
 Each provider keeps thin module-level wrappers (`_throttled_get`,
 `_request_slot`) that exist to preserve the test seams: tests monkeypatch those
-names, and override pacing via `mod._throttle.min_gap_seconds`. crossref adds
-`_throttled_search_get` with its own `reset_search_pacing()`, which the conftest
-fixture must also call.
+names, and override pacing via `mod._throttle.min_gap_seconds`. crossref and
+paperswithcode add a stricter `throttle.SubGap` for search (`_throttled_search_get`,
+paced via `mod._search_gap.min_gap_seconds`), reset through `reset_search_pacing()`,
+which the conftest fixture must also call. A `SubGap` answers to its throttle's quota
+and `max_pending` *before* it sleeps, so a queued search is refused, not stacked.
 
 ## net/stats.py
 
 - **A quota is observed, never assumed.** Only OpenAlex sends `X-RateLimit-*`, so
   no header, no deadline and an elapsed deadline all read as *proceed* — refusing
   on ignorance would strand every provider that publishes nothing.
+- **A 429 with a usable `Retry-After` is an observation too.** Without
+  `X-RateLimit-*` headers (which win), `http.record_quota` records the budget as
+  spent until then, and `Throttle.slot` refuses every later caller for that
+  namespace. A retry already inside `get_with_retry` holds its slot, so it is not
+  refused; it waits out `Retry-After` itself, up to the sleep ceiling. The
+  lockout is unclamped, like `_quota_dict`, and ends only at its deadline: a later
+  header-less success does not clear it.
 - **`_quota_dict`'s `retry_after_seconds` escapes `_MAX_RETRY_AFTER_SECONDS`.**
   That ceiling bounds a sleep, and a quota refusal never sleeps; clamping an
   hours-away refill to 10 minutes advertises a retry that cannot succeed.

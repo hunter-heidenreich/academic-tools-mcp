@@ -42,6 +42,7 @@ class TestNamespaceVocabulary:
             "oa_download",
             "openalex",
             "opencitations",
+            "paperswithcode",
             "wikipedia",
         }
     )
