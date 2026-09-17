@@ -237,6 +237,15 @@ class TestDownloadPdfCascade:
 # ---------------------------------------------------------------------------
 
 
+def _batch_of(get_paper):
+    """An ``arxiv.get_papers_batch`` stub answering each id as the singleton stub would."""
+
+    async def batch(arxiv_ids, *, force_refresh=False):
+        return {server.arxiv.canonical_arxiv_id(i): await get_paper(i) for i in arxiv_ids}
+
+    return batch
+
+
 class TestGetPapersMetadataTool:
     @pytest.mark.asyncio
     async def test_mixed_sources_dispatched_correctly(self, monkeypatch):
@@ -264,7 +273,7 @@ class TestGetPapersMetadataTool:
                 for d in dois
             }
 
-        monkeypatch.setattr(server.arxiv, "get_paper", fake_arxiv)
+        monkeypatch.setattr(server.arxiv, "get_papers_batch", _batch_of(fake_arxiv))
         monkeypatch.setattr(server.openalex, "get_works_batch", fake_batch)
 
         result = await server.get_papers_metadata(
@@ -310,7 +319,7 @@ class TestGetPapersMetadataTool:
                 "published": "",
             }
 
-        monkeypatch.setattr(server.arxiv, "get_paper", fake_arxiv)
+        monkeypatch.setattr(server.arxiv, "get_papers_batch", _batch_of(fake_arxiv))
         result = await server.get_papers_metadata(
             identifiers=["2301.0001", "2301.00099", "2301.0002"]
         )

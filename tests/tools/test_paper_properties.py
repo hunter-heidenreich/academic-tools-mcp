@@ -88,7 +88,11 @@ def _serve(monkeypatch: pytest.MonkeyPatch, names: list[str] | None = None) -> N
     async def fake_batch(dois: list[str], **kwargs: Any) -> dict[str, dict[str, Any]]:
         return {openalex.canonical_doi(d): {"id": "W1", "title": "T"} for d in dois}
 
+    async def fake_arxiv_batch(ids: list[str], **kwargs: Any) -> dict[str, dict[str, Any]]:
+        return {arxiv.canonical_arxiv_id(i): await fake_arxiv(i) for i in ids}
+
     monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
+    monkeypatch.setattr(arxiv, "get_papers_batch", fake_arxiv_batch)
     monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv)
     monkeypatch.setattr(openalex, "get_work", fake_openalex)
     monkeypatch.setattr(openalex, "get_works_batch", fake_batch)

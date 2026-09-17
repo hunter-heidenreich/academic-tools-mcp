@@ -34,6 +34,10 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **`get_papers_metadata` fetches arXiv IDs in one request.** Uncached arXiv IDs
+  go out in batched `id_list` calls, as OpenAlex DOIs already did. Each ID was its
+  own request behind arXiv's one-at-a-time limit, so a list of more than a few
+  cold IDs came back partly as backpressure errors. ([#130])
 - **DOIs the Anthology hosts route to it**, including TACL/CL (`10.1162/…`), so
   they download natively but lose OpenAlex's `cited_by_count`, `pmid`, open-access
   fields and `fallback_crossref`. ([#128])
@@ -1857,3 +1861,4 @@ say which.
 [#127]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/127
 [#128]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/128
 [#129]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/129
+[#130]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/130

@@ -1582,3 +1582,216 @@ class TestSpellingsThatMissedTheRouter:
         # Case survives: BibTeX's eprint field keeps the archive class.
         assert bibtex._arxiv_eprint_from_doi("10.48550/arXiv.math.GT/0309136") == "math.GT/0309136"
         assert bibtex._arxiv_eprint_from_doi("10.1234/other") == ""
+
+
+# ---------------------------------------------------------------------------
+# get_papers_batch: one id_list request for many ids
+# ---------------------------------------------------------------------------
+
+
+def _stub_scripted_client(monkeypatch, *responses):
+    """Install a stub client answering each GET with the next ``(status, text)``.
+
+    Returns the list of params each GET sent. A 4xx/5xx raises from
+    ``raise_for_status`` as a real response would.
+    """
+    from academic_tools_mcp.net import clients
+
+    seen: list[dict] = []
+    queue = list(responses)
+
+    class StubResponse:
+        def __init__(self, status_code, text):
+            self.status_code = status_code
+            self.text = text
+            self.headers: dict[str, str] = {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise _http_status_error(self.status_code)
+
+    class StubClient:
+        async def get(self, url, **kwargs):
+            seen.append(kwargs.get("params") or {})
+            return StubResponse(*queue.pop(0))
+
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
+    return seen
+
+
+class TestGetPapersBatch:
+    @pytest.mark.asyncio
+    async def test_many_ids_cost_one_request(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        ids = [f"2301.{n:05d}" for n in range(20)]
+        # Unordered, as arXiv answers: attribution is by id, not by position.
+        feed = _feed(*(_search_entry(f"{i}v1") for i in reversed(ids)), total="20")
+        seen = _stub_scripted_client(monkeypatch, (200, feed))
+
+        out = await arxiv.get_papers_batch(ids)
+
+        assert len(seen) == 1
+        assert seen[0] == {"id_list": ",".join(ids), "max_results": "20"}
+        assert list(out) == ids
+        assert all(arxiv.id_from_entry(out[i]) == f"{i}v1" for i in ids)
+
+    @pytest.mark.asyncio
+    async def test_a_hit_serves_a_later_singleton_without_a_request(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(
+            monkeypatch, (200, _feed(_search_entry("2301.00001v2"), total="1"))
+        )
+
+        await arxiv.get_papers_batch(["2301.00001"])
+        paper = await arxiv.get_paper("2301.00001")
+
+        assert arxiv.id_from_entry(paper) == "2301.00001v2"
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_cached_ids_are_not_requested(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(
+            monkeypatch,
+            (200, _feed(_search_entry("2301.00001v1"), total="1")),
+            (200, _feed(_search_entry("2301.00002v1"), total="1")),
+        )
+
+        await arxiv.get_papers_batch(["2301.00001"])
+        out = await arxiv.get_papers_batch(["2301.00001", "2301.00002"])
+
+        assert seen[1]["id_list"] == "2301.00002"
+        assert set(out) == {"2301.00001", "2301.00002"}
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_requests_cached_ids_again(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(
+            monkeypatch,
+            (200, _feed(_search_entry("2301.00001v1"), total="1")),
+            (200, _feed(_search_entry("2301.00001v2"), total="1")),
+        )
+
+        await arxiv.get_papers_batch(["2301.00001"])
+        out = await arxiv.get_papers_batch(["2301.00001"], force_refresh=True)
+
+        assert len(seen) == 2
+        assert arxiv.id_from_entry(out["2301.00001"]) == "2301.00001v2"
+
+    @pytest.mark.asyncio
+    async def test_spellings_of_one_id_share_one_slot(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(
+            monkeypatch, (200, _feed(_search_entry("hep-th/9901001v3"), total="1"))
+        )
+
+        out = await arxiv.get_papers_batch(["HEP-TH/9901001", "arXiv:hep-th/9901001"])
+
+        assert seen[0]["id_list"] == "hep-th/9901001"
+        assert list(out) == ["hep-th/9901001"]
+
+    @pytest.mark.asyncio
+    async def test_a_bare_id_gets_the_newest_version_beside_an_older_request(
+        self, tmp_path, monkeypatch
+    ):
+        """arXiv returns both revisions; the older one must not answer "current"."""
+        _reset_throttle(monkeypatch, tmp_path)
+        feed = _feed(
+            _search_entry("1706.03762v1", "v1"), _search_entry("1706.03762v7", "v7"), total="2"
+        )
+        _stub_scripted_client(monkeypatch, (200, feed))
+
+        out = await arxiv.get_papers_batch(["1706.03762", "1706.03762v1"])
+
+        assert out["1706.03762"]["title"] == "v7"
+        assert out["1706.03762v1"]["title"] == "v1"
+
+    @pytest.mark.asyncio
+    async def test_an_omitted_id_is_negative_cached_when_the_feed_accounts_for_itself(
+        self, tmp_path, monkeypatch
+    ):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_scripted_client(monkeypatch, (200, _feed(_search_entry("2301.00001v1"), total="1")))
+
+        out = await arxiv.get_papers_batch(["2301.00001", "2301.99999"])
+
+        expected = {"error": "No paper found for arXiv ID: 2301.99999", "not_found": True}
+        assert out["2301.99999"] == expected
+        assert cache.get_negative(arxiv.NAMESPACE, "papers", "2301.99999") == expected
+
+    @pytest.mark.parametrize(
+        "feed",
+        [
+            # totalResults says more matched than the page carries.
+            _feed(_search_entry("2301.00001v1"), total="2"),
+            # A record we did not ask for.
+            _feed(_search_entry("2301.00001v1"), _search_entry("2399.00001v1"), total="2"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_an_omitted_id_is_retryable_when_the_feed_does_not(
+        self, tmp_path, monkeypatch, feed
+    ):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_scripted_client(monkeypatch, (200, feed))
+
+        out = await arxiv.get_papers_batch(["2301.00001", "2301.99999"])
+
+        assert out["2301.99999"]["retryable"] is True
+        assert "not_found" not in out["2301.99999"]
+        assert cache.get_negative(arxiv.NAMESPACE, "papers", "2301.99999") is None
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_chunk_falls_back_to_singletons(self, tmp_path, monkeypatch):
+        """One id arXiv won't accept fails the whole id_list; only that id is not-found."""
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(
+            monkeypatch,
+            (400, _feed(_ERROR_ENTRY)),
+            (200, _feed(_search_entry("2301.00001v1"), total="1")),
+            (400, _feed(_ERROR_ENTRY)),
+        )
+
+        out = await arxiv.get_papers_batch(["2301.00001", "2301.00002"])
+
+        assert [s.get("id_list") for s in seen] == [
+            "2301.00001,2301.00002",
+            "2301.00001",
+            "2301.00002",
+        ]
+        assert arxiv.id_from_entry(out["2301.00001"]) == "2301.00001v1"
+        assert out["2301.00002"]["not_found"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_contaminates_the_chunk_uncached(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        monkeypatch.setattr(arxiv._throttle, "retry_attempts", 1)
+        _stub_scripted_client(monkeypatch, (503, ""))
+
+        out = await arxiv.get_papers_batch(["2301.00001", "2301.00002"])
+
+        assert all(out[c]["retryable"] is True for c in out)
+        # Fresh dicts: mutating one caller's error must not corrupt the other.
+        assert out["2301.00001"] is not out["2301.00002"]
+        assert cache.get_negative(arxiv.NAMESPACE, "papers", "2301.00001") is None
+
+    @pytest.mark.asyncio
+    async def test_misses_are_chunked(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        monkeypatch.setattr(arxiv, "_BATCH_CHUNK_SIZE", 2)
+        seen = _stub_scripted_client(
+            monkeypatch,
+            (200, _feed(_search_entry("2301.00001v1"), _search_entry("2301.00002v1"), total="2")),
+            (200, _feed(_search_entry("2301.00003v1"), total="1")),
+        )
+
+        out = await arxiv.get_papers_batch(["2301.00001", "2301.00002", "2301.00003"])
+
+        assert [s["id_list"] for s in seen] == ["2301.00001,2301.00002", "2301.00003"]
+        assert all("error" not in p for p in out.values())

@@ -46,10 +46,11 @@ table is `README.md` § Caching.
 
 ### `cached_lookup` — the shared cached-getter protocol
 
-**Two paths deliberately re-implement its ordering; a change here must be
-mirrored in both.** `openalex.get_works_batch` open-codes the outer
-invalidate / positive / negative check per DOI and coalesces a whole chunk
-through `_fetch_chunk`; `streaming.cached_download` is the file-on-disk sibling
+**Three paths deliberately re-implement its ordering; a change here must be
+mirrored in all of them.** `openalex.get_works_batch` and `arxiv.get_papers_batch`
+open-code the outer invalidate / positive / negative check per id and coalesce a
+whole chunk through `_fetch_chunk` / `_fetch_batch_chunk`;
+`streaming.cached_download` is the file-on-disk sibling
 (`.claude/rules/download.md`). Anything else that wants this ordering calls
 `cached_lookup`.
 

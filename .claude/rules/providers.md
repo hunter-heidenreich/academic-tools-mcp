@@ -108,6 +108,16 @@ snippet. `_rejection_root` lets exactly that 400 reach the parse, and
 identically — as not-found and as a non-retryable query rejection respectively.
 A valid-shape id that does not exist is a 200 with an empty feed.
 
+**An `id_list` batch answers in its own order and omits a missing id silently.**
+`get_papers_batch` therefore attributes each entry by id, never by position, and
+negative-caches an omission only when the feed accounted for itself — every entry
+attributable and `totalResults` equal to the entries returned, the openalex rule.
+Two more upstream facts shape it: **one id arXiv rejects fails the whole request**
+(the chunk falls back to singleton `get_paper`, which isolates it), and **a bare
+id and an older revision in one request both come back**, so the bare key takes
+the newest version returned rather than whichever entry matched first. The
+default page is 10, so `max_results` rides every request.
+
 **arXiv raises `retry_attempts` above the shared default.** Its Fastly edge
 returns 429/503 with no `Retry-After` when an IP is briefly penalty-boxed, and
 one retry tends to land in the same cooldown; two ride `get_with_retry`'s backoff
