@@ -25,11 +25,13 @@ import signal
 import sys
 import tempfile
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from ..store.stems import markdown_path, safe_stem
 from ..util import config
+from . import latexml
 from .index import (
     _reparse_sections_locked,
     drop_derived,
@@ -334,6 +336,74 @@ def _finalize_markdown(
     return store_markdown_and_index(namespace, canonical, md_path, markdown, mode)
 
 
+async def _cached_or_cleared(
+    namespace: str, canonical: str, *, force_refresh: bool
+) -> dict[str, Any] | None:
+    """The cached conversion response, or ``None`` to convert — after clearing, if forced.
+
+    Shared by every converter: cached markdown never re-runs one, and a missing or
+    stale sections entry only costs a re-parse.
+    """
+    md_path = markdown_path(namespace, canonical)
+
+    if force_refresh:
+        # Both halves under one lock, so a reader can't catch a half-cleared
+        # state: markdown gone, sections entry still on the old checksum.
+        async with sections_lock(namespace, canonical):
+            drop_derived(namespace, canonical)
+
+    # None means the file vanished under the lock — convert.
+    if md_path.exists():
+        async with sections_lock(namespace, canonical):
+            payload = await _reparse_sections_locked(namespace, canonical, md_path)
+            if payload is not None:
+                return _cached_response(md_path, payload)
+    return None
+
+
+async def convert_html(
+    namespace: str,
+    canonical: str,
+    fetch: Callable[[], Awaitable[dict[str, Any]]],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any] | None:
+    """Markdown from a provider's LaTeXML rendering, cached as ``conversion_mode: "html"``.
+
+    ``fetch`` returns the provider's ``{"html": text}`` or error dict, which keeps this
+    module free of provider imports. Returns the conversion response; the fetch's
+    error with ``conversion_mode: "html"`` when it failed transiently; or ``None``
+    when there is no usable rendering — a definitive miss, or a document that
+    renders to nothing — so the caller falls back to the PDF.
+    """
+    if (
+        cached := await _cached_or_cleared(namespace, canonical, force_refresh=force_refresh)
+    ) is not None:
+        return cached
+
+    result = await fetch()
+    if "error" in result:
+        return None if result.get("not_found") is True else {**result, "conversion_mode": "html"}
+
+    try:
+        markdown = await asyncio.to_thread(latexml.to_markdown, result["html"])
+    except RecursionError:
+        # Nesting deeper than the renderer's stack: unusable, not a reason to fail.
+        return None
+    if not markdown.strip():
+        return None
+
+    md_path = markdown_path(namespace, canonical)
+    async with sections_lock(namespace, canonical):
+        # A racing caller may have written the markdown since the outer check.
+        payload = await _reparse_sections_locked(namespace, canonical, md_path)
+        if payload is not None:
+            return _cached_response(md_path, payload)
+        return await asyncio.to_thread(
+            _finalize_markdown, namespace, canonical, md_path, markdown, "html"
+        )
+
+
 async def _convert_fast(
     pdf_path: Path,
     namespace: str,
@@ -453,19 +523,10 @@ async def convert_pdf(
 
     md_path = markdown_path(namespace, canonical)
 
-    if force_refresh:
-        # Both halves under one lock, so a reader can't catch a half-cleared
-        # state: markdown gone, sections entry still on the old checksum.
-        async with sections_lock(namespace, canonical):
-            drop_derived(namespace, canonical)
-
-    # Cached markdown never re-runs the converter; a missing or stale sections entry
-    # only costs a re-parse. None means the file vanished under the lock — convert.
-    if md_path.exists():
-        async with sections_lock(namespace, canonical):
-            payload = await _reparse_sections_locked(namespace, canonical, md_path)
-            if payload is not None:
-                return _cached_response(md_path, payload)
+    if (
+        cached := await _cached_or_cleared(namespace, canonical, force_refresh=force_refresh)
+    ) is not None:
+        return cached
 
     # One stat, no exists(): a concurrent unlink fits through that window and the answer
     # is the same either way. The error stays unnamed — no cache path crosses the MCP

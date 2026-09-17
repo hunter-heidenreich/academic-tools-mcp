@@ -55,10 +55,12 @@ mcp = FastMCP(
         "get_paper_section, all auto-detecting the provider. download_pdf "
         "handles arXiv/bioRxiv/ACL; other DOIs need allow_oa_url=True (fetches "
         "only the OA URL OpenAlex reports) or import_paper with a file you "
-        "fetched, which also takes pre-converted .md. convert_paper(mode="
+        "fetched, which also takes pre-converted .md. convert_paper turns an "
+        "arXiv paper's own HTML rendering into markdown in seconds, with no "
+        "PDF needed; other papers need download_pdf first. convert_paper(mode="
         "'fast') is a seconds-long degraded fallback: plain text, no tables, "
         "equations, or headings. A real download drops cached markdown + "
-        "sections; markdown from import_paper survives unless "
+        "sections; markdown from import_paper or arXiv's HTML survives unless "
         "force_refresh=True. find_in_paper returns section + char_offset per "
         "hit, to chain into get_paper_section.\n\n"
         "References/citations: call the `_count` tool first, then paginate. "
@@ -443,7 +445,8 @@ CONVERT_FORCE_REFRESH = Annotated[
     bool,
     Field(
         description=(
-            "Drop cached markdown and section index so the converter re-runs. "
+            "Drop cached markdown and section index so the converter re-runs "
+            "(for arXiv papers, the HTML rendering is fetched again). "
             "Use after replacing the source PDF or upgrading the converter. "
             "Conversion takes minutes — only set this when you need fresh "
             "markdown."

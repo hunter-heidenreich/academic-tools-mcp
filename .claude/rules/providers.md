@@ -143,6 +143,13 @@ revision is exactly what it reports. Older papers carry no `<license>`.
 **`arxiv:doi` is the author-recorded journal DOI**, sometimes several separated by
 whitespace and often absent; `follow_published` takes the first.
 
+**`arxiv.org/html/<id>` is LaTeXML's rendering, and not every paper has one.**
+arXiv answers 404 with a "No HTML for …" page when the source was not LaTeX or
+conversion failed; `get_html` negative-caches that on the short arXiv TTL, since a
+rendering can land after announcement. A 200 without `_HTML_MARKER` is the wrong
+shape and so transient. The body is held in memory, so `MAX_PDF_BYTES` bounds it
+too.
+
 **XML is parsed with `defusedxml`**, and the refusal joins `ET.ParseError` in
 `_PARSE_ERRORS` — transient, not not-found.
 

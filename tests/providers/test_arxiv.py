@@ -1672,6 +1672,7 @@ def _stub_scripted_client(monkeypatch, *responses):
         def __init__(self, status_code, text):
             self.status_code = status_code
             self.text = text
+            self.content = text.encode()
             self.headers: dict[str, str] = {}
 
         def raise_for_status(self):
@@ -1680,7 +1681,7 @@ def _stub_scripted_client(monkeypatch, *responses):
 
     class StubClient:
         async def get(self, url, **kwargs):
-            seen.append(kwargs.get("params") or {})
+            seen.append(kwargs.get("params") or {"url": url})
             return StubResponse(*queue.pop(0))
 
     monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
@@ -2076,3 +2077,92 @@ class TestGetVersions:
     )
     def test_dates_convert_or_degrade_to_none(self, raw, expected):
         assert arxiv._iso_utc(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# get_html: arXiv's LaTeXML rendering
+# ---------------------------------------------------------------------------
+
+_RENDERING = '<html><body><article class="ltx_document"><h1>T</h1></article></body></html>'
+
+
+class TestGetHtml:
+    @pytest.mark.asyncio
+    async def test_a_rendering_is_returned_from_the_versioned_url(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(monkeypatch, (200, _RENDERING))
+
+        result = await arxiv.get_html("arXiv:1706.03762v7")
+
+        assert result == {"html": _RENDERING}
+        assert seen == [{"url": "https://arxiv.org/html/1706.03762v7"}]
+
+    @pytest.mark.asyncio
+    async def test_a_404_is_negative_cached(self, tmp_path, monkeypatch):
+        """arXiv's "No HTML for …" page: non-LaTeX source or a failed conversion."""
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(monkeypatch, (404, "<html>No HTML for '2401.00005'</html>"))
+
+        result = await arxiv.get_html("2401.00005")
+
+        expected = {"error": "No HTML rendering for arXiv ID: 2401.00005", "not_found": True}
+        assert result == expected
+        assert cache.get_negative(arxiv.NAMESPACE, "html", "2401.00005") == expected
+        assert await arxiv.get_html("2401.00005") == expected
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_asks_again_after_a_404(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(monkeypatch, (404, ""), (200, _RENDERING))
+
+        await arxiv.get_html("2401.00005")
+        result = await arxiv.get_html("2401.00005", force_refresh=True)
+
+        assert result == {"html": _RENDERING}
+        assert len(seen) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_200_that_is_not_a_rendering_is_transient_and_uncached(
+        self, tmp_path, monkeypatch
+    ):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_scripted_client(monkeypatch, (200, "<html>Service maintenance</html>"))
+
+        result = await arxiv.get_html("1706.03762")
+
+        assert result["retryable"] is True
+        assert cache.get_negative(arxiv.NAMESPACE, "html", "1706.03762") is None
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_is_retryable(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        monkeypatch.setattr(arxiv._throttle, "retry_attempts", 1)
+        _stub_scripted_client(monkeypatch, (503, ""))
+
+        assert (await arxiv.get_html("1706.03762"))["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_body_past_the_byte_cap_is_refused(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        monkeypatch.setenv("MAX_PDF_BYTES", "10")
+        _stub_scripted_client(monkeypatch, (200, _RENDERING))
+
+        result = await arxiv.get_html("1706.03762")
+
+        assert result["retryable"] is False
+        assert result["max_bytes"] == 10
+
+    @pytest.mark.asyncio
+    async def test_an_id_outside_the_grammar_makes_no_request(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(monkeypatch)
+
+        result = await arxiv.get_html("../../2301.00001")
+
+        assert result["not_found"] is True
+        assert seen == []

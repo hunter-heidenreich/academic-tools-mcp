@@ -35,6 +35,12 @@ NAMESPACE = "arxiv"
 # The PDF host's path for a bare id, versioned or not: what an entry's pdf link names.
 _PDF_URL_TEMPLATE = "https://arxiv.org/pdf/{}"
 
+# arXiv's LaTeXML rendering, versioned or not; not every paper has one.
+_HTML_URL_TEMPLATE = "https://arxiv.org/html/{}"
+
+# LaTeXML's root class: what separates a rendering from any other 200 page.
+_HTML_MARKER = "ltx_document"
+
 # Agent-facing provider name; every site that names us reads it.
 LABEL = "arXiv"
 
@@ -717,6 +723,57 @@ async def get_versions(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
         force_refresh=force_refresh,
         sf_key=("versions", canonical),
     )
+
+
+async def get_html(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """arXiv's LaTeXML HTML rendering of a paper, as ``{"html": text}``.
+
+    arXiv answers 404 when a paper has none — non-LaTeX source or a failed
+    conversion — which is negative-cached on the short arXiv TTL, since a rendering
+    can appear after announcement. There is no positive cache: the markdown made
+    from it is the cache.
+    """
+    canonical = canonical_arxiv_id(arxiv_id)
+
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "html", canonical)
+    elif (neg := cache.get_negative(NAMESPACE, "html", canonical)) is not None:
+        return neg
+
+    async def _fetch() -> dict[str, Any]:
+        bare = normalize_arxiv_id(arxiv_id)
+        # Shape-gated: only a grammar-valid id is interpolated into the HTML host's path.
+        if not _is_arxiv_shape(bare):
+            return http.not_found(f"Not an arXiv ID: {arxiv_id}")
+
+        try:
+            response = await _throttled_get(
+                _HTML_URL_TEMPLATE.format(bare), timeout=_PDF_TIMEOUT_SECONDS
+            )
+            if response.status_code == 404:
+                err = http.not_found(f"No HTML rendering for arXiv ID: {arxiv_id}")
+                cache.put_negative(NAMESPACE, "html", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
+                return err
+            response.raise_for_status()
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
+
+        max_bytes = streaming.resolve_max_pdf_bytes()
+        if max_bytes is not None and len(response.content) > max_bytes:
+            return {
+                "error": f"{LABEL} HTML exceeds MAX_PDF_BYTES ({max_bytes} bytes).",
+                "retryable": False,
+                "max_bytes": max_bytes,
+            }
+
+        text = response.text
+        # A 200 of the wrong shape is transient, as a garbled body is.
+        if _HTML_MARKER not in text:
+            return http.parse_error_dict(LABEL, detail="was not a LaTeXML rendering")
+        return {"html": text}
+
+    # Tuple-keyed to stay distinct from get_paper's and download_pdf's slots.
+    return await _single_flight.do(("html", canonical), _fetch)
 
 
 def pdf_path(arxiv_id: str) -> Path:
