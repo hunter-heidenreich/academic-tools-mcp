@@ -406,21 +406,25 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
 def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     """Generate a BibTeX entry from a parsed bioRxiv/medRxiv paper dict.
 
-    ``@article`` on a ``published_doi``, with no ``journal`` — bioRxiv reports
-    the DOI, never the venue. Otherwise ``@misc``, ``publisher`` naming the
-    server and a resolver URL only if the preprint has a DOI.
+    ``@article`` on a ``published_doi``, with ``journal`` when bioRxiv's ``/pubs`` named
+    it and year and key from the journal's ``published_date`` when present. Otherwise
+    ``@misc``, ``publisher`` naming the server and a resolver URL only if the preprint
+    has a DOI.
     """
-    key = _flat_key(paper, "date")
-    year = _year_from_date(paper, "date")
     doi = doinorm.normalize(paper.get("doi") or "")
     published_doi = doinorm.normalize(paper.get("published_doi") or "")
     server = paper.get("server") or "biorxiv"
 
     entry_type = "article" if published_doi else "misc"
+    date_field = "published_date" if published_doi and paper.get("published_date") else "date"
+    key = _flat_key(paper, date_field)
+    year = _year_from_date(paper, date_field)
 
     fields: list[tuple[str, str]] = [_title_field(paper.get("title") or "")]
     if authors := _format_flat_authors_bibtex(paper.get("authors") or []):
         fields.append(("author", f"{{{authors}}}"))
+    if published_doi and (journal := paper.get("published_journal")):
+        fields.append(("journal", f"{{{_escape_bibtex(journal)}}}"))
     if published_doi:
         fields.append(("doi", f"{{{_escape_doi(published_doi)}}}"))
     if year:

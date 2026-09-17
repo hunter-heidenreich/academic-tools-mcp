@@ -171,6 +171,8 @@ def _format_biorxiv_metadata(
         "license": paper.get("license"),
         "server": paper.get("server"),
         "published_doi": paper.get("published_doi"),
+        "published_journal": paper.get("published_journal"),
+        "published_date": paper.get("published_date"),
         "pdf_url": paper.get("pdf_url"),
     }
     # Absent unless a chain was attempted, so the default shape is unchanged.
@@ -456,7 +458,8 @@ async def get_paper_metadata(
         one), journal_ref, comment. License and revision history are
         get_paper_versions'.
       - biorxiv: doi, title, date, version, type, category, license, server,
-        published_doi, pdf_url.
+        published_doi, published_journal, published_date, pdf_url. The last two
+        name the journal version bioRxiv links; null while unpublished.
       - For arxiv and biorxiv, a ``follow_published`` chain that didn't reach the
         journal version adds ``followed_published=False``, plus
         ``published_lookup_retryable=True`` if that lookup failed transiently
@@ -909,7 +912,8 @@ async def get_paper_bibtex(
       - arxiv: @article if the paper has journal_ref, else @misc. Both carry
         eprint / archiveprefix, plus primaryclass when the paper has a
         primary_category.
-      - biorxiv: @article when published_doi is present, else @misc with
+      - biorxiv: @article with the journal DOI, and the journal name and year
+        when bioRxiv records them, when published_doi is present; else @misc with
         the preprint DOI and server.
       - acl_anthology: @article for a journal (TACL, CL), else @inproceedings
         with editor, booktitle and address.

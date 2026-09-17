@@ -1145,6 +1145,8 @@ class TestFlatMetadataFormatters:
                 "license": "cc_by",
                 "server": "bioRxiv",
                 "published_doi": "10.1038/y",
+                "published_journal": "Nature",
+                "published_date": "2024-06-01",
                 "pdf_url": "https://biorxiv.org/x.full.pdf",
             },
             "10.1101/2024.01.01.123",
@@ -1161,6 +1163,8 @@ class TestFlatMetadataFormatters:
             "license": "cc_by",
             "server": "bioRxiv",
             "published_doi": "10.1038/y",
+            "published_journal": "Nature",
+            "published_date": "2024-06-01",
             "pdf_url": "https://biorxiv.org/x.full.pdf",
         }
 

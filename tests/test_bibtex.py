@@ -409,6 +409,43 @@ class TestGenerateBiorxivBibtex:
         bib = generate_biorxiv_bibtex(_biorxiv_paper(title="Drug & Target: 100% Binding"))
         assert r"Drug \& Target: 100\% Binding" in bib
 
+    def test_published_names_the_journal(self):
+        bib = generate_biorxiv_bibtex(
+            _biorxiv_paper(
+                published_doi="10.1038/s41422-020-0305-x", published_journal="Cell Research"
+            )
+        )
+        assert "journal={Cell Research}" in bib
+
+    def test_published_without_a_journal_name_omits_the_field(self):
+        bib = generate_biorxiv_bibtex(
+            _biorxiv_paper(published_doi="10.1038/x", published_journal=None)
+        )
+        assert "journal=" not in bib
+
+    def test_a_preprint_never_carries_a_journal(self):
+        bib = generate_biorxiv_bibtex(_biorxiv_paper(published_journal="Stale Journal"))
+        assert "journal=" not in bib
+
+    def test_journal_name_is_escaped(self):
+        bib = generate_biorxiv_bibtex(
+            _biorxiv_paper(published_doi="10.1038/x", published_journal="Genes & Development")
+        )
+        assert r"journal={Genes \& Development}" in bib
+
+    def test_published_year_and_key_come_from_the_journal_date(self):
+        bib = generate_biorxiv_bibtex(
+            _biorxiv_paper(published_doi="10.1038/x", published_date="2025-02-03")
+        )
+        assert bib.startswith("@article{fujii2025great,")
+        assert "year={2025}" in bib
+
+    def test_published_without_a_journal_date_keeps_the_preprint_year(self):
+        bib = generate_biorxiv_bibtex(
+            _biorxiv_paper(published_doi="10.1038/x", published_date=None)
+        )
+        assert "year={2024}" in bib
+
     def test_no_authors(self):
         bib = generate_biorxiv_bibtex(_biorxiv_paper(authors=[]))
         assert "unknown2024" in bib
