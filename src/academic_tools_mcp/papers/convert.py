@@ -379,13 +379,10 @@ async def convert_markup(
 ) -> dict[str, Any] | None:
     """Markdown from a provider's own markup, cached as ``conversion_mode: mode``.
 
-    ``mode`` picks the renderer: ``"html"`` arXiv's LaTeXML (:mod:`.latexml`), ``"jats"``
-    bioRxiv's JATS XML (:mod:`.jats`). ``fetch`` returns the provider's
-    ``{"markup": text}`` or error dict, which keeps this module free of provider
-    imports. Returns the conversion response; the fetch's error with
-    ``conversion_mode: mode`` when it failed transiently; or ``None`` when there is no
-    usable rendering — a definitive miss, or a document that renders to nothing — so
-    the caller falls back to the PDF.
+    ``mode`` picks the renderer (:mod:`.latexml` or :mod:`.jats`). ``fetch`` returns
+    ``{"markup": text}`` or an error dict, keeping provider imports out. Returns the
+    conversion response; a transient fetch error tagged with ``mode``; or ``None`` when
+    there is no usable rendering, so the caller falls back to the PDF.
 
     ``force_refresh`` drops the cached markdown only after a successful render, so a
     failed fetch keeps it.

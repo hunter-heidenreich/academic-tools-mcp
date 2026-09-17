@@ -35,18 +35,13 @@ never the facade** — it re-exports by value, so
   whatever produced it. **Except a forced `convert_markup`, which must not clear
   first**: `convert_paper` calls it before the PDF check, so a failed fetch could
   leave no markdown and nothing to convert.
-- **`convert_markup` takes a `fetch` closure, never a provider.** That keeps
-  `papers` below `providers`; `tools/pipeline._markup_source` is where the
-  closure binds `arxiv.get_html` or `biorxiv.get_jats`, looked up at call time.
-  `mode` picks the renderer from `_RENDERERS` and is the provenance written. Its
-  three outcomes are the contract: a conversion response, a transient error
-  tagged with `mode`, or `None` for "no usable rendering" — including one that
-  renders to nothing, nests past the renderer's stack, or (JATS) does not parse —
-  which the caller reads as "try the PDF". **A renderer never raises on bad
-  input**; it returns `""`, so the three outcomes stay three.
-- **`blocks` is what the renderers share, and only that**: the heading escape and
-  the span-aware pipe table. Each walks its own tree — an `html.parser` DOM and
-  an `ElementTree` have nothing else in common.
+- **`convert_markup` takes a `fetch` closure, never a provider**, keeping `papers`
+  below `providers`; `tools/pipeline._markup_source` binds it. Its three outcomes
+  are the contract: a conversion response, a transient error tagged with `mode`,
+  or `None` for "no usable rendering" (empty, too deep, or unparseable), read as
+  "try the PDF". **A renderer never raises on bad input**; it returns `""`.
+- **`blocks` holds only what the renderers share**: the heading escape and the
+  span-aware pipe table. Each walks its own tree.
 - **Placeholder substitution is `shlex.quote`d, and that quoting is the trust
   boundary**: a canonical-derived path cannot inject into the `bash -c` command.
   Templates therefore carry bare `{input}` / `{output_dir}` / `{python}`.

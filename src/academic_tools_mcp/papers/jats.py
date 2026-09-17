@@ -1,15 +1,8 @@
 """bioRxiv's JATS XML to section-structured markdown.
 
-Pure — text in, text out, parsed with ``defusedxml``. The output is shaped for
-:mod:`.sections` exactly as :mod:`.latexml`'s is: the article title is ``#``, the
-abstract, top-level sections, back matter and the reference list are ``##``,
-subsections ``###``, anything deeper ``####``.
-
-Tags match by local name, so HighWire's namespaced attributes and a default
-namespace alike are ignored. Math is its LaTeX source (``tex-math``, else MathML
-``alttext``) — ``$…$`` inline, ``$$…$$`` for display. Graphics are dropped and
-labels and captions kept, as for converter output; a table bioRxiv ships only as
-an image is its caption alone.
+Pure, parsed with ``defusedxml``, tags matched by local name. Heading levels follow
+:mod:`.latexml`'s. Math is its LaTeX (``tex-math``, else MathML ``alttext``); graphics
+are dropped and captions kept, so a table shipped as an image is its caption alone.
 """
 
 import re
@@ -208,11 +201,7 @@ def _render(root: Element) -> list[str]:
 
 
 def to_markdown(xml: str) -> str:
-    """Render a JATS article as markdown, one blank line between blocks.
-
-    ``""`` for a document that does not parse, or that ``defusedxml`` refuses — no
-    usable rendering, so the caller falls back to the PDF.
-    """
+    """Render a JATS article as markdown; ``""`` if it does not parse or ``defusedxml`` refuses it."""
     try:
         root = fromstring(xml)
     except (ParseError, DefusedXmlException, ValueError):

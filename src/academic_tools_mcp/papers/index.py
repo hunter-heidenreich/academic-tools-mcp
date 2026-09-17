@@ -65,9 +65,8 @@ def rekey_sections(
     """Carry a section index entry onto a re-filed paper's new key, verbatim.
 
     The key changed, the bytes did not. Re-deriving would reset
-    ``conversion_mode`` to ``None``, losing the ``"imported"`` / ``"html"`` /
-    ``"jats"`` marker that keeps markdown a PDF did not produce out of
-    ``tools/pipeline``'s download cascade.
+    ``conversion_mode`` to ``None``, losing the marker that keeps markdown a PDF did
+    not produce out of ``tools/pipeline``'s download cascade.
 
     Not a third assembler: it copies a *complete* entry, only onto an empty
     destination. Keyed by the source *stem*, which is what the caller found on

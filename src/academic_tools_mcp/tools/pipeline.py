@@ -38,10 +38,9 @@ _NOT_FROM_PDF = frozenset({"imported", "html", "jats"})
 def _markup_source(
     namespace: str, identifier: str, *, force_refresh: bool
 ) -> tuple[Callable[[], Awaitable[dict[str, Any]]], papers.MarkupMode, str] | None:
-    """The provider's own markup, tried before the PDF: its fetch, provenance and name.
+    """The provider markup to try before the PDF — fetch, provenance, name — or ``None``.
 
-    ``None`` for a namespace with none. The getter is looked up at call time, so a
-    patched provider function is the one that runs.
+    Getters are looked up at call time, so a patched provider applies.
     """
     if namespace == arxiv.NAMESPACE:
         return (
@@ -211,11 +210,10 @@ async def convert_paper(
     modes write the same cache slot, so ``mode="full"`` with ``force_refresh``
     upgrades a fast conversion.
 
-    **arXiv and bioRxiv/medRxiv papers try the provider's own markup first**, in
-    either mode — arXiv's HTML rendering, bioRxiv's JATS XML: real headings,
-    equations as LaTeX and captions, in seconds, with no PDF needed. Papers without
-    one — non-LaTeX arXiv source, a failed rendering, a bioRxiv record with no full
-    text — fall through to the PDF path, which then needs download_pdf.
+    **arXiv and bioRxiv/medRxiv papers try their provider's markup first** (arXiv's
+    HTML, bioRxiv's JATS), in either mode: real headings, LaTeX equations and captions
+    in seconds, with no PDF. Papers without it fall through to the PDF path, which
+    needs download_pdf.
 
     Returns ``{sections, sections_detected, cached, conversion_mode}``, each
     section entry ``{index, title, h3s, approx_tokens}``. ``cached`` is true
@@ -229,8 +227,7 @@ async def convert_paper(
       - No usable PDF cached → ``{error, suggestion}`` only, pointing at
         download_pdf / import_paper; nothing was tried, so no ``retryable``.
       - The provider's markup failed transiently and no PDF is cached → that
-        error, with ``retryable: True`` and ``conversion_mode`` ``"html"`` or
-        ``"jats"``.
+        error, ``retryable: True``, ``conversion_mode`` ``"html"`` / ``"jats"``.
       - Another conversion in flight (full mode only) → ``{busy: True,
         retryable: True, in_progress: {...}}``; retry, or use ``mode="fast"``.
       - Timeout → ``{timed_out: True, timeout_seconds}``; the suggestion points

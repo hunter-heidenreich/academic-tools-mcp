@@ -1,9 +1,7 @@
 """bioRxiv's JATS XML to markdown: ``papers.jats``.
 
-The fixture is trimmed from a real bioRxiv source.xml (10.1101/2020.03.09.983247) —
-HighWire's namespace declarations, ``hwp:`` attributes, ``object-id`` noise and
-``citation`` markup kept as served. Math, tables and lists are synthetic: that paper
-ships its table as an image and has no formulas.
+The fixture is trimmed from a real bioRxiv source.xml (10.1101/2020.03.09.983247);
+math, tables and lists are synthetic, as that paper has none in markup.
 """
 
 import pytest

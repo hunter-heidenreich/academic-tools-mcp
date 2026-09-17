@@ -123,8 +123,8 @@ its markdown consistent.
 
 **The exceptions are markdown the PDF did not produce** — `pipeline._NOT_FROM_PDF`,
 `"imported"`, `"html"` and `"jats"`: no converter can reproduce an operator's own
-markdown, and a provider's own markup does not change with the PDF bytes, so an
-implicit cascade must not destroy any of them. An explicit `force_refresh=True` still replaces them —
+markdown, and provider markup does not change with the PDF bytes, so an implicit
+cascade must not destroy them. An explicit `force_refresh=True` still replaces them —
 that is what the flag means.
 
 `sections_note` is what stops `sections_detected: false` being read as "this

@@ -446,20 +446,18 @@ async def _get_details(doi: str, *, force_refresh: bool = False) -> dict[str, An
     )
 
 
-# The only hosts a ``jatsxml`` URL may name: it comes from the API record, and a record
-# pointing elsewhere is not one this client fetches.
+# The only hosts a ``jatsxml`` URL is fetched from.
 _JATS_HOSTS = frozenset({"www.biorxiv.org", "www.medrxiv.org"})
 
-# Present in every JATS article; a 200 without it is a challenge page or an error.
+# In every JATS article; a 200 without it is a challenge or error page.
 _JATS_MARKER = "<article"
 
 
 async def get_jats(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """bioRxiv's JATS XML full text of a paper, as ``{"markup": text}``.
+    """bioRxiv's JATS XML full text, from the record's ``jatsxml``, as ``{"markup": text}``.
 
-    The URL is the details record's ``jatsxml``, fetched only from the content hosts.
-    A 404 is negative-cached on the short TTL, as a rendering can land after posting.
-    There is no positive cache: the markdown made from it is the cache.
+    A 404 is negative-cached on the short TTL; the markdown made from it is the only
+    positive cache.
     """
     canonical = canonical_key(doi)
     if force_refresh:

@@ -1,8 +1,4 @@
-"""Markdown block emitters shared by the markup renderers (:mod:`.latexml`, :mod:`.jats`).
-
-Pure. Each renderer walks its own tree; what they share is how a paragraph is kept
-from reading as a heading and how a grid of cells becomes a pipe table.
-"""
+"""Markdown block emitters shared by :mod:`.latexml` and :mod:`.jats`. Pure."""
 
 import re
 from collections.abc import Iterable
@@ -26,10 +22,9 @@ def span(value: str | None) -> int:
 
 
 def pipe_table(rows: Iterable[Iterable[tuple[str, int, int]]]) -> str:
-    """Rows of ``(text, colspan, rowspan)`` cells as a pipe table, the first row the header.
+    """Rows of ``(text, colspan, rowspan)`` cells as a pipe table, first row the header.
 
-    Spanned columns and rows are blank, keeping every cell under its header. Text
-    arrives collapsed; ``|`` is escaped here.
+    Spanned cells are blank, keeping every cell under its header; ``|`` is escaped here.
     """
     grid = []
     # Column -> rows a rowspan above still covers.
