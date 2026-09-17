@@ -99,11 +99,14 @@ it unconditionally mangles an unrelated DataCite record *and* costs the pass its
 idempotence for a nested spelling. It is public for the reason
 `acl.ACL_DOI_PREFIX` is — one spelling of a registrant, not two.
 
-**arXiv answers HTTP 200 with a synthetic `api/errors` entry for both an invalid
-id and a malformed `search_query`.** Parsed as a normal entry it becomes a "hit"
-whose id is an errors URL, which the agent then chains the next tool call onto.
+**arXiv answers an invalid id and a malformed `search_query` with a synthetic
+`api/errors` entry, under HTTP 400 (or 200).** Parsed as a normal entry it
+becomes a "hit" whose id is an errors URL, which the agent then chains the next
+tool call onto; raised as a plain 400 it becomes an unflagged `error_dict`
+snippet. `_rejection_root` lets exactly that 400 reach the parse, and
 `_is_error_entry` is shared so `get_paper` and `search_papers` classify it
 identically — as not-found and as a non-retryable query rejection respectively.
+A valid-shape id that does not exist is a 200 with an empty feed.
 
 **arXiv raises `retry_attempts` above the shared default.** Its Fastly edge
 returns 429/503 with no `Retry-After` when an IP is briefly penalty-boxed, and
