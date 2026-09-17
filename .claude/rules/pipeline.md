@@ -32,10 +32,9 @@ never the facade** — it re-exports by value, so
 - **`_cached_or_cleared` is the one cached-markdown check, for every converter.**
   `convert_pdf` and `convert_html` both start there, which is why a paper whose
   markdown came from one never re-runs the other: cached markdown answers,
-  whatever produced it. **Except `convert_html` under `force_refresh`**, which
-  skips it and drops the markdown only once a rendering is in hand: `convert_paper`
-  calls it before checking for a PDF, so clearing up front would leave a failed
-  fetch with no markdown and nothing to convert.
+  whatever produced it. **Except a forced `convert_html`, which must not clear
+  first**: `convert_paper` calls it before the PDF check, so a failed fetch could
+  leave no markdown and nothing to convert.
 - **`convert_html` takes a `fetch` closure, never a provider.** That keeps
   `papers` below `providers`; the closure is where `tools/pipeline` binds
   `arxiv.get_html`. Its three outcomes are the contract: a conversion response,

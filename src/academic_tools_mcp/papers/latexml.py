@@ -61,10 +61,10 @@ _DEEPEST_LEVEL = 4
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
-# A body line opening with ``#`` — a code comment, a ``#1`` — would parse as a heading.
+# A body line starting with ``#`` (a code comment) would parse as a heading.
 _LEADING_HASH_RE = re.compile(r"^#", re.MULTILINE)
 
-# Bounds a malformed ``colspan``/``rowspan`` so one cell can't inflate the table.
+# Caps a malformed span so one cell can't inflate the table.
 _MAX_SPAN = 100
 
 
@@ -177,11 +177,10 @@ def _span(cell: _Node, attr: str) -> int:
 def _table(node: _Node) -> str:
     """A tabular as a pipe table, the first row taken as the header.
 
-    A spanning cell fills the columns and rows it covers with blanks, so every
-    later cell stays under its own header.
+    Spanned columns and rows are blank, keeping every cell under its header.
     """
     rows = []
-    # Column index -> how many more rows a rowspan above still covers it.
+    # Column -> rows a rowspan above still covers.
     covered: dict[int, int] = {}
 
     def skip_covered(cells: list[str]) -> None:
@@ -201,7 +200,7 @@ def _table(node: _Node) -> str:
             cells.extend([""] * (colspan - 1))
             if rowspan > 1:
                 covered.update(dict.fromkeys(range(start, start + colspan), rowspan - 1))
-        # A rowspan past this row's last cell still covers its column here.
+        # Covered columns past this row's last cell.
         while any(n > 0 and col >= len(cells) for col, n in covered.items()):
             if covered.get(len(cells), 0) > 0:
                 covered[len(cells)] -= 1

@@ -1465,7 +1465,7 @@ class TestConvertHtml:
     )
     @pytest.mark.asyncio
     async def test_a_forced_refresh_that_fails_keeps_the_cached_markdown(self, failure):
-        """Regression: the markdown was cleared before the fetch, so a failed refresh lost it."""
+        """Regression: a failed forced refresh deleted the markdown."""
         md_path = stems.markdown_path("arxiv", "2301.00001")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         store_markdown_and_index("arxiv", "2301.00001", md_path, "## A\n\nb\n", "imported")

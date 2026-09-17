@@ -176,7 +176,7 @@ class TestFiguresTablesListsNotes:
         ) in md
 
     def test_a_rowspan_keeps_the_rows_below_it_under_their_headers(self):
-        """Regression: 1706.03762 Table 3's "(A)" spans 4 rows; each row below slid left."""
+        """Regression: 1706.03762 Table 3's rows under a rowspan slid left."""
         html = _page(
             '<table class="ltx_tabular"><tr><th>Row</th><th>h</th><th>d_k</th></tr>'
             '<tr><td rowspan="3">(A)</td><td>1</td><td>512</td></tr>'
@@ -197,7 +197,7 @@ class TestFiguresTablesListsNotes:
         )
 
     def test_a_code_line_opening_with_a_hash_is_not_a_heading(self):
-        """Regression: an unnumbered listing's ``# comment`` line opened a fake section."""
+        """Regression: a listing's ``# comment`` line opened a fake section."""
         html = _page(
             '<section class="ltx_section"><h2 class="ltx_title ltx_title_section">1 Intro</h2>'
             '<div class="ltx_listing"><div class="ltx_listingline"># load the data</div></div>'

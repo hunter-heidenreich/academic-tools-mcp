@@ -874,7 +874,7 @@ class TestConvertPaperHtmlFirst:
     async def test_force_refresh_with_no_rendering_and_no_pdf_keeps_imported_markdown(
         self, isolated_cache, monkeypatch, failure
     ):
-        """Regression: the refresh cleared the markdown, then had nothing to replace it with."""
+        """Regression: a failed forced refresh deleted the markdown."""
         md_path = stems.markdown_path("arxiv", "2301.00001")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         papers.store_markdown_and_index("arxiv", "2301.00001", md_path, "## A\n\nb\n", "imported")

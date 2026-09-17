@@ -376,9 +376,8 @@ async def convert_html(
     when there is no usable rendering — a definitive miss, or a document that
     renders to nothing — so the caller falls back to the PDF.
 
-    ``force_refresh`` replaces the cached markdown only once a rendering is in hand:
-    cleared up front, a failed fetch would leave the paper with none, and the caller
-    may have no PDF to fall back to.
+    ``force_refresh`` drops the cached markdown only after a successful render, so a
+    failed fetch keeps it.
     """
     if (
         not force_refresh
