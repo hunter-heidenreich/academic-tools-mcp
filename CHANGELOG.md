@@ -26,9 +26,19 @@ grouped by milestone rather than per commit.
   operator's browser, so requests run one at a time at no more than 90% of each
   documented rate, with no automatic retries or paging, and every response is
   cached. ([#127])
+- **The ACL Anthology serves its own metadata** (`_source: "acl_anthology"`):
+  abstracts, ORCID iDs, affiliations, and BibTeX with `booktitle`, `editor` and
+  `address`. ([#128])
+- **Anthology IDs and URLs are identifiers** in every tool, reaching the ~58,000
+  Anthology papers with no DOI. ([#128])
 
 ### Changed
 
+- **DOIs the Anthology hosts route to it**, including TACL/CL (`10.1162/…`), so
+  they download natively but lose OpenAlex's `cited_by_count`, `pmid`, open-access
+  fields and `fallback_crossref`. ([#128])
+- **ACL artifacts are keyed by Anthology ID**, migrated at startup. ([#128])
+- **Volume-level ACL DOIs (`10.18653/v1/W17-47`) route to OpenAlex.** ([#128])
 - **A 429 with `Retry-After` locks its provider out locally.** For a provider
   without `X-RateLimit-*` headers, every later call is refused without a request,
   returning `{quota_exhausted: true, retry_after_seconds}`, until that time passes.
@@ -1839,3 +1849,4 @@ say which.
 [#124]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/124
 [#126]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/126
 [#127]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/127
+[#128]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/128

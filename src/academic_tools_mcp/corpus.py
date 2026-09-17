@@ -16,7 +16,7 @@ from typing import Any, NamedTuple
 from urllib.parse import unquote
 
 from . import manual, papers
-from .providers import acl, arxiv, biorxiv
+from .providers import arxiv, biorxiv
 from .store import cache, stems
 from .util import doinorm, textnorm
 
@@ -114,9 +114,9 @@ def _extract_snippet(
 # --- Filename → identifier inversion per namespace ---
 
 # A DOI suffix may contain "_", so only a slash a known prefix introduces is decidable.
+# ``acl_anthology`` stems are Anthology IDs, which have no slash.
 _NAMESPACE_DOI_PREFIXES = {
     biorxiv.NAMESPACE: biorxiv.DOI_PREFIX,
-    acl.NAMESPACE: acl.ACL_DOI_PREFIX,
 }
 
 # manual holds publisher DOIs, not the freeform labels its name suggests.

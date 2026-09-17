@@ -336,13 +336,12 @@ class TestFilenameToCanonical:
             == "10.1101/2024.01.01.123"
         )
 
-    def test_acl_anthology_restores_two_slashes(self):
-        # ACL DOIs always start with 10.18653/v1/ — both slashes
-        # become underscores on disk and must come back.
+    def test_acl_anthology_stem_is_the_anthology_id(self):
+        # The key is the Anthology ID, which carries no slash to restore.
         assert (
-            corpus._filename_to_canonical("acl_anthology", "10.18653_v1_2023.acl-long.1")
-            == "10.18653/v1/2023.acl-long.1"
+            corpus._filename_to_canonical("acl_anthology", "2023.acl-long.1") == "2023.acl-long.1"
         )
+        assert corpus._filename_to_canonical("acl_anthology", "P16-1160") == "P16-1160"
 
     def test_manual_freeform_label_passes_through(self):
         # A label that isn't DOI-shaped has no slash to restore.
@@ -400,6 +399,7 @@ class TestFilenameToCanonical:
             "2301.00001v2",
             "10.1101/2024.01.01.123",
             "10.18653/v1/2023.acl-long.1",
+            "https://aclanthology.org/W04-1013/",
             "10.1038/s41586-021-03819-2",
             "my-imported-paper",
         ],
@@ -422,7 +422,8 @@ class TestFilenameToCanonical:
             ("arxiv", "2301.00001"),
             ("arxiv", "hep-th/9901001"),
             ("biorxiv", "10.1101/2024.01.01.123"),
-            ("acl_anthology", "10.18653/v1/2023.acl-long.1"),
+            ("acl_anthology", "2023.acl-long.1"),
+            ("acl_anthology", "W04-1013"),
             ("manual", "10.1038/s41586-021-03819-2"),
             ("manual", "my-imported-paper"),
         ):
@@ -563,11 +564,11 @@ class TestSearch:
         _seed_markdown(
             isolated_cache,
             "acl_anthology",
-            "10.18653_v1_2023.acl-long.1",
+            "2023.acl-long.1",
             "# Some ACL paper\n\nattention.\n",
         )
         hits = corpus.search("attention")
-        assert hits[0]["canonical_id"] == "10.18653/v1/2023.acl-long.1"
+        assert hits[0]["canonical_id"] == "2023.acl-long.1"
 
     def test_zero_score_hits_dropped(self, isolated_cache):
         # An empty markdown file shouldn't surface as a phantom hit.

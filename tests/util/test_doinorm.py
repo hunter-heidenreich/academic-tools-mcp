@@ -178,29 +178,26 @@ class TestIdempotence:
 # Provider wrapper delegation
 # ---------------------------------------------------------------------------
 
-# `openalex`, `crossref`, `opencitations` and `acl` each expose a *public*
+# `openalex`, `crossref` and `opencitations` each expose a *public*
 # canonicalizer that is pure delegation to `doinorm.canonical` — the indirection
 # exists so the tool layer imports a provider symbol, not `dois` directly
 # (`tools/paper.py` and `manual._ROUTES` both do). What matters is that they
 # *delegate*; re-deriving `dois`'s behaviour once per provider says nothing
-# extra and rots into four copies of the same expectations.
+# extra and rots into three copies of the same expectations.
 #
 # There is deliberately no `_normalize_doi` half to this: the private wrappers
 # were pure aliases with one caller each, and the rationale above never applied
-# to them. `acl`'s Anthology-prefix policy lives in `_strip_acl_prefix`, not in
-# a normalizer. `biorxiv` is the one provider that keeps a `_normalize_doi`,
+# to them. `acl` keys on the Anthology ID, not a DOI. `biorxiv` is the one
+# provider that keeps a `_normalize_doi`,
 # because it layers a content URL and a version-stripping rule on top of
 # `doinorm.normalize` — equality is not its contract, and
 # `providers/test_biorxiv_properties.py` states what is.
 #
-# (module, the name that provider gives its cache-key wrapper). The two
-# spellings are the router's: `manual._ROUTES` passes `canonical_key` for the
-# DOI-prefix providers.
+# (module, the name that provider gives its cache-key wrapper).
 _DELEGATING_PROVIDERS = [
     ("openalex", "canonical_doi"),
     ("crossref", "canonical_doi"),
     ("opencitations", "canonical_doi"),
-    ("acl", "canonical_key"),
 ]
 
 _SPELLINGS = [

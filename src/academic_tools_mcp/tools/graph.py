@@ -12,10 +12,10 @@ from ..app import (
     enrich_error,
     mcp,
     page_bounds,
-    resolve_paper_identifier,
+    resolve_pmid_identifier,
 )
 from ..net import http
-from ..providers import crossref, openalex, opencitations
+from ..providers import acl, crossref, openalex, opencitations
 from ..util import doinorm
 
 # Auto-selection bias: OpenCitations rows are bare DOI links where Crossref's
@@ -62,13 +62,46 @@ async def _resolve_doi(doi: str, *, force_refresh: bool) -> tuple[str, dict[str,
     The one entry every graph tool takes, so the PMID trade and the DOI-only
     rejection keep one order across all four. Resolving first is what makes the
     ``pmid`` these tools hand out on every OpenCitations row one they also take.
+    An Anthology ID trades for the DOI on its record.
     """
-    doi, pmid_error = await resolve_paper_identifier(doi, force_refresh=force_refresh)
+    doi, pmid_error = await resolve_pmid_identifier(doi, force_refresh=force_refresh)
     if pmid_error is not None:
         return doi, pmid_error
+    if not doinorm.looks_like_doi(doi) and acl.is_anthology_id(doi):
+        doi, acl_error = await _anthology_doi(doi, force_refresh=force_refresh)
+        if acl_error is not None:
+            return doi, acl_error
     if (bad := _reject_non_doi(doi)) is not None:
         return doi, bad
     return doinorm.canonical(doi), None
+
+
+async def _anthology_doi(
+    identifier: str, *, force_refresh: bool
+) -> tuple[str, dict[str, Any] | None]:
+    """An Anthology ID's DOI, or the error that ends the call (forwarded whole)."""
+    record = await acl.get_paper(identifier, force_refresh=force_refresh)
+    if "error" in record:
+        hint = (
+            "Check the Anthology ID on aclanthology.org, or pass the paper's DOI directly."
+            if record.get("not_found")
+            else "Retry, or pass the paper's DOI directly if you have it."
+        )
+        return identifier, enrich_error(record, hint)
+    doi = record.get("doi")
+    if not isinstance(doi, str) or not doi:
+        anthology_id = acl.canonical_key(identifier)
+        return anthology_id, {
+            **http.not_found(
+                f"ACL Anthology paper {anthology_id} has no DOI. "
+                "Reference and citation graphs are DOI-only."
+            ),
+            "suggestion": (
+                "Read the paper's own reference list instead: "
+                "download_pdf → convert_paper → get_paper_sections."
+            ),
+        }
+    return doi, None
 
 
 def _source_error(result: dict[str, Any]) -> dict[str, Any]:

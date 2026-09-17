@@ -13,7 +13,7 @@ from typing import ClassVar
 import pytest
 
 from academic_tools_mcp import manual, server
-from academic_tools_mcp.providers import arxiv, biorxiv, openalex
+from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 from academic_tools_mcp.tools import paper
 
 # ---------------------------------------------------------------------------
@@ -502,11 +502,13 @@ class TestMetadataHintsCentralized:
 
         monkeypatch.setattr(arxiv, "get_paper", fake_error)
         monkeypatch.setattr(biorxiv, "get_paper", fake_error)
+        monkeypatch.setattr(acl, "get_paper", fake_error)
         monkeypatch.setattr(openalex, "get_work", fake_error)
 
         cases = [
             ("2301.00001", paper._ARXIV_METADATA_HINT),
             ("10.1101/2024.01.01.123", paper._BIORXIV_METADATA_HINT),
+            ("P16-1160", paper._ACL_METADATA_HINT),
             ("10.1038/s41586-024-07000-0", paper._OPENALEX_METADATA_HINT),
         ]
         sibling_tools = (
@@ -1471,3 +1473,146 @@ class TestCitedByCountReachesEveryOpenalexPath:
 
         assert set(single) == set(batched) - {"_input"}
         assert set(single) <= set(followed)
+
+
+# ---------------------------------------------------------------------------
+# ACL Anthology
+# ---------------------------------------------------------------------------
+
+
+def _acl_record(**overrides):
+    record = {
+        "anthology_id": "W04-1013",
+        "title": "ROUGE: A Package for Automatic Evaluation of Summaries",
+        "authors": [
+            {
+                "name": "Chin-Yew Lin",
+                "first": "Chin-Yew",
+                "last": "Lin",
+                "orcid": None,
+                "affiliation": "ISI",
+            }
+        ],
+        "abstract": "An abstract.",
+        "booktitle": "Text Summarization Branches Out",
+        "editors": [],
+        "volume_type": "proceedings",
+        "journal_volume": None,
+        "journal_issue": None,
+        "venues": ["ws"],
+        "publisher": "Association for Computational Linguistics",
+        "address": "Barcelona, Spain",
+        "month": "July",
+        "year": "2004",
+        "pages": "74–81",
+        "doi": None,
+        "bibkey": "lin-2004-rouge",
+        "url": "https://aclanthology.org/W04-1013/",
+        "pdf_url": "https://aclanthology.org/W04-1013.pdf",
+    }
+    record.update(overrides)
+    return record
+
+
+class TestAclAnthologySource:
+    @pytest.fixture(autouse=True)
+    def _acl(self, monkeypatch):
+        seen: list[str] = []
+
+        async def fake_get_paper(identifier, **kwargs):
+            seen.append(identifier)
+            return _acl_record()
+
+        async def no_openalex(*args, **kwargs):
+            raise AssertionError("an Anthology paper must not reach OpenAlex")
+
+        monkeypatch.setattr(acl, "get_paper", fake_get_paper)
+        monkeypatch.setattr(openalex, "get_work", no_openalex)
+        monkeypatch.setattr(openalex, "get_works_batch", no_openalex)
+        return seen
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "identifier", ["W04-1013", "https://aclanthology.org/W04-1013/", "10.18653/v1/w04-1013"]
+    )
+    async def test_metadata_echoes_the_anthology_id(self, identifier):
+        result = await server.get_paper_metadata(identifier)
+
+        assert result["_source"] == "acl_anthology"
+        assert result["_canonical_id"] == "W04-1013"
+        assert result["booktitle"] == "Text Summarization Branches Out"
+        assert result["doi"] is None
+
+    @pytest.mark.asyncio
+    async def test_metadata_carries_the_journal_fields(self):
+        result = await server.get_paper_metadata("W04-1013")
+
+        assert (result["volume_type"], result["journal_volume"], result["journal_issue"]) == (
+            "proceedings",
+            None,
+            None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_authors_keep_the_symmetric_shape(self):
+        result = await server.get_paper_authors("W04-1013")
+
+        assert result["_source"] == "acl_anthology"
+        assert result["authors"][0]["affiliation"] == "ISI"
+        assert (result["page_institutions"], result["page_institution_count"]) == ([], 0)
+
+    @pytest.mark.asyncio
+    async def test_abstract(self):
+        result = await server.get_paper_abstract("W04-1013")
+
+        assert (result["_source"], result["abstract"]) == ("acl_anthology", "An abstract.")
+
+    @pytest.mark.asyncio
+    async def test_bibtex_is_the_anthology_generator(self):
+        result = await server.get_paper_bibtex("W04-1013")
+
+        assert result["bibtex"].startswith("@inproceedings{lin2004rouge,")
+        assert "booktitle={Text Summarization Branches Out}" in result["bibtex"]
+
+    @pytest.mark.asyncio
+    async def test_batch_fetches_anthology_papers_as_singletons(self):
+        result = await server.get_papers_metadata(["W04-1013"])
+
+        assert result["papers"][0]["_source"] == "acl_anthology"
+        assert result["papers"][0]["_input"] == "W04-1013"
+
+    @pytest.mark.asyncio
+    async def test_fallback_crossref_never_applies(self, monkeypatch):
+        async def missing(identifier, **kwargs):
+            return {"error": "No ACL Anthology paper: W04-1013", "not_found": True}
+
+        monkeypatch.setattr(acl, "get_paper", missing)
+
+        result = await server.get_paper_metadata("W04-1013", fallback_crossref=True)
+
+        assert result["suggestion"] == paper._ACL_METADATA_HINT
+        assert "crossref_fallback_retryable" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_hosted_doi_answers_from_the_anthology(self, monkeypatch, _acl):
+        async def hosted(doi):
+            return "2026.tacl-1.1" if doi.endswith("10.1162/tacl.a.63") else None
+
+        monkeypatch.setattr(acl, "anthology_id_for_doi", hosted)
+
+        result = await server.get_paper_metadata("https://doi.org/10.1162/tacl.a.63")
+
+        assert result["_source"] == "acl_anthology"
+        assert result["_canonical_id"] == "2026.tacl-1.1"
+        assert _acl == ["2026.tacl-1.1"]
+
+    @pytest.mark.asyncio
+    async def test_a_claimed_doi_never_asks_the_index(self, monkeypatch):
+        async def boom(doi):
+            raise AssertionError("a routed DOI must not consult the index")
+
+        monkeypatch.setattr(acl, "anthology_id_for_doi", boom)
+
+        assert (await server.get_paper_metadata("10.18653/v1/W04-1013"))["_source"] == (
+            "acl_anthology"
+        )

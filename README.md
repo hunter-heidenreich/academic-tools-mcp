@@ -11,7 +11,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [OpenAlex](https://openalex.org/) | Paper metadata, authors, abstracts, topics, citations, BibTeX | Optional API key (free) |
 | [arXiv](https://arxiv.org/) | Preprint metadata, authors, abstracts, BibTeX, PDF download | None |
 | [bioRxiv/medRxiv](https://www.biorxiv.org/) | Preprint metadata, authors, abstracts, BibTeX, PDF download | None |
-| [ACL Anthology](https://aclanthology.org/) | PDF download for ACL venue papers (ACL, EMNLP, NAACL, etc.) | None |
+| [ACL Anthology](https://aclanthology.org/) | Metadata, authors, abstracts, BibTeX and PDF download for ACL venue papers | None |
 | [Crossref](https://www.crossref.org/) | Reference lists, title search / DOI discovery | Optional email (for polite pool) |
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
 | [Wikipedia](https://www.wikipedia.org/) | Article search, summaries | Optional email (for User-Agent) |
@@ -27,6 +27,7 @@ These are properties of the upstream providers rather than of this server, which
 - **Affiliations are current, not paper-time.** OpenAlex reports where an author works *now*, not where they were when the paper was published — the gap widens for older papers.
 - **A zero from OpenCitations is not a claim of absence.** OpenCitations answers a DOI it has never indexed and a DOI it indexed with zero edges identically — an empty list — so `get_paper_references(source="opencitations")` and `get_paper_citations` returning `total: 0` mean "no edges in this index", not "this paper has no references or citations". Cross-check against Crossref for references (`get_paper_references_count` reports both) and against OpenAlex for citations (`get_paper_citations_count` reports both).
 - **Papers with Code is a public beta with a per-IP rate limit** (120 req/min, 60 for list and search) and no uptime promise. Your browser and scripts share that limit, so browsing it heavily while an agent runs can still trigger a 429. It accepts arXiv IDs only, stops search at page 100, and fills the `hf_models` / `hf_datasets` / `hf_spaces` URL lists only for papers not from arXiv. Repository links, `is_official` and leaderboard rows are community-curated: cite a result's source paper, not the leaderboard.
+- **ACL Anthology papers without a DOI have no reference or citation graph**, and a just-minted hosted DOI (`10.1162/tacl…`) answers from OpenAlex until the weekly index refresh.
 - **Preprint and published author lists diverge.** arXiv and the published DOI can list different author sets for the same work. `get_paper_metadata(doi, follow_published=True)` chains a bioRxiv preprint to its journal version, but only once OpenAlex has indexed that version; until then the response carries `followed_published: false` so you can tell you are looking at preprint-era metadata.
 
 ## Setup
@@ -102,12 +103,12 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | Tool | Description |
 |------|-------------|
 | `get_paper_metadata` | Title, dates, venue / categories, identifiers, citation count — shape varies by `_source`. Optional `follow_published=True` auto-chains a bioRxiv preprint to its journal version on OpenAlex when one exists. |
-| `get_papers_metadata` | Bulk metadata for many identifiers at once. *Uncached* OpenAlex DOIs are chunked into batched `/works?filter=doi:...` calls — a cached one costs no request at all; arXiv / bioRxiv fan out concurrently. Designed for reference-graph enrichment after `get_paper_references`. Cap 100 per call. |
+| `get_papers_metadata` | Bulk metadata for many identifiers at once. *Uncached* OpenAlex DOIs are chunked into batched `/works?filter=doi:...` calls — a cached one costs no request at all; arXiv / bioRxiv / ACL Anthology fan out concurrently. Designed for reference-graph enrichment after `get_paper_references`. Cap 100 per call. |
 | `get_paper_authors` | Author list with source-appropriate detail (affiliations, corresponding author, OpenAlex IDs) |
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
 
-Pass an arXiv ID, any DOI, or a PMID. DOIs include bioRxiv/medRxiv (`10.1101/...`), ACL Anthology (`10.18653/v1/...`) and generic publisher DOIs. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"openalex"`) so you know which provider answered and which fields to expect; `follow_published` adds `"openalex_via_biorxiv"` when the chain reaches the journal version. arXiv IDs always route to arXiv; bioRxiv DOIs route to bioRxiv; everything else (including ACL) routes to OpenAlex.
+Pass an arXiv ID, an ACL Anthology ID, any DOI, or a PMID. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"acl_anthology"` / `"openalex"`) so you know which provider answered and which fields to expect; `follow_published` adds `"openalex_via_biorxiv"` when the chain reaches the journal version. arXiv IDs always route to arXiv; bioRxiv DOIs (`10.1101/...`) route to bioRxiv; ACL Anthology IDs, URLs and hosted DOIs route to the Anthology, keyed by Anthology ID; everything else routes to OpenAlex.
 
 All four take `fallback_crossref=True`. When OpenAlex returns a definitive 404 for a DOI — a paper published last week, indexed by Crossref and not yet by OpenAlex — the answer comes from Crossref instead, tagged `_source: "crossref"`. Off by default, and never triggered by a transient OpenAlex failure. What Crossref cannot supply is null rather than absent: no open-access fields, no OpenAlex author IDs or corresponding-author flag, and no abstract on the many records deposited without one. If Crossref itself fails transiently, the OpenAlex error carries `crossref_fallback_retryable: true`, so a retry is distinguishable from a paper neither index has.
 
@@ -172,7 +173,7 @@ For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself (browser, `curl`, pu
 
 After importing a PDF, use the unified pipeline tools (`convert_paper` → `get_paper_sections` → `get_paper_section`) with the same identifier. Markdown imports skip the conversion step and go straight to `get_paper_sections` / `get_paper_section`.
 
-**Provider-aware routing**: if the identifier is an arXiv ID, bioRxiv DOI, or ACL DOI, the file is stored in that provider's cache namespace automatically. A subsequent `download_pdf("2301.00001")` will find an already-imported PDF — no duplicates.
+**Provider-aware routing**: if the identifier is an arXiv ID, bioRxiv DOI, or ACL Anthology ID, URL or DOI, the file is stored in that provider's cache namespace automatically. A subsequent `download_pdf("2301.00001")` will find an already-imported PDF — no duplicates.
 
 ### Papers with Code
 
@@ -295,6 +296,7 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 | paperswithcode (papers, evaluations, datasets) | 7d | 24h | Repository stars drift; leaderboards gain rows. |
 | paperswithcode (tasks) | 30d | 24h | The taxonomy is curated and slow-moving. |
 | paperswithcode (searches) | 1d | 24h | Results reorder as papers are ingested. |
+| acl_anthology | 7d | 24h (1h for a paper missing from its collection) | Collection files change only through corrections. |
 
 **PDF downloads** negative-cache definitive failures too, under a `downloads` entity in each provider's namespace: arxiv / biorxiv 1h (they render PDFs lazily, so a just-announced paper's PDF can 404 for minutes), acl_anthology and the open-access path 24h (static files — a 404 means a wrong ID or a closed-access paper). The PDF itself never expires.
 

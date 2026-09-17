@@ -242,6 +242,23 @@ def _block_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket, "create_connection", guarded_create_connection)
 
 
+@pytest.fixture(autouse=True)
+def _stub_doi_index(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer "not hosted" for every DOI unless the test is marked ``real_doi_index``.
+
+    Otherwise any generic-DOI test would try to download the Anthology's dump.
+    """
+    if request.node.get_closest_marker("real_doi_index") is not None:
+        return
+
+    from academic_tools_mcp.providers import acl
+
+    async def _not_hosted(doi: str) -> None:
+        return None
+
+    monkeypatch.setattr(acl, "anthology_id_for_doi", _not_hosted)
+
+
 # ---------------------------------------------------------------------------
 # Opt-in conversion fixtures
 #

@@ -21,7 +21,7 @@ from .util import doinorm
 
 NAMESPACE = "manual"
 
-MetadataSource = Literal["arxiv", "biorxiv", "openalex"]
+MetadataSource = Literal["arxiv", "biorxiv", "acl_anthology", "openalex"]
 RefileOutcome = Literal["moved", "linked"]
 
 # Covers the `arXiv:` prefix, every abs/pdf URL host, and the `10.48550/arXiv.` DOI.
@@ -51,12 +51,7 @@ class _Route(NamedTuple):
 # Ordered: an arXiv id is not a DOI, an ACL DOI is, so the generic fallback comes last.
 _ROUTES = (
     _Route(arxiv.is_arxiv_id, arxiv.NAMESPACE, arxiv.canonical_arxiv_id, arxiv.pdf_path),
-    _Route(
-        acl.is_acl_doi,
-        acl.NAMESPACE,
-        acl.canonical_key,
-        acl.pdf_path,
-    ),
+    _Route(acl.is_anthology_id, acl.NAMESPACE, acl.canonical_key, acl.pdf_path),
     _Route(biorxiv.is_biorxiv_doi, biorxiv.NAMESPACE, biorxiv.canonical_key, biorxiv.pdf_path),
 )
 
@@ -89,7 +84,7 @@ def resolve_target(identifier: str) -> Target:
 _METADATA_SOURCE_BY_NAMESPACE: dict[str, MetadataSource] = {
     arxiv.NAMESPACE: "arxiv",
     biorxiv.NAMESPACE: "biorxiv",
-    acl.NAMESPACE: "openalex",
+    acl.NAMESPACE: "acl_anthology",
 }
 
 
@@ -98,8 +93,7 @@ def resolve_metadata_source(identifier: str) -> MetadataSource | None:
 
     ``None`` when nothing claims it. Derived from :func:`resolve_target`, not a
     second pass over the shapes, so storage and metadata cannot disagree; only
-    the ``manual`` fallback re-tests its key. ACL is the one namespace that
-    changes hands — the Anthology has no metadata API.
+    the ``manual`` fallback re-tests its key.
     """
     target = resolve_target(identifier)
 
@@ -130,13 +124,58 @@ def migrate_misrouted_arxiv() -> int:
                 continue
             recovered, outcome = claim
             refiled += 1
-            if entity != "markdown":
-                continue
-            # Before the invalidate: the entry it carries is the one being dropped.
-            papers.rekey_sections(NAMESPACE, path.stem, arxiv.NAMESPACE, recovered)
-            if outcome == "moved":
-                cache.invalidate(NAMESPACE, "sections", stems.sections_key_for_stem(path.stem))
+            if entity == "markdown":
+                _carry_sections(NAMESPACE, path.stem, arxiv.NAMESPACE, recovered, outcome)
     return refiled
+
+
+def migrate_acl_stems() -> int:
+    """Re-file DOI-keyed ACL stems and ACL-shaped ``manual`` stems onto the Anthology ID.
+
+    Idempotent and best-effort, once at startup; returns files re-filed. Opaque
+    hosted DOIs are left to :func:`refile_hosted_doi_stems`.
+    """
+    refiled = 0
+    for source_ns in (acl.NAMESPACE, NAMESPACE):
+        for entity in ("pdfs", "markdown"):
+            target_dir = cache.cache_dir(acl.NAMESPACE, entity)
+            for path in stems.list_dir(cache.cache_dir(source_ns, entity)):
+                if path.suffix not in (".pdf", ".md"):
+                    continue
+                key = _misfiled_anthology_id(path.stem)
+                if key is None or (source_ns == acl.NAMESPACE and key == path.stem):
+                    continue
+                if not _place(path, target_dir / (stems.safe_stem(key) + path.suffix), "moved"):
+                    continue
+                refiled += 1
+                if entity == "markdown":
+                    _carry_sections(source_ns, path.stem, acl.NAMESPACE, key, "moved")
+    return refiled
+
+
+def _misfiled_anthology_id(stem: str) -> str | None:
+    """The Anthology ID the router gives a stored stem, trying ``_`` as ``/``; else ``None``."""
+    for candidate in (stem, stem.replace("_", "/", 1), stem.replace("_", "/")):
+        target = resolve_target(unquote(candidate))
+        if target["namespace"] == acl.NAMESPACE:
+            return target["canonical"]
+    return None
+
+
+def _carry_sections(
+    src_namespace: str,
+    src_stem: str,
+    dst_namespace: str,
+    dst_canonical: str,
+    outcome: RefileOutcome,
+) -> None:
+    """Carry a re-filed markdown's section index to its new key; drop the old one if moved.
+
+    Carried, not re-derived, so ``conversion_mode`` survives.
+    """
+    papers.rekey_sections(src_namespace, src_stem, dst_namespace, dst_canonical)
+    if outcome == "moved":
+        cache.invalidate(src_namespace, "sections", stems.sections_key_for_stem(src_stem))
 
 
 def _refile_misrouted_arxiv(path: Path, target_dir: Path) -> tuple[str, RefileOutcome] | None:
@@ -231,25 +270,33 @@ def refile_pmid_stems(raw_identifier: str, doi: str) -> int:
     The destination asks the router too — that DOI is usually another ``manual``
     stem, but ``10.1101/…`` is bioRxiv's and ``10.18653/v1/…`` the Anthology's.
     """
-    dest = resolve_target(doi)
+    return _refile_onto(_pmid_sources(raw_identifier), resolve_target(doi))
+
+
+def refile_hosted_doi_stems(doi: str, anthology_id: str) -> int:
+    """Move an import filed under a hosted DOI onto its Anthology ID's stem.
+
+    Lazy, like :func:`refile_pmid_stems`. Caller holds the destination's
+    ``papers.sections_lock``.
+    """
+    return _refile_onto([(resolve_target(doi), "moved")], resolve_target(anthology_id))
+
+
+def _refile_onto(sources: list[tuple[Target, RefileOutcome]], dest: Target) -> int:
+    """Place each source's PDF and markdown on *dest*'s stems."""
     dest_markdown = stems.markdown_path(dest["namespace"], dest["canonical"])
 
     refiled = 0
-    for src, outcome in _pmid_sources(raw_identifier):
+    for src, outcome in sources:
         src_markdown = stems.markdown_path(src["namespace"], src["canonical"])
         refiled += _place(src["pdf_path"], dest["pdf_path"], outcome)
 
         if not _place(src_markdown, dest_markdown, outcome):
             continue
         refiled += 1
-        # Before the invalidate: the entry it carries is the one being dropped.
-        papers.rekey_sections(
-            src["namespace"], src_markdown.stem, dest["namespace"], dest["canonical"]
+        _carry_sections(
+            src["namespace"], src_markdown.stem, dest["namespace"], dest["canonical"], outcome
         )
-        if outcome == "moved":
-            cache.invalidate(
-                src["namespace"], "sections", stems.sections_key_for_stem(src_markdown.stem)
-            )
     return refiled
 
 

@@ -23,9 +23,9 @@ needs the shape predicate and has no provider wrapper to borrow it from.
 
 **Never add a local copy for inbound normalization** — including a bare
 DOI-shape regex, which is a normalization decision in disguise: dispatch and
-caching must agree on what a DOI is. `REGISTRANT_PATTERN`, `biorxiv.DOI_PREFIX`
-and `acl.ACL_DOI_PREFIX` are exported for the one consumer that needs the
-*pattern* rather than the function (`corpus`, inverting a stored filename stem);
+caching must agree on what a DOI is. `REGISTRANT_PATTERN` and `biorxiv.DOI_PREFIX`
+are exported for the one consumer that needs the *pattern* rather than the
+function (`corpus`, inverting a stored filename stem);
 build from them instead of respelling `10\.\d{4,}`.
 
 One deliberate exception, on the *response* side:

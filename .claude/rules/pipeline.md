@@ -107,12 +107,10 @@ state.
 - **The arXiv shape test is `arxiv.is_arxiv_id`**, called by both
   `resolve_target` and `resolve_metadata_source` — storage and metadata must not
   disagree about which ids are arXiv's. This module routes on three predicates of
-  the same shape (`is_arxiv_id`, `biorxiv.is_biorxiv_doi`, `acl.is_acl_doi`) and
-  owns none of them.
+  the same shape (`is_arxiv_id`, `biorxiv.is_biorxiv_doi`, `acl.is_anthology_id`)
+  and owns none of them.
 - **`resolve_metadata_source` is derived from `resolve_target`**, not a second
-  pass over the shapes. Two parallel if-chains is the bug this shape prevents —
-  ACL is the one namespace that changes hands, its PDFs from the Anthology and
-  its metadata from OpenAlex.
+  pass over the shapes. Two parallel if-chains is the bug this shape prevents.
 - **An id `is_arxiv_id` rejects still gets a canonical key identical to arXiv's**,
   so it lands in `manual` and the same paper caches, downloads and converts twice.
   `migrate_misrouted_arxiv()` re-files what a narrower test left behind.
@@ -133,6 +131,11 @@ state.
   readers resolve away is an import nothing reads back. `refile_pmid_stems`
   catches up with what an older build stranded, linking a bare digit run rather
   than moving it for the reason `_misrouted_arxiv_id` links a repaired slash.
+- **An identifier changes identity only in `app.resolve_paper_identifier`**
+  (PMID → DOI → hosted DOI's Anthology ID), each trade lazily re-filing old
+  stems. Graph tools skip the Anthology trade: they are DOI-keyed.
+- **`migrate_acl_stems` asks the router too.** It cannot reach opaque hosted
+  DOIs; only the network index names their ID, so readers repair those.
 - **Both import functions stay synchronous; the async boundary is the tool
   layer.** `tools/pipeline.import_paper` wraps each in `asyncio.to_thread` — an
   arbitrarily large copy or parse run inline stalls every concurrent tool call —

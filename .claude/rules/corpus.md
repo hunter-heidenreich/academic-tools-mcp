@@ -16,10 +16,10 @@ the two upstream facts about FTS5 that no comment beside a line can carry.
   nowhere. The router and the inverter must match the same grammar, which is why
   both `_ARXIV_OLDSTYLE_STEM_RE` and `arxiv.is_arxiv_id` are built from
   `providers.arxiv`'s exported `OLD_ARCHIVE_PATTERN` / `OLD_NUMBER_PATTERN`, and
-  why `_NAMESPACE_DOI_PREFIXES` holds `biorxiv.DOI_PREFIX` / `acl.ACL_DOI_PREFIX`
-  rather than respelling them. Spell either out again and they drift.
+  why `_NAMESPACE_DOI_PREFIXES` holds `biorxiv.DOI_PREFIX` rather than respelling
+  it. Spell either out again and they drift.
 - **The `manual` namespace is mostly publisher DOIs, not the freeform labels the
-  name suggests** — `manual.resolve_target` sends every non-arXiv/bioRxiv/ACL DOI
+  name suggests** — `manual.resolve_target` sends every DOI no provider claims
   there. A suffix carrying further slashes still round-trips imperfectly.
 - **`search` must keep taking the section from `papers.section_at_offset` and the
   hit's title from `papers.first_section_heading`.** A local copy of that scan

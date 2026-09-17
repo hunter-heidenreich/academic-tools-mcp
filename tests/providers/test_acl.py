@@ -1,409 +1,165 @@
 import asyncio
+import gzip
+import os
+import time
 from urllib.parse import quote, urlsplit
 
+import httpx
 import pytest
 
 from academic_tools_mcp import manual
+from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import acl
-from academic_tools_mcp.store import stems
-from academic_tools_mcp.util import doinorm
+from academic_tools_mcp.store import cache, stems
 
 # ---------------------------------------------------------------------------
-# DOI detection
-# ---------------------------------------------------------------------------
-
-
-class TestIsAclDoi:
-    def test_acl_doi_bare(self):
-        assert acl.is_acl_doi("10.18653/v1/2023.acl-long.1") is True
-
-    def test_acl_doi_url(self):
-        assert acl.is_acl_doi("https://doi.org/10.18653/v1/2023.acl-long.1") is True
-
-    def test_acl_doi_prefixed(self):
-        assert acl.is_acl_doi("doi:10.18653/v1/2023.acl-long.1") is True
-
-    def test_non_acl_doi(self):
-        assert acl.is_acl_doi("10.1038/s41586-021-03819-2") is False
-
-    def test_arxiv_doi(self):
-        assert acl.is_acl_doi("10.48550/arXiv.2301.00001") is False
-
-    def test_uppercase_prefix(self):
-        # DOIs are case-insensitive; an uppercased 'V1' prefix is still ACL.
-        assert acl.is_acl_doi("10.18653/V1/2023.acl-long.1") is True
-
-    def test_uppercase_prefix_url(self):
-        assert acl.is_acl_doi("https://doi.org/10.18653/V1/P16-1160") is True
-
-
-# ---------------------------------------------------------------------------
-# DOI → Anthology ID
+# Identifier shapes
 # ---------------------------------------------------------------------------
 
 
-class TestDoiToAnthologyId:
-    def test_bare_doi(self):
-        assert acl.doi_to_anthology_id("10.18653/v1/2023.acl-long.1") == "2023.acl-long.1"
+class TestIsAnthologyId:
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "P16-1160",
+            "p16-1160",
+            "W04-1013",
+            "2023.acl-long.1",
+            "2023.ACL-LONG.1",
+            "2022.findings-emnlp.100",
+            "10.18653/v1/2023.acl-long.1",
+            "https://doi.org/10.18653/v1/P16-1160",
+            "doi:10.18653/V1/2023.ACL-LONG.1",
+            "10.3115/v1/W15-2301",
+            "https://aclanthology.org/W04-1013/",
+            "https://aclanthology.org/W04-1013",
+            "aclanthology.org/2023.acl-long.1.pdf",
+            "https://aclanthology.org/2023.acl-long.1.bib",
+            "https://www.aclweb.org/anthology/P16-1160.pdf",
+            "http://aclweb.org/anthology/P/P16/P16-1160.pdf",
+        ],
+    )
+    def test_claimed(self, identifier):
+        assert acl.is_anthology_id(identifier) is True
 
-    def test_url_doi(self):
-        assert (
-            acl.doi_to_anthology_id("https://doi.org/10.18653/v1/2023.acl-long.1")
-            == "2023.acl-long.1"
-        )
-
-    def test_prefixed_doi(self):
-        assert acl.doi_to_anthology_id("doi:10.18653/v1/2023.acl-long.1") == "2023.acl-long.1"
-
-    def test_emnlp(self):
-        assert acl.doi_to_anthology_id("10.18653/v1/2022.emnlp-main.100") == "2022.emnlp-main.100"
-
-    def test_naacl(self):
-        assert acl.doi_to_anthology_id("10.18653/v1/2022.naacl-main.50") == "2022.naacl-main.50"
-
-    def test_findings(self):
-        assert acl.doi_to_anthology_id("10.18653/v1/2023.findings-acl.42") == "2023.findings-acl.42"
-
-    def test_non_acl_returns_none(self):
-        assert acl.doi_to_anthology_id("10.1038/s41586-021-03819-2") is None
-
-    def test_whitespace_stripped(self):
-        assert acl.doi_to_anthology_id("  10.18653/v1/2023.acl-long.1  ") == "2023.acl-long.1"
-
-    def test_old_format_lowercased_uppercased(self):
-        # Crossref hands old-format DOIs back lowercased; the CDN path is
-        # case-sensitive, so the extracted ID must be uppercased.
-        assert acl.doi_to_anthology_id("10.18653/v1/p16-1160") == "P16-1160"
-
-    def test_old_format_already_uppercase_idempotent(self):
-        assert acl.doi_to_anthology_id("10.18653/v1/P16-1160") == "P16-1160"
-
-    def test_old_format_workshop_venue(self):
-        assert acl.doi_to_anthology_id("10.18653/v1/w04-1013") == "W04-1013"
-
-    def test_new_format_stays_lowercase(self):
-        # New-format IDs carry lowercase venue letters that must be preserved.
-        assert acl.doi_to_anthology_id("10.18653/v1/2023.acl-long.1") == "2023.acl-long.1"
-
-    def test_uppercase_prefix_new_format(self):
-        # DOIs are case-insensitive: an uppercased 'V1' prefix still resolves.
-        assert acl.doi_to_anthology_id("10.18653/V1/2023.acl-long.1") == "2023.acl-long.1"
-
-    def test_uppercase_prefix_old_format(self):
-        # Case-insensitive prefix match AND old-format suffix uppercasing.
-        assert acl.doi_to_anthology_id("10.18653/V1/p16-1160") == "P16-1160"
-
-
-# ---------------------------------------------------------------------------
-# PDF URL construction
-# ---------------------------------------------------------------------------
-
-
-class TestPdfUrl:
-    def test_basic(self):
-        assert acl.pdf_url("2023.acl-long.1") == "https://aclanthology.org/2023.acl-long.1.pdf"
-
-    def test_emnlp(self):
-        assert (
-            acl.pdf_url("2022.emnlp-main.100") == "https://aclanthology.org/2022.emnlp-main.100.pdf"
-        )
-
-    def test_old_format_lowercased_doi_round_trip(self):
-        # A Crossref-lowercased old-format DOI must produce the case-sensitive
-        # URL the CDN expects (P16-1160.pdf, not p16-1160.pdf).
-        aid = acl.doi_to_anthology_id("10.18653/v1/p16-1160")
-        assert acl.pdf_url(aid) == "https://aclanthology.org/P16-1160.pdf"
-
-
-# ---------------------------------------------------------------------------
-# Anthology ID normalization
-# ---------------------------------------------------------------------------
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "P16-1",  # a volume, not a paper
+            "10.18653/v1/W17-47",  # a volume DOI
+            "10.18653/v1/",
+            "10.18653/v1/foo;bar",
+            "B12-3456",  # a letter the Anthology never used
+            "PP16-1160",
+            "P1-1160",
+            "P16-11600",
+            "2301.00001",  # arXiv
+            "10.1162/tacl.a.63",  # hosted, but opaque: the index's job
+            "10.1038/nature12373",
+            "https://aclanthology.org/people/chin-yew-lin/",
+            "",
+        ],
+    )
+    def test_not_claimed(self, identifier):
+        assert acl.is_anthology_id(identifier) is False
 
 
 class TestNormalizeAnthologyId:
-    def test_old_format_lowercased(self):
-        assert acl._normalize_anthology_id("p16-1160") == "P16-1160"
+    @pytest.mark.parametrize(
+        ("identifier", "expected"),
+        [
+            ("p16-1160", "P16-1160"),
+            ("10.18653/v1/w04-1013", "W04-1013"),
+            ("2023.ACL-long.1", "2023.acl-long.1"),
+            ("10.18653/V1/2023.ACL-LONG.1", "2023.acl-long.1"),
+            ("  10.18653/v1/2023.acl-long.1  ", "2023.acl-long.1"),
+            ("https://aclanthology.org/2023.acl-long.1.xml", "2023.acl-long.1"),
+            ("10.3115/V1/w15-2301", "W15-2301"),
+        ],
+    )
+    def test_spellings(self, identifier, expected):
+        assert acl.normalize_anthology_id(identifier) == expected
 
-    def test_old_format_already_uppercase(self):
-        assert acl._normalize_anthology_id("P16-1160") == "P16-1160"
+    def test_a_non_id_passes_through_doi_normalized(self):
+        assert acl.normalize_anthology_id("doi:10.1038/X") == "10.1038/X"
 
-    def test_new_format_unchanged(self):
-        assert acl._normalize_anthology_id("2023.acl-long.1") == "2023.acl-long.1"
+    def test_canonical_key_is_the_normalized_id(self):
+        assert acl.canonical_key("10.18653/v1/p16-1160") == "P16-1160"
 
-    def test_new_format_mixed_case_left_as_is(self):
-        # Not an old-format match, so it is returned verbatim (no spurious upper()).
-        assert acl._normalize_anthology_id("2023.ACL-long.1") == "2023.ACL-long.1"
+
+class TestStripAclPrefix:
+    def test_both_registrants(self):
+        assert acl._strip_acl_prefix("10.18653/v1/x") == "x"
+        assert acl._strip_acl_prefix("10.3115/V1/x") == "x"
+
+    @pytest.mark.parametrize("doi", ["", "10.18653/v1", "10.186530/v1/x", "10.18653/v1/   "])
+    def test_no_suffix(self, doi):
+        assert acl._strip_acl_prefix(doi) is None
+
+    def test_is_acl_doi_reads_the_prefix_only(self):
+        assert acl.is_acl_doi("https://doi.org/10.18653/v1/P16-1160") is True
+        assert acl.is_acl_doi("P16-1160") is False
+
+    def test_bare_prefix_falls_through_to_the_generic_doi_route(self):
+        assert manual.resolve_target("10.18653/v1/")["namespace"] == manual.NAMESPACE
+        assert manual.resolve_metadata_source("10.18653/v1/") == "openalex"
+
+
+class TestParseId:
+    @pytest.mark.parametrize(
+        ("anthology_id", "parts"),
+        [
+            ("2022.acl-main.1", ("2022.acl", "main", "1")),
+            ("P16-1160", ("P16", "1", "160")),
+            ("P18-1007", ("P18", "1", "7")),
+            ("W18-6310", ("W18", "63", "10")),
+            ("W04-1013", ("W04", "10", "13")),
+            ("W18-0501", ("W18", "5", "1")),
+            ("D19-1001", ("D19", "1", "1")),
+            ("D19-5702", ("D19", "57", "2")),
+            ("C69-0101", ("C69", "1", "1")),
+            ("P18-1000", ("P18", "1", "0")),
+        ],
+    )
+    def test_matches_upstream(self, anthology_id, parts):
+        assert acl.parse_id(anthology_id) == parts
+        assert acl._build_id(*parts) == anthology_id
 
 
 # ---------------------------------------------------------------------------
-# PDF cache path
+# PDF paths and URLs
 # ---------------------------------------------------------------------------
 
 
 class TestPdfPath:
-    """Every ACL artifact keys on the canonical DOI, as every other provider's does.
+    """Every ACL artifact keys on the Anthology ID, whichever spelling reached it."""
 
-    The Anthology ID addresses the CDN and nothing on disk. Keying the PDF on it
-    instead made ACL the one namespace whose PDF stem disagreed with its markdown
-    and section-index stems, which is the identity ``corpus`` inverts an ACL
-    filename with.
-    """
-
-    def test_acl_doi(self):
-        path = acl.pdf_path("10.18653/v1/2023.acl-long.1")
-        assert path.parent.name == "pdfs"
-        assert path.parent.parent.name == "acl_anthology"
-        assert path.name == "10.18653_v1_2023.acl-long.1.pdf"
-
-    def test_keys_on_the_canonical_doi_not_the_anthology_id(self):
-        # Crossref hands old-format DOIs back lowercased and the CDN wants
-        # P16-1160 — but that casing belongs to the URL, not the filename.
+    def test_keys_on_the_anthology_id(self):
         path = acl.pdf_path("10.18653/v1/p16-1160")
-        assert path.name == "10.18653_v1_p16-1160.pdf"
-        assert path == stems.pdf_path(acl.NAMESPACE, acl.canonical_key("10.18653/v1/p16-1160"))
+        assert path.parent == cache.cache_dir(acl.NAMESPACE, "pdfs")
+        assert path.name == "P16-1160.pdf"
 
-    def test_case_variants_share_one_path(self):
-        assert acl.pdf_path("10.18653/V1/P16-1160") == acl.pdf_path("10.18653/v1/p16-1160")
+    def test_every_spelling_shares_one_path(self):
+        assert (
+            acl.pdf_path("10.18653/V1/P16-1160")
+            == acl.pdf_path("https://aclanthology.org/P16-1160/")
+            == acl.pdf_path("p16-1160")
+        )
 
     def test_agrees_with_the_markdown_stem(self):
-        # The two used to disagree, and corpus's ACL stem inversion was
-        # correct only by accident of walking markdown rather than pdfs.
-        doi = "10.18653/v1/2023.acl-long.1"
-        canonical = acl.canonical_key(doi)
-        assert acl.pdf_path(doi).stem == stems.markdown_path(acl.NAMESPACE, canonical).stem
+        key = acl.canonical_key("2023.acl-long.1")
+        assert acl.pdf_path(key).stem == stems.markdown_path(acl.NAMESPACE, key).stem
 
-    def test_non_acl_doi_raises(self):
-        # Must not return a sentinel path (e.g. /dev/null) whose .exists() is
-        # True — that would let a non-PDF slip past the convert guard.
+    @pytest.mark.parametrize("identifier", ["10.1038/s41586-021-03819-2", "10.18653/v1/", "P16-1"])
+    def test_anything_else_raises(self, identifier):
+        # Must not return a sentinel path whose .exists() could be True.
         with pytest.raises(ValueError):
-            acl.pdf_path("10.1038/s41586-021-03819-2")
-
-    def test_bare_prefix_raises(self):
-        with pytest.raises(ValueError):
-            acl.pdf_path("10.18653/v1/")
-
-
-# ---------------------------------------------------------------------------
-# PDF filename sanitization
-# ---------------------------------------------------------------------------
-
-
-class TestPdfFilename:
-    def test_new_format(self):
-        assert acl.pdf_path("10.18653/v1/2023.acl-long.1").name == "10.18653_v1_2023.acl-long.1.pdf"
-
-    def test_old_format(self):
-        assert acl.pdf_path("10.18653/v1/P16-1160").name == "10.18653_v1_p16-1160.pdf"
-
-    def test_metacharacters_neutralized(self):
-        # Defense-in-depth: shell/path metacharacters never reach the filename.
-        # They are percent-encoded (injective) rather than collapsed to "_".
-        assert acl.pdf_path("10.18653/v1/foo;bar").name == "10.18653_v1_foo%3Bbar.pdf"
-
-
-# ---------------------------------------------------------------------------
-# download_pdf
-# ---------------------------------------------------------------------------
-
-
-class TestDownloadPdfProvenance:
-    """ACL decorates its response with ``anthology_id`` and ``pdf_url``.
-
-    The cached and fresh branches were two hand-copied blocks, so nothing
-    stopped them drifting apart — and both called ``dest.stat()`` outside any
-    try, so a concurrent unlink between the usability check and the stat raised
-    OSError straight out of ``download_pdf``, breaking the module's uniform
-    ``{error}`` contract. Both now come from one ``extra_fields`` dict.
-    """
-
-    _DOI = "10.18653/v1/2023.acl-long.1"
-
-    @pytest.mark.asyncio
-    async def test_fresh_and_cached_payloads_agree(self, tmp_path, monkeypatch):
-        from academic_tools_mcp.download import streaming
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-
-        async def fake_stream(client, url, dest, **kwargs):
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"%PDF-1.4 acl")
-            return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": False}
-
-        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
-
-        fresh = await acl.download_pdf(self._DOI)
-        cached = await acl.download_pdf(self._DOI)
-
-        assert fresh["cached"] is False
-        assert cached["cached"] is True
-        # Provenance is identical across both branches, by construction.
-        for key in ("anthology_id", "pdf_url"):
-            assert fresh[key] == cached[key]
-        assert fresh["anthology_id"] == "2023.acl-long.1"
-        assert fresh["pdf_url"] == "https://aclanthology.org/2023.acl-long.1.pdf"
-
-    @pytest.mark.asyncio
-    async def test_a_404_is_negative_cached(self, tmp_path, monkeypatch):
-        """A missing camera-ready re-hit the CDN on every call: only
-        openaccess negative-cached its download failures, the three native
-        providers cached nothing."""
-        from academic_tools_mcp.download import streaming
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-        calls = 0
-
-        async def fake_stream(client, url, dest, **kwargs):
-            nonlocal calls
-            calls += 1
-            return {"error": "PDF not found", "retryable": False}
-
-        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
-
-        assert "error" in await acl.download_pdf(self._DOI)
-        assert "error" in await acl.download_pdf(self._DOI)
-        assert calls == 1
-
-    @pytest.mark.asyncio
-    async def test_an_error_carries_no_provenance(self, tmp_path, monkeypatch):
-        from academic_tools_mcp.download import streaming
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-
-        async def fake_stream(client, url, dest, **kwargs):
-            return {"error": "PDF not found", "retryable": False}
-
-        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
-
-        result = await acl.download_pdf(self._DOI)
-
-        assert "anthology_id" not in result
-
-    @pytest.mark.asyncio
-    async def test_a_non_acl_doi_is_rejected_before_any_fetch(self):
-        result = await acl.download_pdf("10.1038/nature12373")
-        assert "error" in result
-        assert "Not an ACL Anthology DOI" in result["error"]
-
-
-# ---------------------------------------------------------------------------
-# canonical_key
-# ---------------------------------------------------------------------------
-
-
-class TestCanonicalKey:
-    """The key every ACL artifact and the negative-cache entry are filed under."""
-
-    def test_delegates_to_the_shared_normalizer(self):
-        # ACL layers no URL form of its own, so a second definition here would
-        # be `doinorm.canonical` respelled — and free to drift from it.
-        assert acl.canonical_key("10.18653/V1/P16-1160") == doinorm.canonical(
-            "10.18653/V1/P16-1160"
-        )
-
-    def test_folds_case(self):
-        assert acl.canonical_key("10.18653/V1/P16-1160") == "10.18653/v1/p16-1160"
-
-    def test_case_variants_share_one_key(self):
-        assert acl.canonical_key("10.18653/V1/P16-1160") == acl.canonical_key(
-            "https://doi.org/10.18653/v1/p16-1160"
-        )
-
-    def test_idempotent(self):
-        key = acl.canonical_key("doi:10.18653/V1/2023.acl-long.1")
-        assert acl.canonical_key(key) == key
-
-    def test_is_the_key_download_pdf_files_under(self):
-        doi = "10.18653/v1/P16-1160"
-        assert acl.pdf_path(doi).stem == stems.safe_stem(acl.canonical_key(doi))
-
-
-# ---------------------------------------------------------------------------
-# Prefix stripping — the edges the venue examples don't reach
-# ---------------------------------------------------------------------------
-
-
-class TestStripAclPrefix:
-    def test_empty_string(self):
-        assert acl._strip_acl_prefix("") is None
-
-    def test_prefix_without_trailing_slash(self):
-        assert acl._strip_acl_prefix("10.18653/v1") is None
-
-    def test_longer_registrant_sharing_the_prefix_slice(self):
-        # The slice is fixed-length and includes the trailing "/", so a
-        # registrant that merely starts with 10.18653 cannot match.
-        assert acl._strip_acl_prefix("10.186530/v1/x") is None
-
-    @pytest.mark.parametrize("doi", ["10.18653/v1/", "10.18653/V1/", "10.18653/v1/   "])
-    def test_empty_suffix_is_not_an_acl_doi(self, doi):
-        # It names no paper, and `safe_stem("")` is "" — so every such DOI
-        # would cache as the same `.pdf`.
-        assert acl._strip_acl_prefix(doi.strip()) is None
-        assert acl.is_acl_doi(doi) is False
-        assert acl.doi_to_anthology_id(doi) is None
-
-    def test_bare_prefix_falls_through_to_the_generic_doi_route(self):
-        target = manual.resolve_target("10.18653/v1/")
-        assert target["namespace"] == manual.NAMESPACE
-        assert manual.resolve_metadata_source("10.18653/v1/") == "openalex"
-
-    def test_one_character_suffix_is_accepted(self):
-        # The boundary: empty is rejected, one character is a (short) id.
-        assert acl._strip_acl_prefix("10.18653/v1/x") == "x"
-
-
-# ---------------------------------------------------------------------------
-# Old-format ID grammar — the boundaries around `^[A-Za-z]\d{2}-\d+$`
-# ---------------------------------------------------------------------------
-
-
-class TestOldFormatBoundaries:
-    """One letter, exactly two year digits, at least one paper digit.
-
-    Anything outside that is left verbatim: uppercasing a new-format id would
-    404 the CDN just as surely as leaving an old-format one lowercased.
-    """
-
-    @pytest.mark.parametrize("aid", ["p16-1160", "w04-1013", "d14-1162", "j93-2004", "l16-1"])
-    def test_matches_are_uppercased(self, aid):
-        assert acl._normalize_anthology_id(aid) == aid.upper()
-
-    @pytest.mark.parametrize(
-        "aid",
-        [
-            "pp16-1160",  # two leading letters
-            "p1-1160",  # one year digit
-            "p166-1160",  # three year digits
-            "p16-1160a",  # trailing non-digit
-            "p16-",  # no paper number
-            "16-1160",  # no letter
-            "2023.acl-long.1",  # new format
-        ],
-    )
-    def test_non_matches_are_verbatim(self, aid):
-        assert acl._normalize_anthology_id(aid) == aid
-
-
-# ---------------------------------------------------------------------------
-# PDF URL encoding
-# ---------------------------------------------------------------------------
+            acl.pdf_path(identifier)
 
 
 class TestPdfUrlEncoding:
-    """The id is percent-encoded, so the URL names exactly the resource it claims.
-
-    A DOI suffix reaches here untouched — `doinorm.normalize` keeps a literal `?`
-    or `#` in a bare DOI deliberately — so an unencoded interpolation would
-    request one resource while the response reported another as `pdf_url`.
-    """
-
     @pytest.mark.parametrize("aid", ["2023.acl-long.1", "P16-1160"])
     def test_real_ids_are_unchanged(self, aid):
-        # Every character of a real Anthology ID is RFC 3986 unreserved, so no
-        # cached URL moves.
         assert acl.pdf_url(aid) == f"https://aclanthology.org/{aid}.pdf"
 
     @pytest.mark.parametrize("aid", ["x?y", "x#y", "x y", "a/b"])
@@ -412,90 +168,407 @@ class TestPdfUrlEncoding:
         assert parts.query == ""
         assert parts.fragment == ""
         assert parts.path == "/" + quote(aid, safe="") + ".pdf"
-        assert parts.path.count("/") == 1
 
 
-class TestDownloadPdfNegativeCache:
-    """What a failure is worth remembering, and for how long.
+# ---------------------------------------------------------------------------
+# Transport fakes
+# ---------------------------------------------------------------------------
 
-    ``_NEG_TTL_SECONDS`` is 24h here rather than the preprint servers' 1h: an
-    Anthology camera-ready is a static file, so a 404 means a wrong ID or a
-    paper not yet posted — neither resolves in minutes.
-    """
 
-    _DOI = "10.18653/v1/2023.acl-long.1"
+def _stub_routes(monkeypatch, routes):
+    """Serve each request from the first ``routes`` key in its URL; return the requests."""
+    requests: list[httpx.Request] = []
 
-    @staticmethod
-    def _counting_stream(monkeypatch, result):
-        from academic_tools_mcp.download import streaming
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        for fragment, answer in routes.items():
+            if fragment in str(request.url):
+                if isinstance(answer, Exception):
+                    raise answer
+                status, body = answer
+                return httpx.Response(status, content=body)
+        return httpx.Response(599, content=b"unexpected")
 
-        calls = []
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+    return requests
 
-        async def fake_stream(client, url, dest, **kwargs):
-            calls.append(url)
-            if "error" not in result:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(b"%PDF-1.4 acl")
+
+_P16 = b"""<?xml version='1.0' encoding='UTF-8'?>
+<collection id="P16">
+  <volume id="1" type="proceedings">
+    <meta>
+      <booktitle>Proceedings of the 54th Annual Meeting of the <fixed-case>ACL</fixed-case></booktitle>
+      <editor><first>Katrin</first><last>Erk</last></editor>
+      <publisher>Association for Computational Linguistics</publisher>
+      <address>Berlin, Germany</address>
+      <month>August</month>
+      <year>2016</year>
+      <venue>acl</venue>
+    </meta>
+    <frontmatter>
+      <bibkey>acl-2016-long</bibkey>
+    </frontmatter>
+    <paper id="160">
+      <title>A Character-level Decoder for <fixed-case>NMT</fixed-case></title>
+      <author orcid="0000-0002-1825-0097"><first>Junyoung</first><last>Chung</last>
+        <affiliation>NYU</affiliation></author>
+      <author><first>Kyunghyun</first><last>Cho</last></author>
+      <pages>1693\xe2\x80\x931703</pages>
+      <abstract>We use <i>no</i> segmentation <tex-math>x^2</tex-math>.</abstract>
+      <doi>10.18653/v1/P16-1160</doi>
+      <bibkey>chung-etal-2016-character</bibkey>
+    </paper>
+    <paper id="161">
+      <title>Sibling</title>
+    </paper>
+  </volume>
+</collection>
+"""
+
+
+# ---------------------------------------------------------------------------
+# get_paper
+# ---------------------------------------------------------------------------
+
+
+class TestGetPaper:
+    @pytest.mark.asyncio
+    async def test_parses_the_record(self, monkeypatch):
+        requests = _stub_routes(monkeypatch, {"/data/xml/P16.xml": (200, _P16)})
+
+        paper = await acl.get_paper("10.18653/v1/p16-1160")
+
+        assert str(requests[0].url).endswith("/data/xml/P16.xml")
+        assert paper["anthology_id"] == "P16-1160"
+        assert paper["title"] == "A Character-level Decoder for NMT"
+        assert paper["abstract"] == "We use no segmentation x^2."
+        assert paper["authors"][0] == {
+            "name": "Junyoung Chung",
+            "first": "Junyoung",
+            "last": "Chung",
+            "orcid": "0000-0002-1825-0097",
+            "affiliation": "NYU",
+        }
+        assert paper["editors"][0]["name"] == "Katrin Erk"
+        assert paper["booktitle"] == "Proceedings of the 54th Annual Meeting of the ACL"
+        assert paper["volume_type"] == "proceedings"
+        assert (paper["year"], paper["month"], paper["pages"]) == ("2016", "August", "1693–1703")
+        assert paper["doi"] == "10.18653/v1/P16-1160"
+        assert paper["pdf_url"] == "https://aclanthology.org/P16-1160.pdf"
+
+    @pytest.mark.asyncio
+    async def test_one_collection_fetch_serves_every_paper_in_it(self, monkeypatch):
+        requests = _stub_routes(monkeypatch, {"P16.xml": (200, _P16)})
+
+        await acl.get_paper("P16-1160")
+        sibling = await acl.get_paper("P16-1161")
+        frontmatter = await acl.get_paper("P16-1000")
+
+        assert len(requests) == 1
+        assert sibling["title"] == "Sibling"
+        assert frontmatter["bibkey"] == "acl-2016-long"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_papers_share_one_collection_fetch(self, monkeypatch):
+        requests = _stub_routes(monkeypatch, {"P16.xml": (200, _P16)})
+
+        await asyncio.gather(acl.get_paper("P16-1160"), acl.get_paper("P16-1161"))
+
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_paper_missing_from_its_collection_is_negative_cached_briefly(
+        self, monkeypatch
+    ):
+        requests = _stub_routes(monkeypatch, {"P16.xml": (200, _P16)})
+
+        first = await acl.get_paper("P16-1999")
+        second = await acl.get_paper("P16-1999")
+
+        assert first["not_found"] is True
+        assert second["not_found"] is True
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_missing_collection_is_negative_cached(self, monkeypatch):
+        requests = _stub_routes(monkeypatch, {"Q99.xml": (404, b"")})
+
+        assert (await acl.get_paper("Q99-1001"))["not_found"] is True
+        assert (await acl.get_paper("Q99-1002"))["not_found"] is True
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"<collection id='P16'><volume",  # truncated
+            b"<html>rate limited</html>",  # wrong root
+            b"<collection id='W04'><volume id='1'/></collection>",  # another collection
+            b"<collection id='P16'></collection>",  # no volumes
+        ],
+    )
+    async def test_a_bad_body_is_transient_and_uncached(self, monkeypatch, body):
+        requests = _stub_routes(monkeypatch, {"P16.xml": (200, body)})
+
+        result = await acl.get_paper("P16-1160")
+        await acl.get_paper("P16-1160")
+
+        assert result["retryable"] is True
+        assert "not_found" not in result
+        assert len(requests) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_is_retryable(self, monkeypatch):
+        _stub_routes(monkeypatch, {"P16.xml": httpx.ConnectError("down")})
+
+        result = await acl.get_paper("P16-1160")
+
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_refetches_the_collection(self, monkeypatch):
+        requests = _stub_routes(monkeypatch, {"P16.xml": (200, _P16)})
+
+        await acl.get_paper("P16-1160")
+        await acl.get_paper("P16-1160", force_refresh=True)
+
+        assert len(requests) == 2
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_clears_a_negative_collection(self, monkeypatch):
+        routes = {"P16.xml": (404, b"")}
+        requests = _stub_routes(monkeypatch, routes)
+        await acl.get_paper("P16-1160")
+
+        routes["P16.xml"] = (200, _P16)
+        paper = await acl.get_paper("P16-1160", force_refresh=True)
+
+        assert paper["anthology_id"] == "P16-1160"
+        assert len(requests) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_non_id_is_refused_without_a_request(self, monkeypatch):
+        requests = _stub_routes(monkeypatch, {})
+
+        result = await acl.get_paper("10.1038/nature12373")
+
+        assert result["not_found"] is True
+        assert requests == []
+
+
+# ---------------------------------------------------------------------------
+# Hosted-DOI index
+# ---------------------------------------------------------------------------
+
+
+def _dump(*entries):
+    """A gzipped anthology.bib holding ``(anthology_id, doi)`` entries."""
+    text = "".join(
+        f'@inproceedings{{k{i},\n    url = "https://aclanthology.org/{aid}/",\n'
+        f'    doi = "{doi}",\n}}\n'
+        for i, (aid, doi) in enumerate(entries)
+    )
+    return gzip.compress(text.encode())
+
+
+_DUMP = _dump(
+    ("2026.tacl-1.1", "10.1162/tacl.a.63"),
+    ("P04-1077", "10.3115/1218955.1219032"),
+    ("P16-1160", "10.18653/v1/P16-1160"),  # derivable: left out
+)
+
+
+def _age_index():
+    """Push the cached index past its max age."""
+    meta = cache.get(acl.NAMESPACE, "doi_index", "meta")
+    meta["fetched_at"] = time.time() - acl._DOI_INDEX_MAX_AGE_SECONDS - 1
+    cache.put(acl.NAMESPACE, "doi_index", "meta", meta)
+
+
+@pytest.mark.real_doi_index
+class TestAnthologyIdForDoi:
+    @pytest.mark.asyncio
+    async def test_a_hosted_doi_resolves(self, monkeypatch):
+        _stub_routes(monkeypatch, {"anthology.bib.gz": (200, _DUMP)})
+
+        assert (
+            await acl.anthology_id_for_doi("https://doi.org/10.1162/TACL.a.63") == "2026.tacl-1.1"
+        )
+        assert await acl.anthology_id_for_doi("10.3115/1218955.1219032") == "P04-1077"
+
+    @pytest.mark.asyncio
+    async def test_derivable_dois_are_not_indexed(self, monkeypatch):
+        _stub_routes(monkeypatch, {"anthology.bib.gz": (200, _DUMP)})
+
+        await acl.anthology_id_for_doi("10.1162/tacl.a.63")
+        meta = cache.get(acl.NAMESPACE, "doi_index", "meta")
+
+        assert meta["registrants"] == ["10.1162", "10.3115"]
+
+    @pytest.mark.asyncio
+    async def test_the_dump_is_fetched_once_and_an_unknown_registrant_costs_nothing(
+        self, monkeypatch
+    ):
+        requests = _stub_routes(monkeypatch, {"anthology.bib.gz": (200, _DUMP)})
+
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") is not None
+        assert await acl.anthology_id_for_doi("10.1038/nature12373") is None
+        assert await acl.anthology_id_for_doi("10.1162/other") is None
+
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_non_doi_makes_no_request(self, monkeypatch):
+        requests = _stub_routes(monkeypatch, {})
+
+        assert await acl.anthology_id_for_doi("P16-1160") is None
+        assert requests == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_refresh_keeps_the_stale_index(self, monkeypatch):
+        routes = {"anthology.bib.gz": (200, _DUMP)}
+        _stub_routes(monkeypatch, routes)
+        await acl.anthology_id_for_doi("10.1162/tacl.a.63")
+        _age_index()
+        routes["anthology.bib.gz"] = httpx.ConnectError("down")
+
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") == "2026.tacl-1.1"
+        await asyncio.gather(*acl._refresh_tasks)
+
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") == "2026.tacl-1.1"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_index_answers_without_waiting_for_the_refresh(self, monkeypatch):
+        _stub_routes(monkeypatch, {"anthology.bib.gz": (200, _DUMP)})
+        await acl.anthology_id_for_doi("10.1162/tacl.a.63")
+        _age_index()
+
+        release = asyncio.Event()
+        refreshes: list[None] = []
+
+        async def slow_refresh():
+            refreshes.append(None)
+            await release.wait()
+
+        monkeypatch.setattr(acl, "_refresh_doi_index", slow_refresh)
+
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") == "2026.tacl-1.1"
+        assert await acl.anthology_id_for_doi("10.3115/1218955.1219032") == "P04-1077"
+        await asyncio.sleep(0)
+
+        assert len(refreshes) == 1
+        release.set()
+        await asyncio.gather(*acl._refresh_tasks)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "answer",
+        [httpx.ConnectError("down"), (200, b"not gzip"), (200, gzip.compress(b"no entries"))],
+    )
+    async def test_a_failure_is_remembered_so_the_next_caller_skips_it(self, monkeypatch, answer):
+        requests = _stub_routes(monkeypatch, {"anthology.bib.gz": answer})
+
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") is None
+        attempts = len(requests)
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") is None
+
+        assert len(requests) == attempts
+        assert cache.get(acl.NAMESPACE, "doi_index", "meta") is None
+
+    @pytest.mark.asyncio
+    async def test_the_failure_record_expires(self, monkeypatch):
+        routes = {"anthology.bib.gz": httpx.ConnectError("down")}
+        _stub_routes(monkeypatch, routes)
+        await acl.anthology_id_for_doi("10.1162/tacl.a.63")
+
+        path = cache._entry_path(acl.NAMESPACE, "doi_index", "last_failure")
+        old = time.time() - acl._DOI_INDEX_RETRY_SECONDS - 1
+        os.utime(path, (old, old))
+        routes["anthology.bib.gz"] = (200, _DUMP)
+
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") == "2026.tacl-1.1"
+
+
+# ---------------------------------------------------------------------------
+# download_pdf
+# ---------------------------------------------------------------------------
+
+
+def _fake_stream(monkeypatch, result=None):
+    """Replace ``stream_to_file``; writes a PDF unless ``result`` is an error. Returns URLs."""
+    from academic_tools_mcp.download import streaming
+
+    calls: list[str] = []
+
+    async def fake_stream(client, url, dest, **kwargs):
+        calls.append(url)
+        if result is not None:
             return dict(result)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"%PDF-1.4 acl")
+        return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": False}
 
-        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
-        return calls
+    monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
+    return calls
+
+
+class TestDownloadPdf:
+    @pytest.mark.asyncio
+    async def test_fresh_and_cached_payloads_agree(self, monkeypatch):
+        calls = _fake_stream(monkeypatch)
+
+        fresh = await acl.download_pdf("10.18653/v1/p16-1160")
+        cached = await acl.download_pdf("https://aclanthology.org/P16-1160/")
+
+        assert (fresh["cached"], cached["cached"]) == (False, True)
+        for key in ("anthology_id", "pdf_url"):
+            assert fresh[key] == cached[key]
+        assert fresh["anthology_id"] == "P16-1160"
+        assert calls == ["https://aclanthology.org/P16-1160.pdf"]
+
+    @pytest.mark.asyncio
+    async def test_a_404_is_negative_cached_under_the_anthology_id(self, monkeypatch):
+        calls = _fake_stream(monkeypatch, {"error": "PDF not found", "retryable": False})
+
+        await acl.download_pdf("W04-1013")
+        await acl.download_pdf("w04-1013")
+
+        assert len(calls) == 1
+        assert cache.get_negative(acl.NAMESPACE, "downloads", "W04-1013") is not None
 
     @pytest.mark.asyncio
     async def test_a_retryable_failure_is_not_negative_cached(self, monkeypatch):
-        # `is_definitive_failure` is an allowlist, so a transport blip must
-        # leave the paper refetchable rather than stranded for 24h.
-        calls = self._counting_stream(
-            monkeypatch, {"error": "ACL Anthology: network error", "retryable": True}
-        )
+        calls = _fake_stream(monkeypatch, {"error": "network error", "retryable": True})
 
-        assert "error" in await acl.download_pdf(self._DOI)
-        assert "error" in await acl.download_pdf(self._DOI)
-        assert len(calls) == 2
+        await acl.download_pdf("W04-1013")
+        await acl.download_pdf("W04-1013")
 
-    @pytest.mark.asyncio
-    async def test_an_unclassified_failure_is_not_negative_cached(self, monkeypatch):
-        # A 403 paywall arrives with no `retryable` key at all; a denylist
-        # would cache it as a fact about the paper.
-        calls = self._counting_stream(monkeypatch, {"error": "ACL Anthology: HTTP 403"})
-
-        await acl.download_pdf(self._DOI)
-        await acl.download_pdf(self._DOI)
         assert len(calls) == 2
 
     @pytest.mark.asyncio
     async def test_force_refresh_drops_the_negative_entry(self, monkeypatch):
-        calls = self._counting_stream(monkeypatch, {"error": "PDF not found", "retryable": False})
+        calls = _fake_stream(monkeypatch, {"error": "PDF not found", "retryable": False})
 
-        await acl.download_pdf(self._DOI)
-        await acl.download_pdf(self._DOI)
-        assert len(calls) == 1
+        await acl.download_pdf("W04-1013")
+        await acl.download_pdf("W04-1013", force_refresh=True)
 
-        result = await acl.download_pdf(self._DOI, force_refresh=True)
         assert len(calls) == 2
-        assert "error" in result
 
     @pytest.mark.asyncio
-    async def test_the_negative_entry_is_keyed_on_the_canonical_doi(self, monkeypatch):
-        from academic_tools_mcp.store import cache
+    async def test_an_error_carries_no_provenance(self, monkeypatch):
+        _fake_stream(monkeypatch, {"error": "PDF not found", "retryable": False})
 
-        self._counting_stream(monkeypatch, {"error": "PDF not found", "retryable": False})
+        assert "anthology_id" not in await acl.download_pdf("W04-1013")
 
-        await acl.download_pdf("10.18653/V1/2023.acl-long.1")
+    @pytest.mark.asyncio
+    async def test_a_non_anthology_identifier_is_rejected_before_any_fetch(self, monkeypatch):
+        calls = _fake_stream(monkeypatch)
 
-        assert (
-            cache.get_negative(acl.NAMESPACE, "downloads", acl.canonical_key(self._DOI)) is not None
-        )
+        result = await acl.download_pdf("10.1038/nature12373")
 
-
-class TestDownloadPdfSingleFlight:
-    """Concurrent callers for one paper share one fetch.
-
-    ACL omits ``sf_key`` — it is PDF-only, so there is no re-entrant getter on
-    this ``SingleFlight`` to collide with the bare canonical key.
-    """
-
-    _DOI = "10.18653/v1/2023.acl-long.1"
+        assert result["not_found"] is True
+        assert calls == []
 
     @pytest.mark.asyncio
     async def test_concurrent_downloads_collapse_to_one_stream(self, monkeypatch):
@@ -514,118 +587,22 @@ class TestDownloadPdfSingleFlight:
 
         monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
 
-        tasks = [asyncio.create_task(acl.download_pdf(self._DOI)) for _ in range(5)]
+        tasks = [asyncio.create_task(acl.download_pdf("2023.acl-long.1")) for _ in range(5)]
         await asyncio.sleep(0)
         release.set()
         results = await asyncio.gather(*tasks)
 
         assert started == 1
-        assert all(r["anthology_id"] == "2023.acl-long.1" for r in results)
+        # `tools/pipeline` writes into what it receives, so followers need copies.
+        results[0]["cascaded_invalidated"] = ["markdown"]
+        assert all("cascaded_invalidated" not in r for r in results[1:])
 
     @pytest.mark.asyncio
-    async def test_followers_get_independent_copies(self, monkeypatch):
-        from academic_tools_mcp.download import streaming
+    async def test_a_download_and_a_metadata_fetch_do_not_share_a_slot(self, monkeypatch):
+        """One `SingleFlight` carries every key, so the PDF's must be namespaced."""
+        _fake_stream(monkeypatch)
+        _stub_routes(monkeypatch, {"P16.xml": (200, _P16)})
 
-        release = asyncio.Event()
+        pdf, paper = await asyncio.gather(acl.download_pdf("P16-1160"), acl.get_paper("P16-1160"))
 
-        async def fake_stream(client, url, dest, **kwargs):
-            await release.wait()
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(b"%PDF-1.4 acl")
-            return {"path": str(dest), "size_bytes": 12, "cached": False}
-
-        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
-
-        tasks = [asyncio.create_task(acl.download_pdf(self._DOI)) for _ in range(3)]
-        await asyncio.sleep(0)
-        release.set()
-        first, *rest = await asyncio.gather(*tasks)
-
-        # `tools/pipeline` writes `cascaded_invalidated` into what it receives.
-        first["cascaded_invalidated"] = ["markdown"]
-        assert all("cascaded_invalidated" not in r for r in rest)
-
-
-# ---------------------------------------------------------------------------
-# Startup migration
-# ---------------------------------------------------------------------------
-
-
-class TestMigrateLegacyPdfStems:
-    """Re-files PDFs named after the Anthology ID under the canonical key.
-
-    Only ``pdfs/`` ever diverged; markdown and the section index have always
-    keyed on ``canonical_key``.
-    """
-
-    @staticmethod
-    def _pdf_dir():
-        from academic_tools_mcp.store import cache
-
-        d = cache.cache_dir(acl.NAMESPACE, "pdfs")
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-
-    def test_renames_a_legacy_stem_to_the_canonical_one(self):
-        d = self._pdf_dir()
-        (d / "P16-1160.pdf").write_bytes(b"%PDF-1.4 old")
-
-        assert acl.migrate_legacy_pdf_stems() == 1
-        assert not (d / "P16-1160.pdf").exists()
-        assert (d / "10.18653_v1_p16-1160.pdf").read_bytes() == b"%PDF-1.4 old"
-
-    def test_the_migrated_file_is_where_pdf_path_looks(self):
-        d = self._pdf_dir()
-        (d / "2023.acl-long.1.pdf").write_bytes(b"%PDF-1.4 old")
-
-        acl.migrate_legacy_pdf_stems()
-
-        assert acl.pdf_path("10.18653/v1/2023.acl-long.1").exists()
-
-    def test_idempotent(self):
-        d = self._pdf_dir()
-        (d / "P16-1160.pdf").write_bytes(b"%PDF-1.4 old")
-
-        assert acl.migrate_legacy_pdf_stems() == 1
-        assert acl.migrate_legacy_pdf_stems() == 0
-        assert (d / "10.18653_v1_p16-1160.pdf").exists()
-
-    def test_a_percent_encoded_legacy_stem_round_trips(self):
-        d = self._pdf_dir()
-        (d / "foo%3Bbar.pdf").write_bytes(b"%PDF-1.4 old")
-
-        acl.migrate_legacy_pdf_stems()
-
-        assert (d / "10.18653_v1_foo%3Bbar.pdf").exists()
-
-    def test_leaves_in_flight_tmp_files_alone(self):
-        # An `atomic._new_temp` name still carries its destination's stem;
-        # renaming it breaks the writer's `os.replace`.
-        d = self._pdf_dir()
-        tmp = d / "P16-1160.pdf.abc123.tmp"
-        tmp.write_bytes(b"partial")
-
-        assert acl.migrate_legacy_pdf_stems() == 0
-        assert tmp.exists()
-
-    def test_a_collision_leaves_both_files(self):
-        d = self._pdf_dir()
-        (d / "P16-1160.pdf").write_bytes(b"%PDF-1.4 legacy")
-        (d / "10.18653_v1_p16-1160.pdf").write_bytes(b"%PDF-1.4 current")
-
-        assert acl.migrate_legacy_pdf_stems() == 0
-        assert (d / "P16-1160.pdf").exists()
-        assert (d / "10.18653_v1_p16-1160.pdf").read_bytes() == b"%PDF-1.4 current"
-
-    def test_a_missing_directory_is_not_an_error(self):
-        # It runs inside the startup lifespan; nothing here may raise.
-        assert acl.migrate_legacy_pdf_stems() == 0
-
-    def test_an_unreadable_directory_is_skipped(self):
-        d = self._pdf_dir()
-        (d / "P16-1160.pdf").write_bytes(b"%PDF-1.4 old")
-        d.chmod(0o000)
-        try:
-            assert acl.migrate_legacy_pdf_stems() == 0
-        finally:
-            d.chmod(0o755)
+        assert pdf["anthology_id"] == paper["anthology_id"] == "P16-1160"

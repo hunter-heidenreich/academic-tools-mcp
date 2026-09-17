@@ -53,10 +53,11 @@ These hold across several tools, so changing one tool alone breaks the set.
   `10.1234/X`, `doi:10.1234/x` and the resolver URL, already one cache key, also
   correlate to one value across calls.
 - **`_source` carries no lowest-common-denominator normalisation.** Agents branch
-  on it for provider-specific fields, so the four shared tags (`arxiv` /
-  `biorxiv` / `openalex` / `crossref`) must mean the same thing in all four paper
-  tools — `fallback_crossref` is a parameter of each, and a paper reachable
-  through one must be reachable through all of them. `openalex_via_biorxiv` is
+  on it for provider-specific fields, so the five shared tags (`arxiv` /
+  `biorxiv` / `acl_anthology` / `openalex` / `crossref`) must mean the same thing
+  in all four paper tools — `fallback_crossref` is a parameter of each, and a
+  paper reachable through one must be reachable through all of them.
+  `openalex_via_biorxiv` is
   still `get_paper_metadata`-only, `follow_published` being that one tool's.
   **The fallback's whole precondition lives once**, in `paper._crossref_fallback`
   — the opt-in flag, the definitive 404 *and* `source == "openalex"`. A tool that
@@ -68,7 +69,7 @@ These hold across several tools, so changing one tool alone breaks the set.
   of the three; don't ship a tool with none.
 - **Response-shape keys stay symmetric across branches** so paginating agents
   never feature-detect — `page_institutions` / `page_institution_count` are
-  emitted empty for arxiv/biorxiv rather than omitted.
+  emitted empty for arxiv/biorxiv/acl_anthology rather than omitted.
 - **Every response key a tool returns is named in its `@mcp.tool` docstring.**
   The docstring *is* the agent's tool description, so a key it omits is a key no
   agent will look for. Add a key, add it to the docstring in the same edit.
@@ -189,7 +190,7 @@ instead.
   DOI to **OpenAlex**, so a `search_crossref_by_title` hit is free only for the
   reference tools and the `fallback_crossref` path, never for
   `get_paper_metadata`. `openalex.search_works` is the one that lands where the
-  dispatcher looks, so **it must never send `select=`** — a projected work is a
+  dispatcher looks (bar Anthology-hosted DOIs), so **it must never send `select=`** — a projected work is a
   partial object, and warming that key with one poisons every reader of it. This
   file is the authority; a docstring, `README.md` or `app.py`'s `instructions=`
   string that says otherwise is the one to fix.

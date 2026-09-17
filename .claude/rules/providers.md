@@ -24,8 +24,7 @@ Two things the shape does not make obvious:
 - **Going out as `python-httpx/x.y`** is the generic agent several upstreams
   throttle hardest, and the one that leaves an operator no way to reach us.
   Hence headers always, from the shared `useragent` module.
-- **`acl` is PDF-only**, so it has the slot wrapper but no `_throttled_get`, no
-  metadata getter, and none of the parsing contract below.
+- **`acl` fetches a whole collection per metadata miss** (§ acl.py).
 
 ### Parsing and encoding — the shared contract
 
@@ -206,13 +205,19 @@ then stops the server adding to it.
 diverge. It is also the value an agent passes to
 `search_cached_papers(namespace=...)`.
 
-**Invariant: the Anthology ID addresses the CDN and names nothing on disk.**
-`pdf_path` keys on `canonical_key`, so the PDF, the markdown and the section
-index share one stem — the identity `corpus._restore_slashes` inverts an ACL
-filename with, and the reason `tools/pipeline`'s force_refresh cascade (which
-drops artifacts keyed on `target["canonical"]`) reaches the file the agent just
-replaced. Key the PDF on the Anthology ID instead and this becomes the one
-namespace whose three artifacts disagree.
+**Invariant: the Anthology ID keys all three artifacts.** Half the Anthology has
+no DOI, and the force_refresh cascade only reaches artifacts sharing one key.
+
+**The ID grammar is closed.** Claiming a label or volume ID (`P16-1`) would
+negative-cache a paper that doesn't exist.
+
+**Cache per paper, not per collection**: `cached_lookup` deep-copies a
+megabytes-large collection on every read.
+
+**The hosted-DOI index keeps its last good copy.** A failed refresh must not flip
+a DOI's identity, and is recorded as a positive entry: it establishes nothing
+about the DOI. A stale index answers while it refreshes in the background: the
+refresh is a 12 MB download, and every generic DOI lookup would otherwise wait on it.
 
 ---
 

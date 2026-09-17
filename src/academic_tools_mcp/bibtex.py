@@ -285,9 +285,14 @@ def _title_field(title: str) -> tuple[str, str]:
     return ("title", f"{{{{{_escape_bibtex(title)}}}}}")
 
 
+def _escaped_url(url: str) -> str:
+    """*url* with the characters BibTeX or LaTeX would read percent-encoded."""
+    return url.translate(_URL_TABLE)
+
+
 def _url_field(url: str) -> tuple[str, str]:
     """``howpublished`` pointing at a resolvable URL."""
-    return ("howpublished", f"{{\\url{{{url.translate(_URL_TABLE)}}}}}")
+    return ("howpublished", f"{{\\url{{{_escaped_url(url)}}}}}")
 
 
 def _render_entry(entry_type: str, key: str, fields: list[tuple[str, str]]) -> str:
@@ -475,15 +480,19 @@ def _crossref_first(value: Any) -> str:
     return ""
 
 
-def _crossref_pages(work: dict[str, Any]) -> str:
-    """Crossref's single ``page`` string as a BibTeX range."""
-    page = work.get("page")
+def _pages(page: Any) -> str:
+    """A freeform page string as a BibTeX range, ``""`` for none."""
     if not isinstance(page, str) or not page.strip():
         return ""
     escaped = _escape_bibtex(page)
     if m := _PAGE_RANGE_RE.match(escaped):
         return f"{m.group(1)}--{m.group(2)}"
     return escaped
+
+
+def _crossref_pages(work: dict[str, Any]) -> str:
+    """Crossref's single ``page`` string as a BibTeX range."""
+    return _pages(work.get("page"))
 
 
 def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
@@ -547,4 +556,87 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
         elif doi:
             fields.append(_url_field(f"https://doi.org/{doi}"))
 
+    return _render_entry(entry_type, key, fields)
+
+
+# Emitted bare, so a style can localise them.
+_MONTH_MACROS = {
+    name: name[:3]
+    for name in (
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    )
+}
+
+# "Computational Linguistics, Volume 49, Issue 1" → the journal precedes the volume.
+_JOURNAL_FROM_BOOKTITLE_RE = re.compile(r"^(.*?),\s*Volume\b")
+
+
+def _month_field(month: Any) -> tuple[str, str] | None:
+    """A bare macro for one month, else an escaped literal (``July–August``)."""
+    if not isinstance(month, str) or not month.strip():
+        return None
+    if macro := _MONTH_MACROS.get(month.strip().lower()):
+        return ("month", macro)
+    return ("month", f"{{{_escape_bibtex(month)}}}")
+
+
+def generate_acl_bibtex(paper: dict[str, Any]) -> str:
+    """Generate a BibTeX entry from a parsed ACL Anthology paper record.
+
+    ``@article`` for a journal volume, else ``@inproceedings``. Front matter keys on
+    its editors; a paper without a DOI gets its Anthology ``url``.
+    """
+    authors = paper.get("authors") or []
+    editors = paper.get("editors") or []
+    key = _flat_key(paper if authors else {**paper, "authors": editors}, "year")
+    year = _year_from_date(paper, "year")
+    doi = doinorm.normalize(paper.get("doi") or "")
+    booktitle = paper.get("booktitle") or ""
+    is_journal = paper.get("volume_type") == "journal"
+
+    fields: list[tuple[str, str]] = [_title_field(paper.get("title") or "")]
+    if names := _format_flat_authors_bibtex(authors):
+        fields.append(("author", f"{{{names}}}"))
+
+    if is_journal:
+        m = _JOURNAL_FROM_BOOKTITLE_RE.match(booktitle)
+        if journal := (m.group(1) if m else booktitle):
+            fields.append(("journal", f"{{{_escape_bibtex(journal)}}}"))
+        if volume := paper.get("journal_volume"):
+            fields.append(("volume", f"{{{_escape_bibtex(str(volume))}}}"))
+        if issue := paper.get("journal_issue"):
+            fields.append(("number", f"{{{_escape_bibtex(str(issue))}}}"))
+    else:
+        if names := _format_flat_authors_bibtex(editors):
+            fields.append(("editor", f"{{{names}}}"))
+        if booktitle:
+            fields.append(("booktitle", f"{{{_escape_bibtex(booktitle)}}}"))
+
+    if month := _month_field(paper.get("month")):
+        fields.append(month)
+    if year:
+        fields.append(("year", f"{{{year}}}"))
+    if not is_journal and (address := paper.get("address")):
+        fields.append(("address", f"{{{_escape_bibtex(address)}}}"))
+    if publisher := paper.get("publisher"):
+        fields.append(("publisher", f"{{{_escape_bibtex(publisher)}}}"))
+    if pages := _pages(paper.get("pages")):
+        fields.append(("pages", f"{{{pages}}}"))
+    if doi:
+        fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
+    elif url := paper.get("url"):
+        fields.append(("url", f"{{{_escaped_url(url)}}}"))
+
+    entry_type = "article" if is_journal else "inproceedings"
     return _render_entry(entry_type, key, fields)

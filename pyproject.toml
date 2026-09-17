@@ -49,6 +49,9 @@ asyncio_mode = "strict"
 # The coverage floor lives in the CI step, not `addopts`: applied to every
 # invocation it also fails `pytest tests/test_bibtex.py`, a workflow the README
 # documents.
+markers = [
+    "real_doi_index: use the real acl.anthology_id_for_doi",
+]
 
 [tool.ruff]
 line-length = 100

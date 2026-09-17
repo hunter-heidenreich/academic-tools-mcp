@@ -17,6 +17,7 @@ from . import corpus, manual, papers
 from .net import clients, http
 from .providers import acl, openalex
 from .store import cache, stems
+from .util import doinorm
 
 _T = TypeVar("_T")
 
@@ -30,7 +31,7 @@ async def _lifespan(app: FastMCP) -> AsyncGenerator[None]:
     cache.gc_orphan_tmp_files()
     stems.migrate_legacy_stems()
     manual.migrate_misrouted_arxiv()
-    acl.migrate_legacy_pdf_stems()
+    manual.migrate_acl_stems()
     try:
         yield
     finally:
@@ -44,9 +45,11 @@ mcp = FastMCP(
         "Academic paper research: OpenAlex, arXiv, bioRxiv/medRxiv, Crossref, "
         "OpenCitations, ACL Anthology, Wikipedia, Papers with Code.\n\n"
         "get_paper_metadata / _authors / _abstract / _bibtex take an arXiv ID, "
-        "any DOI, or a PMID and route to the right provider; each response tags "
-        "`_source`. A PMID works everywhere a DOI does, including the graph "
-        "tools, whose OpenCitations rows hand PMIDs back. Batch many "
+        "an ACL Anthology ID (P16-1160, 2023.acl-long.1) or URL, any DOI, or a "
+        "PMID and route to the right provider; each response tags `_source`. "
+        "A DOI the Anthology hosts answers from it. A PMID works "
+        "everywhere a DOI does, including the graph tools, whose OpenCitations "
+        "rows hand PMIDs back. Batch many "
         "identifiers with get_papers_metadata.\n\n"
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
         "get_paper_section, all auto-detecting the provider. download_pdf "
@@ -61,7 +64,8 @@ mcp = FastMCP(
         "References/citations: call the `_count` tool first, then paginate. "
         "Search tools return slim triage hits — chain to get_paper_metadata. "
         "search_openalex is the broad topic search and its hits are free to "
-        "chain; search_arxiv the field-scoped preprint one; "
+        "chain, except ACL Anthology papers; search_arxiv the field-scoped "
+        "preprint one; "
         "search_crossref_by_title finds a DOI from a title, and warms the "
         "reference tools rather than get_paper_metadata. search_authors is the "
         "way into get_author when you have a person rather than one of their "
@@ -83,7 +87,8 @@ DOI = Annotated[
     Field(
         description="Paper DOI. Full URL, doi:-prefixed, or bare (10.1234/example). "
         "A PMID works too — pmid:20079334, a pubmed.ncbi.nlm.nih.gov URL, or a "
-        "bare 7-8 digit run — so a `pmid` from an OpenCitations row pastes back in."
+        "bare 7-8 digit run — so a `pmid` from an OpenCitations row pastes back in. "
+        "An ACL Anthology ID or URL works too."
     ),
 ]
 
@@ -100,9 +105,10 @@ PAPER_ID = Annotated[
     Field(
         description="Paper identifier — bare, doi:-prefixed, or a full URL. "
         "Auto-routed by shape: arXiv ID (2301.00001, hep-th/9901001), "
-        "bioRxiv/medRxiv DOI (10.1101/...), ACL DOI (10.18653/v1/...), any "
-        "other DOI, or a PMID (pmid:20079334, a pubmed.ncbi.nlm.nih.gov URL, or "
-        "a bare 7-8 digit run). Pipeline and markdown tools (download_pdf, "
+        "bioRxiv/medRxiv DOI (10.1101/...), ACL Anthology ID (P16-1160, "
+        "2023.acl-long.1) or URL, any other DOI, or a PMID (pmid:20079334, a "
+        "pubmed.ncbi.nlm.nih.gov URL, or a bare 7-8 digit run). Pipeline and "
+        "markdown tools (download_pdf, "
         "convert_paper, import_paper, get_paper_sections, get_paper_section, "
         "find_in_paper) also take a freeform label for a manually imported "
         "file; metadata tools require a shape above."
@@ -176,14 +182,40 @@ def enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
 async def resolve_paper_identifier(
     identifier: str, *, force_refresh: bool = False
 ) -> tuple[str, dict[str, Any] | None]:
+    """Trade an identifier for the one its paper is stored under: PMID → DOI → Anthology ID.
+
+    Returns ``(identifier, None)`` or ``(identifier, error)``. **The one place an
+    identifier changes identity**, so no paper gets a second cache key. Graph tools
+    use :func:`resolve_pmid_identifier`: they stay DOI-keyed.
+
+    Not in ``manual.resolve_target``, which is pure and synchronous.
+    """
+    identifier, pmid_error = await resolve_pmid_identifier(identifier, force_refresh=force_refresh)
+    if pmid_error is not None:
+        return identifier, pmid_error
+    return await _trade_hosted_doi(identifier), None
+
+
+async def _trade_hosted_doi(identifier: str) -> str:
+    """The Anthology ID for an unrouted DOI the Anthology hosts, else *identifier*. Never errors."""
+    if not doinorm.looks_like_doi(identifier):
+        return identifier
+    if manual.resolve_target(identifier)["namespace"] != manual.NAMESPACE:
+        return identifier
+
+    anthology_id = await acl.anthology_id_for_doi(identifier)
+    if anthology_id is None:
+        return identifier
+    await _repair_import(manual.refile_hosted_doi_stems, identifier, anthology_id)
+    return anthology_id
+
+
+async def resolve_pmid_identifier(
+    identifier: str, *, force_refresh: bool = False
+) -> tuple[str, dict[str, Any] | None]:
     """Trade a PMID for its DOI; pass every other identifier through untouched.
 
-    Returns ``(identifier, None)`` or ``(identifier, error)``. **The one place a
-    PMID is resolved**, so no paper acquires a second cache identity: a PMID is
-    never a storage key, and what the tools below see is always the DOI.
-
-    Not in ``manual.resolve_target`` — resolution is a network call, and that
-    dispatcher is pure and synchronous.
+    Returns ``(identifier, None)`` or ``(identifier, error)``.
     """
     if not openalex.is_pmid(identifier):
         return identifier, None
@@ -212,20 +244,22 @@ async def resolve_paper_identifier(
             ),
         }
 
-    await _repair_pmid_import(identifier, doi)
+    await _repair_import(manual.refile_pmid_stems, identifier, doi)
     return doi, None
 
 
-async def _repair_pmid_import(raw_identifier: str, doi: str) -> None:
-    """Re-file an orphaned PMID-keyed import onto *doi*'s stem. Never raises.
+async def _repair_import(
+    refile: Callable[[str, str], int], raw_identifier: str, resolved: str
+) -> None:
+    """Re-file an import orphaned under *raw_identifier* onto *resolved*'s stem.
 
     Inline, not on a thread: the stems are computable, so a miss is a few
     ``stat`` calls and a hit is a ``rename``/``link``, never a copy. Holds the
     *destination*'s lock — the one every markdown writer takes.
     """
-    dest = manual.resolve_target(doi)
+    dest = manual.resolve_target(resolved)
     async with papers.sections_lock(dest["namespace"], dest["canonical"]):
-        manual.refile_pmid_stems(raw_identifier, doi)
+        refile(raw_identifier, resolved)
 
 
 async def read_markdown(
@@ -384,8 +418,8 @@ ALLOW_OA_URL = Annotated[
     bool,
     Field(
         description=(
-            "Let a non-arXiv/bioRxiv/ACL DOI download from the open-access PDF "
-            "URL OpenAlex reports for it. Only that URL is fetched, never an "
+            "Let a DOI no native provider hosts download from the open-access "
+            "PDF URL OpenAlex reports for it. Only that URL is fetched, never an "
             "arbitrary one. Errors if the paper is closed-access, absent from "
             "OpenAlex, or the URL is a landing page. Otherwise such DOIs are "
             "refused — fetch the PDF yourself and use import_paper. Ignored for "
