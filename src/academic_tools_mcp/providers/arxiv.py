@@ -4,7 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from defusedxml.common import DefusedXmlException
@@ -57,6 +57,19 @@ _PDF_TIMEOUT_SECONDS = 60.0
 
 # Exported so ``search_arxiv``'s validation bound isn't a second spelling of it.
 MAX_SEARCH_RESULTS = 50
+
+# arXiv answers HTTP 500 once ``start + max_results`` passes this: a query's reachable
+# window, not its match count. Exported for the same reason as ``MAX_SEARCH_RESULTS``.
+MAX_SEARCH_WINDOW = 10_000
+
+# Agent-facing sort names; ``_SORT_BY`` maps them to the API's ``sortBy`` values.
+SearchSortBy = Literal["relevance", "submitted", "updated"]
+SearchSortOrder = Literal["descending", "ascending"]
+_SORT_BY: dict[str, str] = {
+    "relevance": "relevance",
+    "submitted": "submittedDate",
+    "updated": "lastUpdatedDate",
+}
 
 # ``id_list`` fan-in size: one GET per chunk, with a URL well inside edge limits.
 _BATCH_CHUNK_SIZE = 50
@@ -370,22 +383,41 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
 async def search_papers(
     query: str,
     max_results: int = 10,
+    *,
+    start: int = 0,
+    sort_by: SearchSortBy = "relevance",
+    sort_order: SearchSortOrder = "descending",
 ) -> dict[str, Any]:
     """Search arXiv. ``query`` takes field prefixes (ti:, au:, abs:, cat:) and AND/OR/ANDNOT.
 
-    ``max_results`` is clamped to ``MAX_SEARCH_RESULTS``. Returns ``{total_results,
-    entries}``; the result list is not cached (ad-hoc queries), but each hit warms the
-    paper cache.
+    ``max_results`` is clamped to ``MAX_SEARCH_RESULTS`` and ``start`` to 0. Returns
+    ``{total_results, entries}``; the result list is not cached (ad-hoc queries), but
+    each hit warms the paper cache. A page past ``MAX_SEARCH_WINDOW`` is refused
+    without a request, as ``{error, retryable: False, beyond_window: True}``.
     """
     capped = min(max(max_results, 1), MAX_SEARCH_RESULTS)
+    start = max(start, 0)
+
+    # arXiv's answer here is a 500, which would read as transient and be retried.
+    if start + capped > MAX_SEARCH_WINDOW:
+        return {
+            "error": (
+                f"arXiv serves only the first {MAX_SEARCH_WINDOW} results of a query; "
+                f"this page starts at result {start + 1}."
+            ),
+            "retryable": False,
+            "beyond_window": True,
+        }
 
     try:
         response = await _throttled_get(
             ARXIV_BASE_URL,
             params={
                 "search_query": query,
-                "start": "0",
+                "start": str(start),
                 "max_results": str(capped),
+                "sortBy": _SORT_BY[sort_by],
+                "sortOrder": sort_order,
             },
         )
 

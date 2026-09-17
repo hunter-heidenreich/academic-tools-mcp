@@ -25,7 +25,7 @@ class TestSearchAuthorCount:
 
     @pytest.mark.asyncio
     async def test_search_arxiv_includes_author_count(self, monkeypatch):
-        async def fake_search(query, max_results=10):
+        async def fake_search(query, max_results=10, **kwargs):
             return {
                 "total_results": 1,
                 "entries": [
@@ -48,7 +48,7 @@ class TestSearchAuthorCount:
     async def test_search_arxiv_zero_authors(self, monkeypatch):
         # Defensive: the parser returns [] for missing authors. The slim
         # tool must still report 0, not crash, and not omit the field.
-        async def fake_search(query, max_results=10):
+        async def fake_search(query, max_results=10, **kwargs):
             return {
                 "total_results": 1,
                 "entries": [
@@ -74,7 +74,7 @@ class TestSearchAuthorCount:
         # feature-detecting field names. total_results is the upstream
         # match count (how many exist); result_count is how many hits the
         # call actually returned.
-        async def fake_arxiv(query, max_results=10):
+        async def fake_arxiv(query, max_results=10, **kwargs):
             return {"total_results": 0, "entries": []}
 
         async def fake_crossref(bibliographic, year=None, rows=5):
@@ -92,7 +92,7 @@ class TestSearchAuthorCount:
     async def test_search_arxiv_total_vs_result_count(self, monkeypatch):
         # total_results is arXiv's upstream match count; result_count is
         # how many hits this page returned. They are NOT the same number.
-        async def fake_search(query, max_results=10):
+        async def fake_search(query, max_results=10, **kwargs):
             return {
                 "total_results": 50000,
                 "entries": [
@@ -275,7 +275,7 @@ class TestSearchParameterThreading:
     async def test_search_arxiv_threads_max_results_at_both_bounds(self, monkeypatch):
         seen = []
 
-        async def fake_search(query, max_results=10):
+        async def fake_search(query, max_results=10, **kwargs):
             seen.append(max_results)
             return {"total_results": 0, "entries": []}
 
@@ -284,6 +284,39 @@ class TestSearchParameterThreading:
         await server.search_arxiv("x", max_results=1)
         await server.search_arxiv("x", max_results=arxiv.MAX_SEARCH_RESULTS)
         assert seen == [1, arxiv.MAX_SEARCH_RESULTS]
+
+    @pytest.mark.asyncio
+    async def test_search_arxiv_threads_page_and_sort(self, monkeypatch):
+        seen = {}
+
+        async def fake_search(query, max_results=10, **kwargs):
+            seen.update(max_results=max_results, **kwargs)
+            return {"total_results": 0, "entries": []}
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_search)
+
+        await server.search_arxiv(
+            "x", max_results=10, page=3, sort_by="submitted", sort_order="ascending"
+        )
+        assert seen == {
+            "max_results": 10,
+            "start": 20,
+            "sort_by": "submitted",
+            "sort_order": "ascending",
+        }
+
+    @pytest.mark.asyncio
+    async def test_search_arxiv_defaults_to_the_first_page_by_relevance(self, monkeypatch):
+        seen = {}
+
+        async def fake_search(query, max_results=10, **kwargs):
+            seen.update(kwargs)
+            return {"total_results": 0, "entries": []}
+
+        monkeypatch.setattr(arxiv, "search_papers", fake_search)
+
+        await server.search_arxiv("x")
+        assert seen == {"start": 0, "sort_by": "relevance", "sort_order": "descending"}
 
     @pytest.mark.asyncio
     async def test_search_crossref_threads_year_and_max_results(self, monkeypatch):
@@ -324,11 +357,30 @@ class TestSearchErrorContract:
     """
 
     @pytest.mark.asyncio
+    async def test_a_page_past_arxivs_window_is_told_to_narrow_not_rewrite(self, monkeypatch):
+        """The query is fine; paging further is what cannot work."""
+        requests = []
+
+        async def fake_get(url, **kwargs):
+            requests.append(kwargs)
+            raise AssertionError("a page past the window must not reach arXiv")
+
+        monkeypatch.setattr(arxiv, "_throttled_get", fake_get)
+
+        page = arxiv.MAX_SEARCH_WINDOW // arxiv.MAX_SEARCH_RESULTS + 1
+        result = await server.search_arxiv("x", max_results=arxiv.MAX_SEARCH_RESULTS, page=page)
+
+        assert result["retryable"] is False
+        assert result["beyond_window"] is True
+        assert "Narrow the query" in result["suggestion"]
+        assert requests == []
+
+    @pytest.mark.asyncio
     async def test_a_rejected_arxiv_query_is_told_to_rewrite_not_retry(self, monkeypatch):
         # arXiv answers a malformed query with a 400 + an api/errors entry, which
         # the provider classifies `retryable: False`. Advising a retry sends the
         # agent back at a call that cannot succeed.
-        async def fake_search(query, max_results=10):
+        async def fake_search(query, max_results=10, **kwargs):
             return {"error": "arXiv rejected the search query: ti:", "retryable": False}
 
         monkeypatch.setattr(arxiv, "search_papers", fake_search)
@@ -340,7 +392,7 @@ class TestSearchErrorContract:
 
     @pytest.mark.asyncio
     async def test_a_transient_arxiv_failure_is_told_to_retry(self, monkeypatch):
-        async def fake_search(query, max_results=10):
+        async def fake_search(query, max_results=10, **kwargs):
             return {"error": "arXiv request timed out", "retryable": True}
 
         monkeypatch.setattr(arxiv, "search_papers", fake_search)
@@ -367,7 +419,7 @@ class TestSearchHitFields:
     async def test_the_hit_carries_the_bare_arxiv_id(self, monkeypatch):
         # `arxiv_id` is what the docstring's "free cache hit" promise rests on;
         # it must be the bare versioned id, not the Atom URL.
-        async def fake_search(query, max_results=10):
+        async def fake_search(query, max_results=10, **kwargs):
             return {
                 "total_results": 1,
                 "entries": [
@@ -394,7 +446,7 @@ class TestSearchHitFields:
         `totalResults`; the year parse must agree with it.
         """
 
-        async def fake_search(query, max_results=10):
+        async def fake_search(query, max_results=10, **kwargs):
             return {
                 "total_results": 1,
                 "entries": [
@@ -444,7 +496,7 @@ class TestSearchHitFields:
     async def test_an_absent_upstream_total_is_zero_on_both_tools(self, monkeypatch):
         # Crossref omits `total-results` on some responses. The key means the
         # same thing on both tools or an agent cannot branch on it.
-        async def fake_arxiv(query, max_results=10):
+        async def fake_arxiv(query, max_results=10, **kwargs):
             return {"entries": []}
 
         async def fake_crossref(bibliographic, year=None, rows=5):

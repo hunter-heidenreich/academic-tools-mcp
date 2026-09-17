@@ -954,6 +954,74 @@ class TestSearchMaxResults:
         assert str(arxiv.MAX_SEARCH_RESULTS) in field.description
 
 
+class TestSearchPagingAndSort:
+    @pytest.mark.asyncio
+    async def test_start_and_sort_reach_the_request(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_capturing_client(monkeypatch, _feed(total="0"))
+
+        await arxiv.search_papers(
+            "anything", max_results=5, start=40, sort_by="updated", sort_order="ascending"
+        )
+
+        assert seen[0] == {
+            "search_query": "anything",
+            "start": "40",
+            "max_results": "5",
+            "sortBy": "lastUpdatedDate",
+            "sortOrder": "ascending",
+        }
+
+    @pytest.mark.parametrize(
+        ("sort_by", "sent"), [("relevance", "relevance"), ("submitted", "submittedDate")]
+    )
+    @pytest.mark.asyncio
+    async def test_each_sort_name_maps_to_the_api_value(self, tmp_path, monkeypatch, sort_by, sent):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_capturing_client(monkeypatch, _feed(total="0"))
+
+        await arxiv.search_papers("anything", sort_by=sort_by)
+
+        assert seen[0]["sortBy"] == sent
+
+    @pytest.mark.asyncio
+    async def test_a_negative_start_is_clamped(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_capturing_client(monkeypatch, _feed(total="0"))
+
+        await arxiv.search_papers("anything", start=-5)
+
+        assert seen[0]["start"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_a_page_ending_exactly_at_the_window_is_requested(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_capturing_client(monkeypatch, _feed(total="0"))
+
+        result = await arxiv.search_papers(
+            "anything", max_results=10, start=arxiv.MAX_SEARCH_WINDOW - 10
+        )
+
+        assert "error" not in result
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_one_result_past_the_window_is_refused_without_a_request(
+        self, tmp_path, monkeypatch
+    ):
+        """arXiv answers this with a 500, which the retry path would read as transient."""
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_capturing_client(monkeypatch, _feed(total="0"))
+
+        result = await arxiv.search_papers(
+            "anything", max_results=10, start=arxiv.MAX_SEARCH_WINDOW - 9
+        )
+
+        assert result["retryable"] is False
+        assert result["beyond_window"] is True
+        assert seen == []
+
+
 class TestSearchErrorEntry:
     @pytest.mark.asyncio
     async def test_arxiv_error_entry_is_not_returned_as_a_hit(self, tmp_path, monkeypatch):

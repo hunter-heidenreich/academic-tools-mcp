@@ -12,6 +12,7 @@ from ..app import (
     CACHE_SEARCH_TOP_K,
     FIND_MAX_RESULTS,
     FORCE_REFRESH,
+    PAGE,
     PAPER_ID,
     SEARCH_YEAR_MAX,
     SEARCH_YEAR_MIN,
@@ -20,11 +21,27 @@ from ..app import (
     dict_list,
     enrich_error,
     mcp,
+    page_bounds,
     read_markdown,
     unwrap_first,
 )
 from ..providers import arxiv, crossref, openalex, wikipedia
 from ..util import doinorm
+
+ARXIV_SORT_BY = Annotated[
+    arxiv.SearchSortBy,
+    Field(
+        description=(
+            "'relevance' (default), 'submitted' (original submission date) or "
+            "'updated' (latest version's date)."
+        ),
+    ),
+]
+
+ARXIV_SORT_ORDER = Annotated[
+    arxiv.SearchSortOrder,
+    Field(description="'descending' (default) or 'ascending'."),
+]
 
 
 def _first_author_name(paper: dict[str, Any]) -> str | None:
@@ -60,6 +77,22 @@ def _published_year(paper: dict[str, Any]) -> int | None:
     return int(published[:4]) if published[:4].isdecimal() else None
 
 
+def _arxiv_search_suggestion(result: dict[str, Any]) -> str:
+    """Recovery advice for a failed arXiv search, one per cause."""
+    if result.get("beyond_window"):
+        return (
+            "Narrow the query instead of paging further — add a cat: prefix or a "
+            "submittedDate range, or sort by 'submitted' and split by date."
+        )
+    # A malformed query is `retryable: False`; a wait cannot help.
+    if result.get("retryable") is False:
+        return (
+            "Rewrite the query — arXiv rejected this one. Check the field "
+            "prefixes (ti:/au:/abs:/cat:) and the AND/OR/ANDNOT operators."
+        )
+    return "Refine the query or retry if arXiv is temporarily unavailable."
+
+
 @mcp.tool
 async def search_arxiv(
     query: Annotated[
@@ -68,7 +101,9 @@ async def search_arxiv(
             description="arXiv search query. Supports field prefixes: "
             "ti: (title), au: (author), abs: (abstract), cat: (category). "
             "Boolean operators: AND, OR, ANDNOT. "
-            "Example: 'ti:attention AND au:vaswani'"
+            "Date range: submittedDate:[YYYYMMDDTTTT TO YYYYMMDDTTTT] (GMT). "
+            "Example: 'ti:attention AND au:vaswani AND "
+            "submittedDate:[201701010000 TO 201712312359]'"
         ),
     ],
     max_results: Annotated[
@@ -79,6 +114,9 @@ async def search_arxiv(
             le=arxiv.MAX_SEARCH_RESULTS,
         ),
     ] = 10,
+    page: PAGE = 1,
+    sort_by: ARXIV_SORT_BY = "relevance",
+    sort_order: ARXIV_SORT_ORDER = "descending",
 ) -> dict[str, Any]:
     """Search arXiv papers. Returns a slim triage list.
 
@@ -86,25 +124,24 @@ async def search_arxiv(
     first_author, author_count, published_year}, ...]}``. ``total_results`` is
     the upstream match count, ``result_count`` what this call returned — a larger
     ``total_results`` means more exist. The author list is omitted so consortium
-    papers can't balloon the response.
+    papers can't balloon the response. Pages are ``max_results`` long; a page past
+    ``total_results`` has empty ``results``.
 
     Errors: ``{error, suggestion}`` plus arXiv's verdict — ``retryable: false``
     for a query arXiv rejected, ``retryable: true`` for a transport or parse
-    failure.
+    failure. arXiv serves only a query's leading results (the error names how
+    many), so a page past them is refused without a request as ``retryable:
+    false`` plus ``beyond_window: true``: narrow the query instead of paging on.
 
     Call get_paper_metadata(arxiv_id) for the full record — every hit is
     already cached, so it costs no request.
     """
-    result = await arxiv.search_papers(query, max_results=max_results)
+    start, _ = page_bounds(page, max_results)
+    result = await arxiv.search_papers(
+        query, max_results=max_results, start=start, sort_by=sort_by, sort_order=sort_order
+    )
     if "error" in result:
-        # A malformed query is `retryable: False`; a wait cannot help.
-        return enrich_error(
-            result,
-            "Rewrite the query — arXiv rejected this one. Check the field "
-            "prefixes (ti:/au:/abs:/cat:) and the AND/OR/ANDNOT operators."
-            if result.get("retryable") is False
-            else "Refine the query or retry if arXiv is temporarily unavailable.",
-        )
+        return enrich_error(result, _arxiv_search_suggestion(result))
 
     results = [
         {
