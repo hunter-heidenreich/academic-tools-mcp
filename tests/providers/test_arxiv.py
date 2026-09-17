@@ -883,7 +883,7 @@ def _search_entry(arxiv_id: str, title: str = "A Paper") -> str:
     )
 
 
-# arXiv answers a malformed search_query with HTTP 200 and this entry.
+# arXiv answers a malformed search_query with this entry: HTTP 400 now, 200 before.
 _ERROR_ENTRY = (
     "  <entry>\n"
     "    <id>http://arxiv.org/api/errors#incorrect_id_format_for_x</id>\n"
@@ -983,6 +983,41 @@ class TestSearchErrorEntry:
         await arxiv.search_papers("ti:(unbalanced")
 
         assert not list(cache.cache_dir(arxiv.NAMESPACE, "papers").glob("*.json"))
+
+    @pytest.mark.asyncio
+    async def test_a_400_carrying_the_entry_is_a_rejection(self, tmp_path, monkeypatch):
+        """Regression: since arXiv's cloud migration the rejection arrives as a 400.
+
+        ``raise_for_status`` ran first, so the agent got ``arXiv HTTP 400: <xml…>``
+        with no ``retryable`` flag and a suggestion to retry.
+        """
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(
+            monkeypatch, _feed(_ERROR_ENTRY), status_code=400, raises=_http_status_error(400)
+        )
+
+        result = await arxiv.search_papers("ti:(unbalanced")
+
+        assert result == {
+            "error": "arXiv rejected the search query: incorrect id format for x",
+            "retryable": False,
+        }
+        assert not list(cache.cache_dir(arxiv.NAMESPACE, "papers").glob("*.json"))
+
+    @pytest.mark.parametrize("body", ["<html>Bad Request</html>", _feed(total="0"), ""])
+    @pytest.mark.asyncio
+    async def test_a_400_without_the_entry_stays_unclassified(self, tmp_path, monkeypatch, body):
+        """Not a rejection and not a parse error: neither flag, so no retry and no rewrite."""
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, body, status_code=400, raises=_http_status_error(400))
+
+        result = await arxiv.search_papers("ti:attention")
+
+        assert result["error"].startswith("arXiv HTTP 400")
+        assert "retryable" not in result
+        assert "not_found" not in result
 
 
 class TestSearchTotalResults:
@@ -1136,9 +1171,17 @@ class TestNotFoundShapes:
             "http_404": {"text": _feed(_search_entry("2301.99999v1")), "status_code": 404},
             "empty_feed": {"text": TestNotFoundShapes._EMPTY_FEED},
             "error_entry": {"text": TestNotFoundShapes._ERROR_FEED},
+            # arXiv's current spelling of the same rejection.
+            "http_400_error_entry": {
+                "text": TestNotFoundShapes._ERROR_FEED,
+                "status_code": 400,
+                "raises": _http_status_error(400),
+            },
         }
 
-    @pytest.mark.parametrize("shape", ["http_404", "empty_feed", "error_entry"])
+    @pytest.mark.parametrize(
+        "shape", ["http_404", "empty_feed", "error_entry", "http_400_error_entry"]
+    )
     @pytest.mark.asyncio
     async def test_each_shape_is_negative_cached_with_one_payload(
         self, tmp_path, monkeypatch, shape

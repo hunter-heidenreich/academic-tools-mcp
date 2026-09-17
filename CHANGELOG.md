@@ -50,6 +50,12 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A rejected arXiv search is reported as a query to rewrite.** Since its cloud
+  migration arXiv answers a malformed `search_query` or id with HTTP 400, which
+  surfaced as `arXiv HTTP 400: <xml…>` with no `retryable` flag and advice to
+  retry. The 400's `api/errors` entry is now read: `search_arxiv` returns arXiv's
+  message with `retryable: false`, and a rejected id is a cached not-found.
+  ([#129])
 - **`download_pdf` fetches an arXiv PDF while the arXiv metadata API is
   rate-limiting.** The PDF URL came only from the `export.arxiv.org` record, so
   a 429 or timeout there failed every arXiv download even while `arxiv.org/pdf`
@@ -1850,3 +1856,4 @@ say which.
 [#126]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/126
 [#127]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/127
 [#128]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/128
+[#129]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/129

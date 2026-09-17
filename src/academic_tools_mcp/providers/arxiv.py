@@ -202,12 +202,28 @@ def id_from_entry(paper: dict[str, Any]) -> str:
 
 
 def _is_error_entry(entry: ET.Element) -> bool:
-    """arXiv answers a bad id *or* a bad query with 200 and an ``api/errors`` entry.
+    """arXiv answers a bad id *or* a bad query with an ``api/errors`` entry, under 400 or 200.
 
     Shared so ``search_papers`` classifies it the way ``get_paper`` does.
     """
     id_el = entry.find(f"{{{_ATOM_NS}}}id")
     return id_el is not None and "api/errors" in (id_el.text or "")
+
+
+def _rejection_root(response: httpx.Response) -> ET.Element | None:
+    """The parsed feed of a 400 that carries arXiv's ``api/errors`` entry, else ``None``.
+
+    ``None`` sends the caller to ``raise_for_status``: a 400 with any other body
+    stays an unclassified ``error_dict``, not a rejection or a parse error.
+    """
+    if response.status_code != 400:
+        return None
+    try:
+        root = _safe_fromstring(response.text)
+    except _PARSE_ERRORS:
+        return None
+    entry = root.find(f"{{{_ATOM_NS}}}entry")
+    return root if entry is not None and _is_error_entry(entry) else None
 
 
 def _parse_entry(entry: ET.Element) -> dict[str, Any]:
@@ -298,9 +314,11 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
             if response.status_code == 404:
                 return _not_found()
 
-            response.raise_for_status()
-
-            root = _safe_fromstring(response.text)
+            # A rejected id is a 400 whose entry the not-found branch below classifies.
+            root = _rejection_root(response)
+            if root is None:
+                response.raise_for_status()
+                root = _safe_fromstring(response.text)
         # Neither caches: a garbled body and a 5xx/timeout/429 say nothing about existence.
         except _PARSE_ERRORS:
             return _parse_error_dict()
@@ -349,10 +367,12 @@ async def search_papers(
             },
         )
 
-        response.raise_for_status()
-
-        # Inside the guard: a garbled or hostile body must return, not raise.
-        root = _safe_fromstring(response.text)
+        # A rejected query is a 400 whose entry the rejection branch below classifies.
+        root = _rejection_root(response)
+        if root is None:
+            response.raise_for_status()
+            # Inside the guard: a garbled or hostile body must return, not raise.
+            root = _safe_fromstring(response.text)
     except _PARSE_ERRORS:
         return _parse_error_dict()
     except http.HTTPX_ERRORS as e:

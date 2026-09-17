@@ -325,7 +325,7 @@ class TestSearchErrorContract:
 
     @pytest.mark.asyncio
     async def test_a_rejected_arxiv_query_is_told_to_rewrite_not_retry(self, monkeypatch):
-        # arXiv answers a malformed query with 200 + an api/errors entry, which
+        # arXiv answers a malformed query with a 400 + an api/errors entry, which
         # the provider classifies `retryable: False`. Advising a retry sends the
         # agent back at a call that cannot succeed.
         async def fake_search(query, max_results=10):
