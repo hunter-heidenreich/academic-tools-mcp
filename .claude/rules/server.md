@@ -57,8 +57,10 @@ These hold across several tools, so changing one tool alone breaks the set.
   `biorxiv` / `acl_anthology` / `openalex` / `crossref`) must mean the same thing
   in all four paper tools — `fallback_crossref` is a parameter of each, and a
   paper reachable through one must be reachable through all of them.
-  `openalex_via_biorxiv` is
-  still `get_paper_metadata`-only, `follow_published` being that one tool's.
+  `openalex_via_biorxiv` and `openalex_via_arxiv` are `get_paper_metadata`-only,
+  `follow_published` being that one tool's. **The chain lives once**, in
+  `paper._follow_published`; each preprint server supplies only where its journal
+  DOI sits and how its two records format.
   **The fallback's whole precondition lives once**, in `paper._crossref_fallback`
   — the opt-in flag, the definitive 404 *and* `source == "openalex"`. A tool that
   spells any of it itself is how the four start disagreeing about which papers

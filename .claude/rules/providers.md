@@ -131,6 +131,18 @@ returns 429/503 with no `Retry-After` when an IP is briefly penalty-boxed, and
 one retry tends to land in the same cooldown; two ride `get_with_retry`'s backoff
 out of it.
 
+**License and revision history come from OAI-PMH, not the Atom API**, which
+carries neither. `get_versions` reads the `arXivRaw` record at `_OAI_BASE_URL`
+through the same `_throttled_get`: arXiv's single-connection rule covers every
+interface, so a second throttle would double the rate it allows. OAI-PMH reports
+every error in a 200 body as `<error code=…>`; only `idDoesNotExist` is a
+definitive miss. The record is keyed by the bare id (one record spans every
+revision) and lives `_VERSIONS_TTL_SECONDS`, far shorter than a paper's: a new
+revision is exactly what it reports. Older papers carry no `<license>`.
+
+**`arxiv:doi` is the author-recorded journal DOI**, sometimes several separated by
+whitespace and often absent; `follow_published` takes the first.
+
 **XML is parsed with `defusedxml`**, and the refusal joins `ET.ParseError` in
 `_PARSE_ERRORS` — transient, not not-found.
 

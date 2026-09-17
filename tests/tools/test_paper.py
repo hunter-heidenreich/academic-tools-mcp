@@ -1665,3 +1665,166 @@ class TestArxivBatchThroughTheTool:
         assert [p["_input"] for p in papers] == ids
         assert all(p["_source"] == "arxiv" and "error" not in p for p in papers)
         assert papers[3]["title"] == f"T {ids[3]}"
+
+
+# ---------------------------------------------------------------------------
+# get_paper_versions: arXiv license and revision history
+# ---------------------------------------------------------------------------
+
+
+class TestGetPaperVersions:
+    _RECORD: ClassVar[dict] = {
+        "arxiv_id": "1706.03762",
+        "submitter": "Llion Jones",
+        "license": "http://arxiv.org/licenses/nonexclusive-distrib/1.0/",
+        "versions": [
+            {"version": "v1", "date": "2017-06-12T17:57:34Z", "size": "1102kb"},
+            {"version": "v2", "date": "2017-06-19T16:49:45Z", "size": "1124kb"},
+        ],
+    }
+
+    @pytest.mark.asyncio
+    async def test_the_record_is_returned_with_its_count(self, monkeypatch):
+        seen = []
+
+        async def fake_versions(arxiv_id, *, force_refresh=False):
+            seen.append(arxiv_id)
+            return self._RECORD
+
+        monkeypatch.setattr(arxiv, "get_versions", fake_versions)
+
+        result = await server.get_paper_versions("arXiv:1706.03762v2")
+
+        assert result == {
+            "_source": "arxiv",
+            "_canonical_id": "1706.03762",
+            **self._RECORD,
+            "version_count": 2,
+        }
+        assert seen == ["arXiv:1706.03762v2"]
+
+    @pytest.mark.parametrize("identifier", ["10.1038/nature12373", "pmid:20079334", "P16-1160"])
+    @pytest.mark.asyncio
+    async def test_a_non_arxiv_identifier_is_refused_without_a_request(
+        self, monkeypatch, identifier
+    ):
+        async def no_request(*args, **kwargs):
+            raise AssertionError("a non-arXiv identifier must not reach arXiv")
+
+        monkeypatch.setattr(arxiv, "get_versions", no_request)
+
+        result = await server.get_paper_versions(identifier)
+
+        assert "Not an arXiv ID" in result["error"]
+        assert "search_arxiv" in result["suggestion"]
+        # Unflagged would read as "unknown", not "can never work".
+        assert result["not_found"] is True
+        assert "retryable" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_provider_error_keeps_its_verdict_and_gains_a_suggestion(self, monkeypatch):
+        async def fake_versions(arxiv_id, *, force_refresh=False):
+            return {"error": "No paper found for arXiv ID: 2301.99999", "not_found": True}
+
+        monkeypatch.setattr(arxiv, "get_versions", fake_versions)
+
+        result = await server.get_paper_versions("2301.99999")
+
+        assert result["not_found"] is True
+        assert result["suggestion"] == paper._ARXIV_METADATA_HINT
+
+
+# ---------------------------------------------------------------------------
+# get_paper_metadata: follow_published for arXiv
+# ---------------------------------------------------------------------------
+
+
+class TestFollowPublishedArxiv:
+    _ENTRY: ClassVar[dict] = {
+        "id": "http://arxiv.org/abs/hep-th/9901001v3",
+        "title": "String Junctions (preprint)",
+        "doi": "10.1143/PTP.101.1155",
+        "journal_ref": "Prog.Theor.Phys.101:1155-1164,1999",
+        "links": [],
+    }
+
+    def _serve(self, monkeypatch, entry, work):
+        requested = []
+
+        async def fake_arxiv(ident, **kwargs):
+            return entry
+
+        async def fake_work(doi, **kwargs):
+            requested.append(doi)
+            return work
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
+        monkeypatch.setattr(openalex, "get_work", fake_work)
+        return requested
+
+    @pytest.mark.asyncio
+    async def test_a_recorded_doi_chains_to_the_journal_record(self, monkeypatch):
+        requested = self._serve(
+            monkeypatch, self._ENTRY, {"title": "String Junctions", "doi": "10.1143/ptp.101.1155"}
+        )
+
+        result = await server.get_paper_metadata("hep-th/9901001", follow_published=True)
+
+        assert requested == ["10.1143/PTP.101.1155"]
+        assert result["_source"] == "openalex_via_arxiv"
+        assert result["_canonical_id"] == "10.1143/ptp.101.1155"
+        assert result["title"] == "String Junctions"
+        assert result["preprint_arxiv_id"] == "hep-th/9901001v3"
+        assert result["followed_published"] is True
+
+    @pytest.mark.asyncio
+    async def test_without_follow_published_openalex_is_never_asked(self, monkeypatch):
+        requested = self._serve(monkeypatch, self._ENTRY, {"title": "unused"})
+
+        result = await server.get_paper_metadata("hep-th/9901001")
+
+        assert requested == []
+        assert result["_source"] == "arxiv"
+        assert "followed_published" not in result
+
+    @pytest.mark.asyncio
+    async def test_no_recorded_doi_returns_the_preprint_unmarked(self, monkeypatch):
+        requested = self._serve(monkeypatch, {**self._ENTRY, "doi": None}, {"title": "unused"})
+
+        result = await server.get_paper_metadata("hep-th/9901001", follow_published=True)
+
+        assert requested == []
+        assert result["_source"] == "arxiv"
+        assert "followed_published" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_first_of_several_recorded_dois_is_followed(self, monkeypatch):
+        requested = self._serve(
+            monkeypatch,
+            {**self._ENTRY, "doi": "10.1143/PTP.101.1155 10.1143/PTP.101.9999"},
+            {"title": "String Junctions"},
+        )
+
+        await server.get_paper_metadata("hep-th/9901001", follow_published=True)
+
+        assert requested == ["10.1143/PTP.101.1155"]
+
+    @pytest.mark.parametrize(
+        ("work", "retryable"),
+        [
+            ({"error": "No work found", "not_found": True}, False),
+            ({"error": "OpenAlex server error (HTTP 503).", "retryable": True}, True),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_an_openalex_miss_falls_back_to_the_marked_preprint(
+        self, monkeypatch, work, retryable
+    ):
+        self._serve(monkeypatch, self._ENTRY, work)
+
+        result = await server.get_paper_metadata("hep-th/9901001", follow_published=True)
+
+        assert result["_source"] == "arxiv"
+        assert result["title"] == "String Junctions (preprint)"
+        assert result["followed_published"] is False
+        assert result.get("published_lookup_retryable", False) is retryable

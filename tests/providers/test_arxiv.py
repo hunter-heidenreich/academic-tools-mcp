@@ -1903,3 +1903,176 @@ class TestGetPapersBatch:
 
         assert [s["id_list"] for s in seen] == ["2301.00001,2301.00002", "2301.00003"]
         assert all("error" not in p for p in out.values())
+
+
+# ---------------------------------------------------------------------------
+# get_versions: license and revision history from OAI-PMH arXivRaw
+# ---------------------------------------------------------------------------
+
+
+def _oai_record(arxiv_id="1706.03762", *, license_url=None, versions=2):
+    """An OAI-PMH GetRecord body in arXivRaw form, as oaipmh.arxiv.org serves it."""
+    version_xml = "".join(
+        f'<version version="v{n}"><date>Mon, 12 Jun 2017 17:5{n}:34 GMT</date>'
+        f"<size>11{n}kb</size><source_type>D</source_type></version>"
+        for n in range(1, versions + 1)
+    )
+    license_xml = f"<license>{license_url}</license>" if license_url else ""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">'
+        "<GetRecord><record><header><identifier>oai:arXiv.org:"
+        f"{arxiv_id}</identifier></header><metadata>"
+        '<arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/">'
+        f"<id>{arxiv_id}</id><submitter>Llion Jones</submitter>{version_xml}"
+        f"<title>Attention Is All You Need</title>{license_xml}"
+        "</arXivRaw></metadata></record></GetRecord></OAI-PMH>"
+    )
+
+
+def _oai_error(code):
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">'
+        f"<error code='{code}'>The value of the identifier argument is unknown.</error>"
+        "</OAI-PMH>"
+    )
+
+
+class TestGetVersions:
+    _NONEXCLUSIVE = "http://arxiv.org/licenses/nonexclusive-distrib/1.0/"
+
+    @pytest.mark.asyncio
+    async def test_the_record_parses_license_submitter_and_versions(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, _oai_record(license_url=self._NONEXCLUSIVE))
+
+        result = await arxiv.get_versions("1706.03762")
+
+        assert result == {
+            "arxiv_id": "1706.03762",
+            "submitter": "Llion Jones",
+            "license": self._NONEXCLUSIVE,
+            "versions": [
+                {"version": "v1", "date": "2017-06-12T17:51:34Z", "size": "111kb"},
+                {"version": "v2", "date": "2017-06-12T17:52:34Z", "size": "112kb"},
+            ],
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_record_without_a_license_reads_as_none(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, _oai_record("hep-th/9901001"))
+
+        result = await arxiv.get_versions("hep-th/9901001")
+
+        assert result["license"] is None
+        assert len(result["versions"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_every_revision_shares_one_bare_request_and_entry(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_capturing_client(monkeypatch, _oai_record())
+
+        await arxiv.get_versions("arXiv:1706.03762v3")
+        await arxiv.get_versions("1706.03762")
+
+        assert len(seen) == 1
+        assert seen[0] == {
+            "verb": "GetRecord",
+            "identifier": "oai:arXiv.org:1706.03762",
+            "metadataPrefix": "arXivRaw",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_positive_entry_lives_a_day_not_fourteen(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, _oai_record())
+        ttls: list[float] = []
+        real = cache.cached_lookup
+
+        async def spy(**kwargs):
+            ttls.append(kwargs["positive_ttl"])
+            return await real(**kwargs)
+
+        monkeypatch.setattr(cache, "cached_lookup", spy)
+
+        await arxiv.get_versions("1706.03762")
+
+        assert ttls == [arxiv._VERSIONS_TTL_SECONDS]
+        assert arxiv._VERSIONS_TTL_SECONDS < arxiv._POSITIVE_TTL_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_id_does_not_exist_is_negative_cached(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        calls = _stub_text_response(monkeypatch, _oai_error("idDoesNotExist"))
+
+        result = await arxiv.get_versions("2301.99999")
+
+        assert result == {"error": "No paper found for arXiv ID: 2301.99999", "not_found": True}
+        assert cache.get_negative(arxiv.NAMESPACE, "versions", "2301.99999") == result
+        assert await arxiv.get_versions("2301.99999") == result
+        assert calls[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_another_oai_error_is_definitive_but_uncached(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, _oai_error("badArgument"))
+
+        result = await arxiv.get_versions("2301.00001")
+
+        assert result["retryable"] is False
+        assert "badArgument" in result["error"]
+        assert cache.get_negative(arxiv.NAMESPACE, "versions", "2301.00001") is None
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<OAI-PMH><GetRec",
+            '<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><GetRecord/></OAI-PMH>',
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_garbled_or_wrong_shape_body_is_transient(self, tmp_path, monkeypatch, body):
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, body)
+
+        result = await arxiv.get_versions("2301.00001")
+
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_transport_failure_is_retryable(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        monkeypatch.setattr(arxiv._throttle, "retry_attempts", 1)
+        _stub_text_response(monkeypatch, "", status_code=503, raises=_http_status_error(503))
+
+        assert (await arxiv.get_versions("2301.00001"))["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_id_outside_the_grammar_makes_no_request(self, tmp_path, monkeypatch):
+        _reset_throttle(monkeypatch, tmp_path)
+        calls = _stub_text_response(monkeypatch, _oai_record())
+
+        result = await arxiv.get_versions("../../2301.00001")
+
+        assert result["not_found"] is True
+        assert calls[0] == 0
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("Wed, 02 Aug 2023 00:41:18 GMT", "2023-08-02T00:41:18Z"),
+            ("not a date", None),
+            ("", None),
+            (None, None),
+        ],
+    )
+    def test_dates_convert_or_degrade_to_none(self, raw, expected):
+        assert arxiv._iso_utc(raw) == expected

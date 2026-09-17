@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`get_paper_versions` reports an arXiv paper's license and revision history**:
+  the license URL, the submitter, and every version's date and size, from
+  arXiv's OAI-PMH record. The license says whether a paper may be
+  redistributed. ([#133])
+- **`follow_published` chains arXiv preprints too.** When the authors recorded
+  a journal DOI, `get_paper_metadata(arxiv_id, follow_published=True)` returns
+  OpenAlex's journal record as `_source: "openalex_via_arxiv"` with
+  `preprint_arxiv_id`. ([#133])
 - **`search_arxiv` pages and sorts.** `page` walks past the first `max_results`
   hits, `sort_by` orders by relevance, submission or update date, and `sort_order`
   flips it; the query description now documents `submittedDate:[… TO …]` ranges.
@@ -1869,3 +1877,4 @@ say which.
 [#129]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/129
 [#130]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/130
 [#132]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/132
+[#133]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/133
