@@ -1,12 +1,14 @@
 """Paper metadata tools: metadata / authors / abstract / bibtex / author lookup."""
 
 import asyncio
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from pydantic import Field
 
 from .. import manual
 from ..app import (
+    ARXIV_ID,
     AUTHOR_ID,
     AUTHORS_PAGE,
     AUTHORS_PAGE_SIZE,
@@ -118,8 +120,13 @@ async def _fetch_source(
     return source, canonical_id, obj
 
 
-def _format_arxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
-    return {
+def _format_arxiv_metadata(
+    paper: dict[str, Any],
+    canonical_id: str | None,
+    *,
+    followed_published: bool | None = None,
+) -> dict[str, Any]:
+    result = {
         "_source": "arxiv",
         "_canonical_id": canonical_id,
         "arxiv_id": arxiv.id_from_entry(paper),
@@ -133,6 +140,10 @@ def _format_arxiv_metadata(paper: dict[str, Any], canonical_id: str | None) -> d
         "journal_ref": paper.get("journal_ref"),
         "comment": paper.get("comment"),
     }
+    # Absent unless a chain was attempted, so the default shape is unchanged.
+    if followed_published is not None:
+        result["followed_published"] = followed_published
+    return result
 
 
 def _format_biorxiv_metadata(
@@ -230,6 +241,46 @@ def _format_openalex_via_biorxiv(
     base["preprint_doi"] = preprint_doi
     base["followed_published"] = True  # symmetric with the False on fall-through
     return base
+
+
+def _format_openalex_via_arxiv(
+    work: dict[str, Any], preprint_arxiv_id: str, journal_canonical: str
+) -> dict[str, Any]:
+    base = _format_openalex_metadata(work, journal_canonical)
+    base["_source"] = "openalex_via_arxiv"
+    base["preprint_arxiv_id"] = preprint_arxiv_id
+    base["followed_published"] = True  # symmetric with the False on fall-through
+    return base
+
+
+def _arxiv_published_doi(paper: dict[str, Any]) -> str | None:
+    """The journal DOI an arXiv author recorded; the first, when they listed several."""
+    raw = paper.get("doi")
+    tokens = raw.split() if isinstance(raw, str) else []
+    return tokens[0] if tokens else None
+
+
+async def _follow_published(
+    published_doi: str,
+    *,
+    journal: Callable[[dict[str, Any], str], dict[str, Any]],
+    preprint: Callable[[], dict[str, Any]],
+    force_refresh: bool,
+) -> dict[str, Any]:
+    """OpenAlex's record for a preprint's journal version, else the preprint's own.
+
+    ``journal`` formats the OpenAlex work under its canonical DOI; ``preprint`` builds
+    the fall-through record, already carrying ``followed_published=False``.
+    """
+    work = await openalex.get_work(published_doi, force_refresh=force_refresh)
+    if "error" not in work:
+        return journal(work, openalex.canonical_doi(published_doi))
+    # Not indexed yet: fall back to the preprint — the agent asked for the best
+    # version, not a failure.
+    result = preprint()
+    if work.get("retryable") is True:
+        result["published_lookup_retryable"] = True
+    return result
 
 
 def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
@@ -365,9 +416,12 @@ async def get_paper_metadata(
     later calls instead of re-normalizing whatever the user typed.
 
       - arxiv: arxiv_id, title, published, updated, primary_category,
-        categories, pdf_url, doi, journal_ref, comment.
+        categories, pdf_url, doi (the journal version's, when the authors recorded
+        one), journal_ref, comment. License and revision history are
+        get_paper_versions'.
       - biorxiv: doi, title, date, version, type, category, license, server,
-        published_doi, pdf_url. A ``follow_published`` chain that didn't reach the
+        published_doi, pdf_url.
+      - For arxiv and biorxiv, a ``follow_published`` chain that didn't reach the
         journal version adds ``followed_published=False``, plus
         ``published_lookup_retryable=True`` if that lookup failed transiently
         (5xx/429/timeout); both absent when no chain was attempted.
@@ -380,9 +434,9 @@ async def get_paper_metadata(
         language, venue, cited_by_count, is_oa, oa_status, oa_url, pdf_url.
         ``pmid`` is bare digits (null when OpenAlex has none) and is itself an
         accepted identifier; ``cited_by_count`` drifts with time.
-      - openalex_via_biorxiv (``follow_published`` reached the journal version):
-        openalex's fields plus preprint_doi and ``followed_published=True``,
-        ``_canonical_id`` being the journal DOI.
+      - openalex_via_biorxiv / openalex_via_arxiv (``follow_published`` reached the
+        journal version): openalex's fields plus preprint_doi / preprint_arxiv_id
+        and ``followed_published=True``, ``_canonical_id`` being the journal DOI.
       - crossref (``fallback_crossref`` after an OpenAlex 404): openalex's fields
         with is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
         ``cited_by_count`` is Crossref's own tally, which differs from OpenAlex's.
@@ -402,20 +456,33 @@ async def get_paper_metadata(
     if source is None:
         return obj  # unknown-identifier error
 
-    if source == "biorxiv" and "error" not in obj:
-        published_doi = obj.get("published_doi")
-        if follow_published and published_doi:
-            work = await openalex.get_work(published_doi, force_refresh=force_refresh)
-            if "error" not in work:
-                return _format_openalex_via_biorxiv(
-                    work, obj.get("doi"), openalex.canonical_doi(published_doi)
-                )
-            # Not indexed yet: fall back to the preprint — the agent asked for the best
-            # version, not a failure.
-            result = _format_biorxiv_metadata(obj, canonical_id, followed_published=False)
-            if work.get("retryable") is True:
-                result["published_lookup_retryable"] = True
-            return result
+    if (
+        follow_published
+        and source == "biorxiv"
+        and "error" not in obj
+        and (published_doi := obj.get("published_doi"))
+    ):
+        return await _follow_published(
+            published_doi,
+            journal=lambda work, doi: _format_openalex_via_biorxiv(work, obj.get("doi"), doi),
+            preprint=lambda: _format_biorxiv_metadata(obj, canonical_id, followed_published=False),
+            force_refresh=force_refresh,
+        )
+
+    if (
+        follow_published
+        and source == "arxiv"
+        and "error" not in obj
+        and (published_doi := _arxiv_published_doi(obj))
+    ):
+        return await _follow_published(
+            published_doi,
+            journal=lambda work, doi: _format_openalex_via_arxiv(
+                work, arxiv.id_from_entry(obj), doi
+            ),
+            preprint=lambda: _format_arxiv_metadata(obj, canonical_id, followed_published=False),
+            force_refresh=force_refresh,
+        )
 
     cr, cr_retryable = await _crossref_fallback(
         source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
@@ -426,6 +493,53 @@ async def get_paper_metadata(
     if "error" in obj:
         return _provider_error(obj, source, crossref_retryable=cr_retryable)
     return _format_metadata_by_source(source, obj, canonical_id)
+
+
+@mcp.tool
+async def get_paper_versions(
+    arxiv_id: ARXIV_ID,
+    force_refresh: FORCE_REFRESH = False,
+) -> dict[str, Any]:
+    """An arXiv paper's license, submitter and revision history.
+
+    Returns ``{_source: "arxiv", _canonical_id, arxiv_id, submitter, license,
+    versions, version_count}``, each version ``{version, date, size}`` oldest
+    first — ``date`` ISO 8601 UTC, ``size`` arXiv's own string (``"1102kb"``).
+    ``_canonical_id`` is unversioned: every revision shares one record.
+
+    ``license`` is a license URL, null for papers that predate arXiv recording one.
+    It decides reuse: arXiv's non-exclusive distribution license
+    (``…/licenses/nonexclusive-distrib/1.0/``) does not permit redistribution; a
+    Creative Commons license may.
+
+    A separate arXiv interface from get_paper_metadata, so this costs its own
+    request; cached for a day, since a new revision is what it reports.
+
+    Errors: ``{error, suggestion}``, plus ``not_found: true`` for an id arXiv does
+    not have or ``retryable: true`` for a transport or parse failure. A DOI or other
+    non-arXiv identifier is refused without a request.
+    """
+    if not arxiv.is_arxiv_id(arxiv_id):
+        return {
+            "error": f"Not an arXiv ID: {arxiv_id!r}.",
+            "suggestion": "Revision history is arXiv's. Find the paper's arXiv ID with "
+            "get_paper_metadata or search_arxiv, then retry.",
+        }
+
+    record = await arxiv.get_versions(arxiv_id, force_refresh=force_refresh)
+    if "error" in record:
+        return enrich_error(record, _ARXIV_METADATA_HINT)
+
+    versions = dict_list(record.get("versions"))
+    return {
+        "_source": "arxiv",
+        "_canonical_id": arxiv.base_arxiv_id(arxiv_id),
+        "arxiv_id": record.get("arxiv_id"),
+        "submitter": record.get("submitter"),
+        "license": record.get("license"),
+        "versions": versions,
+        "version_count": len(versions),
+    }
 
 
 @mcp.tool

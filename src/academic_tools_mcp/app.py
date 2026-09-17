@@ -100,6 +100,15 @@ AUTHOR_ID = Annotated[
     ),
 ]
 
+ARXIV_ID = Annotated[
+    str,
+    Field(
+        description="arXiv ID: bare (1706.03762, hep-th/9901001), arXiv:-prefixed, "
+        "or an arxiv.org URL; any version suffix is ignored. DOIs are not accepted — "
+        "find the arXiv ID with get_paper_metadata or search_arxiv."
+    ),
+]
+
 PAPER_ID = Annotated[
     str,
     Field(
@@ -353,9 +362,11 @@ FOLLOW_PUBLISHED = Annotated[
     bool,
     Field(
         description=(
-            "bioRxiv/medRxiv only: if the preprint has a published_doi, return "
-            "OpenAlex's journal record instead — _source='openalex_via_biorxiv' "
-            "plus preprint_doi and followed_published=True. Not-yet-indexed "
+            "bioRxiv/medRxiv and arXiv: if the preprint names its journal version "
+            "(bioRxiv's published_doi, arXiv's doi), return OpenAlex's journal record "
+            "instead — _source='openalex_via_biorxiv' plus preprint_doi, or "
+            "'openalex_via_arxiv' plus preprint_arxiv_id, and followed_published=True. "
+            "Not-yet-indexed "
             "falls back to the preprint with followed_published=False; a "
             "retryable lookup failure also sets published_lookup_retryable=True. "
             "No effect on other shapes or unpublished preprints."

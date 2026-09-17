@@ -27,8 +27,9 @@ These are properties of the upstream providers rather than of this server, which
 - **Affiliations are current, not paper-time.** OpenAlex reports where an author works *now*, not where they were when the paper was published — the gap widens for older papers.
 - **A zero from OpenCitations is not a claim of absence.** OpenCitations answers a DOI it has never indexed and a DOI it indexed with zero edges identically — an empty list — so `get_paper_references(source="opencitations")` and `get_paper_citations` returning `total: 0` mean "no edges in this index", not "this paper has no references or citations". Cross-check against Crossref for references (`get_paper_references_count` reports both) and against OpenAlex for citations (`get_paper_citations_count` reports both).
 - **Papers with Code is a public beta with a per-IP rate limit** (120 req/min, 60 for list and search) and no uptime promise. Your browser and scripts share that limit, so browsing it heavily while an agent runs can still trigger a 429. It accepts arXiv IDs only, stops search at page 100, and fills the `hf_models` / `hf_datasets` / `hf_spaces` URL lists only for papers not from arXiv. Repository links, `is_official` and leaderboard rows are community-curated: cite a result's source paper, not the leaderboard.
+- **arXiv records almost no affiliations.** Neither its API nor its OAI-PMH record carries them for most papers, so `get_paper_authors` on an arXiv ID usually lists names only. Chain to the journal version with `follow_published=True`, or look the author up with `search_authors` / `get_author`, keeping in mind that OpenAlex's affiliations are current rather than paper-time.
 - **ACL Anthology papers without a DOI have no reference or citation graph**, and a just-minted hosted DOI (`10.1162/tacl…`) answers from OpenAlex until the weekly index refresh.
-- **Preprint and published author lists diverge.** arXiv and the published DOI can list different author sets for the same work. `get_paper_metadata(doi, follow_published=True)` chains a bioRxiv preprint to its journal version, but only once OpenAlex has indexed that version; until then the response carries `followed_published: false` so you can tell you are looking at preprint-era metadata.
+- **Preprint and published author lists diverge.** arXiv and the published DOI can list different author sets for the same work. `get_paper_metadata(identifier, follow_published=True)` chains a bioRxiv or arXiv preprint to its journal version — arXiv's only when the authors recorded that DOI — but only once OpenAlex has indexed that version; until then the response carries `followed_published: false` so you can tell you are looking at preprint-era metadata.
 
 ## Setup
 
@@ -102,13 +103,14 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 
 | Tool | Description |
 |------|-------------|
-| `get_paper_metadata` | Title, dates, venue / categories, identifiers, citation count — shape varies by `_source`. Optional `follow_published=True` auto-chains a bioRxiv preprint to its journal version on OpenAlex when one exists. |
+| `get_paper_metadata` | Title, dates, venue / categories, identifiers, citation count — shape varies by `_source`. Optional `follow_published=True` auto-chains a bioRxiv or arXiv preprint to its journal version on OpenAlex when one exists. |
 | `get_papers_metadata` | Bulk metadata for many identifiers at once. *Uncached* OpenAlex DOIs are chunked into batched `/works?filter=doi:...` calls and uncached arXiv IDs into `id_list` calls — a cached one costs no request at all; bioRxiv / ACL Anthology fan out concurrently. Designed for reference-graph enrichment after `get_paper_references`. Cap 100 per call. |
 | `get_paper_authors` | Author list with source-appropriate detail (affiliations, corresponding author, OpenAlex IDs) |
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
+| `get_paper_versions` | arXiv only: license URL, submitter and every revision's date and size, from arXiv's OAI-PMH record. The license decides whether a paper may be redistributed. |
 
-Pass an arXiv ID, an ACL Anthology ID, any DOI, or a PMID. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"acl_anthology"` / `"openalex"`) so you know which provider answered and which fields to expect; `follow_published` adds `"openalex_via_biorxiv"` when the chain reaches the journal version. arXiv IDs always route to arXiv; bioRxiv DOIs (`10.1101/...`) route to bioRxiv; ACL Anthology IDs, URLs and hosted DOIs route to the Anthology, keyed by Anthology ID; everything else routes to OpenAlex.
+Pass an arXiv ID, an ACL Anthology ID, any DOI, or a PMID. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"acl_anthology"` / `"openalex"`) so you know which provider answered and which fields to expect; `follow_published` adds `"openalex_via_biorxiv"` / `"openalex_via_arxiv"` when the chain reaches the journal version. arXiv IDs always route to arXiv; bioRxiv DOIs (`10.1101/...`) route to bioRxiv; ACL Anthology IDs, URLs and hosted DOIs route to the Anthology, keyed by Anthology ID; everything else routes to OpenAlex.
 
 All four take `fallback_crossref=True`. When OpenAlex returns a definitive 404 for a DOI — a paper published last week, indexed by Crossref and not yet by OpenAlex — the answer comes from Crossref instead, tagged `_source: "crossref"`. Off by default, and never triggered by a transient OpenAlex failure. What Crossref cannot supply is null rather than absent: no open-access fields, no OpenAlex author IDs or corresponding-author flag, and no abstract on the many records deposited without one. If Crossref itself fails transiently, the OpenAlex error carries `crossref_fallback_retryable: true`, so a retry is distinguishable from a paper neither index has.
 
@@ -288,6 +290,7 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 | Provider | Positive TTL | Negative TTL | Why |
 |----------|--------------|--------------|-----|
 | arxiv | 14d | 1h | New versions land under a new key; preprint IDs go live mid-session. |
+| arxiv (versions) | 1d | 1h | The revision history changes exactly when a new version lands. |
 | biorxiv | 7d | 1h | `published_doi` appears asynchronously once a preprint is published. |
 | openalex (works, authors, pmids) | 30d | 24h | Citation counts, topics, h-index all drift. |
 | crossref | 30d | 24h | Reference lists grow as publishers re-deposit metadata. |

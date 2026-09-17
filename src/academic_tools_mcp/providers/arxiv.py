@@ -3,6 +3,7 @@
 import re
 import xml.etree.ElementTree as ET
 from contextlib import AbstractAsyncContextManager
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -26,6 +27,9 @@ def _parse_error_dict() -> dict[str, Any]:
 
 
 ARXIV_BASE_URL = "https://export.arxiv.org/api/query"
+
+# License, submitter and revision history: the Atom API carries none of them.
+_OAI_BASE_URL = "https://oaipmh.arxiv.org/oai"
 NAMESPACE = "arxiv"
 
 # The PDF host's path for a bare id, versioned or not: what an entry's pdf link names.
@@ -37,6 +41,8 @@ LABEL = "arXiv"
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 _ARXIV_NS = "http://arxiv.org/schemas/atom"
 _OPENSEARCH_NS = "http://a9.com/-/spec/opensearch/1.1/"
+_OAI_NS = "http://www.openarchives.org/OAI/2.0/"
+_ARXIV_RAW_NS = "http://arxiv.org/OAI/arXivRaw/"
 
 # concurrency=1 is arXiv's documented "single connection" rule; _MAX_PENDING x
 # _MIN_REQUEST_GAP bounds how long a queued caller blocks before backpressure.
@@ -77,6 +83,9 @@ _BATCH_CHUNK_SIZE = 50
 # Long: a record is stable per version — but bounded, so a revision still surfaces
 # under a bare key.
 _POSITIVE_TTL_SECONDS = 14 * 86400.0
+
+# Short: the record changes exactly when a revision lands, which is what it reports.
+_VERSIONS_TTL_SECONDS = 86400.0
 
 
 def _build_headers() -> dict[str, str]:
@@ -608,6 +617,106 @@ async def get_papers_batch(
         out.update(await _fetch_batch_chunk(chunk, force_refresh=force_refresh))
 
     return {c: out[c] for c in canonicals_in_order}
+
+
+def _iso_utc(rfc2822: str | None) -> str | None:
+    """An OAI ``Mon, 12 Jun 2017 17:57:34 GMT`` date in the Atom feed's ISO 8601 form."""
+    if not rfc2822:
+        return None
+    try:
+        return parsedate_to_datetime(rfc2822).isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_versions(root: ET.Element) -> dict[str, Any] | None:
+    """An ``arXivRaw`` record as ``{arxiv_id, submitter, license, versions}``, or ``None``."""
+    raw = root.find(f".//{{{_ARXIV_RAW_NS}}}arXivRaw")
+    if raw is None:
+        return None
+
+    def _text(el: ET.Element, tag: str) -> str | None:
+        child = el.find(f"{{{_ARXIV_RAW_NS}}}{tag}")
+        return child.text.strip() if child is not None and child.text else None
+
+    versions = [
+        {
+            "version": v.get("version") or None,
+            "date": _iso_utc(_text(v, "date")),
+            "size": _text(v, "size"),
+        }
+        for v in raw.findall(f"{{{_ARXIV_RAW_NS}}}version")
+    ]
+    return {
+        "arxiv_id": _text(raw, "id") or "",
+        "submitter": _text(raw, "submitter"),
+        "license": _text(raw, "license"),
+        "versions": versions,
+    }
+
+
+async def get_versions(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """License, submitter and revision history from arXiv's OAI-PMH ``arXivRaw`` record.
+
+    Keyed by the bare id: every revision shares one record. ``license`` is a URL, or
+    ``None`` for papers that predate arXiv recording one; each version's ``date`` is
+    ISO 8601 UTC. Through the same throttle as the Atom API: arXiv's single-connection
+    rule covers both.
+    """
+    canonical = base_arxiv_id(arxiv_id)
+
+    async def _fetch() -> dict[str, Any]:
+        # Shape-gated: only a grammar-valid id is interpolated into the OAI identifier.
+        if not _is_arxiv_shape(canonical):
+            return http.not_found(f"Not an arXiv ID: {arxiv_id}")
+
+        try:
+            response = await _throttled_get(
+                _OAI_BASE_URL,
+                params={
+                    "verb": "GetRecord",
+                    "identifier": f"oai:arXiv.org:{canonical}",
+                    "metadataPrefix": "arXivRaw",
+                },
+            )
+            response.raise_for_status()
+            root = _safe_fromstring(response.text)
+        except _PARSE_ERRORS:
+            return _parse_error_dict()
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
+
+        # OAI-PMH reports errors in a 200 body.
+        error_el = root.find(f"{{{_OAI_NS}}}error")
+        if error_el is not None:
+            if error_el.get("code") == "idDoesNotExist":
+                err = http.not_found(f"No paper found for arXiv ID: {arxiv_id}")
+                cache.put_negative(
+                    NAMESPACE, "versions", canonical, err, ttl_seconds=_NEG_TTL_SECONDS
+                )
+                return err
+            detail = " ".join((error_el.text or "").split())
+            return {
+                "error": f"{LABEL} OAI-PMH rejected the request ({error_el.get('code')}): {detail}",
+                "retryable": False,
+            }
+
+        record = _parse_versions(root)
+        if record is None:
+            return _parse_error_dict()
+        cache.put(NAMESPACE, "versions", canonical, record)
+        return record
+
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="versions",
+        canonical=canonical,
+        positive_ttl=_VERSIONS_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        sf_key=("versions", canonical),
+    )
 
 
 def pdf_path(arxiv_id: str) -> Path:

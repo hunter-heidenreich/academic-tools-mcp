@@ -8,17 +8,8 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from ..app import FORCE_REFRESH, enrich_error, mcp
+from ..app import ARXIV_ID, FORCE_REFRESH, enrich_error, mcp
 from ..providers import arxiv, paperswithcode
-
-ARXIV_ID = Annotated[
-    str,
-    Field(
-        description="arXiv ID: bare (1706.03762, hep-th/9901001), arXiv:-prefixed, "
-        "or an arxiv.org URL; any version suffix is ignored. DOIs are not accepted — "
-        "find the arXiv ID with get_paper_metadata or search_arxiv."
-    ),
-]
 
 PWC_PAGE = Annotated[
     int,
