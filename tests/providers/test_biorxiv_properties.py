@@ -149,3 +149,9 @@ def test_a_stored_stem_inverts_to_an_identifier_the_router_accepts(doi: str) -> 
     target = manual.resolve_target(recovered)
     assert target["namespace"] == biorxiv.NAMESPACE
     assert target["canonical"] == canonical
+
+
+@given(biorxiv_dois)
+def test_every_doi_asks_both_servers_once_each(doi):
+    """Ordering is a heuristic; a definitive miss still needs both servers' answers."""
+    assert sorted(biorxiv._servers_for(doi)) == ["biorxiv", "medrxiv"]

@@ -67,6 +67,11 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **A medRxiv DOI costs one metadata request, not two.** bioRxiv and medRxiv
+  share the `10.1101/` prefix, and every medRxiv DOI asked bioRxiv first. The
+  likelier server is now asked first — medRxiv for an 8-digit id — and a miss is
+  still definitive only once both have answered. ([#139])
+
 - **`get_papers_metadata` fetches arXiv IDs in one request.** Uncached arXiv IDs
   go out in batched `id_list` calls, as OpenAlex DOIs already did. Each ID was its
   own request behind arXiv's one-at-a-time limit, so a list of more than a few
@@ -1907,3 +1912,4 @@ say which.
 [#136]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/136
 [#137]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/137
 [#138]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/138
+[#139]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/139

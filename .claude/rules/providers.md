@@ -174,6 +174,10 @@ budget.
 `download/openaccess` rule. Any other URL is "no full text", negative-cached. A
 200 without `_JATS_MARKER` is a challenge or error page, so transient.
 
+**Server order is only a heuristic.** `_servers_for` asks medRxiv first for an
+8-digit id; a definitive miss still needs both servers, so an off-pattern DOI
+costs a request, never a false not-found.
+
 ## crossref.py
 
 **The tier is chosen from config, not assumed.** `_resolve_policy()` picks the

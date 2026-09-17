@@ -1567,3 +1567,63 @@ class TestGetJats:
 
         assert result["retryable"] is True
         assert seen == []
+
+
+_MEDRXIV_DOI = "10.1101/2020.09.09.20191205"
+
+
+class TestServerOrder:
+    @pytest.mark.parametrize(
+        ("doi", "expected"),
+        [
+            ("10.1101/2024.01.01.573838", ("biorxiv", "medrxiv")),
+            ("10.1101/123456", ("biorxiv", "medrxiv")),
+            ("10.1101/2020.09.09.20191205", ("medrxiv", "biorxiv")),
+            ("10.1101/20191205", ("medrxiv", "biorxiv")),
+            # One digit either side of the 8-digit id is not medRxiv's shape.
+            ("10.1101/2020.09.09.2019120", ("biorxiv", "medrxiv")),
+            ("10.1101/2020.09.09.201912051", ("biorxiv", "medrxiv")),
+        ],
+    )
+    def test_the_likelier_server_comes_first(self, doi, expected):
+        assert biorxiv._servers_for(doi) == expected
+
+    @pytest.fixture
+    def _no_gap(self, monkeypatch):
+        _reset_biorxiv(monkeypatch)
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_no_gap")
+    async def test_a_medrxiv_doi_is_one_request(self, monkeypatch):
+        body = _collection(doi=_MEDRXIV_DOI, server="medRxiv")
+        calls = _stub_json_responses(monkeypatch, body)
+
+        paper = await biorxiv.get_paper(_MEDRXIV_DOI)
+
+        assert paper["server"] == "medrxiv"
+        assert [str(r.url) for r in calls] == [
+            f"https://api.biorxiv.org/details/medrxiv/{_MEDRXIV_DOI}/na/json"
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_no_gap")
+    async def test_a_medrxiv_shaped_doi_biorxiv_holds_still_resolves(self, monkeypatch):
+        calls = _stub_json_responses(monkeypatch, _EMPTY, _collection(doi=_MEDRXIV_DOI))
+
+        paper = await biorxiv.get_paper(_MEDRXIV_DOI)
+
+        assert paper["server"] == "biorxiv"
+        assert [r.url.path.split("/")[2] for r in calls] == ["medrxiv", "biorxiv"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("_no_gap")
+    async def test_a_medrxiv_doi_still_needs_both_servers_for_a_miss(self, monkeypatch):
+        _stub_json_responses(monkeypatch, _EMPTY, _WRONG_SHAPE)
+
+        result = await biorxiv.get_paper(_MEDRXIV_DOI)
+
+        assert result["retryable"] is True
+        assert (
+            cache.get_negative(biorxiv.NAMESPACE, "papers", biorxiv.canonical_key(_MEDRXIV_DOI))
+            is None
+        )
