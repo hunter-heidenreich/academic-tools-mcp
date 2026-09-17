@@ -100,7 +100,10 @@ async def _fetch_source(
     for the Crossref fallback.
 
     All four paper tools reach a provider through here, so the PMID trade at the
-    top is uniform across them.
+    top is uniform across them — and so is the bioRxiv → OpenAlex fallback
+    (``_biorxiv_fallback``): a hit comes back as ``source == "openalex"`` with the
+    work marked ``biorxiv_unavailable``, which ``_flag_fallback`` carries onto the
+    response.
     """
     identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
@@ -112,6 +115,11 @@ async def _fetch_source(
         obj = await arxiv.get_paper(identifier, force_refresh=force_refresh)
     elif source == "biorxiv":
         obj = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
+        work, oa_retryable = await _biorxiv_fallback(canonical_id, obj, force_refresh=force_refresh)
+        if work is not None:
+            return "openalex", canonical_id, {**work, "biorxiv_unavailable": True}
+        if oa_retryable:
+            obj = {**obj, "openalex_fallback_retryable": True}
     elif source == "acl_anthology":
         obj = await acl.get_paper(identifier, force_refresh=force_refresh)
     elif source == "openalex":
@@ -339,6 +347,37 @@ async def _crossref_fallback(
     return None, cr.get("retryable") is True
 
 
+async def _biorxiv_fallback(
+    canonical_id: str | None, obj: dict[str, Any], *, force_refresh: bool
+) -> tuple[dict[str, Any] | None, bool]:
+    """OpenAlex's work for a bioRxiv DOI bioRxiv failed to serve, and whether that failed transiently.
+
+    ``(work, False)`` on a hit, ``(None, retryable)`` otherwise — ``_crossref_fallback``'s
+    contract. One home for the precondition: an *upstream*-transient bioRxiv failure.
+    A definitive miss stays bioRxiv's verdict, and a local refusal (``backpressure``,
+    ``quota_exhausted``) says nothing about bioRxiv's health — falling back on one
+    would spend OpenAlex budget to route around our own pacing.
+    """
+    if not (
+        canonical_id
+        and obj.get("retryable") is True
+        and not obj.get("backpressure")
+        and not obj.get("quota_exhausted")
+    ):
+        return None, False
+    work = await openalex.get_work(canonical_id, force_refresh=force_refresh)
+    if "error" not in work:
+        return work, False
+    return None, work.get("retryable") is True
+
+
+def _flag_fallback(result: dict[str, Any], obj: dict[str, Any]) -> dict[str, Any]:
+    """Carry ``biorxiv_unavailable`` from a fallback work onto a tool response; returns it."""
+    if obj.get("biorxiv_unavailable") is True:
+        result["biorxiv_unavailable"] = True
+    return result
+
+
 def _provider_error(
     obj: dict[str, Any], source: manual.MetadataSource, *, crossref_retryable: bool
 ) -> dict[str, Any]:
@@ -442,13 +481,19 @@ async def get_paper_metadata(
         with is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
         ``cited_by_count`` is Crossref's own tally, which differs from OpenAlex's.
 
+    A bioRxiv/medRxiv DOI that bioRxiv fails to serve *transiently* (5xx, 429, timeout,
+    garbled body — not a definitive miss or a local refusal) is answered by OpenAlex:
+    ``_source`` is ``openalex``, the response adds ``biorxiv_unavailable: true``, and no
+    ``follow_published`` chain runs. All four paper tools fall back alike.
+
     A PMID dispatches as its DOI, so ``_source`` is ``openalex`` and
     ``_canonical_id`` the DOI whichever of the two you passed. An Anthology URL or
     hosted DOI dispatches as the Anthology ID.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    if the fallback's own Crossref call failed transiently. Siblings
+    if the fallback's own Crossref call failed transiently, or
+    ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did. Siblings
     get_paper_authors / _abstract / _bibtex share this dispatch, the cached
     object and ``fallback_crossref``. For many identifiers at once, use
     get_papers_metadata.
@@ -493,7 +538,7 @@ async def get_paper_metadata(
 
     if "error" in obj:
         return _provider_error(obj, source, crossref_retryable=cr_retryable)
-    return _format_metadata_by_source(source, obj, canonical_id)
+    return _flag_fallback(_format_metadata_by_source(source, obj, canonical_id), obj)
 
 
 @mcp.tool
@@ -574,7 +619,8 @@ async def get_papers_metadata(
     Returns ``{count, papers}``: each entry is get_paper_metadata's payload plus
     ``_input``, the original string, so an agent can correlate input to output.
     Order matches the input list; failures appear as ``{_input, error, suggestion?}``
-    and don't affect others.
+    and don't affect others. A bioRxiv DOI answered by the OpenAlex fallback carries
+    ``biorxiv_unavailable: true``, as in get_paper_metadata.
     """
     n = len(identifiers)
     results: list[dict[str, Any] | None] = [None] * n
@@ -596,7 +642,7 @@ async def get_papers_metadata(
                 **enrich_error(obj, _METADATA_HINT_BY_SOURCE[source]),
             }
             return
-        formatted = _format_metadata_by_source(source, obj, canonical)
+        formatted = _flag_fallback(_format_metadata_by_source(source, obj, canonical), obj)
         formatted["_input"] = ident
         results[slot] = formatted
 
@@ -749,7 +795,8 @@ async def get_paper_authors(
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    if the fallback's own Crossref call failed transiently.
+    if the fallback's own Crossref call failed transiently, or
+    ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
@@ -800,7 +847,7 @@ async def get_paper_authors(
     if source == "biorxiv":
         result["author_corresponding"] = obj.get("author_corresponding")
         result["author_corresponding_institution"] = obj.get("author_corresponding_institution")
-    return result
+    return _flag_fallback(result, obj)
 
 
 @mcp.tool
@@ -819,7 +866,8 @@ async def get_paper_abstract(
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    if the fallback's own Crossref call failed transiently.
+    if the fallback's own Crossref call failed transiently, or
+    ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
@@ -846,12 +894,13 @@ async def get_paper_abstract(
     else:
         abstract = openalex.reconstruct_abstract(obj.get("abstract_inverted_index")) or None
 
-    return {
+    result = {
         "_source": source,
         "_canonical_id": canonical_id,
         "title": obj.get("title"),
         "abstract": abstract,
     }
+    return _flag_fallback(result, obj)
 
 
 @mcp.tool
@@ -878,7 +927,8 @@ async def get_paper_bibtex(
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    if the fallback's own Crossref call failed transiently.
+    if the fallback's own Crossref call failed transiently, or
+    ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
@@ -906,11 +956,12 @@ async def get_paper_bibtex(
     else:
         bibtex = generate_bibtex(obj)
 
-    return {
+    result = {
         "_source": source,
         "_canonical_id": canonical_id,
         "bibtex": bibtex,
     }
+    return _flag_fallback(result, obj)
 
 
 @mcp.tool

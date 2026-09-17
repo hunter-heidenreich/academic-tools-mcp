@@ -10,7 +10,7 @@ import httpx
 
 from ..download import streaming
 from ..net import clients, http
-from ..net.throttle import Throttle
+from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight, stems
 from ..util import doinorm, useragent
 
@@ -66,6 +66,18 @@ _throttle = Throttle(
     min_gap_seconds=_MIN_REQUEST_GAP,
     max_pending=_MAX_PENDING,
 )
+
+
+# The content hosts (www.biorxiv.org / www.medrxiv.org) sit behind Cloudflare, which
+# rate-limits (429, error 1015) or challenges (403) a handful of requests at the API's
+# pace. Stricter, and shared by both hosts: one operator, one edge.
+_CONTENT_REQUEST_GAP = 3.0
+_content_gap = SubGap(_throttle, min_gap_seconds=_CONTENT_REQUEST_GAP)
+
+
+def reset_content_pacing() -> None:
+    """Reset the content-host gap (test seam, called by conftest)."""
+    _content_gap.reset()
 
 
 def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
@@ -342,6 +354,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             # Definitive: the record exists but carries no PDF URL.
             return {"error": f"No PDF URL found for DOI: {doi}", "retryable": False}
 
+        await _content_gap.wait()
         return await streaming.stream_to_file(
             _get_client(),
             pdf_url,

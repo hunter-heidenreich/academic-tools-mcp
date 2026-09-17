@@ -1064,3 +1064,33 @@ class TestDownloadPdfMetadataBranches:
         await biorxiv.download_pdf(_DOI, force_refresh=force)
 
         assert seen["force_refresh"] is force
+
+
+class TestContentHostPacing:
+    @pytest.mark.asyncio
+    async def test_the_content_gap_is_waited_out_before_the_pdf_stream(self, monkeypatch):
+        # Cloudflare fronts the content hosts and rate-limits at the API's pace, so the
+        # PDF fetch must take the stricter gap first.
+        order: list[str] = []
+
+        async def _fake_get_paper(doi, *, force_refresh=False):
+            return {"doi": doi, "pdf_url": f"https://www.biorxiv.org/content/{doi}v1.full.pdf"}
+
+        async def _fake_wait():
+            order.append("gap")
+
+        async def _fake_stream(*args, **kwargs):
+            order.append("stream")
+            return {"error": "stop here", "retryable": True}
+
+        monkeypatch.setattr(biorxiv, "get_paper", _fake_get_paper)
+        monkeypatch.setattr(biorxiv._content_gap, "wait", _fake_wait)
+        monkeypatch.setattr(biorxiv.streaming, "stream_to_file", _fake_stream)
+
+        await biorxiv.download_pdf(_DOI)
+
+        assert order == ["gap", "stream"]
+
+    def test_the_content_gap_is_stricter_than_the_api_gap(self):
+        assert biorxiv._content_gap.min_gap_seconds > biorxiv._throttle.min_gap_seconds
+        assert biorxiv._content_gap.throttle is biorxiv._throttle

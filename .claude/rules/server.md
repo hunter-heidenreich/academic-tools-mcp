@@ -64,7 +64,13 @@ These hold across several tools, so changing one tool alone breaks the set.
   **The fallback's whole precondition lives once**, in `paper._crossref_fallback`
   — the opt-in flag, the definitive 404 *and* `source == "openalex"`. A tool that
   spells any of it itself is how the four start disagreeing about which papers
-  Crossref answers for.
+  Crossref answers for. **The bioRxiv → OpenAlex fallback is the same rule one
+  level down**: its precondition (upstream-transient only, never backpressure or
+  quota) lives in `paper._biorxiv_fallback`, called only from `_fetch_source`, so
+  the four tools *and* the batch singleton closure inherit it. A hit is
+  `_source: "openalex"`, never a new tag — the payload *is* OpenAlex's — and
+  `biorxiv_unavailable` reaches the response only through `_flag_fallback`; a new
+  response builder that skips it silently drops the flag.
 - **Every search tool owes the agent *some* "more exist" signal** —
   `total_results` (the provider's own upstream count, never `len(results)`),
   `result_count` alone where there is no upstream total, or `truncated`. Pick one
