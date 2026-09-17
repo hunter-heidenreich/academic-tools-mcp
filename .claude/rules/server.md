@@ -117,9 +117,11 @@ file that is gone. A cache hit does not cascade (the markdown is still
 consistent); a *failed* refresh does not either, keeping the preserved PDF and
 its markdown consistent.
 
-**The one exception is `conversion_mode == "imported"`**: no converter can
-reproduce an operator's own markdown, so an implicit cascade must not destroy it.
-An explicit `force_refresh=True` still replaces it — that is what the flag means.
+**The exceptions are markdown the PDF did not produce** — `pipeline._NOT_FROM_PDF`,
+`"imported"` and `"html"`: no converter can reproduce an operator's own markdown,
+and arXiv's rendering does not change with the PDF bytes, so an implicit cascade
+must not destroy either. An explicit `force_refresh=True` still replaces them —
+that is what the flag means.
 
 `sections_note` is what stops `sections_detected: false` being read as "this
 paper has one section". The distinction matters most on the largest documents,
@@ -137,9 +139,13 @@ either guard.
 
 ## Conversion modes
 
-**`CONVERT_MODE` stays `Literal["full", "fast"]`.** `"imported"` is provenance
-you can *receive* — a pre-converted file handed to `import_paper` — not a backend
-you can request. `null` appears only for papers converted before the field existed.
+**`CONVERT_MODE` stays `Literal["full", "fast"]`.** `"imported"` and `"html"` are
+provenance you can *receive* — a pre-converted file handed to `import_paper`, or
+arXiv's rendering, which `convert_paper` tries before either mode — not backends
+you can request. **The HTML attempt runs before the PDF gate**, so an arXiv paper
+converts with no PDF; only a definitive "no rendering" (`convert_html` returning
+`None`) falls through, and a transient failure falls through only when a PDF is
+there to convert. `null` appears only for papers converted before the field existed.
 
 **Invariant: every `convert_pdf` error carries `retryable` and `conversion_mode`,
 plus `pdf_size_mb` once the PDF has been sized.** Two deliberate exceptions, both

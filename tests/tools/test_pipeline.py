@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from academic_tools_mcp import manual, papers, server
-from academic_tools_mcp.providers import acl, openalex
+from academic_tools_mcp.providers import acl, arxiv, openalex
 from academic_tools_mcp.store import cache, stems
 
 
@@ -794,3 +794,147 @@ class TestPipelineToolsAcceptPmids:
 
         assert result["not_found"] is True
         assert not stems.markdown_path("manual", "pmid:20079334").exists()
+
+
+# ---------------------------------------------------------------------------
+# convert_paper: arXiv's HTML rendering first
+# ---------------------------------------------------------------------------
+
+_RENDERING = (
+    '<article class="ltx_document"><section>'
+    '<h2 class="ltx_title ltx_title_section">1 Intro</h2><p>Body.</p></section></article>'
+)
+
+
+def _serve_html(monkeypatch, result):
+    calls = []
+
+    async def fake_get_html(arxiv_id, *, force_refresh=False):
+        calls.append((arxiv_id, force_refresh))
+        return result
+
+    monkeypatch.setattr(arxiv, "get_html", fake_get_html)
+    return calls
+
+
+def _no_pdf_conversion(monkeypatch):
+    async def fail(*args, **kwargs):
+        raise AssertionError("the PDF converter must not run")
+
+    monkeypatch.setattr(papers, "convert_pdf", fail)
+
+
+class TestConvertPaperHtmlFirst:
+    @pytest.mark.asyncio
+    async def test_an_arxiv_paper_converts_from_html_with_no_pdf(self, isolated_cache, monkeypatch):
+        calls = _serve_html(monkeypatch, {"html": _RENDERING})
+        _no_pdf_conversion(monkeypatch)
+
+        result = await server.convert_paper("arXiv:2301.00001")
+
+        assert result["conversion_mode"] == "html"
+        assert [s["title"] for s in result["sections"]] == ["1 Intro"]
+        assert "markdown_path" not in result
+        assert calls == [("arXiv:2301.00001", False)]
+        sections = await server.get_paper_sections("2301.00001")
+        assert sections["conversion_mode"] == "html"
+
+    @pytest.mark.asyncio
+    async def test_no_rendering_falls_through_to_the_pdf(self, isolated_cache, monkeypatch):
+        _serve_html(monkeypatch, {"error": "No HTML rendering", "not_found": True})
+        target = manual.resolve_target("2301.00001")
+        target["pdf_path"].parent.mkdir(parents=True, exist_ok=True)
+        target["pdf_path"].write_bytes(b"%PDF-1.4 stub")
+        seen = []
+
+        async def fake_convert(pdf, ns, canonical, **kwargs):
+            seen.append((ns, canonical, kwargs))
+            return {
+                "sections": [],
+                "sections_detected": False,
+                "cached": False,
+                "conversion_mode": "full",
+            }
+
+        monkeypatch.setattr(papers, "convert_pdf", fake_convert)
+
+        result = await server.convert_paper("2301.00001", mode="fast")
+
+        assert result["conversion_mode"] == "full"
+        assert seen == [("arxiv", "2301.00001", {"force_refresh": False, "mode": "fast"})]
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"error": "No HTML rendering", "not_found": True},
+            {"error": "arXiv server error (HTTP 503).", "retryable": True},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_force_refresh_with_no_rendering_and_no_pdf_keeps_imported_markdown(
+        self, isolated_cache, monkeypatch, failure
+    ):
+        """Regression: a failed forced refresh deleted the markdown."""
+        md_path = stems.markdown_path("arxiv", "2301.00001")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        papers.store_markdown_and_index("arxiv", "2301.00001", md_path, "## A\n\nb\n", "imported")
+        _serve_html(monkeypatch, failure)
+        _no_pdf_conversion(monkeypatch)
+
+        await server.convert_paper("2301.00001", force_refresh=True)
+
+        sections = await server.get_paper_sections("2301.00001")
+        assert sections["conversion_mode"] == "imported"
+        assert [s["title"] for s in sections["sections"]] == ["A"]
+
+    @pytest.mark.asyncio
+    async def test_no_rendering_and_no_pdf_points_at_download(self, isolated_cache, monkeypatch):
+        _serve_html(monkeypatch, {"error": "No HTML rendering", "not_found": True})
+        _no_pdf_conversion(monkeypatch)
+
+        result = await server.convert_paper("2301.00001")
+
+        assert "download_pdf" in result["suggestion"]
+        assert "retryable" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_transient_html_failure_without_a_pdf_is_retryable(
+        self, isolated_cache, monkeypatch
+    ):
+        _serve_html(monkeypatch, {"error": "arXiv server error (HTTP 503).", "retryable": True})
+        _no_pdf_conversion(monkeypatch)
+
+        result = await server.convert_paper("2301.00001")
+
+        assert result["retryable"] is True
+        assert result["conversion_mode"] == "html"
+        assert "download_pdf" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_non_arxiv_papers_never_ask_for_html(self, isolated_cache, monkeypatch):
+        calls = _serve_html(monkeypatch, {"html": _RENDERING})
+
+        await server.convert_paper("10.1101/2024.01.01.123")
+
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_html_markdown_survives_a_download_but_not_a_forced_one(
+        self, isolated_cache, monkeypatch
+    ):
+        _serve_html(monkeypatch, {"html": _RENDERING})
+        await server.convert_paper("2301.00001")
+        target = manual.resolve_target("2301.00001")
+
+        async def fresh_download(identifier, *, force_refresh=False):
+            return {"path": str(target["pdf_path"]), "size_bytes": 9, "cached": False}
+
+        monkeypatch.setattr(arxiv, "download_pdf", fresh_download)
+
+        kept = await server.download_pdf("2301.00001")
+        assert "cascaded_invalidated" not in kept
+        assert stems.markdown_path("arxiv", "2301.00001").exists()
+
+        dropped = await server.download_pdf("2301.00001", force_refresh=True)
+        assert dropped["cascaded_invalidated"] == ["markdown", "sections"]
+        assert not stems.markdown_path("arxiv", "2301.00001").exists()

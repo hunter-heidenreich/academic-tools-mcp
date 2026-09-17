@@ -17,6 +17,12 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`convert_paper` reads arXiv papers from arXiv's own HTML.** For an arXiv ID
+  it first fetches the LaTeXML rendering and converts it in-process, in seconds
+  and with no PDF: sections as headings, equations as LaTeX, tables as pipe
+  tables. The result records `conversion_mode: "html"` and survives a later PDF
+  download. Papers without a rendering fall back to the PDF converter as
+  before. ([#134])
 - **`get_paper_versions` reports an arXiv paper's license and revision history**:
   the license URL, the submitter, and every version's date and size, from
   arXiv's OAI-PMH record. The license says whether a paper may be
@@ -1878,3 +1884,4 @@ say which.
 [#130]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/130
 [#132]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/132
 [#133]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/133
+[#134]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/134

@@ -1392,3 +1392,119 @@ class TestEveryErrorNamesItsMode:
         assert result["retryable"] is False
         assert result["conversion_mode"] == "full"
         assert "pdf_size_mb" in result
+
+
+# ---------------------------------------------------------------------------
+# convert_html: a provider's LaTeXML rendering, no subprocess
+# ---------------------------------------------------------------------------
+
+_RENDERING = (
+    '<article class="ltx_document"><h1 class="ltx_title ltx_title_document">T</h1>'
+    '<section><h2 class="ltx_title ltx_title_section">1 Intro</h2><p>Body.</p></section>'
+    "</article>"
+)
+
+
+def _fetching(*results):
+    """A ``fetch`` closure answering each call with the next result; counts calls."""
+    calls = []
+
+    async def fetch():
+        calls.append(1)
+        return results[len(calls) - 1]
+
+    return fetch, calls
+
+
+class TestConvertHtml:
+    @pytest.mark.asyncio
+    async def test_a_rendering_is_stored_as_html_provenance(self):
+        fetch, _ = _fetching({"html": _RENDERING})
+
+        result = await papers.convert_html("arxiv", "2301.00001", fetch)
+
+        assert result["conversion_mode"] == "html"
+        assert result["cached"] is False
+        assert result["sections_detected"] is True
+        assert [s["title"] for s in result["sections"]] == ["1 Intro"]
+        md = stems.markdown_path("arxiv", "2301.00001").read_text(encoding="utf-8")
+        assert md.startswith("# T\n\n## 1 Intro\n\nBody.")
+        assert papers.recorded_conversion_mode("arxiv", "2301.00001") == "html"
+
+    @pytest.mark.asyncio
+    async def test_cached_markdown_never_fetches(self):
+        stems.markdown_path("arxiv", "2301.00001").parent.mkdir(parents=True, exist_ok=True)
+        store_markdown_and_index(
+            "arxiv", "2301.00001", stems.markdown_path("arxiv", "2301.00001"), "## A\n\nb\n", "full"
+        )
+        fetch, calls = _fetching({"html": _RENDERING})
+
+        result = await papers.convert_html("arxiv", "2301.00001", fetch)
+
+        assert calls == []
+        assert result["cached"] is True
+        assert result["conversion_mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_replaces_cached_markdown(self):
+        fetch, calls = _fetching({"html": _RENDERING}, {"html": _RENDERING.replace("Body", "New")})
+
+        await papers.convert_html("arxiv", "2301.00001", fetch)
+        result = await papers.convert_html("arxiv", "2301.00001", fetch, force_refresh=True)
+
+        assert len(calls) == 2
+        assert result["cached"] is False
+        assert "New." in stems.markdown_path("arxiv", "2301.00001").read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"error": "No HTML rendering", "not_found": True},
+            {"error": "arXiv server error (HTTP 503).", "retryable": True},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_forced_refresh_that_fails_keeps_the_cached_markdown(self, failure):
+        """Regression: a failed forced refresh deleted the markdown."""
+        md_path = stems.markdown_path("arxiv", "2301.00001")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        store_markdown_and_index("arxiv", "2301.00001", md_path, "## A\n\nb\n", "imported")
+        fetch, _ = _fetching(failure)
+
+        await papers.convert_html("arxiv", "2301.00001", fetch, force_refresh=True)
+
+        assert md_path.read_text(encoding="utf-8") == "## A\n\nb\n"
+        assert papers.recorded_conversion_mode("arxiv", "2301.00001") == "imported"
+
+    @pytest.mark.asyncio
+    async def test_a_definitive_miss_is_none_so_the_caller_falls_back(self):
+        fetch, _ = _fetching({"error": "No HTML rendering", "not_found": True})
+
+        assert await papers.convert_html("arxiv", "2301.00001", fetch) is None
+        assert not stems.markdown_path("arxiv", "2301.00001").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_names_the_html_mode(self):
+        fetch, _ = _fetching({"error": "arXiv server error (HTTP 503).", "retryable": True})
+
+        result = await papers.convert_html("arxiv", "2301.00001", fetch)
+
+        assert result == {
+            "error": "arXiv server error (HTTP 503).",
+            "retryable": True,
+            "conversion_mode": "html",
+        }
+
+    @pytest.mark.parametrize("html", ['<article class="ltx_document"></article>', "   "])
+    @pytest.mark.asyncio
+    async def test_a_rendering_with_no_text_is_none(self, html):
+        fetch, _ = _fetching({"html": html})
+
+        assert await papers.convert_html("arxiv", "2301.00001", fetch) is None
+
+    @pytest.mark.asyncio
+    async def test_nesting_past_the_renderer_stack_is_none_not_a_raise(self):
+        deep = '<article class="ltx_document">' + "<span>" * 5000 + "x" + "</span>" * 5000
+        fetch, _ = _fetching({"html": deep})
+
+        assert await papers.convert_html("arxiv", "2301.00001", fetch) is None

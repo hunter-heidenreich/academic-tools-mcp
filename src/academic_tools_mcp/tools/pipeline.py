@@ -29,6 +29,9 @@ from ..download import openaccess, streaming
 from ..providers import acl, arxiv, biorxiv
 
 _INTERNAL_PATH_KEYS = ("path", "markdown_path")
+
+# Conversion modes whose markdown a new PDF did not produce, so a download keeps it.
+_NOT_FROM_PDF = frozenset({"imported", "html"})
 _MARKDOWN_EXTS = {".md", ".markdown"}
 
 # Single-homed: three failure paths offer the same escape hatch.
@@ -52,8 +55,8 @@ async def _download_pdf_by_provider(
 
     Fresh bytes (``cached is False``) invalidate the markdown and section index they
     replaced, so
-    the next ``convert_paper`` re-runs. Markdown recorded ``"imported"`` is
-    exempt unless ``force_refresh``: no converter can reproduce it.
+    the next ``convert_paper`` re-runs. Markdown that did not come from those
+    bytes — ``"imported"``, or ``"html"`` — is exempt unless ``force_refresh``.
 
     A PMID is traded for its DOI before routing, so storage and metadata agree
     on which paper it names.
@@ -99,7 +102,7 @@ async def _download_pdf_by_provider(
     if result.get("cached") is False:
         canonical = target["canonical"]
         async with papers.sections_lock(ns, canonical):
-            if force_refresh or papers.recorded_conversion_mode(ns, canonical) != "imported":
+            if force_refresh or papers.recorded_conversion_mode(ns, canonical) not in _NOT_FROM_PDF:
                 papers.drop_derived(ns, canonical)
                 result["cascaded_invalidated"] = ["markdown", "sections"]
 
@@ -175,23 +178,31 @@ async def convert_paper(
     force_refresh: CONVERT_FORCE_REFRESH = False,
     mode: CONVERT_MODE = "full",
 ) -> dict[str, Any]:
-    """Convert a downloaded PDF to markdown and parse it into sections.
+    """Convert a paper to markdown and parse it into sections.
 
     Step 2 of the PDF pipeline. Skips the converter when the markdown is already
     cached, re-parsing from it if the section index is missing or stale. Both
     modes write the same cache slot, so ``mode="full"`` with ``force_refresh``
     upgrades a fast conversion.
 
+    **arXiv papers try arXiv's own HTML rendering first**, in either mode: real
+    headings, equations as LaTeX and tables, in seconds, with no PDF needed.
+    Papers without one — non-LaTeX source or a failed rendering — fall through to
+    the PDF path, which then needs download_pdf.
+
     Returns ``{sections, sections_detected, cached, conversion_mode}``, each
     section entry ``{index, title, h3s, approx_tokens}``. ``cached`` is true
     whenever the expensive conversion was skipped, re-parses included.
-    ``conversion_mode`` is provenance: ``"full"`` / ``"fast"``, ``"imported"``
-    (a file handed to import_paper), or null (converted before the field existed).
+    ``conversion_mode`` is provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's
+    rendering), ``"imported"`` (a file handed to import_paper), or null (converted
+    before the field existed).
 
     Errors: ``{error, retryable, conversion_mode, pdf_size_mb?, suggestion}``,
     where ``conversion_mode`` names the mode that *failed*.
       - No usable PDF cached → ``{error, suggestion}`` only, pointing at
         download_pdf / import_paper; nothing was tried, so no ``retryable``.
+      - arXiv's HTML failed transiently and no PDF is cached → that error, with
+        ``retryable: True`` and ``conversion_mode: "html"``.
       - Another conversion in flight (full mode only) → ``{busy: True,
         retryable: True, in_progress: {...}}``; retry, or use ``mode="fast"``.
       - Timeout → ``{timed_out: True, timeout_seconds}``; the suggestion points
@@ -205,8 +216,26 @@ async def convert_paper(
     target = manual.resolve_target(identifier)
     pdf = target["pdf_path"]
 
+    html_error: dict[str, Any] | None = None
+    if target["namespace"] == arxiv.NAMESPACE:
+        converted = await papers.convert_html(
+            target["namespace"],
+            target["canonical"],
+            lambda: arxiv.get_html(identifier, force_refresh=force_refresh),
+            force_refresh=force_refresh,
+        )
+        if converted is not None and "error" not in converted:
+            return _strip_internal_paths(converted)
+        html_error = converted
+
     # Not merely absent: a 0-byte or non-%PDF- leftover is a miss too.
     if not streaming.is_usable_pdf(pdf):
+        if html_error is not None:
+            return enrich_error(
+                html_error,
+                "arXiv's HTML rendering is temporarily unavailable. Retry, or run "
+                "download_pdf and then convert_paper to convert the PDF instead.",
+            )
         return pdf_not_cached_error(identifier)
 
     result = await papers.convert_pdf(
@@ -234,8 +263,9 @@ async def get_paper_sections(
     Returns ``{total_sections, total_approx_tokens, sections_detected,
     conversion_mode, sections}``, each section entry ``{index, title, h3s,
     approx_tokens}`` with ``h3s`` its sub-headings. ``conversion_mode`` is
-    provenance: ``"full"`` / ``"fast"``, ``"imported"`` (a file handed to
-    import_paper), or null (converted before the field existed).
+    provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's rendering),
+    ``"imported"`` (a file handed to import_paper), or null (converted before the
+    field existed).
 
     ``sections_detected: false`` means the markdown had **no headings at all**,
     so the single section returned is synthetic and its title meaningless — not
