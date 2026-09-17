@@ -1328,3 +1328,74 @@ class TestGetPaperMergesPublication:
 
         assert paper["not_found"] is True
         assert all(c.url.path.startswith("/details/") for c in calls)
+
+
+class TestParseFunding:
+    def test_na_is_no_funders(self):
+        assert biorxiv._parse_funding(_SAMPLE_RAW) == []
+
+    def test_missing_is_no_funders(self):
+        assert biorxiv._parse_funding({}) == []
+
+    def test_a_list_under_the_funder_key(self):
+        raw = {
+            "funder": [
+                {"name": "NIH", "id": "01cwqze88", "id-type": "ROR", "award": "R01 GM000000"},
+                {"name": "Wellcome Trust", "id": "029chgv08", "id-type": "ROR", "award": "NA"},
+            ]
+        }
+        assert biorxiv._parse_funding(raw) == [
+            {"name": "NIH", "id": "01cwqze88", "id_type": "ROR", "award": "R01 GM000000"},
+            {"name": "Wellcome Trust", "id": "029chgv08", "id_type": "ROR", "award": "NA"},
+        ]
+
+    def test_a_single_object_under_the_funding_key(self):
+        raw = {"funding": {"name": "ERC", "id_type": "ROR"}}
+        assert biorxiv._parse_funding(raw) == [
+            {"name": "ERC", "id": None, "id_type": "ROR", "award": None}
+        ]
+
+    @pytest.mark.parametrize("value", ["NA", 3, None, ["NIH"], [{}], [{"name": "  "}]])
+    def test_malformed_or_empty_entries_are_dropped(self, value):
+        assert biorxiv._parse_funding({"funder": value}) == []
+
+    def test_parse_paper_carries_funding(self):
+        raw = {**_SAMPLE_RAW, "funder": [{"name": "NIH"}]}
+        assert biorxiv._parse_paper(raw)["funding"] == [
+            {"name": "NIH", "id": None, "id_type": None, "award": None}
+        ]
+
+
+class TestParseVersions:
+    def test_oldest_first_with_per_version_license(self):
+        collection = [
+            {"version": "2", "date": "2024-03-04", "license": "cc_by"},
+            {"version": "1", "date": "2024-01-02", "license": "cc_no"},
+            {"version": "10", "date": "2024-09-09", "license": "cc_by"},
+        ]
+        assert biorxiv._parse_versions(collection) == [
+            {"version": "1", "date": "2024-01-02", "license": "cc_no"},
+            {"version": "2", "date": "2024-03-04", "license": "cc_by"},
+            {"version": "10", "date": "2024-09-09", "license": "cc_by"},
+        ]
+
+    def test_junk_fields_are_null_not_errors(self):
+        assert biorxiv._parse_versions([{"version": None, "date": 5}]) == [
+            {"version": None, "date": None, "license": None}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_paper_records_every_version(self, monkeypatch):
+        _reset_biorxiv(monkeypatch)
+        body = {
+            "collection": [
+                {**_collection()["collection"][0], "version": "1", "date": "2024-01-02"},
+                {**_collection()["collection"][0], "version": "2", "date": "2024-03-04"},
+            ]
+        }
+        _stub_routes(monkeypatch, {"/details/": body})
+
+        paper = await biorxiv.get_paper(_DOI)
+
+        assert paper["version"] == "2"
+        assert [v["version"] for v in paper["versions"]] == ["1", "2"]

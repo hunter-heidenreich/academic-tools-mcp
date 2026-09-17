@@ -10,7 +10,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 |----------|-----------------|---------------|
 | [OpenAlex](https://openalex.org/) | Paper metadata, authors, abstracts, topics, citations, BibTeX | Optional API key (free) |
 | [arXiv](https://arxiv.org/) | Preprint metadata, authors, abstracts, BibTeX, license and revision history, PDF download, HTML full text | None |
-| [bioRxiv/medRxiv](https://www.biorxiv.org/) | Preprint metadata, authors, abstracts, journal version, BibTeX, PDF download | None |
+| [bioRxiv/medRxiv](https://www.biorxiv.org/) | Preprint metadata, authors, abstracts, journal version, funders, revision history, BibTeX, PDF download | None |
 | [ACL Anthology](https://aclanthology.org/) | Metadata, authors, abstracts, BibTeX and PDF download for ACL venue papers | None |
 | [Crossref](https://www.crossref.org/) | Reference lists, title search / DOI discovery | Optional email (for polite pool) |
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
@@ -110,7 +110,7 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | `get_paper_authors` | Author list with source-appropriate detail (affiliations, corresponding author, OpenAlex IDs) |
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
-| `get_paper_versions` | arXiv only: license URL, submitter and every revision's date and size, from arXiv's OAI-PMH record. The license decides whether a paper may be redistributed. |
+| `get_paper_versions` | arXiv IDs and bioRxiv/medRxiv DOIs: license and every revision's date (plus submitter and size on arXiv, per-revision license on bioRxiv). The license decides whether a paper may be redistributed. |
 
 Pass an arXiv ID, an ACL Anthology ID, any DOI, or a PMID. Each response carries a `_source` field (`"arxiv"` / `"biorxiv"` / `"acl_anthology"` / `"openalex"`) so you know which provider answered and which fields to expect; `follow_published` adds `"openalex_via_biorxiv"` / `"openalex_via_arxiv"` when the chain reaches the journal version. arXiv IDs always route to arXiv; bioRxiv DOIs (`10.1101/...`) route to bioRxiv; ACL Anthology IDs, URLs and hosted DOIs route to the Anthology, keyed by Anthology ID; everything else routes to OpenAlex.
 

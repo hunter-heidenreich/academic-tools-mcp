@@ -8,7 +8,6 @@ from pydantic import Field
 
 from .. import manual
 from ..app import (
-    ARXIV_ID,
     AUTHOR_ID,
     AUTHORS_PAGE,
     AUTHORS_PAGE_SIZE,
@@ -173,6 +172,7 @@ def _format_biorxiv_metadata(
         "published_doi": paper.get("published_doi"),
         "published_journal": paper.get("published_journal"),
         "published_date": paper.get("published_date"),
+        "funding": dict_list(paper.get("funding")),
         "pdf_url": paper.get("pdf_url"),
     }
     # Absent unless a chain was attempted, so the default shape is unchanged.
@@ -458,8 +458,9 @@ async def get_paper_metadata(
         one), journal_ref, comment. License and revision history are
         get_paper_versions'.
       - biorxiv: doi, title, date, version, type, category, license, server,
-        published_doi, published_journal, published_date, pdf_url. The published_*
-        fields are null while unpublished.
+        published_doi, published_journal, published_date, funding, pdf_url. The
+        published_* fields are null while unpublished; funding is ``[{name, id,
+        id_type, award}]``, recorded only for papers posted since April 2025.
       - For arxiv and biorxiv, a ``follow_published`` chain that didn't reach the
         journal version adds ``followed_published=False``, plus
         ``published_lookup_retryable=True`` if that lookup failed transiently
@@ -541,46 +542,67 @@ async def get_paper_metadata(
 
 @mcp.tool
 async def get_paper_versions(
-    arxiv_id: ARXIV_ID,
+    identifier: PAPER_ID,
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """An arXiv paper's license, submitter and revision history.
+    """A preprint's license and revision history, for an arXiv ID or bioRxiv/medRxiv DOI.
 
-    Returns ``{_source: "arxiv", _canonical_id, arxiv_id, submitter, license,
-    versions, version_count}``, each version ``{version, date, size}`` oldest
-    first — ``date`` ISO 8601 UTC, ``size`` arXiv's own string (``"1102kb"``).
-    ``_canonical_id`` is unversioned: every revision shares one record.
+    Returns ``{_source, _canonical_id, submitter, license, versions, version_count}``,
+    versions oldest first; ``_canonical_id`` is unversioned.
+      - arxiv: plus ``arxiv_id``; versions ``{version, date, size}``, ``date`` ISO 8601
+        UTC, ``size`` arXiv's string (``"1102kb"``). Its own request, cached a day.
+      - biorxiv: plus ``doi`` and ``server``; versions ``{version, date, license}``;
+        ``submitter`` null. Read from the cached metadata record, so free.
 
-    ``license`` is a license URL, null for papers that predate arXiv recording one.
-    It decides reuse: arXiv's non-exclusive distribution license
-    (``…/licenses/nonexclusive-distrib/1.0/``) does not permit redistribution; a
-    Creative Commons license may.
+    ``license`` is the latest version's: a URL on arXiv (null on older papers), a code
+    on bioRxiv (``cc_by``). It decides reuse: arXiv's non-exclusive distribution
+    license (``…/licenses/nonexclusive-distrib/1.0/``) and bioRxiv's ``cc_no`` do not
+    permit redistribution; a Creative Commons license may.
 
-    A separate arXiv interface from get_paper_metadata, so this costs its own
-    request; cached for a day, since a new revision is what it reports.
-
-    Errors: ``{error, suggestion}`` plus ``not_found: true`` (an id arXiv lacks, or a
-    non-arXiv identifier, refused without a request), ``retryable: true`` (transport
-    or parse failure) or ``retryable: false`` (any other arXiv error).
+    Errors: ``{error, suggestion}`` plus ``not_found: true`` (a paper the provider
+    lacks, or another identifier, refused without a request), ``retryable: true``
+    (transport or parse failure) or ``retryable: false`` (any other provider error).
     """
-    if not arxiv.is_arxiv_id(arxiv_id):
+    if biorxiv.is_biorxiv_doi(identifier):
+        return await _biorxiv_versions(identifier, force_refresh=force_refresh)
+
+    if not arxiv.is_arxiv_id(identifier):
         return {
-            **http.not_found(f"Not an arXiv ID: {arxiv_id!r}."),
-            "suggestion": "Revision history is arXiv's. Find the paper's arXiv ID with "
-            "get_paper_metadata or search_arxiv, then retry.",
+            **http.not_found(f"Not an arXiv ID or bioRxiv/medRxiv DOI: {identifier!r}."),
+            "suggestion": "Pass the preprint's arXiv ID or 10.1101 DOI; find it with "
+            "get_paper_metadata or search_arxiv.",
         }
 
-    record = await arxiv.get_versions(arxiv_id, force_refresh=force_refresh)
+    record = await arxiv.get_versions(identifier, force_refresh=force_refresh)
     if "error" in record:
         return enrich_error(record, _ARXIV_METADATA_HINT)
 
     versions = dict_list(record.get("versions"))
     return {
         "_source": "arxiv",
-        "_canonical_id": arxiv.base_arxiv_id(arxiv_id),
+        "_canonical_id": arxiv.base_arxiv_id(identifier),
         "arxiv_id": record.get("arxiv_id"),
         "submitter": record.get("submitter"),
         "license": record.get("license"),
+        "versions": versions,
+        "version_count": len(versions),
+    }
+
+
+async def _biorxiv_versions(identifier: str, *, force_refresh: bool) -> dict[str, Any]:
+    """get_paper_versions' bioRxiv branch, read off the details record."""
+    paper = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
+    if "error" in paper:
+        return enrich_error(paper, _BIORXIV_METADATA_HINT)
+
+    versions = dict_list(paper.get("versions"))
+    return {
+        "_source": "biorxiv",
+        "_canonical_id": biorxiv.canonical_key(identifier),
+        "doi": paper.get("doi"),
+        "server": paper.get("server"),
+        "submitter": None,
+        "license": paper.get("license"),
         "versions": versions,
         "version_count": len(versions),
     }
