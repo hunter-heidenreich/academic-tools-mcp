@@ -1770,10 +1770,7 @@ class TestGetPapersBatch:
     async def test_a_500_carrying_the_error_entry_falls_back_to_singletons(
         self, tmp_path, monkeypatch
     ):
-        """Regression: arXiv 500s on some records (hep-th/9901001v1) every time.
-
-        Chunk-wide, that one id failed every other id in its chunk on every retry.
-        """
+        """Regression: one record that always 500s (hep-th/9901001v1) failed its whole chunk."""
         from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
@@ -1799,7 +1796,7 @@ class TestGetPapersBatch:
 
     @pytest.mark.asyncio
     async def test_a_single_id_500_is_not_refetched(self, tmp_path, monkeypatch):
-        """A singleton fallback of one id would repeat the identical request."""
+        """Falling back for a lone id would repeat the same request."""
         _reset_throttle(monkeypatch, tmp_path)
         monkeypatch.setattr(arxiv._throttle, "retry_attempts", 1)
         seen = _stub_scripted_client(monkeypatch, (500, _feed(_ERROR_ENTRY)))

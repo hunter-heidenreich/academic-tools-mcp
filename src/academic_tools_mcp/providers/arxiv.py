@@ -229,7 +229,7 @@ def _rejection_root(response: httpx.Response) -> ET.Element | None:
 
 
 def _error_entry_root(response: httpx.Response) -> ET.Element | None:
-    """The parsed feed when ``response``'s body carries arXiv's ``api/errors`` entry, else ``None``."""
+    """The parsed feed if the body carries arXiv's ``api/errors`` entry, else ``None``."""
     try:
         root = _safe_fromstring(response.text)
     except _PARSE_ERRORS:
@@ -451,7 +451,7 @@ async def _fetch_batch_chunk(
 
 
 async def _fetch_singletons(chunk: list[str], *, force_refresh: bool) -> dict[str, dict[str, Any]]:
-    """Each id of a chunk arXiv failed as a whole, fetched alone so one bad id fails alone.
+    """A failed chunk's ids one at a time, so one bad id fails alone.
 
     Sequential: a fan-out past the throttle's burst cap is refused.
     """
@@ -470,8 +470,7 @@ async def _fetch_batch_chunk_uncoalesced(
         )
         root = _rejection_root(response)
         if root is None:
-            # arXiv 500s on some records every time, with its error entry. A plain 5xx
-            # (a penalty box) stays chunk-wide rather than multiplying requests.
+            # Some records always 500 with the error entry; a plain 5xx stays chunk-wide.
             if (
                 len(chunk) > 1
                 and response.status_code >= 500
