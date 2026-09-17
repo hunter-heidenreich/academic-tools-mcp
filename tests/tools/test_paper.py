@@ -1234,9 +1234,10 @@ class TestBatchResolutionDisagreement:
 
         monkeypatch.setattr(manual, "resolve_metadata_source", flaky)
 
-        result = await server.get_papers_metadata(identifiers=["2301.00001"])
+        # bioRxiv: still a singleton, so still resolved twice. arXiv now batches.
+        result = await server.get_papers_metadata(identifiers=["10.1101/2024.01.01.123"])
         entry = result["papers"][0]
-        assert entry["_input"] == "2301.00001"
+        assert entry["_input"] == "10.1101/2024.01.01.123"
         assert "Cannot resolve paper provider" in entry["error"]
 
 
@@ -1616,3 +1617,51 @@ class TestAclAnthologySource:
         assert (await server.get_paper_metadata("10.18653/v1/W04-1013"))["_source"] == (
             "acl_anthology"
         )
+
+
+# ---------------------------------------------------------------------------
+# get_papers_metadata: arXiv ids batch into id_list calls
+# ---------------------------------------------------------------------------
+
+
+class TestArxivBatchThroughTheTool:
+    @pytest.mark.asyncio
+    async def test_twenty_cold_arxiv_ids_are_one_request_and_no_backpressure(self, monkeypatch):
+        """Regression: each id was its own request. At arXiv's real pacing the fan-out
+        queued past the throttle's burst cap and came back as backpressure errors."""
+        from academic_tools_mcp.net import clients
+
+        ids = [f"2301.{n:05d}" for n in range(20)]
+        entries = "".join(
+            f"<entry><id>http://arxiv.org/abs/{i}v1</id><title>T {i}</title></entry>" for i in ids
+        )
+        feed = (
+            '<feed xmlns="http://www.w3.org/2005/Atom" '
+            'xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">'
+            f"<opensearch:totalResults>20</opensearch:totalResults>{entries}</feed>"
+        )
+        requests: list[dict] = []
+
+        class StubResponse:
+            status_code = 200
+            text = feed
+            headers: ClassVar[dict[str, str]] = {}
+
+            def raise_for_status(self):
+                pass
+
+        class StubClient:
+            async def get(self, url, **kwargs):
+                requests.append(kwargs.get("params") or {})
+                return StubResponse()
+
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
+        monkeypatch.setattr(arxiv._throttle, "min_gap_seconds", 0.0)
+
+        result = await server.get_papers_metadata(identifiers=ids)
+
+        assert len(requests) == 1
+        papers = result["papers"]
+        assert [p["_input"] for p in papers] == ids
+        assert all(p["_source"] == "arxiv" and "error" not in p for p in papers)
+        assert papers[3]["title"] == f"T {ids[3]}"

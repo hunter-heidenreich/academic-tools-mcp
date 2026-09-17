@@ -449,8 +449,8 @@ async def get_papers_metadata(
     """Batch metadata fetch — same payload as get_paper_metadata, in bulk.
 
     For reference-graph traversal: uncached OpenAlex DOIs are chunked into
-    ``/works?filter=doi:...|...`` calls, arXiv, bioRxiv and the ACL Anthology
-    fetch concurrently,
+    ``/works?filter=doi:...|...`` calls and uncached arXiv IDs into ``id_list``
+    calls, bioRxiv and the ACL Anthology fetch concurrently,
     cached entries cost no HTTP call, and every fetched paper warms the singleton
     cache so a later get_paper_metadata / _authors is free.
 
@@ -466,6 +466,7 @@ async def get_papers_metadata(
 
     singleton_tasks: list[asyncio.Task] = []
     openalex_indices: list[tuple[int, str, str]] = []  # (slot, routed id, caller's input)
+    arxiv_indices: list[tuple[int, str, str]] = []
 
     async def _singleton_one(slot: int, routed: str, ident: str) -> None:
         source, canonical, obj = await _fetch_source(routed, force_refresh=force_refresh)
@@ -495,8 +496,10 @@ async def get_papers_metadata(
             results[i] = {"_input": ident, **pmid_error}
             continue
         source = manual.resolve_metadata_source(routed)
-        if source in ("arxiv", "biorxiv", "acl_anthology"):
+        if source in ("biorxiv", "acl_anthology"):
             singleton_tasks.append(asyncio.create_task(_singleton_one(i, routed, ident)))
+        elif source == "arxiv":
+            arxiv_indices.append((i, routed, ident))
         elif source == "openalex":
             openalex_indices.append((i, routed, ident))
         else:
@@ -524,7 +527,31 @@ async def get_papers_metadata(
             formatted["_input"] = ident
             results[slot] = formatted
 
-    await asyncio.gather(*singleton_tasks, _openalex_batch())
+    async def _arxiv_batch() -> None:
+        if not arxiv_indices:
+            return
+        # One id_list call per chunk: singletons queue behind arXiv's single connection
+        # and a fan-out past its burst cap is refused.
+        batch = await arxiv.get_papers_batch(
+            [r for _, r, _ in arxiv_indices], force_refresh=force_refresh
+        )
+        for slot, routed, ident in arxiv_indices:
+            canonical = arxiv.canonical_arxiv_id(routed)
+            paper = batch.get(canonical)
+            # get_papers_batch is total, so `is None` means a test stub. dict(): batch
+            # entries aren't deep-copied and two spellings of one id share the one entry.
+            if paper is None or "error" in paper:
+                err = paper or {"error": f"No paper found for arXiv ID: {routed}"}
+                results[slot] = {
+                    "_input": ident,
+                    **enrich_error(dict(err), _ARXIV_METADATA_HINT),
+                }
+                continue
+            formatted = _format_arxiv_metadata(paper, canonical)
+            formatted["_input"] = ident
+            results[slot] = formatted
+
+    await asyncio.gather(*singleton_tasks, _openalex_batch(), _arxiv_batch())
 
     # Defensive: a slot still None is a bug — surface it, don't crash the caller.
     for i, r in enumerate(results):

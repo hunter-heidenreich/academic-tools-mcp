@@ -11,7 +11,7 @@ from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from ..download import streaming
-from ..net import clients, http
+from ..net import clients, http, stats
 from ..net.throttle import Throttle
 from ..store import cache, singleflight, stems
 from ..util import config, doinorm, useragent
@@ -57,6 +57,9 @@ _PDF_TIMEOUT_SECONDS = 60.0
 
 # Exported so ``search_arxiv``'s validation bound isn't a second spelling of it.
 MAX_SEARCH_RESULTS = 50
+
+# ``id_list`` fan-in size: one GET per chunk, with a URL well inside edge limits.
+_BATCH_CHUNK_SIZE = 50
 
 # Long: a record is stable per version — but bounded, so a revision still surfaces
 # under a bare key.
@@ -186,6 +189,12 @@ def base_arxiv_id(arxiv_id: str) -> str:
     return strip_version(canonical_arxiv_id(arxiv_id))
 
 
+def _version_number(arxiv_id: str) -> int:
+    """The ``v<n>`` suffix as an int; 0 for a bare id."""
+    m = _VERSION_SUFFIX_RE.search(arxiv_id)
+    return int(m.group()[1:]) if m else 0
+
+
 def id_from_entry(paper: dict[str, Any]) -> str:
     """The bare, versioned ID from an Atom entry's ``id`` URL. Never a local ``split``.
 
@@ -216,14 +225,27 @@ def _rejection_root(response: httpx.Response) -> ET.Element | None:
     ``None`` sends the caller to ``raise_for_status``: a 400 with any other body
     stays an unclassified ``error_dict``, not a rejection or a parse error.
     """
-    if response.status_code != 400:
-        return None
+    return _error_entry_root(response) if response.status_code == 400 else None
+
+
+def _error_entry_root(response: httpx.Response) -> ET.Element | None:
+    """The parsed feed if the body carries arXiv's ``api/errors`` entry, else ``None``."""
     try:
         root = _safe_fromstring(response.text)
     except _PARSE_ERRORS:
         return None
     entry = root.find(f"{{{_ATOM_NS}}}entry")
     return root if entry is not None and _is_error_entry(entry) else None
+
+
+def _total_results(root: ET.Element) -> int | None:
+    """A feed's ``opensearch:totalResults``, or ``None`` when absent or not a count.
+
+    ``isdecimal``, not ``isdigit``: a superscript passes ``isdigit`` and raises in ``int()``.
+    """
+    total_el = root.find(f"{{{_OPENSEARCH_NS}}}totalResults")
+    text = total_el.text.strip() if total_el is not None and total_el.text else ""
+    return int(text) if text.isdecimal() else None
 
 
 def _parse_entry(entry: ET.Element) -> dict[str, Any]:
@@ -391,9 +413,6 @@ async def search_papers(
 
     papers = [_parse_entry(e) for e in entries]
 
-    total_el = root.find(f"{{{_OPENSEARCH_NS}}}totalResults")
-    total_text = total_el.text.strip() if total_el is not None and total_el.text else ""
-
     # Search returns the current version, so each hit is valid under both the versioned
     # key and the bare one; warming only the versioned key leaves every bare lookup a miss.
     for paper in papers:
@@ -403,11 +422,160 @@ async def search_papers(
         for key in {canonical_arxiv_id(paper_id), base_arxiv_id(paper_id)}:
             cache.warm(NAMESPACE, "papers", key, paper, max_age_seconds=_POSITIVE_TTL_SECONDS)
 
-    # ``isdecimal``, not ``isdigit``: a superscript passes ``isdigit`` and raises in ``int()``.
     return {
-        "total_results": int(total_text) if total_text.isdecimal() else 0,
+        "total_results": _total_results(root) or 0,
         "entries": papers,
     }
+
+
+async def _fetch_batch_chunk(
+    chunk: list[str],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Fetch one ``id_list=a,b,c`` chunk, coalesced by single-flight.
+
+    Returns ``{canonical: paper_or_error}`` for every id in ``chunk``; the
+    single-flight key sorts it, so argument order can't defeat coalescing.
+    """
+    # Tuple-keyed to stay distinct from get_paper's slot, which a rejected chunk awaits.
+    sf_key = ("papers_batch", tuple(sorted(chunk)), force_refresh)
+
+    async def _runner() -> dict[str, dict[str, Any]]:
+        # Bypasses ``cache.cached_lookup``, so it books its own misses — one per id.
+        for _ in chunk:
+            stats.incr(NAMESPACE, "cache_misses")
+        return await _fetch_batch_chunk_uncoalesced(chunk, force_refresh=force_refresh)
+
+    return await _single_flight.do(sf_key, _runner)
+
+
+async def _fetch_singletons(chunk: list[str], *, force_refresh: bool) -> dict[str, dict[str, Any]]:
+    """A failed chunk's ids one at a time, so one bad id fails alone.
+
+    Sequential: a fan-out past the throttle's burst cap is refused.
+    """
+    return {c: await get_paper(c, force_refresh=force_refresh) for c in chunk}
+
+
+async def _fetch_batch_chunk_uncoalesced(
+    chunk: list[str], *, force_refresh: bool
+) -> dict[str, dict[str, Any]]:
+    """The actual ``id_list`` GET + result mapping for one chunk."""
+    try:
+        response = await _throttled_get(
+            ARXIV_BASE_URL,
+            # The default page is 10; a short page would read as omitted ids.
+            params={"id_list": ",".join(chunk), "max_results": str(len(chunk))},
+        )
+        root = _rejection_root(response)
+        if root is None:
+            # Some records always 500 with the error entry; a plain 5xx stays chunk-wide.
+            if (
+                len(chunk) > 1
+                and response.status_code >= 500
+                and _error_entry_root(response) is not None
+            ):
+                return await _fetch_singletons(chunk, force_refresh=force_refresh)
+            response.raise_for_status()
+            root = _safe_fromstring(response.text)
+    # One fresh dict per key: ``dict.fromkeys`` would alias one error across the chunk.
+    except _PARSE_ERRORS:
+        return {c: _parse_error_dict() for c in chunk}
+    except http.HTTPX_ERRORS as e:
+        return {c: http.error_dict(LABEL, e) for c in chunk}
+
+    entries = root.findall(f"{{{_ATOM_NS}}}entry")
+
+    # One id arXiv won't accept rejects the whole request; singletons isolate it.
+    if entries and _is_error_entry(entries[0]):
+        return await _fetch_singletons(chunk, force_refresh=force_refresh)
+
+    chunk_set = set(chunk)
+    out: dict[str, dict[str, Any]] = {}
+    # A bare request is "whatever is current": the newest version returned, which is
+    # not the only one when the same chunk also asks for an older revision.
+    newest: dict[str, tuple[int, dict[str, Any]]] = {}
+    unattributed = 0
+    for entry in entries:
+        paper = _parse_entry(entry)
+        returned = canonical_arxiv_id(id_from_entry(paper))
+        bare = strip_version(returned)
+        if returned not in chunk_set and bare not in chunk_set:
+            unattributed += 1
+            continue
+        if returned in chunk_set:
+            out[returned] = paper
+        if bare in chunk_set:
+            version = _version_number(returned)
+            if bare not in newest or version > newest[bare][0]:
+                newest[bare] = (version, paper)
+    for bare, (_, paper) in newest.items():
+        out[bare] = paper
+    for canonical, paper in out.items():
+        cache.put(NAMESPACE, "papers", canonical, paper)
+
+    # arXiv omits a missing id silently. That is a definitive miss only if the feed
+    # accounted for itself; otherwise negative-caching could poison a live id.
+    trustworthy = unattributed == 0 and _total_results(root) == len(entries)
+    for canonical in chunk:
+        if canonical in out:
+            continue
+        err = http.not_found(f"No paper found for arXiv ID: {canonical}")
+        if trustworthy:
+            cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
+        else:
+            # Inconclusive rather than absent — let the caller retry.
+            err = {"error": err["error"], "retryable": True}
+        out[canonical] = err
+
+    return out
+
+
+async def get_papers_batch(
+    arxiv_ids: list[str],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Fetch many arXiv papers in batched ``id_list`` calls.
+
+    Returns ``{canonical_id: paper_or_error_dict}`` for every input id, keyed in
+    first-appearance order. Cached entries (positive or negative) are served
+    without a network call; the *misses* are grouped into ``id_list`` calls of up
+    to ``_BATCH_CHUNK_SIZE``, and each resolved paper is written under the key
+    ``get_paper`` reads, so a later singleton is a free hit. ``force_refresh=True``
+    drops cached entries first.
+
+    As ``openalex.get_works_batch``: a transient failure contaminates its whole
+    chunk, and entries are not deep-copied.
+    """
+    canonicals_in_order = list(dict.fromkeys(canonical_arxiv_id(i) for i in arxiv_ids))
+
+    out: dict[str, dict[str, Any]] = {}
+    misses: list[str] = []
+
+    for canonical in canonicals_in_order:
+        if force_refresh:
+            cache.invalidate(NAMESPACE, "papers", canonical)
+            misses.append(canonical)
+            continue
+        cached = cache.get(NAMESPACE, "papers", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            out[canonical] = cached
+            continue
+        neg = cache.get_negative(NAMESPACE, "papers", canonical)
+        if neg is not None:
+            out[canonical] = neg
+            continue
+        misses.append(canonical)
+
+    # Sequential, unlike openalex's gather: arXiv serves one connection at a time, so
+    # concurrency buys nothing and a gather past the burst cap is refused.
+    for start in range(0, len(misses), _BATCH_CHUNK_SIZE):
+        chunk = misses[start : start + _BATCH_CHUNK_SIZE]
+        out.update(await _fetch_batch_chunk(chunk, force_refresh=force_refresh))
+
+    return {c: out[c] for c in canonicals_in_order}
 
 
 def pdf_path(arxiv_id: str) -> Path:
