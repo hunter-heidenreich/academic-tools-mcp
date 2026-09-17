@@ -1,10 +1,7 @@
-"""Tests for the automatic OpenAlex fallback when bioRxiv fails transiently.
+"""The automatic OpenAlex fallback when bioRxiv fails transiently.
 
-bioRxiv's ``/details`` endpoint has served ``200`` with an empty body for every
-query while the rest of its API answered; dispatch-by-shape then left every
-``10.1101`` DOI unreachable though OpenAlex indexes them. An *upstream*-transient
-bioRxiv failure therefore answers from OpenAlex in all four paper tools and the
-batch — never a definitive miss, and never a local refusal (backpressure, quota).
+Regression: bioRxiv's ``/details`` served empty 200s for every query, leaving every
+``10.1101`` DOI unreachable though OpenAlex indexes them.
 """
 
 import pytest

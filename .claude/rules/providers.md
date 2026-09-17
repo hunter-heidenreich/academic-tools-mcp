@@ -157,15 +157,14 @@ too.
 
 `published_doi` appears asynchronously once a preprint is published; that lag is
 what sets the positive TTL and what `follow_published` consumes
-(`.claude/rules/server.md`).
-
-**Two hosts, two paces.** `api.biorxiv.org` is paced by `_throttle`; the content
-hosts (`www.biorxiv.org`, `www.medrxiv.org`) sit behind Cloudflare, which
-rate-limits (429, error 1015) or challenges (403) at the API's pace, so every
-content fetch waits out `_content_gap` first — a `SubGap`, not a second
-`Throttle`, so the two classes share one concurrency budget. Everything else about this module — the two-server
+(`.claude/rules/server.md`). Everything else about this module — the two-server
 fallback, the version-is-not-identity rule, the two request-side checks, the
 both-servers-must-answer rule — is stated at length in its own comments.
+
+**Content hosts get a stricter pace.** Cloudflare rate-limits or challenges
+`www.biorxiv.org` / `www.medrxiv.org` at the API's pace, so content fetches wait
+out `_content_gap` — a `SubGap`, so both request classes share one concurrency
+budget.
 
 ## crossref.py
 

@@ -68,9 +68,8 @@ _throttle = Throttle(
 )
 
 
-# The content hosts (www.biorxiv.org / www.medrxiv.org) sit behind Cloudflare, which
-# rate-limits (429, error 1015) or challenges (403) a handful of requests at the API's
-# pace. Stricter, and shared by both hosts: one operator, one edge.
+# Cloudflare fronts the content hosts (www.biorxiv.org, www.medrxiv.org) and
+# rate-limits (429, error 1015) or challenges (403) at the API's pace.
 _CONTENT_REQUEST_GAP = 3.0
 _content_gap = SubGap(_throttle, min_gap_seconds=_CONTENT_REQUEST_GAP)
 

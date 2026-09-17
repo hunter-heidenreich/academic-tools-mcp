@@ -74,13 +74,10 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
-- **bioRxiv/medRxiv DOIs answer from OpenAlex while bioRxiv is down.** bioRxiv's
-  `/details` endpoint has served empty bodies for every query, leaving every
-  `10.1101/...` DOI unreachable. A transient bioRxiv failure now falls back to
-  OpenAlex in all four paper tools and `get_papers_metadata`, flagged
-  `biorxiv_unavailable: true`; a definitive miss or local backpressure does not.
-  PDF downloads from bioRxiv's Cloudflare-fronted hosts are also paced more
-  slowly. ([#135])
+- **bioRxiv/medRxiv DOIs answer from OpenAlex while bioRxiv is down.** A transient
+  bioRxiv failure falls back to OpenAlex in all four paper tools and
+  `get_papers_metadata`, flagged `biorxiv_unavailable: true`. PDF downloads from
+  bioRxiv's Cloudflare-fronted hosts are paced more slowly. ([#135])
 
 - **A rejected arXiv search is reported as a query to rewrite.** Since its cloud
   migration arXiv answers a malformed `search_query` or id with HTTP 400, which

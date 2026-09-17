@@ -1069,8 +1069,6 @@ class TestDownloadPdfMetadataBranches:
 class TestContentHostPacing:
     @pytest.mark.asyncio
     async def test_the_content_gap_is_waited_out_before_the_pdf_stream(self, monkeypatch):
-        # Cloudflare fronts the content hosts and rate-limits at the API's pace, so the
-        # PDF fetch must take the stricter gap first.
         order: list[str] = []
 
         async def _fake_get_paper(doi, *, force_refresh=False):

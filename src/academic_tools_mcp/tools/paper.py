@@ -100,10 +100,8 @@ async def _fetch_source(
     for the Crossref fallback.
 
     All four paper tools reach a provider through here, so the PMID trade at the
-    top is uniform across them — and so is the bioRxiv → OpenAlex fallback
-    (``_biorxiv_fallback``): a hit comes back as ``source == "openalex"`` with the
-    work marked ``biorxiv_unavailable``, which ``_flag_fallback`` carries onto the
-    response.
+    top is uniform across them, as is the bioRxiv → OpenAlex fallback: a hit returns
+    ``source == "openalex"``, its work marked ``biorxiv_unavailable``.
     """
     identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
@@ -350,13 +348,11 @@ async def _crossref_fallback(
 async def _biorxiv_fallback(
     canonical_id: str | None, obj: dict[str, Any], *, force_refresh: bool
 ) -> tuple[dict[str, Any] | None, bool]:
-    """OpenAlex's work for a bioRxiv DOI bioRxiv failed to serve, and whether that failed transiently.
+    """OpenAlex's work for a DOI bioRxiv failed to serve, and whether that lookup failed transiently.
 
-    ``(work, False)`` on a hit, ``(None, retryable)`` otherwise — ``_crossref_fallback``'s
-    contract. One home for the precondition: an *upstream*-transient bioRxiv failure.
-    A definitive miss stays bioRxiv's verdict, and a local refusal (``backpressure``,
-    ``quota_exhausted``) says nothing about bioRxiv's health — falling back on one
-    would spend OpenAlex budget to route around our own pacing.
+    ``_crossref_fallback``'s contract. Only an upstream-transient bioRxiv failure
+    qualifies: a definitive miss stays bioRxiv's, and a local refusal (``backpressure``,
+    ``quota_exhausted``) says nothing about bioRxiv.
     """
     if not (
         canonical_id
@@ -372,7 +368,7 @@ async def _biorxiv_fallback(
 
 
 def _flag_fallback(result: dict[str, Any], obj: dict[str, Any]) -> dict[str, Any]:
-    """Carry ``biorxiv_unavailable`` from a fallback work onto a tool response; returns it."""
+    """Copy ``biorxiv_unavailable`` onto a tool response."""
     if obj.get("biorxiv_unavailable") is True:
         result["biorxiv_unavailable"] = True
     return result
@@ -481,10 +477,9 @@ async def get_paper_metadata(
         with is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
         ``cited_by_count`` is Crossref's own tally, which differs from OpenAlex's.
 
-    A bioRxiv/medRxiv DOI that bioRxiv fails to serve *transiently* (5xx, 429, timeout,
-    garbled body — not a definitive miss or a local refusal) is answered by OpenAlex:
-    ``_source`` is ``openalex``, the response adds ``biorxiv_unavailable: true``, and no
-    ``follow_published`` chain runs. All four paper tools fall back alike.
+    A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
+    ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, with no
+    ``follow_published`` chain.
 
     A PMID dispatches as its DOI, so ``_source`` is ``openalex`` and
     ``_canonical_id`` the DOI whichever of the two you passed. An Anthology URL or
@@ -619,8 +614,7 @@ async def get_papers_metadata(
     Returns ``{count, papers}``: each entry is get_paper_metadata's payload plus
     ``_input``, the original string, so an agent can correlate input to output.
     Order matches the input list; failures appear as ``{_input, error, suggestion?}``
-    and don't affect others. A bioRxiv DOI answered by the OpenAlex fallback carries
-    ``biorxiv_unavailable: true``, as in get_paper_metadata.
+    and don't affect others. OpenAlex fallback answers carry ``biorxiv_unavailable: true``.
     """
     n = len(identifiers)
     results: list[dict[str, Any] | None] = [None] * n
