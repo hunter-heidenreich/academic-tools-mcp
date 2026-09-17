@@ -7,6 +7,7 @@ from academic_tools_mcp.bibtex import (
     _extract_last_name,
     _format_authors_bibtex,
     _generate_key,
+    generate_acl_bibtex,
     generate_arxiv_bibtex,
     generate_bibtex,
     generate_biorxiv_bibtex,
@@ -1192,3 +1193,79 @@ class TestGenerateCrossrefBibtex:
         assert r"\&" in entry and r"\%" in entry and r"\$" in entry and r"\_" in entry
         # An unescaped special would be the only bare one left.
         assert " & " not in entry
+
+
+def _acl_paper(**overrides):
+    paper = {
+        "anthology_id": "P16-1160",
+        "title": "A Character-level Decoder",
+        "authors": [{"name": "Junyoung Chung"}, {"name": "Kyunghyun Cho"}],
+        "editors": [{"name": "Katrin Erk"}, {"name": "Noah A. Smith"}],
+        "booktitle": "Proceedings of the 54th Annual Meeting of the ACL",
+        "volume_type": "proceedings",
+        "journal_volume": None,
+        "journal_issue": None,
+        "publisher": "Association for Computational Linguistics",
+        "address": "Berlin, Germany",
+        "month": "August",
+        "year": "2016",
+        "pages": "1693\u20131703",
+        "doi": "10.18653/v1/P16-1160",
+        "url": "https://aclanthology.org/P16-1160/",
+    }
+    paper.update(overrides)
+    return paper
+
+
+class TestGenerateAclBibtex:
+    def test_inproceedings(self):
+        entry = generate_acl_bibtex(_acl_paper())
+
+        assert entry.startswith("@inproceedings{chung2016characterlevel,")
+        assert "author={Chung, Junyoung and Cho, Kyunghyun}" in entry
+        assert "editor={Erk, Katrin and Smith, Noah A.}" in entry
+        assert "booktitle={Proceedings of the 54th Annual Meeting of the ACL}" in entry
+        assert "  month=aug," in entry
+        assert "address={Berlin, Germany}" in entry
+        assert "pages={1693--1703}" in entry
+        assert "doi={10.18653/v1/P16-1160}" in entry
+        assert "url=" not in entry
+
+    def test_journal_volume_is_an_article(self):
+        entry = generate_acl_bibtex(
+            _acl_paper(
+                volume_type="journal",
+                booktitle="Computational Linguistics, Volume 49, Issue 1 - March 2023",
+                journal_volume="49",
+                journal_issue="1",
+            )
+        )
+
+        assert entry.startswith("@article{")
+        assert "journal={Computational Linguistics}" in entry
+        assert "volume={49}" in entry
+        assert "number={1}" in entry
+        assert "booktitle=" not in entry
+        assert "editor=" not in entry
+
+    def test_a_month_range_is_an_escaped_literal(self):
+        assert "month={July–August}" in generate_acl_bibtex(_acl_paper(month="July–August"))
+
+    def test_front_matter_keys_on_its_first_editor(self):
+        entry = generate_acl_bibtex(_acl_paper(authors=[], title="Proceedings of ACL 2016"))
+
+        assert entry.startswith("@inproceedings{erk2016proceedings,")
+        assert "author=" not in entry
+
+    def test_a_paper_without_a_doi_carries_its_anthology_url(self):
+        entry = generate_acl_bibtex(_acl_paper(doi=None))
+
+        assert "url={https://aclanthology.org/P16-1160/}" in entry
+        assert "doi=" not in entry
+
+    def test_nulls_drop_their_fields(self):
+        entry = generate_acl_bibtex(
+            {"title": "T", "authors": [], "editors": [], "year": None, "month": None}
+        )
+
+        assert entry == "@inproceedings{unknownt,\n  title={{T}}\n}"

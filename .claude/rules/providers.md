@@ -24,8 +24,9 @@ Two things the shape does not make obvious:
 - **Going out as `python-httpx/x.y`** is the generic agent several upstreams
   throttle hardest, and the one that leaves an operator no way to reach us.
   Hence headers always, from the shared `useragent` module.
-- **`acl` is PDF-only**, so it has the slot wrapper but no `_throttled_get`, no
-  metadata getter, and none of the parsing contract below.
+- **`acl` parses XML, not JSON**, and reads its metadata from a *collection*
+  file that holds a whole venue-year, so its getter's shape differs where the
+  upstream does (§ acl.py).
 
 ### Parsing and encoding — the shared contract
 
@@ -206,13 +207,31 @@ then stops the server adding to it.
 diverge. It is also the value an agent passes to
 `search_cached_papers(namespace=...)`.
 
-**Invariant: the Anthology ID addresses the CDN and names nothing on disk.**
-`pdf_path` keys on `canonical_key`, so the PDF, the markdown and the section
-index share one stem — the identity `corpus._restore_slashes` inverts an ACL
-filename with, and the reason `tools/pipeline`'s force_refresh cascade (which
-drops artifacts keyed on `target["canonical"]`) reaches the file the agent just
-replaced. Key the PDF on the Anthology ID instead and this becomes the one
-namespace whose three artifacts disagree.
+**Invariant: the Anthology ID is the key for all three artifacts**, whichever
+spelling reached it — bare, URL, `10.18653/v1/` or `10.3115/v1/` DOI. Half of the
+Anthology has no DOI, so no DOI can be the key; and `tools/pipeline`'s
+force_refresh cascade drops artifacts keyed on `target["canonical"]`, so a PDF
+keyed differently from its markdown is one the cascade cannot reach.
+`manual.migrate_acl_stems` re-files what an older key left behind.
+
+**The ID grammar is closed, not permissive** — unlike arXiv's URL latitude. Both
+formats full-match, the old one only with the letters the Anthology has used and
+exactly four paper digits, so a freeform label or a *volume* ID (`P16-1`,
+`10.18653/v1/W17-47`) is never claimed; claiming one would negative-cache a
+404 for a paper that does not exist.
+
+**Metadata is the collection XML on the data repo, and a fetch writes every paper
+in it.** One entry per paper, never one per collection: `cached_lookup`
+deep-copies what it serves, and a collection runs to megabytes. A paper absent
+from a well-formed collection is negative-cached briefly (ingest adds a volume
+to an existing file); a collection 404 for the full negative TTL.
+
+**`anthology_id_for_doi` never errors and never forgets.** Its index — only the
+DOIs whose suffix is *not* the ID — never expires on read, so a failed weekly
+refresh keeps serving the previous one: a hosted DOI's identity must not flip
+for the length of an outage. The failure is recorded as a *positive* entry with
+its own short age, not a negative one — nothing about the DOI was established.
+It takes no `force_refresh`: a caller's refresh must not re-download the dump.
 
 ---
 

@@ -9,9 +9,10 @@ paths:
 output-correctness contracts that span them — the rules that keep a generated
 entry compiling.
 
-Four entry points, one per provider shape (`generate_bibtex` /
-`generate_arxiv_bibtex` / `generate_biorxiv_bibtex` / `generate_crossref_bibtex`);
-entry-type selection per source is in `get_paper_bibtex`'s docstring. Author
+Five entry points, one per provider shape (`generate_bibtex` /
+`generate_arxiv_bibtex` / `generate_biorxiv_bibtex` / `generate_crossref_bibtex` /
+`generate_acl_bibtex`); entry-type selection per source is in
+`get_paper_bibtex`'s docstring. Author
 formatting is parameterised by a `name_of` accessor, so OpenAlex's nested
 `author.display_name`, arXiv/bioRxiv's flat `name` and Crossref's
 `given`/`family` (rejoined by `crossref.author_name`) reuse one code path.
@@ -79,6 +80,10 @@ formatting is parameterised by a `name_of` accessor, so OpenAlex's nested
   (`.claude/rules/server.md`).
 - **Organisational authors are brace-wrapped** so BibTeX treats them atomically
   instead of splitting off a fake surname.
+- **An ACL key is generated, never the Anthology's `bibkey`**, which is
+  hyphenated. A journal volume's `booktitle` names the issue too, so the journal
+  is cut at `, Volume`. `month` is a bare macro only when it names one month; a
+  range stays an escaped literal.
 
 ## Scope
 

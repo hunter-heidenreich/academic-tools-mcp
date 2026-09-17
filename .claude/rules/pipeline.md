@@ -107,12 +107,10 @@ state.
 - **The arXiv shape test is `arxiv.is_arxiv_id`**, called by both
   `resolve_target` and `resolve_metadata_source` — storage and metadata must not
   disagree about which ids are arXiv's. This module routes on three predicates of
-  the same shape (`is_arxiv_id`, `biorxiv.is_biorxiv_doi`, `acl.is_acl_doi`) and
-  owns none of them.
+  the same shape (`is_arxiv_id`, `biorxiv.is_biorxiv_doi`, `acl.is_anthology_id`)
+  and owns none of them.
 - **`resolve_metadata_source` is derived from `resolve_target`**, not a second
-  pass over the shapes. Two parallel if-chains is the bug this shape prevents —
-  ACL is the one namespace that changes hands, its PDFs from the Anthology and
-  its metadata from OpenAlex.
+  pass over the shapes. Two parallel if-chains is the bug this shape prevents.
 - **An id `is_arxiv_id` rejects still gets a canonical key identical to arXiv's**,
   so it lands in `manual` and the same paper caches, downloads and converts twice.
   `migrate_misrouted_arxiv()` re-files what a narrower test left behind.
@@ -133,6 +131,17 @@ state.
   readers resolve away is an import nothing reads back. `refile_pmid_stems`
   catches up with what an older build stranded, linking a bare digit run rather
   than moving it for the reason `_misrouted_arxiv_id` links a repaired slash.
+- **An identifier changes identity only in `app.resolve_paper_identifier`**:
+  PMID → DOI, then a DOI no route claims → its Anthology ID when the Anthology
+  hosts it under an opaque suffix (`10.1162/…`). Both are network lookups, so
+  neither can live in the pure router, and both re-file what the old spelling
+  stored lazily (`refile_pmid_stems`, `refile_hosted_doi_stems`) through the one
+  `_refile_onto`. The graph tools take `resolve_pmid_identifier` alone: they are
+  DOI-keyed.
+- **`migrate_acl_stems` is the ACL sweep, and it asks the router too** — every
+  `acl_anthology` stem whose router key differs, and every `manual` stem the ACL
+  route now claims. An opaque hosted DOI is beyond any sweep, since only the
+  network index names its ID; readers repair those.
 - **Both import functions stay synchronous; the async boundary is the tool
   layer.** `tools/pipeline.import_paper` wraps each in `asyncio.to_thread` — an
   arbitrarily large copy or parse run inline stalls every concurrent tool call —

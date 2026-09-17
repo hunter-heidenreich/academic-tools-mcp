@@ -24,12 +24,13 @@ from ..app import (
     unwrap_first,
 )
 from ..bibtex import (
+    generate_acl_bibtex,
     generate_arxiv_bibtex,
     generate_bibtex,
     generate_biorxiv_bibtex,
     generate_crossref_bibtex,
 )
-from ..providers import arxiv, biorxiv, crossref, openalex
+from ..providers import acl, arxiv, biorxiv, crossref, openalex
 
 
 def _canonical_for_source(source: manual.MetadataSource | None, identifier: str) -> str | None:
@@ -38,6 +39,8 @@ def _canonical_for_source(source: manual.MetadataSource | None, identifier: str)
         return arxiv.canonical_arxiv_id(identifier)
     if source == "biorxiv":
         return biorxiv.canonical_key(identifier)
+    if source == "acl_anthology":
+        return acl.canonical_key(identifier)
     if source == "openalex":
         return openalex.canonical_doi(identifier)
     return None
@@ -48,8 +51,9 @@ def _unknown_identifier_error(identifier: str) -> dict[str, Any]:
     return {
         "error": (
             f"Cannot resolve paper provider for identifier: {identifier!r}. "
-            "Use an arXiv ID (e.g. 2301.00001), a DOI (e.g. 10.1038/...), "
-            "or call search_arxiv / search_crossref_by_title to find one."
+            "Use an arXiv ID (e.g. 2301.00001), an ACL Anthology ID (e.g. P16-1160), "
+            "a DOI (e.g. 10.1038/...), or call search_arxiv / "
+            "search_crossref_by_title to find one."
         ),
     }
 
@@ -66,6 +70,8 @@ _ARXIV_METADATA_HINT = "Check the arXiv ID format (e.g. 2301.00001) or use searc
 
 _BIORXIV_METADATA_HINT = "Check the DOI format (10.1101/...) or use search_crossref_by_title."
 
+_ACL_METADATA_HINT = "Check the Anthology ID on aclanthology.org (e.g. P16-1160, 2023.acl-long.1)."
+
 _OPENALEX_METADATA_HINT = (
     "Check the DOI format or use search_crossref_by_title to find the correct DOI."
 )
@@ -75,6 +81,7 @@ _OPENALEX_METADATA_HINT = (
 _METADATA_HINT_BY_SOURCE: dict[manual.MetadataSource, str] = {
     "arxiv": _ARXIV_METADATA_HINT,
     "biorxiv": _BIORXIV_METADATA_HINT,
+    "acl_anthology": _ACL_METADATA_HINT,
     "openalex": _OPENALEX_METADATA_HINT,
 }
 
@@ -102,6 +109,8 @@ async def _fetch_source(
         obj = await arxiv.get_paper(identifier, force_refresh=force_refresh)
     elif source == "biorxiv":
         obj = await biorxiv.get_paper(identifier, force_refresh=force_refresh)
+    elif source == "acl_anthology":
+        obj = await acl.get_paper(identifier, force_refresh=force_refresh)
     elif source == "openalex":
         obj = await openalex.get_work(identifier, force_refresh=force_refresh)
     else:
@@ -150,6 +159,26 @@ def _format_biorxiv_metadata(
     if followed_published is not None:
         result["followed_published"] = followed_published
     return result
+
+
+def _format_acl_metadata(paper: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
+    return {
+        "_source": "acl_anthology",
+        "_canonical_id": canonical_id,
+        "anthology_id": paper.get("anthology_id"),
+        "title": paper.get("title"),
+        "doi": paper.get("doi"),
+        "year": paper.get("year"),
+        "month": paper.get("month"),
+        "booktitle": paper.get("booktitle"),
+        "venues": paper.get("venues"),
+        "publisher": paper.get("publisher"),
+        "address": paper.get("address"),
+        "pages": paper.get("pages"),
+        "bibkey": paper.get("bibkey"),
+        "url": paper.get("url"),
+        "pdf_url": paper.get("pdf_url"),
+    }
 
 
 def _openalex_pmid(work: dict[str, Any]) -> str | None:
@@ -314,6 +343,8 @@ def _format_metadata_by_source(
         return _format_arxiv_metadata(obj, canonical_id)
     if source == "biorxiv":
         return _format_biorxiv_metadata(obj, canonical_id)
+    if source == "acl_anthology":
+        return _format_acl_metadata(obj, canonical_id)
     return _format_openalex_metadata(obj, canonical_id)
 
 
@@ -337,6 +368,11 @@ async def get_paper_metadata(
         journal version adds ``followed_published=False``, plus
         ``published_lookup_retryable=True`` if that lookup failed transiently
         (5xx/429/timeout); both absent when no chain was attempted.
+      - acl_anthology: anthology_id, title, doi, year, month, booktitle, venues,
+        publisher, address, pages, bibkey, url, pdf_url — the Anthology's own
+        record, with no citation count (use get_paper_citations_count). doi is
+        null for the many papers that have none; bibkey is the Anthology's key,
+        not the one get_paper_bibtex generates.
       - openalex: title, doi, pmid, publication_year, publication_date, type,
         language, venue, cited_by_count, is_oa, oa_status, oa_url, pdf_url.
         ``pmid`` is bare digits (null when OpenAlex has none) and is itself an
@@ -349,7 +385,9 @@ async def get_paper_metadata(
         ``cited_by_count`` is Crossref's own tally, which differs from OpenAlex's.
 
     A PMID dispatches as its DOI, so ``_source`` is ``openalex`` and
-    ``_canonical_id`` the DOI whichever of the two you passed.
+    ``_canonical_id`` the DOI whichever of the two you passed. An Anthology ID,
+    its URL, or any DOI the Anthology hosts (10.18653/v1/…, 10.1162/tacl…)
+    dispatches as the Anthology ID.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
@@ -394,7 +432,8 @@ async def get_papers_metadata(
         list[str],
         Field(
             description=(
-                "List of paper identifiers (arXiv IDs and/or DOIs). Mixed "
+                "List of paper identifiers (arXiv IDs, ACL Anthology IDs, DOIs, "
+                "PMIDs). Mixed "
                 "sources are fine; each is dispatched to the right "
                 "provider. Cap 100 per call to keep responses bounded — "
                 "for larger sets, page through in batches."
@@ -408,7 +447,8 @@ async def get_papers_metadata(
     """Batch metadata fetch — same payload as get_paper_metadata, in bulk.
 
     For reference-graph traversal: uncached OpenAlex DOIs are chunked into
-    ``/works?filter=doi:...|...`` calls, arXiv and bioRxiv fetch concurrently,
+    ``/works?filter=doi:...|...`` calls, arXiv, bioRxiv and the ACL Anthology
+    fetch concurrently,
     cached entries cost no HTTP call, and every fetched paper warms the singleton
     cache so a later get_paper_metadata / _authors is free.
 
@@ -428,7 +468,7 @@ async def get_papers_metadata(
     async def _singleton_one(slot: int, routed: str, ident: str) -> None:
         source, canonical, obj = await _fetch_source(routed, force_refresh=force_refresh)
         if source is None:
-            # Unreachable: the loop routes only arXiv/bioRxiv here. Guards the hint
+            # Unreachable: the loop routes only singleton sources here. Guards the hint
             # lookup against a None key regardless.
             results[slot] = {"_input": ident, **obj}
             return
@@ -453,7 +493,7 @@ async def get_papers_metadata(
             results[i] = {"_input": ident, **pmid_error}
             continue
         source = manual.resolve_metadata_source(routed)
-        if source in ("arxiv", "biorxiv"):
+        if source in ("arxiv", "biorxiv", "acl_anthology"):
             singleton_tasks.append(asyncio.create_task(_singleton_one(i, routed, ident)))
         elif source == "openalex":
             openalex_indices.append((i, routed, ident))
@@ -548,6 +588,10 @@ async def get_paper_authors(
     whole list, not the page.
       - arxiv: authors = [{name, affiliations}]; page_institutions [] and
         page_institution_count 0 — arXiv has no per-author roll-up.
+      - acl_anthology: authors = [{name, first, last, orcid, affiliation}]
+        (orcid and affiliation null where the Anthology has none);
+        page_institutions [] and page_institution_count 0 — affiliations are
+        per-author strings, not institution records.
       - biorxiv: authors = [{name}], plus author_corresponding /
         author_corresponding_institution on every page; page_institutions [] and
         page_institution_count 0 — bioRxiv exposes only the corresponding author's
@@ -592,7 +636,7 @@ async def get_paper_authors(
     if source == "openalex":
         page_slice = _format_openalex_authors(obj, start, end)
     else:
-        # arXiv/bioRxiv have no per-author institutions; emit them empty so agents
+        # arXiv/bioRxiv/ACL have no institution records; emit them empty so agents
         # never feature-detect.
         authors = obj.get("authors", [])
         page_slice = {
@@ -627,9 +671,11 @@ async def get_paper_abstract(
 
     Returns ``{_source, _canonical_id, title, abstract}``; ``abstract`` is null
     when the source has none. OpenAlex abstracts are reconstructed from an
-    inverted index — not byte-identical to the publisher's. A crossref abstract
-    (``fallback_crossref`` after an OpenAlex 404) is JATS rendered to plain text,
-    section titles included; many Crossref records carry none at all.
+    inverted index — not byte-identical to the publisher's. An acl_anthology
+    abstract has its inline markup (italics, TeX math) flattened to text. A
+    crossref abstract (``fallback_crossref`` after an OpenAlex 404) is JATS
+    rendered to plain text, section titles included; many Crossref records carry
+    none at all.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
@@ -655,7 +701,7 @@ async def get_paper_abstract(
 
     if source == "arxiv":
         abstract = obj.get("summary")
-    elif source == "biorxiv":
+    elif source in ("biorxiv", "acl_anthology"):
         abstract = obj.get("abstract")
     else:
         abstract = openalex.reconstruct_abstract(obj.get("abstract_inverted_index")) or None
@@ -682,6 +728,9 @@ async def get_paper_bibtex(
         primary_category.
       - biorxiv: @article when published_doi is present, else @misc with
         the preprint DOI and server.
+      - acl_anthology: @article for a journal volume (TACL, Computational
+        Linguistics), else @inproceedings with editor, booktitle and address.
+        A paper without a DOI carries its Anthology url.
       - openalex: inferred from the work type (@article, @inproceedings,
         @misc for preprints, @phdthesis, etc.).
       - crossref (``fallback_crossref`` after an OpenAlex 404): inferred from
@@ -713,6 +762,8 @@ async def get_paper_bibtex(
         bibtex = generate_arxiv_bibtex(obj)
     elif source == "biorxiv":
         bibtex = generate_biorxiv_bibtex(obj)
+    elif source == "acl_anthology":
+        bibtex = generate_acl_bibtex(obj)
     else:
         bibtex = generate_bibtex(obj)
 

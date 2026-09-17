@@ -105,7 +105,7 @@ class TestDownloadPdfCascade:
 
         The cascade drops artifacts keyed on ``target["canonical"]``, so this
         also pins that the ACL PDF the agent just replaced is filed under that
-        same key rather than under its Anthology ID.
+        same key — the Anthology ID, whichever spelling reached it.
         """
         from academic_tools_mcp.providers import acl
 
@@ -136,6 +136,41 @@ class TestDownloadPdfCascade:
         assert result.get("cascaded_invalidated") == ["markdown", "sections"]
         assert not md_path.exists()
         assert cache.get(acl.NAMESPACE, "sections", stems.sections_key(canonical)) is None
+
+    @pytest.mark.asyncio
+    async def test_a_hosted_doi_downloads_as_its_anthology_id_and_brings_its_import(
+        self, monkeypatch
+    ):
+        """A DOI only the index can place is traded before routing.
+
+        Markdown imported under the DOI while it still routed to ``manual`` is
+        re-filed onto the Anthology ID's stem, so it is what the reader finds.
+        """
+        from academic_tools_mcp.providers import acl
+
+        doi = "10.1162/tacl.a.63"
+        seen = {}
+
+        async def hosted(candidate):
+            return "2026.tacl-1.1" if candidate == doi else None
+
+        async def fake_download(identifier, *, force_refresh=False):
+            seen["identifier"] = identifier
+            return {"size_bytes": 1234, "cached": True}
+
+        monkeypatch.setattr(acl, "anthology_id_for_doi", hosted)
+        monkeypatch.setattr(acl, "download_pdf", fake_download)
+
+        imported = stems.markdown_path("manual", doi)
+        imported.parent.mkdir(parents=True, exist_ok=True)
+        imported.write_text("# Imported\n")
+
+        result = await pipeline._download_pdf_by_provider(doi)
+
+        assert "error" not in result
+        assert seen == {"identifier": "2026.tacl-1.1"}
+        assert stems.markdown_path(acl.NAMESPACE, "2026.tacl-1.1").read_text() == "# Imported\n"
+        assert not imported.exists()
 
     @pytest.mark.asyncio
     async def test_fresh_bytes_cascade_without_force_refresh(self, monkeypatch):

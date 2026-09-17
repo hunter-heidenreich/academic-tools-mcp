@@ -7,7 +7,7 @@ Crossref row formatters, and the partial-failure envelope.
 import pytest
 
 from academic_tools_mcp import server
-from academic_tools_mcp.providers import crossref, openalex, opencitations
+from academic_tools_mcp.providers import acl, crossref, openalex, opencitations
 
 
 def _stub_openalex_work(monkeypatch, work=None):
@@ -1191,3 +1191,52 @@ class TestCitationsCountSurvey:
         import inspect
 
         assert "source" not in inspect.signature(server.get_paper_citations).parameters
+
+
+class TestGraphToolsAcceptAnthologyIds:
+    """An Anthology ID trades for its DOI through the paper's Anthology record."""
+
+    @pytest.mark.asyncio
+    async def test_an_anthology_id_resolves_to_its_doi(self, monkeypatch):
+        async def fake_get_paper(identifier, **kwargs):
+            return {"anthology_id": "P16-1160", "doi": "10.18653/v1/P16-1160"}
+
+        seen: list[str] = []
+
+        async def fake_oc(doi, **kwargs):
+            seen.append(doi)
+            return {"count": 3}
+
+        monkeypatch.setattr(acl, "get_paper", fake_get_paper)
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        _stub_openalex_work(monkeypatch)
+
+        result = await server.get_paper_citations_count("https://aclanthology.org/P16-1160/")
+
+        assert result["doi"] == "10.18653/v1/p16-1160"
+        assert seen == ["10.18653/v1/p16-1160"]
+
+    @pytest.mark.asyncio
+    async def test_a_paper_without_a_doi_is_a_definitive_error(self, monkeypatch):
+        async def fake_get_paper(identifier, **kwargs):
+            return {"anthology_id": "W04-1013", "doi": None}
+
+        monkeypatch.setattr(acl, "get_paper", fake_get_paper)
+
+        result = await server.get_paper_citations_count("W04-1013")
+
+        assert result["not_found"] is True
+        assert "W04-1013 has no DOI" in result["error"]
+        assert "suggestion" in result
+
+    @pytest.mark.asyncio
+    async def test_a_transient_record_failure_stays_retryable(self, monkeypatch):
+        async def fake_get_paper(identifier, **kwargs):
+            return {"error": "ACL Anthology: timeout", "retryable": True}
+
+        monkeypatch.setattr(acl, "get_paper", fake_get_paper)
+
+        result = await server.get_paper_citations_count("W04-1013")
+
+        assert result["retryable"] is True
+        assert "not_found" not in result

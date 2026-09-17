@@ -123,9 +123,15 @@ class TestResolveMetadataSource:
             manual.resolve_metadata_source("https://doi.org/10.1101/2024.01.01.573838") == "biorxiv"
         )
 
-    def test_acl_doi_routes_to_openalex(self):
-        # ACL Anthology has no metadata API — its DOIs route to OpenAlex
-        assert manual.resolve_metadata_source("10.18653/v1/2023.acl-long.1") == "openalex"
+    @pytest.mark.parametrize(
+        "identifier",
+        ["10.18653/v1/2023.acl-long.1", "W04-1013", "https://aclanthology.org/P16-1160/"],
+    )
+    def test_acl_identifiers_route_to_the_anthology(self, identifier):
+        assert manual.resolve_metadata_source(identifier) == "acl_anthology"
+
+    def test_an_acl_volume_doi_routes_to_openalex(self):
+        assert manual.resolve_metadata_source("10.18653/v1/W17-47") == "openalex"
 
     def test_generic_publisher_doi_routes_to_openalex(self):
         assert manual.resolve_metadata_source("10.1038/s41586-024-00001-1") == "openalex"
@@ -1346,3 +1352,107 @@ class TestRefilePmidStems:
 
         assert manual.refile_pmid_stems("pmid:20079334", self.DOI) == 0
         assert stems.markdown_path("manual", "pmid:20079334").exists()
+
+
+class TestMigrateAclStems:
+    """Cached files move onto the Anthology-ID stem the router now gives them.
+
+    The DOI-keyed ``acl_anthology`` stems predate the Anthology ID as the key;
+    the ``manual`` ones are imports labelled with a spelling the ACL route now
+    claims. Either way a reader looks only at the ID stem.
+    """
+
+    @staticmethod
+    def _seed(namespace, stem, text="acl"):
+        from academic_tools_mcp.store import cache
+
+        for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
+            directory = cache.cache_dir(namespace, entity)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / (stem + suffix)).write_text(text)
+
+    @pytest.mark.parametrize(
+        ("namespace", "stem", "key"),
+        [
+            ("acl_anthology", "10.18653_v1_p16-1160", "P16-1160"),
+            ("acl_anthology", "10.18653_v1_2023.acl-long.1", "2023.acl-long.1"),
+            ("manual", "w04-1013", "W04-1013"),
+            ("manual", "10.3115_v1_w15-2301", "W15-2301"),
+            ("manual", "https%3A__aclanthology.org_p16-1160", "P16-1160"),
+        ],
+    )
+    def test_refiles_onto_the_anthology_id(self, namespace, stem, key):
+        self._seed(namespace, stem)
+
+        assert manual.migrate_acl_stems() == 2
+
+        target = manual.resolve_target(key)
+        assert target["pdf_path"].read_text() == "acl"
+        assert stems.markdown_path("acl_anthology", key).read_text() == "acl"
+        assert not stems.markdown_path_for_stem(namespace, stem).exists()
+
+    def test_leaves_everything_else(self):
+        self._seed("acl_anthology", "P16-1160")
+        self._seed("manual", "10.1038_nature12373")
+        self._seed("manual", "my-paper")
+
+        assert manual.migrate_acl_stems() == 0
+
+    def test_is_idempotent(self):
+        self._seed("acl_anthology", "10.18653_v1_p16-1160")
+
+        assert manual.migrate_acl_stems() == 2
+        assert manual.migrate_acl_stems() == 0
+
+    def test_never_overwrites_an_existing_target(self):
+        self._seed("acl_anthology", "P16-1160", text="current")
+        self._seed("acl_anthology", "10.18653_v1_p16-1160", text="legacy")
+
+        assert manual.migrate_acl_stems() == 0
+        assert stems.markdown_path("acl_anthology", "P16-1160").read_text() == "current"
+
+    def test_skips_in_flight_temp_files(self):
+        from academic_tools_mcp.store import cache
+
+        pdfs = cache.cache_dir("acl_anthology", "pdfs")
+        pdfs.mkdir(parents=True)
+        (pdfs / "10.18653_v1_p16-1160.pdf.tmp").write_text("partial")
+
+        assert manual.migrate_acl_stems() == 0
+
+    def test_empty_cache_is_a_no_op(self):
+        assert manual.migrate_acl_stems() == 0
+
+    def test_a_refiled_markdown_keeps_its_imported_marker(self):
+        from academic_tools_mcp import papers
+
+        legacy = "10.18653/v1/p16-1160"
+        md_path = stems.markdown_path("acl_anthology", legacy)
+        papers.store_markdown_and_index("acl_anthology", legacy, md_path, "# T", "imported")
+
+        manual.migrate_acl_stems()
+
+        assert papers.recorded_conversion_mode("acl_anthology", "P16-1160") == "imported"
+        assert papers.recorded_conversion_mode("acl_anthology", legacy) is None
+
+
+class TestRefileHostedDoiStems:
+    """An import filed under a hosted DOI moves onto its Anthology ID's stem.
+
+    Lazy, as PMIDs are: only the network DOI index knows the ID.
+    """
+
+    def test_moves_both_artifacts(self, tmp_path):
+        doi = "10.1162/tacl.a.63"
+        for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
+            directory = tmp_path / "manual" / entity
+            directory.mkdir(parents=True)
+            (directory / (stems.safe_stem(doi) + suffix)).write_text("hosted")
+
+        assert manual.refile_hosted_doi_stems(doi, "2026.tacl-1.1") == 2
+
+        assert manual.resolve_target("2026.tacl-1.1")["pdf_path"].read_text() == "hosted"
+        assert not manual.resolve_target(doi)["pdf_path"].exists()
+
+    def test_nothing_to_move_is_a_no_op(self):
+        assert manual.refile_hosted_doi_stems("10.1162/tacl.a.63", "2026.tacl-1.1") == 0

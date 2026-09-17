@@ -109,7 +109,7 @@ between `do`'s check and that insert. **Keep both halves await-free.**
   stem encodes its own escapes.
 - **No startup sweep may raise**, and `list_dir` is the shared gate for all
   three: `migrate_legacy_stems`, `manual.migrate_misrouted_arxiv`,
-  `acl.migrate_legacy_pdf_stems`.
+  `manual.migrate_acl_stems`.
 
 ### Checksums
 

@@ -26,8 +26,35 @@ grouped by milestone rather than per commit.
   operator's browser, so requests run one at a time at no more than 90% of each
   documented rate, with no automatic retries or paging, and every response is
   cached. ([#127])
+- **The ACL Anthology serves its own metadata.** `get_paper_metadata`,
+  `get_paper_authors`, `get_paper_abstract` and `get_paper_bibtex` answer ACL papers
+  from the Anthology's own records, tagged `_source: "acl_anthology"`: booktitle,
+  editors, venue, pages, abstracts, and authors with ORCID iDs and affiliations.
+  BibTeX entries now carry `booktitle`, `editor`, `address` and `publisher`, which
+  OpenAlex often lacks for ACL venues. ([#128])
+- **Anthology IDs and URLs are identifiers.** `P16-1160`, `2023.acl-long.1`,
+  `aclanthology.org` and `aclweb.org/anthology` URLs work in every paper and PDF
+  tool, which reaches the ~58,000 Anthology papers that have no DOI (ROUGE,
+  `W04-1013`, among them). The graph tools accept them too, through the paper's
+  DOI; a paper without one gets a definitive "has no DOI" error. ([#128])
 
 ### Changed
+
+- **A DOI the Anthology hosts routes to the Anthology.** That covers the
+  `10.3115/v1/` DOIs whose suffix is the ID, and, through an index of the
+  Anthology's BibTeX dump refreshed weekly, opaque ones such as TACL and
+  Computational Linguistics (`10.1162/…`), ELDA (`10.63317/…`) and ACM-era
+  `10.3115/…`. `download_pdf` fetches them without `allow_oa_url`, and their
+  metadata comes from the Anthology rather than OpenAlex, so those responses no
+  longer carry `cited_by_count`, `pmid` or open-access fields, and
+  `fallback_crossref` no longer applies to them. ([#128])
+- **ACL artifacts are keyed by Anthology ID.** At startup, cached PDFs, markdown and
+  section indexes move from `10.18653_v1_…` DOI stems to the Anthology ID, and
+  imports labelled with an Anthology ID, URL or `10.3115/v1/` DOI move from
+  `manual` into `acl_anthology`. `search_cached_papers` reports the Anthology ID as
+  `canonical_id`. ([#128])
+- **Volume-level ACL DOIs route to OpenAlex.** `10.18653/v1/W17-47` names a
+  volume, not a paper, so it is no longer treated as an Anthology paper. ([#128])
 
 - **A 429 with `Retry-After` locks its provider out locally.** For a provider
   without `X-RateLimit-*` headers, every later call is refused without a request,
@@ -1839,3 +1866,4 @@ say which.
 [#124]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/124
 [#126]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/126
 [#127]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/127
+[#128]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/128
