@@ -32,6 +32,7 @@ from ..bibtex import (
     generate_biorxiv_bibtex,
     generate_crossref_bibtex,
 )
+from ..net import http
 from ..providers import acl, arxiv, biorxiv, crossref, openalex
 
 
@@ -516,12 +517,13 @@ async def get_paper_versions(
     request; cached for a day, since a new revision is what it reports.
 
     Errors: ``{error, suggestion}``, plus ``not_found: true`` for an id arXiv does
-    not have or ``retryable: true`` for a transport or parse failure. A DOI or other
-    non-arXiv identifier is refused without a request.
+    not have or ``retryable: true`` for a transport or parse failure; any other error
+    arXiv reports is ``retryable: false``. A DOI or other non-arXiv identifier is
+    refused without a request, as ``not_found: true``.
     """
     if not arxiv.is_arxiv_id(arxiv_id):
         return {
-            "error": f"Not an arXiv ID: {arxiv_id!r}.",
+            **http.not_found(f"Not an arXiv ID: {arxiv_id!r}."),
             "suggestion": "Revision history is arXiv's. Find the paper's arXiv ID with "
             "get_paper_metadata or search_arxiv, then retry.",
         }

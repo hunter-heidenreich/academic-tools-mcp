@@ -1717,6 +1717,9 @@ class TestGetPaperVersions:
 
         assert "Not an arXiv ID" in result["error"]
         assert "search_arxiv" in result["suggestion"]
+        # Flagged: an unflagged dict reads as "unknown", not "this can never work".
+        assert result["not_found"] is True
+        assert "retryable" not in result
 
     @pytest.mark.asyncio
     async def test_a_provider_error_keeps_its_verdict_and_gains_a_suggestion(self, monkeypatch):
