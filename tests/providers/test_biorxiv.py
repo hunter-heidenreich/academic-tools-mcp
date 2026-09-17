@@ -1399,3 +1399,151 @@ class TestParseVersions:
 
         assert paper["version"] == "2"
         assert [v["version"] for v in paper["versions"]] == ["1", "2"]
+
+
+_JATS_URL = "https://www.biorxiv.org/content/early/2024/01/02/2024.01.01.573838.source.xml"
+_JATS_BODY = "<article><body><sec><title>Intro</title><p>Text.</p></sec></body></article>"
+
+
+def _jats_setup(monkeypatch, *responses, jatsxml=_JATS_URL):
+    """A record naming ``jatsxml`` and a content host answering ``(status, text)`` in turn."""
+    _reset_biorxiv(monkeypatch)
+    monkeypatch.setattr(biorxiv._content_gap, "min_gap_seconds", 0.0)
+    papers_asked: list[bool] = []
+
+    async def fake_get_paper(doi, *, force_refresh=False):
+        papers_asked.append(force_refresh)
+        return {"doi": doi, "jatsxml": jatsxml}
+
+    monkeypatch.setattr(biorxiv, "get_paper", fake_get_paper)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status, text = responses[min(len(seen), len(responses) - 1)]
+        seen.append(str(request.url))
+        return httpx.Response(status, text=text)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+    return seen, papers_asked
+
+
+class TestGetJats:
+    @pytest.mark.asyncio
+    async def test_the_records_jatsxml_is_fetched(self, monkeypatch):
+        seen, _ = _jats_setup(monkeypatch, (200, _JATS_BODY))
+
+        result = await biorxiv.get_jats(_DOI)
+
+        assert result == {"markup": _JATS_BODY}
+        assert seen == [_JATS_URL]
+
+    @pytest.mark.asyncio
+    async def test_the_content_gap_is_waited_out_first(self, monkeypatch):
+        _jats_setup(monkeypatch, (200, _JATS_BODY))
+        waited = []
+
+        async def fake_wait():
+            waited.append(1)
+
+        monkeypatch.setattr(biorxiv._content_gap, "wait", fake_wait)
+
+        await biorxiv.get_jats(_DOI)
+
+        assert waited == [1]
+
+    @pytest.mark.asyncio
+    async def test_a_404_is_negative_cached(self, monkeypatch):
+        seen, _ = _jats_setup(monkeypatch, (404, "gone"))
+
+        result = await biorxiv.get_jats(_DOI)
+        again = await biorxiv.get_jats(_DOI)
+
+        assert result == {"error": f"No JATS full text for DOI: {_DOI}", "not_found": True}
+        assert again == result
+        assert cache.get_negative(biorxiv.NAMESPACE, "jats", biorxiv.canonical_key(_DOI)) == result
+        assert len(seen) == 1
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_asks_again_after_a_404_and_refreshes_the_record(self, monkeypatch):
+        seen, papers_asked = _jats_setup(monkeypatch, (404, ""), (200, _JATS_BODY))
+
+        await biorxiv.get_jats(_DOI)
+        result = await biorxiv.get_jats(_DOI, force_refresh=True)
+
+        assert result == {"markup": _JATS_BODY}
+        assert len(seen) == 2
+        assert papers_asked == [False, True]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "jatsxml",
+        [
+            None,
+            "",
+            "NA",
+            "http://www.biorxiv.org/content/early/x.source.xml",
+            "https://evil.example/content/x.source.xml",
+            "https://www.biorxiv.org.evil.example/x.source.xml",
+        ],
+    )
+    async def test_a_url_off_the_content_hosts_is_never_fetched(self, monkeypatch, jatsxml):
+        seen, _ = _jats_setup(monkeypatch, (200, _JATS_BODY), jatsxml=jatsxml)
+
+        result = await biorxiv.get_jats(_DOI)
+
+        assert result["not_found"] is True
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_a_medrxiv_host_is_allowed(self, monkeypatch):
+        url = "https://www.medrxiv.org/content/early/2020/09/10/2020.09.09.20191205.source.xml"
+        seen, _ = _jats_setup(monkeypatch, (200, _JATS_BODY), jatsxml=url)
+
+        assert await biorxiv.get_jats("10.1101/2020.09.09.20191205") == {"markup": _JATS_BODY}
+        assert seen == [url]
+
+    @pytest.mark.asyncio
+    async def test_a_200_that_is_not_an_article_is_transient_and_uncached(self, monkeypatch):
+        _jats_setup(monkeypatch, (200, "<html>Just a moment...</html>"))
+
+        result = await biorxiv.get_jats(_DOI)
+
+        assert result["retryable"] is True
+        assert cache.get_negative(biorxiv.NAMESPACE, "jats", biorxiv.canonical_key(_DOI)) is None
+
+    @pytest.mark.asyncio
+    async def test_a_cloudflare_rate_limit_is_retryable(self, monkeypatch):
+        monkeypatch.setattr(biorxiv._throttle, "retry_attempts", 1)
+        _jats_setup(monkeypatch, (429, "error code: 1015"))
+
+        result = await biorxiv.get_jats(_DOI)
+
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_body_over_the_byte_cap_is_refused(self, monkeypatch):
+        monkeypatch.setenv("MAX_PDF_BYTES", "10")
+        _jats_setup(monkeypatch, (200, _JATS_BODY))
+
+        result = await biorxiv.get_jats(_DOI)
+
+        assert result["retryable"] is False
+        assert result["max_bytes"] == 10
+
+    @pytest.mark.asyncio
+    async def test_a_metadata_error_is_returned_without_a_content_request(self, monkeypatch):
+        seen, _ = _jats_setup(monkeypatch, (200, _JATS_BODY))
+
+        async def failing(doi, *, force_refresh=False):
+            return {
+                "error": "bioRxiv returned a response that could not be parsed.",
+                "retryable": True,
+            }
+
+        monkeypatch.setattr(biorxiv, "get_paper", failing)
+
+        result = await biorxiv.get_jats(_DOI)
+
+        assert result["retryable"] is True
+        assert seen == []

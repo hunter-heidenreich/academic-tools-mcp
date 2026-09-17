@@ -6,9 +6,9 @@ The pipeline in three layers:
   offset, search within a document. No I/O, no asyncio.
 * :mod:`.index` — the on-disk section index: write it, read it, refresh it when
   the markdown drifted, drop it. Owns the per-paper lock.
-* :mod:`.convert` — running a converter subprocess, or rendering a provider's
-  LaTeXML HTML through :mod:`.latexml`, and storing what it produced. Owns the
-  global single-conversion gate.
+* :mod:`.convert` — running a converter subprocess, or rendering a provider's own
+  markup (arXiv's LaTeXML HTML through :mod:`.latexml`, bioRxiv's JATS XML through
+  :mod:`.jats`), and storing what it produced. Owns the global single-conversion gate.
 
 Artifact *naming* deliberately lives one layer down, in
 :mod:`academic_tools_mcp.store.stems`, so a provider that needs to name a PDF
@@ -21,7 +21,7 @@ submodule is the home of its symbols, the place to read about them, and the
 place to patch them.
 """
 
-from .convert import convert_html, convert_pdf
+from .convert import MarkupMode, convert_markup, convert_pdf
 from .index import (
     drop_derived,
     get_or_parse_sections,
@@ -43,8 +43,9 @@ from .sections import (
 )
 
 __all__ = [
+    "MarkupMode",
     "Section",
-    "convert_html",
+    "convert_markup",
     "convert_pdf",
     "drop_derived",
     "find_in_markdown",

@@ -726,7 +726,7 @@ async def get_versions(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
 
 
 async def get_html(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """arXiv's LaTeXML HTML rendering of a paper, as ``{"html": text}``.
+    """arXiv's LaTeXML HTML rendering of a paper, as ``{"markup": text}``.
 
     arXiv answers 404 when a paper has none — non-LaTeX source or a failed
     conversion — which is negative-cached on the short arXiv TTL, since a rendering
@@ -770,7 +770,7 @@ async def get_html(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, A
         # A 200 of the wrong shape is transient, as a garbled body is.
         if _HTML_MARKER not in text:
             return http.parse_error_dict(LABEL, detail="was not a LaTeXML rendering")
-        return {"html": text}
+        return {"markup": text}
 
     # Tuple-keyed to stay distinct from get_paper's and download_pdf's slots.
     return await _single_flight.do(("html", canonical), _fetch)

@@ -22,25 +22,31 @@ converter in it to reach. `tests/test_layering.py` fails if a provider reaches
 `papers` at all.
 
 **Invariant: a module has one import name.** `papers/__init__.py` re-exports its
-three layered submodules and deliberately not `stems` — nor `latexml`, a pure
-renderer only `convert` reaches. **Patch the owning submodule,
+three layered submodules and deliberately not `stems` — nor `latexml`, `jats` or
+`blocks`, pure renderers only `convert` reaches. **Patch the owning submodule,
 never the facade** — it re-exports by value, so
 `monkeypatch.setattr(papers, "_section_locks", ...)` rebinds an alias nothing reads.
 
 ## papers/convert.py
 
 - **`_cached_or_cleared` is the one cached-markdown check, for every converter.**
-  `convert_pdf` and `convert_html` both start there, which is why a paper whose
+  `convert_pdf` and `convert_markup` both start there, which is why a paper whose
   markdown came from one never re-runs the other: cached markdown answers,
-  whatever produced it. **Except a forced `convert_html`, which must not clear
+  whatever produced it. **Except a forced `convert_markup`, which must not clear
   first**: `convert_paper` calls it before the PDF check, so a failed fetch could
   leave no markdown and nothing to convert.
-- **`convert_html` takes a `fetch` closure, never a provider.** That keeps
-  `papers` below `providers`; the closure is where `tools/pipeline` binds
-  `arxiv.get_html`. Its three outcomes are the contract: a conversion response,
-  a transient error tagged `conversion_mode: "html"`, or `None` for "no usable
-  rendering" — including one that renders to nothing or nests past the
-  renderer's stack — which the caller reads as "try the PDF".
+- **`convert_markup` takes a `fetch` closure, never a provider.** That keeps
+  `papers` below `providers`; `tools/pipeline._markup_source` is where the
+  closure binds `arxiv.get_html` or `biorxiv.get_jats`, looked up at call time.
+  `mode` picks the renderer from `_RENDERERS` and is the provenance written. Its
+  three outcomes are the contract: a conversion response, a transient error
+  tagged with `mode`, or `None` for "no usable rendering" — including one that
+  renders to nothing, nests past the renderer's stack, or (JATS) does not parse —
+  which the caller reads as "try the PDF". **A renderer never raises on bad
+  input**; it returns `""`, so the three outcomes stay three.
+- **`blocks` is what the renderers share, and only that**: the heading escape and
+  the span-aware pipe table. Each walks its own tree — an `html.parser` DOM and
+  an `ElementTree` have nothing else in common.
 - **Placeholder substitution is `shlex.quote`d, and that quoting is the trust
   boundary**: a canonical-derived path cannot inject into the `bash -c` command.
   Templates therefore carry bare `{input}` / `{output_dir}` / `{python}`.
@@ -60,7 +66,7 @@ never the facade** — it re-exports by value, so
   file to checksum it (`.claude/rules/store.md` § Checksums). It is the one
   markdown writer outside the per-paper lock discipline.
 - **`drop_derived()` is the only markdown unlinker, and every caller holds
-  `sections_lock`** — `_cached_or_cleared`'s and `convert_html`'s `force_refresh`
+  `sections_lock`** — `_cached_or_cleared`'s and `convert_markup`'s `force_refresh`
   branches, and
   `tools/pipeline`'s `download_pdf` and `import_paper` cascades. The download
   cascade asks `recorded_conversion_mode()` first — the named read for "may I

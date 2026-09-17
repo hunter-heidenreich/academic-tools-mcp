@@ -143,8 +143,8 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 | Tool | Description |
 |------|-------------|
 | `download_pdf` | Download and cache the PDF — auto-detects arXiv, ACL Anthology, bioRxiv/medRxiv. Streams chunks to disk (peak memory = 64 KiB) and aborts mid-stream if the response would exceed `MAX_PDF_BYTES` (default 200 MB). Whenever it actually downloads (not on a cache hit), the cached markdown + section index are dropped automatically so the next `convert_paper` picks up the new bytes. Markdown you imported yourself, or converted from arXiv's HTML, survives that; pass `force_refresh=True` to replace it too. |
-| `convert_paper` | Convert a paper to markdown, parse into sections. arXiv papers use arXiv's own HTML rendering first — seconds, no PDF needed. Otherwise it converts the downloaded PDF (slow: tens of minutes; `PDF_CONVERT_TIMEOUT` caps it at 30 min by default). The server runs at most one conversion at a time across all callers — a second concurrent caller gets `{busy: True, retryable: True, in_progress: {...}}` immediately rather than queueing |
-| `get_paper_sections` | Section index with titles, sub-heading previews, token counts, and `conversion_mode` — what produced the markdown (`full` / `fast` / `html` / `imported`) |
+| `convert_paper` | Convert a paper to markdown, parse into sections. arXiv papers use arXiv's own HTML rendering first, and bioRxiv/medRxiv papers bioRxiv's JATS XML — seconds, no PDF needed. Otherwise it converts the downloaded PDF (slow: tens of minutes; `PDF_CONVERT_TIMEOUT` caps it at 30 min by default). The server runs at most one conversion at a time across all callers — a second concurrent caller gets `{busy: True, retryable: True, in_progress: {...}}` immediately rather than queueing |
+| `get_paper_sections` | Section index with titles, sub-heading previews, token counts, and `conversion_mode` — what produced the markdown (`full` / `fast` / `html` / `jats` / `imported`) |
 | `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
 | `find_in_paper` | Substring (or whole-word) search inside one converted paper. Returns each hit's section + char offset + ~120-char snippet, and echoes `paper_identifier` in canonical form. Char offsets align with `get_paper_section`'s stripped text so you can chain straight to the surrounding context. |
 | `search_cached_papers` | BM25 keyword search across **every** converted paper in the local cache. Answers "which paper mentioned X?"; pair it with `find_in_paper` for "where in that paper?". Papers the index could never use are reported separately as `unindexable`, each with a `canonical_id` you can hand straight to `find_in_paper`. |
@@ -208,6 +208,8 @@ The paper tools take an arXiv ID in any spelling; a DOI is refused without a req
 The PDF-to-markdown pipeline converts downloaded PDFs into section-level markdown that agents can read piece by piece, avoiding token blowouts from dumping entire papers into context.
 
 **arXiv papers skip the converter when they can.** `convert_paper` first fetches arXiv's LaTeXML rendering (`arxiv.org/html/<id>`) and turns it into markdown in-process: sections as headings, equations as their LaTeX source, tables as pipe tables, captions kept and images dropped. It records `conversion_mode: "html"`, and a later PDF download leaves that markdown in place. Only papers without a rendering go through the converter below.
+
+**bioRxiv/medRxiv papers do the same with bioRxiv's JATS XML**, the full-text file its API record links (`jatsxml`). Headings come from its `sec` structure, the abstract and reference list are sections of their own, equations are their LaTeX source where bioRxiv supplies one, and figure and table captions are kept. It records `conversion_mode: "jats"`. bioRxiv ships most tables and many equations as images, which JATS carries only as a caption or not at all — convert the PDF when you need them.
 
 The pipeline is **converter-agnostic**. Set `PDF_CONVERTER` in `.env` to choose your backend:
 
@@ -309,7 +311,7 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 | paperswithcode (searches) | 1d | 24h | Results reorder as papers are ingested. |
 | acl_anthology | 7d | 24h (1h for a paper missing from its collection) | Collection files change only through corrections. |
 
-**arXiv HTML renderings** that don't exist are negative-cached for 1h under an `html` entity; the rendering itself is not cached, only the markdown made from it.
+**arXiv HTML renderings** that don't exist are negative-cached for 1h under an `html` entity, and **bioRxiv JATS files** under a `jats` entity; the rendering itself is not cached, only the markdown made from it.
 
 **PDF downloads** negative-cache definitive failures too, under a `downloads` entity in each provider's namespace: arxiv / biorxiv 1h (they render PDFs lazily, so a just-announced paper's PDF can 404 for minutes), acl_anthology and the open-access path 24h (static files — a 404 means a wrong ID or a closed-access paper). The PDF itself never expires.
 

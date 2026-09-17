@@ -1395,7 +1395,7 @@ class TestEveryErrorNamesItsMode:
 
 
 # ---------------------------------------------------------------------------
-# convert_html: a provider's LaTeXML rendering, no subprocess
+# convert_markup: a provider's own markup, no subprocess
 # ---------------------------------------------------------------------------
 
 _RENDERING = (
@@ -1419,9 +1419,9 @@ def _fetching(*results):
 class TestConvertHtml:
     @pytest.mark.asyncio
     async def test_a_rendering_is_stored_as_html_provenance(self):
-        fetch, _ = _fetching({"html": _RENDERING})
+        fetch, _ = _fetching({"markup": _RENDERING})
 
-        result = await papers.convert_html("arxiv", "2301.00001", fetch)
+        result = await papers.convert_markup("arxiv", "2301.00001", fetch, mode="html")
 
         assert result["conversion_mode"] == "html"
         assert result["cached"] is False
@@ -1437,9 +1437,9 @@ class TestConvertHtml:
         store_markdown_and_index(
             "arxiv", "2301.00001", stems.markdown_path("arxiv", "2301.00001"), "## A\n\nb\n", "full"
         )
-        fetch, calls = _fetching({"html": _RENDERING})
+        fetch, calls = _fetching({"markup": _RENDERING})
 
-        result = await papers.convert_html("arxiv", "2301.00001", fetch)
+        result = await papers.convert_markup("arxiv", "2301.00001", fetch, mode="html")
 
         assert calls == []
         assert result["cached"] is True
@@ -1447,10 +1447,14 @@ class TestConvertHtml:
 
     @pytest.mark.asyncio
     async def test_force_refresh_replaces_cached_markdown(self):
-        fetch, calls = _fetching({"html": _RENDERING}, {"html": _RENDERING.replace("Body", "New")})
+        fetch, calls = _fetching(
+            {"markup": _RENDERING}, {"markup": _RENDERING.replace("Body", "New")}
+        )
 
-        await papers.convert_html("arxiv", "2301.00001", fetch)
-        result = await papers.convert_html("arxiv", "2301.00001", fetch, force_refresh=True)
+        await papers.convert_markup("arxiv", "2301.00001", fetch, mode="html")
+        result = await papers.convert_markup(
+            "arxiv", "2301.00001", fetch, mode="html", force_refresh=True
+        )
 
         assert len(calls) == 2
         assert result["cached"] is False
@@ -1471,7 +1475,7 @@ class TestConvertHtml:
         store_markdown_and_index("arxiv", "2301.00001", md_path, "## A\n\nb\n", "imported")
         fetch, _ = _fetching(failure)
 
-        await papers.convert_html("arxiv", "2301.00001", fetch, force_refresh=True)
+        await papers.convert_markup("arxiv", "2301.00001", fetch, mode="html", force_refresh=True)
 
         assert md_path.read_text(encoding="utf-8") == "## A\n\nb\n"
         assert papers.recorded_conversion_mode("arxiv", "2301.00001") == "imported"
@@ -1480,14 +1484,14 @@ class TestConvertHtml:
     async def test_a_definitive_miss_is_none_so_the_caller_falls_back(self):
         fetch, _ = _fetching({"error": "No HTML rendering", "not_found": True})
 
-        assert await papers.convert_html("arxiv", "2301.00001", fetch) is None
+        assert await papers.convert_markup("arxiv", "2301.00001", fetch, mode="html") is None
         assert not stems.markdown_path("arxiv", "2301.00001").exists()
 
     @pytest.mark.asyncio
     async def test_a_transient_failure_names_the_html_mode(self):
         fetch, _ = _fetching({"error": "arXiv server error (HTTP 503).", "retryable": True})
 
-        result = await papers.convert_html("arxiv", "2301.00001", fetch)
+        result = await papers.convert_markup("arxiv", "2301.00001", fetch, mode="html")
 
         assert result == {
             "error": "arXiv server error (HTTP 503).",
@@ -1498,13 +1502,49 @@ class TestConvertHtml:
     @pytest.mark.parametrize("html", ['<article class="ltx_document"></article>', "   "])
     @pytest.mark.asyncio
     async def test_a_rendering_with_no_text_is_none(self, html):
-        fetch, _ = _fetching({"html": html})
+        fetch, _ = _fetching({"markup": html})
 
-        assert await papers.convert_html("arxiv", "2301.00001", fetch) is None
+        assert await papers.convert_markup("arxiv", "2301.00001", fetch, mode="html") is None
 
     @pytest.mark.asyncio
     async def test_nesting_past_the_renderer_stack_is_none_not_a_raise(self):
         deep = '<article class="ltx_document">' + "<span>" * 5000 + "x" + "</span>" * 5000
-        fetch, _ = _fetching({"html": deep})
+        fetch, _ = _fetching({"markup": deep})
 
-        assert await papers.convert_html("arxiv", "2301.00001", fetch) is None
+        assert await papers.convert_markup("arxiv", "2301.00001", fetch, mode="html") is None
+
+
+_JATS = (
+    "<article><front><article-meta><title-group><article-title>T</article-title>"
+    "</title-group></article-meta></front><body><sec><title>1 Intro</title><p>Body.</p>"
+    "</sec></body></article>"
+)
+
+
+class TestConvertMarkupJats:
+    @pytest.mark.asyncio
+    async def test_jats_is_rendered_and_stored_as_jats_provenance(self):
+        fetch, _ = _fetching({"markup": _JATS})
+
+        result = await papers.convert_markup("biorxiv", "10.1101/x", fetch, mode="jats")
+
+        assert result["conversion_mode"] == "jats"
+        assert [s["title"] for s in result["sections"]] == ["1 Intro"]
+        md = stems.markdown_path("biorxiv", "10.1101/x").read_text(encoding="utf-8")
+        assert md.startswith("# T\n\n## 1 Intro\n\nBody.")
+        assert papers.recorded_conversion_mode("biorxiv", "10.1101/x") == "jats"
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_names_the_jats_mode(self):
+        fetch, _ = _fetching({"error": "bioRxiv HTTP 503", "retryable": True})
+
+        result = await papers.convert_markup("biorxiv", "10.1101/x", fetch, mode="jats")
+
+        assert result == {"error": "bioRxiv HTTP 503", "retryable": True, "conversion_mode": "jats"}
+
+    @pytest.mark.asyncio
+    async def test_xml_that_does_not_parse_is_none_so_the_caller_falls_back(self):
+        fetch, _ = _fetching({"markup": "<article><body>"})
+
+        assert await papers.convert_markup("biorxiv", "10.1101/x", fetch, mode="jats") is None
+        assert not stems.markdown_path("biorxiv", "10.1101/x").exists()

@@ -43,7 +43,8 @@ def drop_derived(namespace: str, canonical: str) -> None:
 def recorded_conversion_mode(namespace: str, canonical: str) -> str | None:
     """Provenance of this paper's cached markdown, or ``None`` if unrecorded.
 
-    ``"full"`` / ``"fast"`` for converter output, ``"imported"`` for a file an
+    ``"full"`` / ``"fast"`` for converter output, ``"html"`` / ``"jats"`` for a
+    provider's own markup, ``"imported"`` for a file an
     operator handed to ``import_paper``, ``None`` for an entry predating the
     field or no entry at all — including an index deleted by hand: nothing
     recorded, nothing to protect. The named read for callers deciding whether
@@ -64,8 +65,9 @@ def rekey_sections(
     """Carry a section index entry onto a re-filed paper's new key, verbatim.
 
     The key changed, the bytes did not. Re-deriving would reset
-    ``conversion_mode`` to ``None``, losing the ``"imported"`` marker that keeps
-    an operator's own markdown out of ``tools/pipeline``'s download cascade.
+    ``conversion_mode`` to ``None``, losing the ``"imported"`` / ``"html"`` /
+    ``"jats"`` marker that keeps markdown a PDF did not produce out of
+    ``tools/pipeline``'s download cascade.
 
     Not a third assembler: it copies a *complete* entry, only onto an empty
     destination. Keyed by the source *stem*, which is what the caller found on
@@ -209,7 +211,8 @@ def store_markdown_and_index(
     The entry writer every other module goes through, so an entry can never be
     built with a key missing (``_reparse_sections_locked`` is the only other
     assembler). ``mode`` is provenance: ``"full"`` / ``"fast"`` for converter
-    output, ``"imported"`` for a file that never ran through one. Takes the
+    output, ``"html"`` / ``"jats"`` for a provider's own markup, ``"imported"``
+    for a file that never ran through one. Takes the
     markdown verbatim — post-processing is the caller's, since what is right for
     converter output is wrong for a file an operator wrote.
     """

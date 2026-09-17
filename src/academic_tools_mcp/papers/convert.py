@@ -27,11 +27,11 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from ..store.stems import markdown_path, safe_stem
 from ..util import config
-from . import latexml
+from . import jats, latexml
 from .index import (
     _reparse_sections_locked,
     drop_derived,
@@ -361,20 +361,31 @@ async def _cached_or_cleared(
     return None
 
 
-async def convert_html(
+# A provider's own markup, by the provenance it is stored under.
+MarkupMode = Literal["html", "jats"]
+_RENDERERS: dict[str, Callable[[str], str]] = {
+    "html": latexml.to_markdown,
+    "jats": jats.to_markdown,
+}
+
+
+async def convert_markup(
     namespace: str,
     canonical: str,
     fetch: Callable[[], Awaitable[dict[str, Any]]],
     *,
+    mode: MarkupMode,
     force_refresh: bool = False,
 ) -> dict[str, Any] | None:
-    """Markdown from a provider's LaTeXML rendering, cached as ``conversion_mode: "html"``.
+    """Markdown from a provider's own markup, cached as ``conversion_mode: mode``.
 
-    ``fetch`` returns the provider's ``{"html": text}`` or error dict, which keeps this
-    module free of provider imports. Returns the conversion response; the fetch's
-    error with ``conversion_mode: "html"`` when it failed transiently; or ``None``
-    when there is no usable rendering — a definitive miss, or a document that
-    renders to nothing — so the caller falls back to the PDF.
+    ``mode`` picks the renderer: ``"html"`` arXiv's LaTeXML (:mod:`.latexml`), ``"jats"``
+    bioRxiv's JATS XML (:mod:`.jats`). ``fetch`` returns the provider's
+    ``{"markup": text}`` or error dict, which keeps this module free of provider
+    imports. Returns the conversion response; the fetch's error with
+    ``conversion_mode: mode`` when it failed transiently; or ``None`` when there is no
+    usable rendering — a definitive miss, or a document that renders to nothing — so
+    the caller falls back to the PDF.
 
     ``force_refresh`` drops the cached markdown only after a successful render, so a
     failed fetch keeps it.
@@ -388,10 +399,10 @@ async def convert_html(
 
     result = await fetch()
     if "error" in result:
-        return None if result.get("not_found") is True else {**result, "conversion_mode": "html"}
+        return None if result.get("not_found") is True else {**result, "conversion_mode": mode}
 
     try:
-        markdown = await asyncio.to_thread(latexml.to_markdown, result["html"])
+        markdown = await asyncio.to_thread(_RENDERERS[mode], result["markup"])
     except RecursionError:
         # Nesting deeper than the renderer's stack: unusable, not a reason to fail.
         return None
@@ -406,7 +417,7 @@ async def convert_html(
         elif (payload := await _reparse_sections_locked(namespace, canonical, md_path)) is not None:
             return _cached_response(md_path, payload)
         return await asyncio.to_thread(
-            _finalize_markdown, namespace, canonical, md_path, markdown, "html"
+            _finalize_markdown, namespace, canonical, md_path, markdown, mode
         )
 
 

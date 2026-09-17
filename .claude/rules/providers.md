@@ -170,6 +170,10 @@ budget.
 `server`. It merges the journal fields outside the details cache entry, or a
 `/pubs` failure would stick for the record's 7 days.
 
+**`get_jats` fetches only https `jatsxml` URLs on `_JATS_HOSTS`** — the
+`download/openaccess` rule. Any other URL is "no full text", negative-cached. A
+200 without `_JATS_MARKER` is a challenge or error page, so transient.
+
 ## crossref.py
 
 **The tier is chosen from config, not assumed.** `_resolve_policy()` picks the
