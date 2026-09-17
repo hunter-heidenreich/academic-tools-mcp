@@ -406,10 +406,9 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
 def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     """Generate a BibTeX entry from a parsed bioRxiv/medRxiv paper dict.
 
-    ``@article`` on a ``published_doi``, with ``journal`` when bioRxiv's ``/pubs`` named
-    it and year and key from the journal's ``published_date`` when present. Otherwise
-    ``@misc``, ``publisher`` naming the server and a resolver URL only if the preprint
-    has a DOI.
+    ``@article`` on a ``published_doi``, with ``journal`` and the journal's year when
+    known. Otherwise ``@misc``, ``publisher`` naming the server and a resolver URL only
+    if the preprint has a DOI.
     """
     doi = doinorm.normalize(paper.get("doi") or "")
     published_doi = doinorm.normalize(paper.get("published_doi") or "")

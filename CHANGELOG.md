@@ -17,10 +17,9 @@ grouped by milestone rather than per commit.
 
 ### Added
 
-- **bioRxiv/medRxiv papers name their journal version.** `get_paper_metadata`
-  adds `published_journal` and `published_date` from bioRxiv's `/pubs` endpoint,
-  and `get_paper_bibtex`'s `@article` for a published preprint now carries
-  `journal` and takes its year from the journal's publication date. ([#136])
+- **bioRxiv/medRxiv papers name their journal version.** `get_paper_metadata` adds
+  `published_journal` and `published_date` from bioRxiv's `/pubs`, and
+  `get_paper_bibtex`'s `@article` gains `journal` and the journal's year. ([#136])
 
 - **`convert_paper` reads arXiv papers from arXiv's own HTML.** For an arXiv ID
   it first fetches the LaTeXML rendering and converts it in-process, in seconds

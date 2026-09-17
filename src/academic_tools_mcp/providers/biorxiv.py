@@ -271,10 +271,9 @@ def _parse_paper(raw: dict[str, Any], requested_doi: str = "") -> dict[str, Any]
 async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a paper by bioRxiv/medRxiv DOI, with its journal version's name and date.
 
-    The ``/details`` record, plus ``published_journal`` / ``published_date`` from
-    ``get_publication`` when it has a ``published_doi`` — ``None`` otherwise, or when
-    that lookup fails. Merged here rather than cached with the record, so a ``/pubs``
-    failure never outlives its own short TTL inside the long-lived details entry.
+    ``published_journal`` / ``published_date`` come from ``get_publication``: ``None``
+    when unpublished or that lookup fails. Merged outside the details cache, so a
+    ``/pubs`` failure is not kept for the record's TTL.
 
     ``force_refresh=True`` drops every cache half before fetching — how the agent picks
     up a ``published_doi`` that has just appeared.
@@ -294,11 +293,10 @@ async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
 
 async def get_publication(doi: str, server: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """The journal version bioRxiv links a preprint to, from ``/pubs``.
+    """The journal version bioRxiv links a preprint to: ``{published_doi, published_journal, published_date}``.
 
-    Returns ``{published_doi, published_journal, published_date}``. Per-server like
-    ``/details``, so ``server`` is the record's own. An empty collection is "no journal
-    version yet" and negative-cached on the short TTL, since a link can land any day.
+    ``server`` is the record's own, as ``/pubs`` is per-server. "No journal version yet"
+    is negative-cached on the short TTL.
     """
     bare = _normalize_doi(doi)
     canonical = bare.lower()
