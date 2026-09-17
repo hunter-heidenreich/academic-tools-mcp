@@ -1767,6 +1767,49 @@ class TestGetPapersBatch:
         assert out["2301.00002"]["not_found"] is True
 
     @pytest.mark.asyncio
+    async def test_a_500_carrying_the_error_entry_falls_back_to_singletons(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: arXiv 500s on some records (hep-th/9901001v1) every time.
+
+        Chunk-wide, that one id failed every other id in its chunk on every retry.
+        """
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        monkeypatch.setattr(arxiv._throttle, "retry_attempts", 1)
+        seen = _stub_scripted_client(
+            monkeypatch,
+            (500, _feed(_ERROR_ENTRY)),
+            (500, _feed(_ERROR_ENTRY)),
+            (200, _feed(_search_entry("2301.00001v1"), total="1")),
+        )
+
+        out = await arxiv.get_papers_batch(["hep-th/9901001v1", "2301.00001"])
+
+        assert [s.get("id_list") for s in seen] == [
+            "hep-th/9901001v1,2301.00001",
+            "hep-th/9901001v1",
+            "2301.00001",
+        ]
+        assert arxiv.id_from_entry(out["2301.00001"]) == "2301.00001v1"
+        # Still arXiv's failure, not a claim of absence.
+        assert out["hep-th/9901001v1"]["retryable"] is True
+        assert cache.get_negative(arxiv.NAMESPACE, "papers", "hep-th/9901001v1") is None
+
+    @pytest.mark.asyncio
+    async def test_a_single_id_500_is_not_refetched(self, tmp_path, monkeypatch):
+        """A singleton fallback of one id would repeat the identical request."""
+        _reset_throttle(monkeypatch, tmp_path)
+        monkeypatch.setattr(arxiv._throttle, "retry_attempts", 1)
+        seen = _stub_scripted_client(monkeypatch, (500, _feed(_ERROR_ENTRY)))
+
+        out = await arxiv.get_papers_batch(["hep-th/9901001v1"])
+
+        assert len(seen) == 1
+        assert out["hep-th/9901001v1"]["retryable"] is True
+
+    @pytest.mark.asyncio
     async def test_a_transient_failure_contaminates_the_chunk_uncached(self, tmp_path, monkeypatch):
         from academic_tools_mcp.store import cache
 

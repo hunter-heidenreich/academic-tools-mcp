@@ -225,8 +225,11 @@ def _rejection_root(response: httpx.Response) -> ET.Element | None:
     ``None`` sends the caller to ``raise_for_status``: a 400 with any other body
     stays an unclassified ``error_dict``, not a rejection or a parse error.
     """
-    if response.status_code != 400:
-        return None
+    return _error_entry_root(response) if response.status_code == 400 else None
+
+
+def _error_entry_root(response: httpx.Response) -> ET.Element | None:
+    """The parsed feed when ``response``'s body carries arXiv's ``api/errors`` entry, else ``None``."""
     try:
         root = _safe_fromstring(response.text)
     except _PARSE_ERRORS:
@@ -447,6 +450,14 @@ async def _fetch_batch_chunk(
     return await _single_flight.do(sf_key, _runner)
 
 
+async def _fetch_singletons(chunk: list[str], *, force_refresh: bool) -> dict[str, dict[str, Any]]:
+    """Each id of a chunk arXiv failed as a whole, fetched alone so one bad id fails alone.
+
+    Sequential: a fan-out past the throttle's burst cap is refused.
+    """
+    return {c: await get_paper(c, force_refresh=force_refresh) for c in chunk}
+
+
 async def _fetch_batch_chunk_uncoalesced(
     chunk: list[str], *, force_refresh: bool
 ) -> dict[str, dict[str, Any]]:
@@ -459,6 +470,14 @@ async def _fetch_batch_chunk_uncoalesced(
         )
         root = _rejection_root(response)
         if root is None:
+            # arXiv 500s on some records every time, with its error entry. A plain 5xx
+            # (a penalty box) stays chunk-wide rather than multiplying requests.
+            if (
+                len(chunk) > 1
+                and response.status_code >= 500
+                and _error_entry_root(response) is not None
+            ):
+                return await _fetch_singletons(chunk, force_refresh=force_refresh)
             response.raise_for_status()
             root = _safe_fromstring(response.text)
     # One fresh dict per key: ``dict.fromkeys`` would alias one error across the chunk.
@@ -470,9 +489,8 @@ async def _fetch_batch_chunk_uncoalesced(
     entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
     # One id arXiv won't accept rejects the whole request; singletons isolate it.
-    # Sequential: a fan-out past the throttle's burst cap is refused.
     if entries and _is_error_entry(entries[0]):
-        return {c: await get_paper(c, force_refresh=force_refresh) for c in chunk}
+        return await _fetch_singletons(chunk, force_refresh=force_refresh)
 
     chunk_set = set(chunk)
     out: dict[str, dict[str, Any]] = {}

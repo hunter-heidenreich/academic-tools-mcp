@@ -113,7 +113,10 @@ A valid-shape id that does not exist is a 200 with an empty feed.
 negative-caches an omission only when the feed accounted for itself — every entry
 attributable and `totalResults` equal to the entries returned, the openalex rule.
 Two more upstream facts shape it: **one id arXiv rejects fails the whole request**
-(the chunk falls back to singleton `get_paper`, which isolates it), and **a bare
+(the chunk falls back to singleton `get_paper`, which isolates it); **some records
+500 every time, with the `api/errors` entry** (`hep-th/9901001v1`), so a multi-id
+chunk answered that way falls back the same way, while a plain 5xx with no entry
+stays chunk-wide — a penalty box is not worth multiplying requests into; and **a bare
 id and an older revision in one request both come back**, so the bare key takes
 the newest version returned rather than whichever entry matched first. The
 default page is 10, so `max_results` rides every request.
