@@ -1717,7 +1717,7 @@ class TestGetPaperVersions:
 
         assert "Not an arXiv ID" in result["error"]
         assert "search_arxiv" in result["suggestion"]
-        # Flagged: an unflagged dict reads as "unknown", not "this can never work".
+        # Unflagged would read as "unknown", not "can never work".
         assert result["not_found"] is True
         assert "retryable" not in result
 

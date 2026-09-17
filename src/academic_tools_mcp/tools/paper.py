@@ -516,10 +516,9 @@ async def get_paper_versions(
     A separate arXiv interface from get_paper_metadata, so this costs its own
     request; cached for a day, since a new revision is what it reports.
 
-    Errors: ``{error, suggestion}``, plus ``not_found: true`` for an id arXiv does
-    not have or ``retryable: true`` for a transport or parse failure; any other error
-    arXiv reports is ``retryable: false``. A DOI or other non-arXiv identifier is
-    refused without a request, as ``not_found: true``.
+    Errors: ``{error, suggestion}`` plus ``not_found: true`` (an id arXiv lacks, or a
+    non-arXiv identifier, refused without a request), ``retryable: true`` (transport
+    or parse failure) or ``retryable: false`` (any other arXiv error).
     """
     if not arxiv.is_arxiv_id(arxiv_id):
         return {
