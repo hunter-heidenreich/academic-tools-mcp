@@ -67,10 +67,8 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
-- **A medRxiv DOI costs one metadata request, not two.** bioRxiv and medRxiv
-  share the `10.1101/` prefix, and every medRxiv DOI asked bioRxiv first. The
-  likelier server is now asked first — medRxiv for an 8-digit id — and a miss is
-  still definitive only once both have answered. ([#139])
+- **A medRxiv DOI costs one metadata request, not two.** The likelier of bioRxiv
+  and medRxiv is asked first; a miss still needs both. ([#139])
 
 - **`get_papers_metadata` fetches arXiv IDs in one request.** Uncached arXiv IDs
   go out in batched `id_list` calls, as OpenAlex DOIs already did. Each ID was its

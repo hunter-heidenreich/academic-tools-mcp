@@ -375,9 +375,8 @@ async def get_publication(doi: str, server: str, *, force_refresh: bool = False)
     )
 
 
-# medRxiv suffixes end in an 8-digit id, bioRxiv's (dated or legacy) in a 6-digit one:
-# without exception across 900 ``/pubs`` DOIs sampled from 2019-2025. A heuristic for
-# which server to ask *first* only — a miss is still definitive only once both answer.
+# medRxiv ids are 8 digits, bioRxiv's 6 (900 sampled DOIs, 2019-2025). Orders the
+# requests only; a miss still needs both servers.
 _MEDRXIV_ID_RE = re.compile(r"(?:^|\.)\d{8}$")
 
 
@@ -390,9 +389,8 @@ def _servers_for(bare: str) -> tuple[str, str]:
 async def _get_details(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """The ``/details`` record for a bioRxiv/medRxiv DOI, using cache when available.
 
-    Asks the likelier server first (``_servers_for``), falling back to the other unless
-    the first answered with a non-empty well-formed collection. Concurrent callers for
-    one DOI share a fetch.
+    Asks the likelier server first, then the other unless the first returned a
+    non-empty well-formed collection. Concurrent callers share a fetch.
     """
     bare = _normalize_doi(doi)
     canonical = bare.lower()
