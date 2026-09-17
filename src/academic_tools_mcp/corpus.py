@@ -114,7 +114,7 @@ def _extract_snippet(
 # --- Filename → identifier inversion per namespace ---
 
 # A DOI suffix may contain "_", so only a slash a known prefix introduces is decidable.
-# ``acl_anthology`` is absent: its stems are Anthology IDs, which carry no slash.
+# ``acl_anthology`` stems are Anthology IDs, which have no slash.
 _NAMESPACE_DOI_PREFIXES = {
     biorxiv.NAMESPACE: biorxiv.DOI_PREFIX,
 }

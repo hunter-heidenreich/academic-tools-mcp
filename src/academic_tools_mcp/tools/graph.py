@@ -62,8 +62,7 @@ async def _resolve_doi(doi: str, *, force_refresh: bool) -> tuple[str, dict[str,
     The one entry every graph tool takes, so the PMID trade and the DOI-only
     rejection keep one order across all four. Resolving first is what makes the
     ``pmid`` these tools hand out on every OpenCitations row one they also take.
-    An Anthology ID trades for the DOI on its Anthology record; the hosted-DOI
-    trade the paper tools make is deliberately absent, since these stay DOI-keyed.
+    An Anthology ID trades for the DOI on its record.
     """
     doi, pmid_error = await resolve_pmid_identifier(doi, force_refresh=force_refresh)
     if pmid_error is not None:
@@ -80,11 +79,7 @@ async def _resolve_doi(doi: str, *, force_refresh: bool) -> tuple[str, dict[str,
 async def _anthology_doi(
     identifier: str, *, force_refresh: bool
 ) -> tuple[str, dict[str, Any] | None]:
-    """An Anthology ID's DOI, from its Anthology record, or the error that ends the call.
-
-    The provider's error is forwarded whole, so a transient failure keeps its
-    ``retryable`` rather than reading as "no DOI".
-    """
+    """An Anthology ID's DOI, or the error that ends the call (forwarded whole)."""
     record = await acl.get_paper(identifier, force_refresh=force_refresh)
     if "error" in record:
         return identifier, enrich_error(

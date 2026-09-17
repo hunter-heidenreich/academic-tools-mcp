@@ -244,12 +244,9 @@ def _block_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _stub_doi_index(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Answer "not hosted" for every DOI, unless the test is marked ``real_doi_index``.
+    """Answer "not hosted" for every DOI unless the test is marked ``real_doi_index``.
 
-    Every paper and pipeline tool asks the ACL Anthology's hosted-DOI index about
-    any DOI no route claims, and the index's first use downloads the whole dump —
-    which ``_block_real_network`` refuses with a ``RuntimeError`` no provider
-    catches. A test about a hosted DOI stubs the lookup itself, or opts out.
+    Otherwise any generic-DOI test would try to download the Anthology's dump.
     """
     if request.node.get_closest_marker("real_doi_index") is not None:
         return

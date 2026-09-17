@@ -1,15 +1,4 @@
-"""Property-based tests for the ACL Anthology identifier layer.
-
-Three invariants are stronger than any example can state, and each one has a
-concrete failure the module has to be safe from:
-
-* one paper, one cache key — every spelling of an Anthology ID (bare, either
-  case, URL, either ID-bearing DOI) is one cached paper;
-* the PDF, the markdown and the section index all key on that same string, so
-  `corpus` can invert an ACL filename back to the identifier the router accepts;
-* `parse_id` and `_build_id` are inverses, since a collection fetch names every
-  paper it caches through the second.
-"""
+"""Property-based tests for the ACL Anthology identifier layer."""
 
 from urllib.parse import urlsplit
 
@@ -65,7 +54,7 @@ def test_every_spelling_yields_one_key(aid: str) -> None:
 
 @given(st.text(max_size=60))
 def test_normalize_is_idempotent_and_claims_agree(identifier: str) -> None:
-    """A key is its own canonical form, and the router claims a key iff it claimed the input."""
+    """Normalizing is idempotent and keeps a claim."""
     once = acl.normalize_anthology_id(identifier)
     assert acl.normalize_anthology_id(once) == once
     if acl.is_anthology_id(identifier):
@@ -88,11 +77,7 @@ def test_pdf_url_is_one_path_segment(aid: str) -> None:
 
 @given(anthology_ids)
 def test_a_stored_stem_inverts_to_the_key_the_router_files_under(aid: str) -> None:
-    """PDF, markdown and section index share one stem, and it round-trips.
-
-    `search_cached_papers` reports that inverted stem as a `canonical_id`; a
-    chained `get_paper_section` must land back in this namespace on this key.
-    """
+    """PDF, markdown and section index share one stem, and it round-trips."""
     target = manual.resolve_target(f"https://doi.org/{acl.ACL_DOI_PREFIX}{aid}")
     stem = stems.safe_stem(target["canonical"])
 

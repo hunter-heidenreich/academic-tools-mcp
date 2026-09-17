@@ -369,10 +369,8 @@ async def get_paper_metadata(
         ``published_lookup_retryable=True`` if that lookup failed transiently
         (5xx/429/timeout); both absent when no chain was attempted.
       - acl_anthology: anthology_id, title, doi, year, month, booktitle, venues,
-        publisher, address, pages, bibkey, url, pdf_url — the Anthology's own
-        record, with no citation count (use get_paper_citations_count). doi is
-        null for the many papers that have none; bibkey is the Anthology's key,
-        not the one get_paper_bibtex generates.
+        publisher, address, pages, bibkey, url, pdf_url. No citation count; doi is
+        often null.
       - openalex: title, doi, pmid, publication_year, publication_date, type,
         language, venue, cited_by_count, is_oa, oa_status, oa_url, pdf_url.
         ``pmid`` is bare digits (null when OpenAlex has none) and is itself an
@@ -385,9 +383,8 @@ async def get_paper_metadata(
         ``cited_by_count`` is Crossref's own tally, which differs from OpenAlex's.
 
     A PMID dispatches as its DOI, so ``_source`` is ``openalex`` and
-    ``_canonical_id`` the DOI whichever of the two you passed. An Anthology ID,
-    its URL, or any DOI the Anthology hosts (10.18653/v1/…, 10.1162/tacl…)
-    dispatches as the Anthology ID.
+    ``_canonical_id`` the DOI whichever of the two you passed. An Anthology URL or
+    hosted DOI dispatches as the Anthology ID.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
@@ -468,7 +465,7 @@ async def get_papers_metadata(
     async def _singleton_one(slot: int, routed: str, ident: str) -> None:
         source, canonical, obj = await _fetch_source(routed, force_refresh=force_refresh)
         if source is None:
-            # Unreachable: the loop routes only singleton sources here. Guards the hint
+            # Unreachable: the loop routes only arXiv/bioRxiv/ACL here. Guards the hint
             # lookup against a None key regardless.
             results[slot] = {"_input": ident, **obj}
             return
@@ -588,10 +585,8 @@ async def get_paper_authors(
     whole list, not the page.
       - arxiv: authors = [{name, affiliations}]; page_institutions [] and
         page_institution_count 0 — arXiv has no per-author roll-up.
-      - acl_anthology: authors = [{name, first, last, orcid, affiliation}]
-        (orcid and affiliation null where the Anthology has none);
-        page_institutions [] and page_institution_count 0 — affiliations are
-        per-author strings, not institution records.
+      - acl_anthology: authors = [{name, first, last, orcid, affiliation}], orcid
+        and affiliation nullable; page_institutions [] and page_institution_count 0.
       - biorxiv: authors = [{name}], plus author_corresponding /
         author_corresponding_institution on every page; page_institutions [] and
         page_institution_count 0 — bioRxiv exposes only the corresponding author's
@@ -671,11 +666,9 @@ async def get_paper_abstract(
 
     Returns ``{_source, _canonical_id, title, abstract}``; ``abstract`` is null
     when the source has none. OpenAlex abstracts are reconstructed from an
-    inverted index — not byte-identical to the publisher's. An acl_anthology
-    abstract has its inline markup (italics, TeX math) flattened to text. A
-    crossref abstract (``fallback_crossref`` after an OpenAlex 404) is JATS
-    rendered to plain text, section titles included; many Crossref records carry
-    none at all.
+    inverted index — not byte-identical to the publisher's. A crossref abstract
+    (``fallback_crossref`` after an OpenAlex 404) is JATS rendered to plain text,
+    section titles included; many Crossref records carry none at all.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
@@ -728,9 +721,8 @@ async def get_paper_bibtex(
         primary_category.
       - biorxiv: @article when published_doi is present, else @misc with
         the preprint DOI and server.
-      - acl_anthology: @article for a journal volume (TACL, Computational
-        Linguistics), else @inproceedings with editor, booktitle and address.
-        A paper without a DOI carries its Anthology url.
+      - acl_anthology: @article for a journal (TACL, CL), else @inproceedings
+        with editor, booktitle and address.
       - openalex: inferred from the work type (@article, @inproceedings,
         @misc for preprints, @phdthesis, etc.).
       - crossref (``fallback_crossref`` after an OpenAlex 404): inferred from

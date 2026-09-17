@@ -1355,12 +1355,7 @@ class TestRefilePmidStems:
 
 
 class TestMigrateAclStems:
-    """Cached files move onto the Anthology-ID stem the router now gives them.
-
-    The DOI-keyed ``acl_anthology`` stems predate the Anthology ID as the key;
-    the ``manual`` ones are imports labelled with a spelling the ACL route now
-    claims. Either way a reader looks only at the ID stem.
-    """
+    """DOI-keyed and ACL-shaped ``manual`` stems move onto the Anthology ID."""
 
     @staticmethod
     def _seed(namespace, stem, text="acl"):
@@ -1437,10 +1432,7 @@ class TestMigrateAclStems:
 
 
 class TestRefileHostedDoiStems:
-    """An import filed under a hosted DOI moves onto its Anthology ID's stem.
-
-    Lazy, as PMIDs are: only the network DOI index knows the ID.
-    """
+    """An import filed under a hosted DOI moves onto its Anthology ID's stem."""
 
     def test_moves_both_artifacts(self, tmp_path):
         doi = "10.1162/tacl.a.63"

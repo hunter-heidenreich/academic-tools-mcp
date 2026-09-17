@@ -56,7 +56,8 @@ These hold across several tools, so changing one tool alone breaks the set.
   on it for provider-specific fields, so the five shared tags (`arxiv` /
   `biorxiv` / `acl_anthology` / `openalex` / `crossref`) must mean the same thing
   in all four paper tools — `fallback_crossref` is a parameter of each, and a
-  paper reachable through one must be reachable through all of them. `openalex_via_biorxiv` is
+  paper reachable through one must be reachable through all of them.
+  `openalex_via_biorxiv` is
   still `get_paper_metadata`-only, `follow_published` being that one tool's.
   **The fallback's whole precondition lives once**, in `paper._crossref_fallback`
   — the opt-in flag, the definitive 404 *and* `source == "openalex"`. A tool that
@@ -189,8 +190,7 @@ instead.
   DOI to **OpenAlex**, so a `search_crossref_by_title` hit is free only for the
   reference tools and the `fallback_crossref` path, never for
   `get_paper_metadata`. `openalex.search_works` is the one that lands where the
-  dispatcher looks (bar a DOI the Anthology hosts, which it sends to
-  `acl_anthology`), so **it must never send `select=`** — a projected work is a
+  dispatcher looks (bar Anthology-hosted DOIs), so **it must never send `select=`** — a projected work is a
   partial object, and warming that key with one poisons every reader of it. This
   file is the authority; a docstring, `README.md` or `app.py`'s `instructions=`
   string that says otherwise is the one to fix.

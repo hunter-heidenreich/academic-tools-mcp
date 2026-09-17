@@ -17,8 +17,7 @@ the two upstream facts about FTS5 that no comment beside a line can carry.
   both `_ARXIV_OLDSTYLE_STEM_RE` and `arxiv.is_arxiv_id` are built from
   `providers.arxiv`'s exported `OLD_ARCHIVE_PATTERN` / `OLD_NUMBER_PATTERN`, and
   why `_NAMESPACE_DOI_PREFIXES` holds `biorxiv.DOI_PREFIX` rather than respelling
-  it. Spell either out again and they drift. `acl_anthology` needs no entry: its
-  key is the Anthology ID, which carries no slash.
+  it. Spell either out again and they drift.
 - **The `manual` namespace is mostly publisher DOIs, not the freeform labels the
   name suggests** — `manual.resolve_target` sends every DOI no provider claims
   there. A suffix carrying further slashes still round-trips imperfectly.

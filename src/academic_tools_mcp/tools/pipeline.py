@@ -79,8 +79,7 @@ async def _download_pdf_by_provider(
             "error": (
                 f"Cannot auto-download PDF for identifier: {identifier!r}. "
                 "Direct download is only supported for arXiv IDs, "
-                "bioRxiv/medRxiv DOIs (10.1101/...), and ACL Anthology papers "
-                "(an Anthology ID, its URL, or a DOI the Anthology hosts)."
+                "bioRxiv/medRxiv DOIs (10.1101/...), and ACL Anthology papers."
             ),
             "suggestion": (
                 "For a generic publisher DOI, retry with allow_oa_url=True to "
@@ -116,9 +115,9 @@ async def download_pdf(
     """Download and cache a paper's PDF, auto-detecting the source.
 
     Step 1 of the PDF pipeline. Direct download covers arXiv IDs, bioRxiv/medRxiv
-    DOIs (10.1101/...) and ACL Anthology papers (an Anthology ID such as P16-1160,
-    its URL, or a DOI the Anthology hosts); anything else is refused
-    unless ``allow_oa_url``, since this tool never fetches a caller-supplied URL.
+    DOIs (10.1101/...) and ACL Anthology papers (ID, URL or hosted DOI); anything
+    else is refused unless ``allow_oa_url``, since this tool never fetches a
+    caller-supplied URL.
     import_paper is the fallback that always works.
 
     Returns ``{size_bytes, cached}``, plus ``{anthology_id, pdf_url}`` for ACL

@@ -1,4 +1,4 @@
-"""ACL Anthology client: Anthology-ID identity, collection-XML metadata, PDFs, hosted DOIs."""
+"""ACL Anthology client: Anthology IDs, collection-XML metadata, PDFs, hosted DOIs."""
 
 import asyncio
 import gzip
@@ -32,47 +32,39 @@ _PARSE_ERRORS = (ET.ParseError, DefusedXmlException)
 
 
 def _parse_error_dict() -> dict[str, Any]:
-    """Fresh transient error for an Anthology body that isn't the XML we expect."""
+    """Fresh transient error for an unparseable Anthology body."""
     return http.parse_error_dict(LABEL, detail="could not be parsed as Anthology XML")
 
 
-# The two registrants whose DOI suffix *is* the Anthology ID. Exported for the reason
-# ``doinorm`` exports ``REGISTRANT_PATTERN``: build from them, never respell them.
+# DOI prefixes whose suffix is the Anthology ID.
 ACL_DOI_PREFIX = "10.18653/v1/"
 ACL_LEGACY_DOI_PREFIX = "10.3115/v1/"
 _ID_DOI_PREFIXES = (ACL_DOI_PREFIX, ACL_LEGACY_DOI_PREFIX)
 
-# The authoritative metadata: one XML file per collection (a venue-year), on the
-# data repo's default branch. The site is built from these same files.
+# One authoritative XML file per collection (a venue-year).
 _COLLECTION_URL = "https://raw.githubusercontent.com/acl-org/acl-anthology/master/data/xml/{}.xml"
 
-# Every paper's BibTeX, rebuilt with the site. Only its url/doi pairs are read.
+# Every paper's BibTeX; only the url/doi pairs are read.
 _DOI_INDEX_URL = "https://aclanthology.org/anthology.bib.gz"
 
-# Generous: a PDF, a multi-MB collection file and the dump share the one client.
+# Generous: PDFs, collection files and the dump share one client.
 _TIMEOUT_SECONDS = 60.0
 
-# Two static hosts (the Anthology CDN and raw.githubusercontent.com), neither with a
-# documented limit, hence no gap. Past _MAX_PENDING a caller gets backpressure, not a queue.
+# Two static hosts, neither with a documented limit, hence no gap.
 _MAX_CONCURRENT = 4
 _MIN_REQUEST_GAP = 0.0
 _MAX_PENDING = 5
 
-# Long, unlike the preprint servers': a camera-ready file is static, so a 404 means
-# a wrong ID or a paper not posted yet — neither resolves in minutes.
+# Long: a camera-ready file is static, so a 404 won't resolve in minutes.
 _NEG_ENTITY = "downloads"
 _NEG_TTL_SECONDS = 24 * 60 * 60
 
-# A collection file changes only through corrections.
 _POSITIVE_TTL_SECONDS = 7 * 86400.0
 
-# Short: ingest adds a volume's papers to an existing collection file in a batch.
+# Short: ingest can add a volume to an existing collection file.
 _MISSING_PAPER_TTL_SECONDS = 3600.0
 
-# The dump is rebuilt daily; a week of lag costs only a just-minted opaque DOI.
 _DOI_INDEX_MAX_AGE_SECONDS = 7 * 86400.0
-
-# How long a failed index refresh keeps the next caller from paying for another.
 _DOI_INDEX_RETRY_SECONDS = 3600.0
 
 _INDEX_ENTITY = "doi_index"
@@ -107,14 +99,12 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 # Anthology ID identity
 # ---------------------------------------------------------------------------
 
-# Full-matched. Every paper ID the Anthology publishes takes one of the two; the old
-# format's letters are exactly those in use, so a label like ``b12-3456`` stays a label.
-# Four digits after the hyphen keep volume IDs (``P16-1``) out.
+# Full-matched against every published ID: only letters in use, and four digits so
+# volume IDs (``P16-1``) stay out.
 _OLD_FORMAT_ID_RE = re.compile(r"[AC-FH-UWXY]\d{2}-\d{4}", re.IGNORECASE)
 _NEW_FORMAT_ID_RE = re.compile(r"\d{4}\.[a-z0-9]+-[a-z0-9]+\.\d+", re.IGNORECASE)
 
-# The site and its predecessor, with a rendering suffix; aclweb.org also nested old
-# IDs under letter and collection directories (``anthology/P/P16/P16-1160.pdf``).
+# The site and aclweb.org, which also nested IDs (``anthology/P/P16/P16-1160.pdf``).
 _ANTHOLOGY_URL_RE = re.compile(
     r"(?:https?://)?(?:www\.)?(?:aclanthology\.org|aclweb\.org/anthology)/"
     r"(?:[A-Za-z]/[A-Za-z]\d{2}/)?([^/?#\s]+?)(?:\.pdf|\.bib|\.xml)?/?(?:[?#].*)?$",
@@ -123,11 +113,7 @@ _ANTHOLOGY_URL_RE = re.compile(
 
 
 def _strip_acl_prefix(bare: str) -> str | None:
-    """Return the Anthology-ID suffix if ``bare`` carries an ID-bearing prefix, else ``None``.
-
-    Case-insensitive (DOIs are). A *blank* suffix names no paper, so it must fall
-    through to the generic-DOI route rather than become an empty Anthology ID.
-    """
+    """The suffix after an ID-bearing DOI prefix, or ``None``; a blank suffix is ``None``."""
     for prefix in _ID_DOI_PREFIXES:
         if bare[: len(prefix)].lower() == prefix:
             suffix = bare[len(prefix) :]
@@ -141,14 +127,9 @@ def is_acl_doi(doi: str) -> bool:
 
 
 def normalize_anthology_id(identifier: str) -> str:
-    """The bare Anthology ID an identifier spells, in the Anthology's own case.
+    """The Anthology ID an ID, URL or ID-bearing DOI spells; anything else ``doinorm``-normalized.
 
-    Accepts a bare ID, an aclanthology.org or aclweb.org URL (page, ``.pdf``,
-    ``.bib``, ``.xml``) and a ``10.18653/v1/`` or ``10.3115/v1/`` DOI in any
-    :mod:`doinorm` spelling. Old-format IDs uppercase (the CDN is case-sensitive:
-    ``p16-1160.pdf`` 404s, and Crossref hands them back lowercased); new-format IDs
-    lowercase, which is how upstream mints every one. Anything else comes back
-    ``doinorm``-normalized. Idempotent.
+    Old-format IDs uppercase (the CDN is case-sensitive), new-format lowercase. Idempotent.
     """
     bare = doinorm.normalize(identifier)
     if m := _ANTHOLOGY_URL_RE.match(bare):
@@ -170,12 +151,12 @@ def is_anthology_id(identifier: str) -> bool:
 
 
 def canonical_key(identifier: str) -> str:
-    """Return the canonical cache key — the Anthology ID — for any spelling of a paper."""
+    """The cache key: the Anthology ID."""
     return normalize_anthology_id(identifier)
 
 
 def _two_digit_volume(collection_id: str, volume_or_rest: str) -> bool:
-    """Whether a pre-2020 collection spends two digits on the volume, per upstream's rule."""
+    """Upstream's rule for which pre-2020 collections take a two-digit volume."""
     return (
         collection_id.startswith("W")
         or collection_id == "C69"
@@ -184,13 +165,9 @@ def _two_digit_volume(collection_id: str, volume_or_rest: str) -> bool:
 
 
 def parse_id(anthology_id: str) -> tuple[str, str, str]:
-    """Split a canonical Anthology ID into ``(collection, volume, paper)``.
+    """``(collection, volume, paper)``, porting ``acl_anthology.utils.ids.parse_id``.
 
-    Ports ``acl_anthology.utils.ids.parse_id``: ``2023.acl-long.1`` →
-    ``("2023.acl", "long", "1")``, ``P16-1160`` → ``("P16", "1", "160")``, and
-    ``W04-1013`` → ``("W04", "10", "13")`` — ``W*``, ``C69`` and ``D19`` volumes
-    from 5 up take two digits. Leading zeros drop; an emptied paper is ``"0"``.
-    Takes only IDs :func:`is_anthology_id` accepts.
+    ``P16-1160`` → ``("P16", "1", "160")``; ``W04-1013`` → ``("W04", "10", "13")``.
     """
     collection_id, _, rest = anthology_id.partition("-")
     if collection_id[:1].isdigit():
@@ -202,7 +179,7 @@ def parse_id(anthology_id: str) -> tuple[str, str, str]:
 
 
 def _build_id(collection_id: str, volume_id: str, paper_id: str) -> str:
-    """Inverse of :func:`parse_id`, for naming every paper a collection file holds."""
+    """Inverse of :func:`parse_id`."""
     if collection_id[:1].isdigit():
         return f"{collection_id}-{volume_id}.{paper_id}"
     if _two_digit_volume(collection_id, volume_id):
@@ -211,11 +188,7 @@ def _build_id(collection_id: str, volume_id: str, paper_id: str) -> str:
 
 
 def pdf_url(anthology_id: str) -> str:
-    """Build the direct PDF URL for an Anthology paper.
-
-    ``safe=""``: an Anthology ID has no path structure, so a stray ``/`` is an
-    escape, not a separator.
-    """
+    """Build the direct PDF URL for an Anthology paper. ``safe=""``: an ID has no path."""
     return f"https://aclanthology.org/{quote(anthology_id, safe='')}.pdf"
 
 
@@ -229,11 +202,7 @@ def _landing_url(anthology_id: str) -> str:
 
 
 def _text_of(el: ET.Element | None) -> str:
-    """An element's text, inline markup flattened and whitespace collapsed; ``""`` if absent.
-
-    Markup is ``<fixed-case>``, ``<i>``, ``<tex-math>`` and the like; ``itertext``
-    keeps the words and drops the tags.
-    """
+    """An element's text with inline markup flattened and whitespace collapsed."""
     if el is None:
         return ""
     return " ".join("".join(el.itertext()).split())
@@ -252,7 +221,7 @@ def _parse_person(el: ET.Element) -> dict[str, Any]:
 
 
 def _parse_volume_meta(volume: ET.Element) -> dict[str, Any]:
-    """The volume-level fields every paper in it inherits."""
+    """Fields every paper in the volume inherits."""
     meta = volume.find("meta")
     if meta is None:
         meta = ET.Element("meta")
@@ -271,7 +240,7 @@ def _parse_volume_meta(volume: ET.Element) -> dict[str, Any]:
 
 
 def _parse_paper(paper: ET.Element, meta: dict[str, Any], anthology_id: str) -> dict[str, Any]:
-    """One normalized record: the paper's own fields over its volume's."""
+
     return {
         "anthology_id": anthology_id,
         "title": _text_of(paper.find("title")),
@@ -287,11 +256,9 @@ def _parse_paper(paper: ET.Element, meta: dict[str, Any], anthology_id: str) -> 
 
 
 def _collection_of(root: Any, collection_id: str) -> list[ET.Element] | None:
-    """The ``<volume>`` elements of a well-formed collection file, ``None`` for a wrong shape.
+    """The collection's ``<volume>`` elements; ``None`` for a wrong shape, never ``[]``.
 
-    A 200 that parses but is not *this* collection — another root, another id, no
-    volumes — is an anomaly, not an empty collection: an empty one would
-    negative-cache every paper in it.
+    Reading an anomaly as empty would negative-cache every paper in it.
     """
     if not isinstance(root, ET.Element) or root.tag != "collection":
         return None
@@ -302,11 +269,7 @@ def _collection_of(root: Any, collection_id: str) -> list[ET.Element] | None:
 
 
 def _parse_collection(body: bytes, collection_id: str) -> dict[str, dict[str, Any]] | None:
-    """Every paper record in a collection file, keyed by Anthology ID; ``None`` for a wrong shape.
-
-    Front matter is paper ``0``. A volume or paper without an ``id`` is skipped,
-    not guessed at.
-    """
+    """Every paper record keyed by Anthology ID (front matter is paper ``0``), or ``None``."""
     volumes = _collection_of(_safe_fromstring(body), collection_id)
     if volumes is None:
         return None
@@ -337,11 +300,9 @@ def _parse_collection(body: bytes, collection_id: str) -> dict[str, dict[str, An
 async def _fetch_collection(
     collection_id: str, *, force_refresh: bool
 ) -> dict[str, dict[str, Any]] | dict[str, Any]:
-    """Fetch, parse and cache one collection file: ``{"records": {...}}`` or an error.
+    """Fetch a collection and cache each paper separately: ``{"records": ...}`` or an error.
 
-    Writes **one cache entry per paper**, so a reader never deep-copies a whole
-    collection. Single-flighted per collection, under a key distinct from
-    :func:`get_paper`'s, which awaits this. A 404 is negative-cached per collection.
+    Per paper, so a read never deep-copies a whole collection.
     """
     url = _COLLECTION_URL.format(quote(collection_id, safe=""))
 
@@ -377,7 +338,7 @@ async def _fetch_collection(
 
 
 def _parse_and_store(body: bytes, collection_id: str) -> dict[str, dict[str, Any]] | None:
-    """Parse a collection and write each paper's entry. Off the event loop: both are heavy."""
+    """Parse and write each paper's entry; run off the event loop."""
     records = _parse_collection(body, collection_id)
     for anthology_id, record in (records or {}).items():
         cache.put(NAMESPACE, "papers", anthology_id, record)
@@ -387,16 +348,11 @@ def _parse_and_store(body: bytes, collection_id: str) -> dict[str, dict[str, Any
 async def get_paper(identifier: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a paper's record by any spelling of its Anthology ID, using cache when available.
 
-    The record is the Anthology's own: title, abstract, authors and editors
-    (``{name, first, last, orcid, affiliation}``), booktitle, volume_type,
-    journal_volume, journal_issue, venues, publisher, address, month, year, pages,
-    doi, bibkey, url, pdf_url. ``force_refresh=True`` re-fetches the paper's whole
-    collection, refreshing every sibling's entry with it.
+    ``force_refresh=True`` re-fetches the whole collection.
     """
     anthology_id = canonical_key(identifier)
 
     async def _fetch() -> dict[str, Any]:
-        # Uncached: no request was spent, and the key is not an Anthology ID.
         if not is_anthology_id(anthology_id):
             return http.not_found(f"Not an ACL Anthology ID: {identifier}")
 
@@ -433,17 +389,12 @@ async def get_paper(identifier: str, *, force_refresh: bool = False) -> dict[str
 _BIB_URL_RE = re.compile(r'^\s*url = "https://aclanthology\.org/([^/"]+)/"', re.MULTILINE)
 _BIB_DOI_RE = re.compile(r'^\s*doi = "([^"]+)"', re.MULTILINE)
 
-# gzip raises OSError (BadGzipFile), EOFError (truncated) or zlib.error; a bad byte
-# in the text is a UnicodeDecodeError, a ValueError.
+# gzip: OSError, EOFError, zlib.error; bad UTF-8: ValueError.
 _DUMP_ERRORS = (OSError, EOFError, zlib.error, ValueError)
 
 
 def _parse_doi_index(body: bytes) -> dict[str, dict[str, str]]:
-    """``{registrant: {canonical DOI: Anthology ID}}`` for every DOI the ID grammar can't derive.
-
-    A derivable DOI (``10.18653/v1/…``) is left out: the router already claims it,
-    so the index holds only what shape cannot say (~10k rows).
-    """
+    """``{registrant: {DOI: Anthology ID}}`` for DOIs the router can't already derive."""
     shards: dict[str, dict[str, str]] = {}
     for entry in gzip.decompress(body).decode("utf-8").split("\n@"):
         url = _BIB_URL_RE.search(entry)
@@ -461,7 +412,7 @@ def _parse_doi_index(body: bytes) -> dict[str, dict[str, str]]:
 
 
 def _index_meta() -> dict[str, Any] | None:
-    """The index's ``{fetched_at, registrants}`` record, shape-guarded; never expires."""
+    """The index's ``{fetched_at, registrants}`` record, shape-guarded."""
     meta = cache.get(NAMESPACE, _INDEX_ENTITY, "meta", count=False)
     if meta is None:
         return None
@@ -477,12 +428,9 @@ def _is_stale(meta: dict[str, Any] | None) -> bool:
 
 
 async def _refresh_doi_index() -> dict[str, Any] | None:
-    """Rebuild the index from the dump; the fresh meta record, or ``None`` if it failed.
+    """Rebuild the index from the dump; the new meta record, or ``None`` on failure.
 
-    **A failed refresh keeps the index it was replacing** — so a hosted DOI's
-    identity cannot flip for the length of an outage — and records the failure so
-    callers for the next ``_DOI_INDEX_RETRY_SECONDS`` skip straight past it. The
-    dump is buffered whole (12.6 MB), then decompressed and parsed off the loop.
+    A failure keeps the old index and is recorded, so callers skip retrying for a while.
     """
 
     async def _runner() -> dict[str, Any] | None:
@@ -503,12 +451,11 @@ async def _refresh_doi_index() -> dict[str, Any] | None:
             cache.put(NAMESPACE, _INDEX_ENTITY, "last_failure", _parse_error_dict())
             return None
         except http.HTTPX_ERRORS as e:
-            # A local refusal says nothing about upstream; the next caller may try at once.
+            # Local backpressure says nothing about upstream.
             if not isinstance(e, http.LocalBackpressureError):
                 cache.put(NAMESPACE, _INDEX_ENTITY, "last_failure", http.error_dict(LABEL, e))
             return None
         if not shards:
-            # An empty dump is an anomaly, not an Anthology with no hosted DOIs.
             cache.put(NAMESPACE, _INDEX_ENTITY, "last_failure", _parse_error_dict())
             return None
 
@@ -522,13 +469,10 @@ async def _refresh_doi_index() -> dict[str, Any] | None:
 
 
 async def anthology_id_for_doi(doi: str) -> str | None:
-    """The Anthology ID of a paper the Anthology hosts under an opaque DOI, else ``None``.
+    """The Anthology ID for a hosted DOI whose suffix isn't the ID (``10.1162/…``), else ``None``.
 
-    For DOIs whose suffix is not the ID — ``10.1162/tacl…``, ``10.63317/…``, the
-    ACM-era ``10.3115/…``. Never an error: a DOI the index cannot place, for any
-    reason, proceeds on its existing route. No ``force_refresh``: a caller's refresh
-    must not re-download the dump. An index older than its max age is refreshed
-    inline, once per age, by whichever caller finds it stale.
+    Never errors. No ``force_refresh``: that would re-download the dump. A stale
+    index is refreshed inline.
     """
     canonical = doinorm.canonical(doi)
     if not doinorm.looks_like_doi(canonical):
@@ -552,12 +496,7 @@ async def anthology_id_for_doi(doi: str) -> str | None:
 
 
 def pdf_path(identifier: str) -> Path:
-    """Return the expected cache path for a PDF (may or may not exist yet).
-
-    Raises ``ValueError`` for anything not an Anthology ID rather than returning a
-    path: every stem in this namespace is one, so any other answer names a file for
-    a paper the Anthology does not own.
-    """
+    """Return the expected cache path for a PDF. Raises ``ValueError`` for a non-Anthology ID."""
     if not is_anthology_id(identifier):
         raise ValueError(f"Not an ACL Anthology ID: {identifier}")
     return stems.pdf_path(NAMESPACE, canonical_key(identifier))
@@ -592,7 +531,7 @@ async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[
             not_found_message=f"PDF not found on ACL Anthology for: {aid}",
         )
 
-    # Tuple-keyed: the module's one single-flight also carries papers and collections.
+    # Tuple-keyed: the single-flight also carries papers and collections.
     return await streaming.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,

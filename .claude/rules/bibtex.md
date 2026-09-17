@@ -80,10 +80,7 @@ formatting is parameterised by a `name_of` accessor, so OpenAlex's nested
   (`.claude/rules/server.md`).
 - **Organisational authors are brace-wrapped** so BibTeX treats them atomically
   instead of splitting off a fake surname.
-- **An ACL key is generated, never the Anthology's `bibkey`**, which is
-  hyphenated. A journal volume's `booktitle` names the issue too, so the journal
-  is cut at `, Volume`. `month` is a bare macro only when it names one month; a
-  range stays an escaped literal.
+- **An ACL key is generated, never the Anthology's hyphenated `bibkey`.**
 
 ## Scope
 

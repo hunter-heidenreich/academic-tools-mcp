@@ -476,7 +476,7 @@ def _crossref_first(value: Any) -> str:
 
 
 def _pages(page: Any) -> str:
-    """A freeform page string as a BibTeX range, ``""`` for none. Shared by Crossref and ACL."""
+    """A freeform page string as a BibTeX range, ``""`` for none."""
     if not isinstance(page, str) or not page.strip():
         return ""
     escaped = _escape_bibtex(page)
@@ -554,8 +554,7 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
     return _render_entry(entry_type, key, fields)
 
 
-# BibTeX's month macros, emitted bare so a style can localise them. The Anthology
-# writes full English names, and occasionally a range ("July–August").
+# Emitted bare, so a style can localise them.
 _MONTH_MACROS = {
     name: name[:3]
     for name in (
@@ -574,13 +573,12 @@ _MONTH_MACROS = {
     )
 }
 
-# A journal volume's booktitle names the issue too: "Computational Linguistics,
-# Volume 49, Issue 1 - March 2023". The journal is what precedes the volume.
+# "Computational Linguistics, Volume 49, Issue 1" → the journal precedes the volume.
 _JOURNAL_FROM_BOOKTITLE_RE = re.compile(r"^(.*?),\s*Volume\b")
 
 
 def _month_field(month: Any) -> tuple[str, str] | None:
-    """``month`` as a bare macro when it names one month, else an escaped literal."""
+    """A bare macro for one month, else an escaped literal (``July–August``)."""
     if not isinstance(month, str) or not month.strip():
         return None
     if macro := _MONTH_MACROS.get(month.strip().lower()):
@@ -591,11 +589,8 @@ def _month_field(month: Any) -> tuple[str, str] | None:
 def generate_acl_bibtex(paper: dict[str, Any]) -> str:
     """Generate a BibTeX entry from a parsed ACL Anthology paper record.
 
-    ``@article`` for a journal volume (TACL, Computational Linguistics), with the
-    journal name cut from the volume's booktitle; ``@inproceedings`` otherwise.
-    The key is generated like every other source's, never upstream's hyphenated
-    ``bibkey``. Front matter has editors and no authors, so they key it. A paper
-    without a DOI carries its Anthology ``url`` instead, so the entry stays findable.
+    ``@article`` for a journal volume, else ``@inproceedings``. Front matter keys on
+    its editors; a paper without a DOI gets its Anthology ``url``.
     """
     authors = paper.get("authors") or []
     editors = paper.get("editors") or []

@@ -1476,7 +1476,7 @@ class TestCitedByCountReachesEveryOpenalexPath:
 
 
 # ---------------------------------------------------------------------------
-# ACL Anthology: native records, and the hosted-DOI trade
+# ACL Anthology
 # ---------------------------------------------------------------------------
 
 

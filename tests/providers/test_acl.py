@@ -176,11 +176,7 @@ class TestPdfUrlEncoding:
 
 
 def _stub_routes(monkeypatch, routes):
-    """Serve each request from the first ``routes`` key its URL contains.
-
-    A value is ``(status, body_bytes)`` or an ``httpx`` exception to raise; a URL
-    no key matches is a 599 the test did not expect. Returns the captured requests.
-    """
+    """Serve each request from the first ``routes`` key in its URL; return the requests."""
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

@@ -187,8 +187,7 @@ class TestIdempotence:
 #
 # There is deliberately no `_normalize_doi` half to this: the private wrappers
 # were pure aliases with one caller each, and the rationale above never applied
-# to them. `acl` is absent: its key is the Anthology ID, not a DOI, and
-# `providers/test_acl_properties.py` states its contract. `biorxiv` is the one
+# to them. `acl` keys on the Anthology ID, not a DOI. `biorxiv` is the one
 # provider that keeps a `_normalize_doi`,
 # because it layers a content URL and a version-stripping rule on top of
 # `doinorm.normalize` — equality is not its contract, and

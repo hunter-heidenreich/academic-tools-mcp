@@ -104,8 +104,7 @@ class TestDownloadPdfCascade:
         """The ACL branch of the provider dispatch, end to end.
 
         The cascade drops artifacts keyed on ``target["canonical"]``, so this
-        also pins that the ACL PDF the agent just replaced is filed under that
-        same key — the Anthology ID, whichever spelling reached it.
+        also pins that the ACL PDF is filed under that same key.
         """
         from academic_tools_mcp.providers import acl
 
@@ -141,11 +140,7 @@ class TestDownloadPdfCascade:
     async def test_a_hosted_doi_downloads_as_its_anthology_id_and_brings_its_import(
         self, monkeypatch
     ):
-        """A DOI only the index can place is traded before routing.
-
-        Markdown imported under the DOI while it still routed to ``manual`` is
-        re-filed onto the Anthology ID's stem, so it is what the reader finds.
-        """
+        """A hosted DOI is traded before routing, and its import follows it."""
         from academic_tools_mcp.providers import acl
 
         doi = "10.1162/tacl.a.63"

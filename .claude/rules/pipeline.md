@@ -131,17 +131,11 @@ state.
   readers resolve away is an import nothing reads back. `refile_pmid_stems`
   catches up with what an older build stranded, linking a bare digit run rather
   than moving it for the reason `_misrouted_arxiv_id` links a repaired slash.
-- **An identifier changes identity only in `app.resolve_paper_identifier`**:
-  PMID → DOI, then a DOI no route claims → its Anthology ID when the Anthology
-  hosts it under an opaque suffix (`10.1162/…`). Both are network lookups, so
-  neither can live in the pure router, and both re-file what the old spelling
-  stored lazily (`refile_pmid_stems`, `refile_hosted_doi_stems`) through the one
-  `_refile_onto`. The graph tools take `resolve_pmid_identifier` alone: they are
-  DOI-keyed.
-- **`migrate_acl_stems` is the ACL sweep, and it asks the router too** — every
-  `acl_anthology` stem whose router key differs, and every `manual` stem the ACL
-  route now claims. An opaque hosted DOI is beyond any sweep, since only the
-  network index names its ID; readers repair those.
+- **An identifier changes identity only in `app.resolve_paper_identifier`**
+  (PMID → DOI → hosted DOI's Anthology ID), each trade lazily re-filing old
+  stems. Graph tools skip the Anthology trade: they are DOI-keyed.
+- **`migrate_acl_stems` asks the router too.** It cannot reach opaque hosted
+  DOIs; only the network index names their ID, so readers repair those.
 - **Both import functions stay synchronous; the async boundary is the tool
   layer.** `tools/pipeline.import_paper` wraps each in `asyncio.to_thread` — an
   arbitrarily large copy or parse run inline stalls every concurrent tool call —

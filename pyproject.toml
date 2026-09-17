@@ -50,7 +50,7 @@ asyncio_mode = "strict"
 # invocation it also fails `pytest tests/test_bibtex.py`, a workflow the README
 # documents.
 markers = [
-    "real_doi_index: exercise acl.anthology_id_for_doi instead of the suite-wide stub",
+    "real_doi_index: use the real acl.anthology_id_for_doi",
 ]
 
 [tool.ruff]

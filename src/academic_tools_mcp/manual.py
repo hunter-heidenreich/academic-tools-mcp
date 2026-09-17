@@ -130,16 +130,10 @@ def migrate_misrouted_arxiv() -> int:
 
 
 def migrate_acl_stems() -> int:
-    """Re-file cached files onto the Anthology-ID stem ``resolve_target`` now gives them.
+    """Re-file DOI-keyed ACL stems and ACL-shaped ``manual`` stems onto the Anthology ID.
 
-    Two sources: ``acl_anthology`` stems keyed before the Anthology ID was the key
-    (the lowercased ``10.18653/v1/…`` DOI), and ``manual`` stems the ACL route now
-    claims (an import labelled by Anthology ID, URL or ``10.3115/v1/`` DOI). Always
-    moved: each candidate is exclusively the Anthology's. Idempotent and
-    best-effort, once at startup; returns files re-filed.
-
-    An opaque hosted DOI (``10.1162/…``) is beyond it — only the network index
-    names its ID — and is re-filed lazily by :func:`refile_hosted_doi_stems`.
+    Idempotent and best-effort, once at startup; returns files re-filed. Opaque
+    hosted DOIs are left to :func:`refile_hosted_doi_stems`.
     """
     refiled = 0
     for source_ns in (acl.NAMESPACE, NAMESPACE):
@@ -160,11 +154,7 @@ def migrate_acl_stems() -> int:
 
 
 def _misfiled_anthology_id(stem: str) -> str | None:
-    """The Anthology ID a stored stem belongs under, asking the router; ``None`` if none.
-
-    A stem doesn't say which ``_`` were slashes, so the DOI spellings are tried
-    repaired, as :func:`_misrouted_arxiv_id` does. No Anthology ID contains a ``_``.
-    """
+    """The Anthology ID the router gives a stored stem, trying ``_`` as ``/``; else ``None``."""
     for candidate in (stem, stem.replace("_", "/", 1), stem.replace("_", "/")):
         target = resolve_target(unquote(candidate))
         if target["namespace"] == acl.NAMESPACE:
@@ -181,9 +171,7 @@ def _carry_sections(
 ) -> None:
     """Carry a re-filed markdown's section index to its new key; drop the old one if moved.
 
-    Shared by every re-filer: re-deriving would reset ``conversion_mode`` and lose
-    the ``"imported"`` marker. The rekey comes first — the entry it carries is the
-    one the invalidate drops.
+    Carried, not re-derived, so ``conversion_mode`` survives.
     """
     papers.rekey_sections(src_namespace, src_stem, dst_namespace, dst_canonical)
     if outcome == "moved":
@@ -286,18 +274,16 @@ def refile_pmid_stems(raw_identifier: str, doi: str) -> int:
 
 
 def refile_hosted_doi_stems(doi: str, anthology_id: str) -> int:
-    """Re-file an import filed under an Anthology-hosted DOI onto its Anthology ID's stem.
+    """Move an import filed under a hosted DOI onto its Anthology ID's stem.
 
-    Lazy for :func:`refile_pmid_stems`' reason: only the network DOI index knows
-    the ID. The DOI's own ``manual`` key is exclusively this paper's, so it moves.
-    Returns files re-filed; never raises. Caller holds the destination's
+    Lazy, like :func:`refile_pmid_stems`. Caller holds the destination's
     ``papers.sections_lock``.
     """
     return _refile_onto([(resolve_target(doi), "moved")], resolve_target(anthology_id))
 
 
 def _refile_onto(sources: list[tuple[Target, RefileOutcome]], dest: Target) -> int:
-    """Place each source's PDF and markdown on *dest*'s stems, carrying the section index."""
+    """Place each source's PDF and markdown on *dest*'s stems."""
     dest_markdown = stems.markdown_path(dest["namespace"], dest["canonical"])
 
     refiled = 0
