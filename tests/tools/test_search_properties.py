@@ -89,7 +89,7 @@ def _serve_crossref(monkeypatch: pytest.MonkeyPatch, items: list[Any], total: An
 
 
 def _serve_arxiv(monkeypatch: pytest.MonkeyPatch, entries: list[Any], total: Any = 7) -> None:
-    async def fake(query: str, max_results: int = 10) -> dict[str, Any]:
+    async def fake(query: str, max_results: int = 10, **kwargs: Any) -> dict[str, Any]:
         return {"total_results": total, "entries": entries}
 
     monkeypatch.setattr(arxiv, "search_papers", fake)
@@ -146,7 +146,7 @@ def _serve_openalex_authors(
 
 
 def _serve_error(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> None:
-    async def fake(query: str, max_results: int = 10) -> dict[str, Any]:
+    async def fake(query: str, max_results: int = 10, **kwargs: Any) -> dict[str, Any]:
         return dict(payload)
 
     monkeypatch.setattr(arxiv, "search_papers", fake)

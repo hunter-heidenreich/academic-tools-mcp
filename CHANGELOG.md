@@ -17,6 +17,12 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`search_arxiv` pages and sorts.** `page` walks past the first `max_results`
+  hits, `sort_by` orders by relevance, submission or update date, and `sort_order`
+  flips it; the query description now documents `submittedDate:[… TO …]` ranges.
+  arXiv serves only a query's first 10,000 results and answers a page past them
+  with a server error, so such a page is refused without a request as
+  `retryable: false` plus `beyond_window: true`. ([#132])
 - **Papers with Code is a provider.** Six tools cover data no other source here
   has: `get_paper_code` (repositories ranked official-first, Hugging Face
   artifacts), `get_paper_catalog` (tasks, methods, introduced benchmarks, best
@@ -1862,3 +1868,4 @@ say which.
 [#128]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/128
 [#129]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/129
 [#130]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/130
+[#132]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/132

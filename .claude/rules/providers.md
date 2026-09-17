@@ -120,6 +120,12 @@ id and an older revision in one request both come back**, so the bare key takes
 the newest version returned rather than whichever entry matched first. The
 default page is 10, so `max_results` rides every request.
 
+**A search page past `MAX_SEARCH_WINDOW` gets HTTP 500, not a 4xx.** The limit
+is on `start + max_results`, not on the match count, and the 500 carries an
+`api/errors` entry reading "internal error" — so the retry path would call it
+transient and spend three attempts on a request that cannot succeed.
+`search_papers` refuses such a page before building the request.
+
 **arXiv raises `retry_attempts` above the shared default.** Its Fastly edge
 returns 429/503 with no `Retry-After` when an IP is briefly penalty-boxed, and
 one retry tends to land in the same cooldown; two ride `get_with_retry`'s backoff
