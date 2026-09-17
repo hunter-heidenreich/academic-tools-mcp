@@ -216,7 +216,8 @@ megabytes-large collection on every read.
 
 **The hosted-DOI index keeps its last good copy.** A failed refresh must not flip
 a DOI's identity, and is recorded as a positive entry: it establishes nothing
-about the DOI.
+about the DOI. A stale index answers while it refreshes in the background: the
+refresh is a 12 MB download, and every generic DOI lookup would otherwise wait on it.
 
 ---
 

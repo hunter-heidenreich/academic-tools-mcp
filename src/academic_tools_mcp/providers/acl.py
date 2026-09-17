@@ -240,7 +240,6 @@ def _parse_volume_meta(volume: ET.Element) -> dict[str, Any]:
 
 
 def _parse_paper(paper: ET.Element, meta: dict[str, Any], anthology_id: str) -> dict[str, Any]:
-
     return {
         "anthology_id": anthology_id,
         "title": _text_of(paper.find("title")),
@@ -468,19 +467,35 @@ async def _refresh_doi_index() -> dict[str, Any] | None:
     return await _single_flight.do(("doi_index",), _runner)
 
 
+# Strong references: the loop holds only weak ones to a running task.
+_refresh_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _refresh_in_background() -> None:
+    """Start a refresh unless one is already running."""
+    if _refresh_tasks:
+        return
+    task = asyncio.create_task(_refresh_doi_index())
+    _refresh_tasks.add(task)
+    task.add_done_callback(_refresh_tasks.discard)
+
+
 async def anthology_id_for_doi(doi: str) -> str | None:
     """The Anthology ID for a hosted DOI whose suffix isn't the ID (``10.1162/…``), else ``None``.
 
-    Never errors. No ``force_refresh``: that would re-download the dump. A stale
-    index is refreshed inline.
+    Never errors. No ``force_refresh``: that would re-download the dump. A missing
+    index is built inline; a stale one answers now and refreshes in the background,
+    so a lookup never waits on the dump twice.
     """
     canonical = doinorm.canonical(doi)
     if not doinorm.looks_like_doi(canonical):
         return None
 
     meta = _index_meta()
-    if _is_stale(meta):
-        meta = await _refresh_doi_index() or meta
+    if meta is None:
+        meta = await _refresh_doi_index()
+    elif _is_stale(meta):
+        _refresh_in_background()
     registrant = canonical.split("/", 1)[0]
     if meta is None or registrant not in meta["registrants"]:
         return None

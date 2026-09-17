@@ -171,6 +171,9 @@ def _format_acl_metadata(paper: dict[str, Any], canonical_id: str | None) -> dic
         "year": paper.get("year"),
         "month": paper.get("month"),
         "booktitle": paper.get("booktitle"),
+        "volume_type": paper.get("volume_type"),
+        "journal_volume": paper.get("journal_volume"),
+        "journal_issue": paper.get("journal_issue"),
         "venues": paper.get("venues"),
         "publisher": paper.get("publisher"),
         "address": paper.get("address"),
@@ -368,9 +371,11 @@ async def get_paper_metadata(
         journal version adds ``followed_published=False``, plus
         ``published_lookup_retryable=True`` if that lookup failed transiently
         (5xx/429/timeout); both absent when no chain was attempted.
-      - acl_anthology: anthology_id, title, doi, year, month, booktitle, venues,
-        publisher, address, pages, bibkey, url, pdf_url. No citation count; doi is
-        often null.
+      - acl_anthology: anthology_id, title, doi, year, month, booktitle,
+        volume_type ("journal" for TACL/CL, else "proceedings"), journal_volume,
+        journal_issue, venues, publisher, address, pages, bibkey, url, pdf_url. No
+        citation count; doi is often null, and the journal fields are null outside
+        a journal.
       - openalex: title, doi, pmid, publication_year, publication_date, type,
         language, venue, cited_by_count, is_oa, oa_status, oa_url, pdf_url.
         ``pmid`` is bare digits (null when OpenAlex has none) and is itself an

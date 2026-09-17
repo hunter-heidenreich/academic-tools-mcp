@@ -285,9 +285,14 @@ def _title_field(title: str) -> tuple[str, str]:
     return ("title", f"{{{{{_escape_bibtex(title)}}}}}")
 
 
+def _escaped_url(url: str) -> str:
+    """*url* with the characters BibTeX or LaTeX would read percent-encoded."""
+    return url.translate(_URL_TABLE)
+
+
 def _url_field(url: str) -> tuple[str, str]:
     """``howpublished`` pointing at a resolvable URL."""
-    return ("howpublished", f"{{\\url{{{url.translate(_URL_TABLE)}}}}}")
+    return ("howpublished", f"{{\\url{{{_escaped_url(url)}}}}}")
 
 
 def _render_entry(entry_type: str, key: str, fields: list[tuple[str, str]]) -> str:
@@ -631,7 +636,7 @@ def generate_acl_bibtex(paper: dict[str, Any]) -> str:
     if doi:
         fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
     elif url := paper.get("url"):
-        fields.append(("url", f"{{{url.translate(_URL_TABLE)}}}"))
+        fields.append(("url", f"{{{_escaped_url(url)}}}"))
 
     entry_type = "article" if is_journal else "inproceedings"
     return _render_entry(entry_type, key, fields)

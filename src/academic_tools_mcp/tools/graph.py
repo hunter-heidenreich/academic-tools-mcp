@@ -82,9 +82,12 @@ async def _anthology_doi(
     """An Anthology ID's DOI, or the error that ends the call (forwarded whole)."""
     record = await acl.get_paper(identifier, force_refresh=force_refresh)
     if "error" in record:
-        return identifier, enrich_error(
-            record, "Retry, or pass the paper's DOI directly if you have it."
+        hint = (
+            "Check the Anthology ID on aclanthology.org, or pass the paper's DOI directly."
+            if record.get("not_found")
+            else "Retry, or pass the paper's DOI directly if you have it."
         )
+        return identifier, enrich_error(record, hint)
     doi = record.get("doi")
     if not isinstance(doi, str) or not doi:
         anthology_id = acl.canonical_key(identifier)

@@ -1240,3 +1240,16 @@ class TestGraphToolsAcceptAnthologyIds:
 
         assert result["retryable"] is True
         assert "not_found" not in result
+        assert result["suggestion"].startswith("Retry")
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_anthology_id_is_not_told_to_retry(self, monkeypatch):
+        async def fake_get_paper(identifier, **kwargs):
+            return {"error": "No ACL Anthology paper: W04-9999", "not_found": True}
+
+        monkeypatch.setattr(acl, "get_paper", fake_get_paper)
+
+        result = await server.get_paper_citations_count("W04-9999")
+
+        assert result["not_found"] is True
+        assert "Retry" not in result["suggestion"]

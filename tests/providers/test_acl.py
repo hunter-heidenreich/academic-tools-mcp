@@ -379,6 +379,13 @@ _DUMP = _dump(
 )
 
 
+def _age_index():
+    """Push the cached index past its max age."""
+    meta = cache.get(acl.NAMESPACE, "doi_index", "meta")
+    meta["fetched_at"] = time.time() - acl._DOI_INDEX_MAX_AGE_SECONDS - 1
+    cache.put(acl.NAMESPACE, "doi_index", "meta", meta)
+
+
 @pytest.mark.real_doi_index
 class TestAnthologyIdForDoi:
     @pytest.mark.asyncio
@@ -423,13 +430,36 @@ class TestAnthologyIdForDoi:
         routes = {"anthology.bib.gz": (200, _DUMP)}
         _stub_routes(monkeypatch, routes)
         await acl.anthology_id_for_doi("10.1162/tacl.a.63")
-
-        meta = cache.get(acl.NAMESPACE, "doi_index", "meta")
-        meta["fetched_at"] = time.time() - acl._DOI_INDEX_MAX_AGE_SECONDS - 1
-        cache.put(acl.NAMESPACE, "doi_index", "meta", meta)
+        _age_index()
         routes["anthology.bib.gz"] = httpx.ConnectError("down")
 
         assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") == "2026.tacl-1.1"
+        await asyncio.gather(*acl._refresh_tasks)
+
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") == "2026.tacl-1.1"
+
+    @pytest.mark.asyncio
+    async def test_a_stale_index_answers_without_waiting_for_the_refresh(self, monkeypatch):
+        _stub_routes(monkeypatch, {"anthology.bib.gz": (200, _DUMP)})
+        await acl.anthology_id_for_doi("10.1162/tacl.a.63")
+        _age_index()
+
+        release = asyncio.Event()
+        refreshes: list[None] = []
+
+        async def slow_refresh():
+            refreshes.append(None)
+            await release.wait()
+
+        monkeypatch.setattr(acl, "_refresh_doi_index", slow_refresh)
+
+        assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") == "2026.tacl-1.1"
+        assert await acl.anthology_id_for_doi("10.3115/1218955.1219032") == "P04-1077"
+        await asyncio.sleep(0)
+
+        assert len(refreshes) == 1
+        release.set()
+        await asyncio.gather(*acl._refresh_tasks)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

@@ -39,7 +39,6 @@ grouped by milestone rather than per commit.
   fields and `fallback_crossref`. ([#128])
 - **ACL artifacts are keyed by Anthology ID**, migrated at startup. ([#128])
 - **Volume-level ACL DOIs (`10.18653/v1/W17-47`) route to OpenAlex.** ([#128])
-
 - **A 429 with `Retry-After` locks its provider out locally.** For a provider
   without `X-RateLimit-*` headers, every later call is refused without a request,
   returning `{quota_exhausted: true, retry_after_seconds}`, until that time passes.

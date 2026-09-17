@@ -1544,6 +1544,16 @@ class TestAclAnthologySource:
         assert result["doi"] is None
 
     @pytest.mark.asyncio
+    async def test_metadata_carries_the_journal_fields(self):
+        result = await server.get_paper_metadata("W04-1013")
+
+        assert (result["volume_type"], result["journal_volume"], result["journal_issue"]) == (
+            "proceedings",
+            None,
+            None,
+        )
+
+    @pytest.mark.asyncio
     async def test_authors_keep_the_symmetric_shape(self):
         result = await server.get_paper_authors("W04-1013")
 
