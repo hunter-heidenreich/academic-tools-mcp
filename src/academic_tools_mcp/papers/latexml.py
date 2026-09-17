@@ -61,6 +61,12 @@ _DEEPEST_LEVEL = 4
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# A body line opening with ``#`` — a code comment, a ``#1`` — would parse as a heading.
+_LEADING_HASH_RE = re.compile(r"^#", re.MULTILINE)
+
+# Bounds a malformed ``colspan``/``rowspan`` so one cell can't inflate the table.
+_MAX_SPAN = 100
+
 
 class _Node:
     __slots__ = ("attrs", "children", "classes", "tag")
@@ -163,17 +169,43 @@ def _equation(node: _Node) -> str:
     return "\n".join(rows)
 
 
+def _span(cell: _Node, attr: str) -> int:
+    value = cell.attrs.get(attr, "1")
+    return min(int(value), _MAX_SPAN) if value.isdecimal() and int(value) > 1 else 1
+
+
 def _table(node: _Node) -> str:
-    """A tabular as a pipe table, the first row taken as the header."""
+    """A tabular as a pipe table, the first row taken as the header.
+
+    A spanning cell fills the columns and rows it covers with blanks, so every
+    later cell stays under its own header.
+    """
     rows = []
+    # Column index -> how many more rows a rowspan above still covers it.
+    covered: dict[int, int] = {}
+
+    def skip_covered(cells: list[str]) -> None:
+        while covered.get(len(cells), 0) > 0:
+            covered[len(cells)] -= 1
+            cells.append("")
+
     for row in _descendants(node, "tr"):
         cells: list[str] = []
         for cell in row.children:
-            if isinstance(cell, _Node) and cell.tag in ("td", "th"):
-                cells.append(_collapse(_inline(cell)).replace("|", "\\|"))
-                # A spanning cell keeps the columns after it aligned under their headers.
-                span = cell.attrs.get("colspan", "1")
-                cells.extend([""] * (int(span) - 1 if span.isdecimal() and int(span) > 1 else 0))
+            if not (isinstance(cell, _Node) and cell.tag in ("td", "th")):
+                continue
+            skip_covered(cells)
+            start = len(cells)
+            colspan, rowspan = _span(cell, "colspan"), _span(cell, "rowspan")
+            cells.append(_collapse(_inline(cell)).replace("|", "\\|"))
+            cells.extend([""] * (colspan - 1))
+            if rowspan > 1:
+                covered.update(dict.fromkeys(range(start, start + colspan), rowspan - 1))
+        # A rowspan past this row's last cell still covers its column here.
+        while any(n > 0 and col >= len(cells) for col, n in covered.items()):
+            if covered.get(len(cells), 0) > 0:
+                covered[len(cells)] -= 1
+            cells.append("")
         if any(cells):
             rows.append(cells)
     if not rows:
@@ -205,12 +237,16 @@ class _Renderer:
         text = _collapse("".join(self._inline))
         self._inline = []
         if text:
-            self.blocks.append(text)
+            self.blocks.append(_LEADING_HASH_RE.sub(r"\\#", text))
 
     def block(self, text: str) -> None:
         self.flush()
         if text.strip():
-            self.blocks.append(text.strip())
+            self.blocks.append(_LEADING_HASH_RE.sub(r"\\#", text.strip()))
+
+    def heading(self, level: int, text: str) -> None:
+        self.flush()
+        self.blocks.append(f"{'#' * level} {text}")
 
     def walk(self, node: _Node) -> None:
         for child in node.children:
@@ -223,7 +259,7 @@ class _Renderer:
         if _skipped(node):
             return
         if (level := _heading_level(node)) is not None:
-            self.block(f"{'#' * level} {_collapse(_inline(node))}")
+            self.heading(level, _collapse(_inline(node)))
         elif node.tag == "math":
             if node.attrs.get("display") == "block":
                 self.block(_math(node))

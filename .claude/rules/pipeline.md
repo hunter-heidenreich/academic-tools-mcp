@@ -32,7 +32,10 @@ never the facade** — it re-exports by value, so
 - **`_cached_or_cleared` is the one cached-markdown check, for every converter.**
   `convert_pdf` and `convert_html` both start there, which is why a paper whose
   markdown came from one never re-runs the other: cached markdown answers,
-  whatever produced it.
+  whatever produced it. **Except `convert_html` under `force_refresh`**, which
+  skips it and drops the markdown only once a rendering is in hand: `convert_paper`
+  calls it before checking for a PDF, so clearing up front would leave a failed
+  fetch with no markdown and nothing to convert.
 - **`convert_html` takes a `fetch` closure, never a provider.** That keeps
   `papers` below `providers`; the closure is where `tools/pipeline` binds
   `arxiv.get_html`. Its three outcomes are the contract: a conversion response,
@@ -58,7 +61,8 @@ never the facade** — it re-exports by value, so
   file to checksum it (`.claude/rules/store.md` § Checksums). It is the one
   markdown writer outside the per-paper lock discipline.
 - **`drop_derived()` is the only markdown unlinker, and every caller holds
-  `sections_lock`** — `_cached_or_cleared`'s `force_refresh` branch, and
+  `sections_lock`** — `_cached_or_cleared`'s and `convert_html`'s `force_refresh`
+  branches, and
   `tools/pipeline`'s `download_pdf` and `import_paper` cascades. The download
   cascade asks `recorded_conversion_mode()` first — the named read for "may I
   replace this markdown?", so the tool layer never reaches into the sections

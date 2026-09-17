@@ -72,7 +72,8 @@ _ATTENTION = _page(
     '<figcaption class="ltx_caption"><span class="ltx_tag">Table 2: </span>BLEU.</figcaption>'
     '<table class="ltx_tabular"><thead class="ltx_thead">'
     '<tr class="ltx_tr"><th class="ltx_th" rowspan="2">Model</th>'
-    '<th class="ltx_th" colspan="2">BLEU</th><th class="ltx_th">Cost</th></tr></thead>'
+    '<th class="ltx_th" colspan="2">BLEU</th><th class="ltx_th" rowspan="2">Cost</th></tr>'
+    '<tr class="ltx_tr"><th class="ltx_th">EN-DE</th><th class="ltx_th">EN-FR</th></tr></thead>'
     '<tbody class="ltx_tbody"><tr class="ltx_tr"><td class="ltx_td">ByteNet</td>'
     '<td class="ltx_td">23.75</td><td class="ltx_td">a|b</td>'
     '<td class="ltx_td"><math alttext="1.0\\cdot 10^{20}" display="inline"></math></td></tr>'
@@ -164,14 +165,50 @@ class TestFiguresTablesListsNotes:
         assert "ModalNet" not in md
         assert "Refer to caption" not in md
 
-    def test_a_tabular_becomes_a_pipe_table_aligned_across_a_colspan(self):
+    def test_a_tabular_becomes_a_pipe_table_aligned_across_spans(self):
         md = latexml.to_markdown(_ATTENTION)
 
         assert (
             "| Model | BLEU |  | Cost |\n"
             "| --- | --- | --- | --- |\n"
+            "|  | EN-DE | EN-FR |  |\n"
             "| ByteNet | 23.75 | a\\|b | $1.0\\cdot 10^{20}$ |"
         ) in md
+
+    def test_a_rowspan_keeps_the_rows_below_it_under_their_headers(self):
+        """Regression: 1706.03762 Table 3's "(A)" spans 4 rows; each row below slid left."""
+        html = _page(
+            '<table class="ltx_tabular"><tr><th>Row</th><th>h</th><th>d_k</th></tr>'
+            '<tr><td rowspan="3">(A)</td><td>1</td><td>512</td></tr>'
+            "<tr><td>4</td><td>128</td></tr>"
+            "<tr><td>16</td><td>32</td></tr>"
+            '<tr><td>(B)</td><td rowspan="2">8</td><td>16</td></tr>'
+            "<tr><td>(C)</td><td>32</td></tr></table>"
+        )
+
+        assert latexml.to_markdown(html) == (
+            "| Row | h | d_k |\n"
+            "| --- | --- | --- |\n"
+            "| (A) | 1 | 512 |\n"
+            "|  | 4 | 128 |\n"
+            "|  | 16 | 32 |\n"
+            "| (B) | 8 | 16 |\n"
+            "| (C) |  | 32 |\n"
+        )
+
+    def test_a_code_line_opening_with_a_hash_is_not_a_heading(self):
+        """Regression: an unnumbered listing's ``# comment`` line opened a fake section."""
+        html = _page(
+            '<section class="ltx_section"><h2 class="ltx_title ltx_title_section">1 Intro</h2>'
+            '<div class="ltx_listing"><div class="ltx_listingline"># load the data</div></div>'
+            '<pre class="ltx_verbatim"># Setup\ndef f(): return 1</pre>'
+            "<p>Rest of the section.</p></section>"
+        )
+
+        md = latexml.to_markdown(html)
+
+        assert "\\# load the data" in md
+        assert [s["title"] for s in sections.parse_sections(md)] == ["1 Intro"]
 
     def test_list_items_and_bibliography_entries_are_one_line_each(self):
         md = latexml.to_markdown(_ATTENTION)

@@ -863,6 +863,30 @@ class TestConvertPaperHtmlFirst:
         assert result["conversion_mode"] == "full"
         assert seen == [("arxiv", "2301.00001", {"force_refresh": False, "mode": "fast"})]
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"error": "No HTML rendering", "not_found": True},
+            {"error": "arXiv server error (HTTP 503).", "retryable": True},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_force_refresh_with_no_rendering_and_no_pdf_keeps_imported_markdown(
+        self, isolated_cache, monkeypatch, failure
+    ):
+        """Regression: the refresh cleared the markdown, then had nothing to replace it with."""
+        md_path = stems.markdown_path("arxiv", "2301.00001")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        papers.store_markdown_and_index("arxiv", "2301.00001", md_path, "## A\n\nb\n", "imported")
+        _serve_html(monkeypatch, failure)
+        _no_pdf_conversion(monkeypatch)
+
+        await server.convert_paper("2301.00001", force_refresh=True)
+
+        sections = await server.get_paper_sections("2301.00001")
+        assert sections["conversion_mode"] == "imported"
+        assert [s["title"] for s in sections["sections"]] == ["A"]
+
     @pytest.mark.asyncio
     async def test_no_rendering_and_no_pdf_points_at_download(self, isolated_cache, monkeypatch):
         _serve_html(monkeypatch, {"error": "No HTML rendering", "not_found": True})

@@ -375,10 +375,16 @@ async def convert_html(
     error with ``conversion_mode: "html"`` when it failed transiently; or ``None``
     when there is no usable rendering — a definitive miss, or a document that
     renders to nothing — so the caller falls back to the PDF.
+
+    ``force_refresh`` replaces the cached markdown only once a rendering is in hand:
+    cleared up front, a failed fetch would leave the paper with none, and the caller
+    may have no PDF to fall back to.
     """
     if (
-        cached := await _cached_or_cleared(namespace, canonical, force_refresh=force_refresh)
-    ) is not None:
+        not force_refresh
+        and (cached := await _cached_or_cleared(namespace, canonical, force_refresh=False))
+        is not None
+    ):
         return cached
 
     result = await fetch()
@@ -395,9 +401,10 @@ async def convert_html(
 
     md_path = markdown_path(namespace, canonical)
     async with sections_lock(namespace, canonical):
+        if force_refresh:
+            drop_derived(namespace, canonical)
         # A racing caller may have written the markdown since the outer check.
-        payload = await _reparse_sections_locked(namespace, canonical, md_path)
-        if payload is not None:
+        elif (payload := await _reparse_sections_locked(namespace, canonical, md_path)) is not None:
             return _cached_response(md_path, payload)
         return await asyncio.to_thread(
             _finalize_markdown, namespace, canonical, md_path, markdown, "html"

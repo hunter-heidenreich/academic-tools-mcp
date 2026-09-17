@@ -1456,6 +1456,26 @@ class TestConvertHtml:
         assert result["cached"] is False
         assert "New." in stems.markdown_path("arxiv", "2301.00001").read_text(encoding="utf-8")
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {"error": "No HTML rendering", "not_found": True},
+            {"error": "arXiv server error (HTTP 503).", "retryable": True},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_forced_refresh_that_fails_keeps_the_cached_markdown(self, failure):
+        """Regression: the markdown was cleared before the fetch, so a failed refresh lost it."""
+        md_path = stems.markdown_path("arxiv", "2301.00001")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        store_markdown_and_index("arxiv", "2301.00001", md_path, "## A\n\nb\n", "imported")
+        fetch, _ = _fetching(failure)
+
+        await papers.convert_html("arxiv", "2301.00001", fetch, force_refresh=True)
+
+        assert md_path.read_text(encoding="utf-8") == "## A\n\nb\n"
+        assert papers.recorded_conversion_mode("arxiv", "2301.00001") == "imported"
+
     @pytest.mark.asyncio
     async def test_a_definitive_miss_is_none_so_the_caller_falls_back(self):
         fetch, _ = _fetching({"error": "No HTML rendering", "not_found": True})
