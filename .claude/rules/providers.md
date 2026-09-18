@@ -64,11 +64,8 @@ metered class; `get_works_batch` buys *wall clock*, not credits, since the singl
 replaces were already free; and `select=` costs nothing to refuse. The polite pool and
 the `mailto` parameter went in Feb 2026 — only the key moves the budget.
 
-**The price is also what the quota gate runs on.** `_throttled_get(metered=False)` on
-the zero-credit classes — every singleton, and `autocomplete` — so a spent budget
-refuses the `search=` and `filter=` calls that spend it and nothing else. Default
-`True`, so a call site added without a measurement is gated rather than silently
-exempt.
+**The price is also what the quota gate runs on**, via `_throttled_get(metered=)`: a
+spent budget refuses the `search=` and `filter=` calls that spend it, and nothing else.
 
 **A ROR is a key and a path, and they differ** — the ORCID rule again.
 `canonical_institution_id` folds every spelling to the bare form; the request rebuilds

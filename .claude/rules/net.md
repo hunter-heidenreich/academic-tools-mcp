@@ -94,14 +94,11 @@ and `max_pending` *before* it sleeps, so a queued search is refused, not stacked
   burst locks it out until the *budget* refills, hours later. The advertised
   `remaining` is recorded either way and still reaches `snapshot()`; it just no
   longer gates on its own.
-- **The quota answers *whether* a budget is spent; `admit(metered=)` answers *who
-  that stops*.** A provider whose call classes are priced apart passes
-  `metered=False` on the free ones, and they skip the quota gate (never the burst or
-  concurrency caps). OpenAlex meters *credits*: its singletons and `/autocomplete`
-  cost none, so a lockout earned by a `search=` would otherwise strand
-  `get_paper_metadata` for the whole window — and the gate blocks the very requests
-  whose response would clear it, so nothing lifts it early. `metered` defaults to
-  `True`: a new call site is gated until someone measures it free.
+- **The quota answers *whether* a budget is spent; `admit(metered=)` answers *whom
+  that stops*.** A provider pricing its classes apart exempts the free ones, which
+  skip the quota gate and no other. Both halves are load-bearing where they meet:
+  an armed lockout refuses the requests whose response would clear it, so gating a
+  free class strands it for the whole window rather than until the next reply.
 - **A 429 with a usable `Retry-After` is an observation too.** Without
   `X-RateLimit-*` headers (which win), `http.record_quota` records the budget as
   spent until then, and `Throttle.slot` refuses every later caller for that

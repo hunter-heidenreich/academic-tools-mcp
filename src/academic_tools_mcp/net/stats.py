@@ -45,11 +45,8 @@ class Quota:
         locks out a provider that is still answering; without ``remaining``, a 429 from a
         momentary rate burst locks it out until the budget refills, hours later.
 
-        This says *whether a budget is spent*, not *who that should stop*. A provider
-        that prices its call classes apart — openalex meters credits, and its singletons
-        spend none — exempts the free ones at the gate instead, via
-        ``throttle.Throttle.admit(metered=False)``; a refusal earned by a paid call would
-        otherwise strand them for the whole window.
+        Says *whether* a budget is spent, never *whom that stops* — that is
+        ``throttle.Throttle.admit(metered=)``.
         """
         if not self.refused or self.deadline is None:
             return None

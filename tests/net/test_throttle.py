@@ -575,9 +575,7 @@ class TestQuotaGate:
         """A spent budget is a claim about credits, and a free class spends none.
 
         Regression: the lockout was namespace-wide, so one 429 earned by a paid call
-        refused openalex's zero-credit singletons and autocomplete for the whole
-        window — and the gate then blocked the very requests whose response would
-        have cleared it.
+        refused openalex's zero-credit classes until the window refilled.
         """
         stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
         admitted = False

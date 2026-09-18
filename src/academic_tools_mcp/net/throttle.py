@@ -9,8 +9,7 @@ construction.
 Gating order (see ``slot``):
 
 1. **Quota** — a spent budget raises ``QuotaExhaustedError``; waiting cannot help.
-   Skipped for a caller passing ``metered=False``: the budget it would wait on is one
-   that class does not spend (see ``admit``).
+   A ``metered=False`` caller skips it; the other three still bind.
 2. **Burst cap** — ``pending >= max_pending`` raises ``LocalBackpressureError``
    before any sem/lock acquisition, so a fan-out fails fast instead of
    silently queueing.
@@ -129,13 +128,8 @@ class Throttle:
 
         ``queued_ahead`` counts callers waiting in front of this throttle (a ``SubGap``'s
         queue), so they share its ``max_pending``; ``gap_seconds`` is the gap they wait on.
-
-        ``metered=False`` exempts a call class the provider serves free of its budget
-        from the quota gate only — the burst and concurrency caps still bind. A spent
-        budget is a statement about *credits*, so gating a class that spends none would
-        strand it for the whole window; openalex's singletons and ``/autocomplete`` are
-        the case this exists for. Default ``True``: a provider that meters every call
-        the same way, which is all of them but openalex, needs no opinion here.
+        ``metered=False`` exempts a call class its provider prices at nothing from the
+        quota gate alone; the queue still refuses it.
         """
         if metered and (refusal := stats.quota_refusal(self.namespace)) is not None:
             stats.incr(self.namespace, "quota_refusals")
@@ -162,8 +156,7 @@ class Throttle:
 
         ``count_request`` records one ``http_calls``, right for a streaming download
         (one slot, one request); ``get`` passes ``False`` so ``get_with_retry``
-        counts the attempts it makes. ``metered=False`` skips the quota gate, for a
-        call class the provider serves outside its budget — see ``admit``.
+        counts the attempts it makes. ``metered`` reaches ``admit``.
         """
         self.admit(metered=metered)
         self.pending += 1
@@ -195,8 +188,8 @@ class Throttle:
         """Fire one GET inside the slot, retried per ``retry_attempts``.
 
         The backoff floor is the provider's own gap, floored at one second, so a
-        retry cannot undercut the documented rate. ``metered`` rides through to
-        ``slot``; it is consumed here, never forwarded to httpx.
+        retry cannot undercut the documented rate. ``metered`` is consumed here, not
+        forwarded to httpx.
         """
         async with self.slot(url, count_request=False, metered=metered):
             return await http.get_with_retry(

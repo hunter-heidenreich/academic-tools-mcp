@@ -136,20 +136,16 @@ grouped by milestone rather than per commit.
   `X-RateLimit-Remaining` counts *credits*, and OpenAlex charges none for singleton
   lookups or autocomplete — but the local quota gate read an advertised zero as "stop
   everything" and refused the whole namespace, `get_paper_metadata` and `get_author`
-  included, until the window refilled roughly seven hours later. Two changes: the
-  lockout arms only on an actual 429 whose budget is also spent — the rule the rest of
-  the quota handling already followed, a quota is observed, never assumed — and it is
-  consulted only by the call classes that spend credits, so an armed lockout stops
-  `search=` and the batched `filter=` list while metadata lookups and autocomplete
-  keep resolving. Without the second, the first only postponed the outage to the first
-  paid call, which is how a budget gets spent in the first place; and because the gate
-  blocked the requests whose response would have cleared it, nothing lifted it early.
-  Requiring `refused` also stops a 429 from a momentary rate burst locking the provider
-  out until the budget refills. The advertised remaining is still reported by
+  included, until the window refilled roughly seven hours later. The lockout now arms
+  only on an actual 429 whose budget is also spent — the rule the rest of the quota
+  handling already followed: a quota is observed, never assumed, and a burst 429 is not
+  a spent budget. It is then consulted only by the classes that spend credits, so an
+  armed lockout stops `search=` and the batched `filter=` list while metadata lookups
+  and autocomplete keep resolving. The advertised remaining is still reported by
   `get_server_stats`. ([#144])
-- **A `ror.org` URL with a trailing slash resolves.** `get_institution("https://ror.org/00jmfr291/")`
-  read the slash as part of the identifier and reported the institution missing; the
-  OpenAlex URL spelling already tolerated one. ([#144])
+- **A `ror.org` URL with a trailing slash resolves.** `get_institution` read the slash
+  as part of the identifier and reported the institution missing; the OpenAlex URL
+  spelling already tolerated one. ([#144])
 - **The README no longer promises an OpenAlex polite pool**, abolished in February
   2026. The entry contradicted the one above it, which already noted that
   `OPENALEX_MAILTO` raises nothing. ([#144])

@@ -1598,11 +1598,7 @@ class TestCreditGateByCallClass:
 
     @pytest.mark.asyncio
     async def test_a_singleton_still_resolves_on_a_spent_budget(self, monkeypatch):
-        """Regression: one 429 earned by a search refused `get_paper_metadata` for hours.
-
-        The `refused` conjunct alone did not reach this — it only delayed the lockout
-        until the first paid call, which is exactly how a budget gets spent.
-        """
+        """Regression: one 429 earned by a search refused `get_paper_metadata` for hours."""
         requests = _stub_json_responses(monkeypatch, _work_response("10.1234/x"))
         self._spend_the_budget()
 
