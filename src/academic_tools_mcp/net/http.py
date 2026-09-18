@@ -190,10 +190,8 @@ def record_quota(provider: str, response: httpx.Response) -> None:
     than sent into the same cooldown. Unclamped, like ``_quota_dict``: the lockout never
     sleeps, so the sleep ceiling must not shorten it.
 
-    **Only a 429 arms the lockout**, whichever branch files it. A header advertising an
-    empty budget is recorded but does not block: OpenAlex — the one provider sending
-    these — meters *credits*, and its singleton and autocomplete endpoints spend none, so
-    an exhausted credit budget still serves them.
+    **Only a 429 arms the lockout**, whichever branch files it: OpenAlex meters *credits*
+    and its singletons spend none, so a budget its headers call empty still serves them.
     """
     refused = response.status_code == 429
     limit = _header_number(response, "x-ratelimit-limit")

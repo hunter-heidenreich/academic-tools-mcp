@@ -3,7 +3,7 @@
 import asyncio
 import re
 from collections.abc import Callable
-from typing import Any, Literal, get_args
+from typing import Any, Literal
 from urllib.parse import quote
 
 import httpx
@@ -28,19 +28,17 @@ def _parse_error_dict() -> dict[str, Any]:
     return http.parse_error_dict(LABEL)
 
 
-# A deliberate 10x margin under OpenAlex's documented 100 req/sec: pace is no longer the
-# binding constraint, the credit budget is, so the gap buys politeness rather than
-# headroom. The concurrency cap lets a reference-graph traversal run lookups in parallel
-# (OpenAlex documents no concurrency limit); the burst cap, as with every other provider,
-# gives a stacked caller feedback instead of silent queueing.
+# A 10x margin under OpenAlex's documented 100 req/sec: the credit budget binds long
+# before the rate does. The concurrency cap lets a reference-graph traversal run lookups
+# in parallel (OpenAlex documents no concurrency limit); the burst cap, as with every
+# other provider, gives a stacked caller feedback instead of silent queueing.
 _MAX_CONCURRENT = 4
 _MIN_REQUEST_GAP = 0.1
 _MAX_PENDING = 5
 
-# Search is the one metered class here: a `search=` list costs 10 credits where a
-# `filter=` list costs 1 and a singleton 0, against 1000 credits/day anonymous (10x with
-# a key). Pacing it by that ratio spends the budget no faster per second than the cheap
-# path does. Measured — OpenAlex publishes the credit tiers, not the per-endpoint cost.
+# Measured, since OpenAlex publishes the tiers but not the per-endpoint cost: a `search=`
+# list costs 10 credits where a `filter=` list costs 1 and a singleton 0. Pacing search by
+# that ratio spends the budget no faster per second than the cheap path does.
 _SEARCH_CREDITS = 10
 _LIST_CREDITS = 1
 _SEARCH_REQUEST_GAP = _MIN_REQUEST_GAP * (_SEARCH_CREDITS / _LIST_CREDITS)
@@ -50,9 +48,8 @@ _SEARCH_REQUEST_GAP = _MIN_REQUEST_GAP * (_SEARCH_CREDITS / _LIST_CREDITS)
 _single_flight = singleflight.SingleFlight()
 
 # Long: a work's citation count and topics drift slowly, an author's h_index and
-# works_count on the same timescale, an institution's works_count and cited_by_count on
-# the same clock again — long enough to amortise a session's reads, short enough that no
-# entity is frozen. All three share this TTL.
+# an institution's works_count on the same timescale — long enough to amortise a
+# session's reads, short enough that no entity is frozen. All three share this TTL.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
@@ -88,8 +85,8 @@ def best_pdf_url(work: dict[str, Any]) -> str | None:
 def _build_params() -> dict[str, str]:
     """Build query params from environment config.
 
-    The key is the whole of it. OpenAlex retired the `mailto` parameter with the polite
-    pool in Feb 2026 and meters by key; sending it bought nothing.
+    The key is the whole of it: OpenAlex retired `mailto` with the polite pool in Feb
+    2026 and meters by key.
     """
     params: dict[str, str] = {}
     api_key = config.get("OPENALEX_API_KEY")
@@ -99,10 +96,7 @@ def _build_params() -> dict[str, str]:
 
 
 def _build_headers() -> dict[str, str]:
-    """The User-Agent, carrying the contact OpenAlex asks a client to be reachable at.
-
-    It buys no rate tier — only `OPENALEX_API_KEY` raises the credit budget.
-    """
+    """The User-Agent and its contact. Buys no rate tier; only the key moves the budget."""
     return useragent.headers(config.get("OPENALEX_MAILTO"))
 
 
@@ -136,8 +130,8 @@ def reset_search_pacing() -> None:
 async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
     """GET at OpenAlex's tighter *search* rate, then through the ordinary slot.
 
-    For a `search=` query only. The batch fetch hits the same `/works` URL with `filter=`
-    at a tenth the cost, so the gate is per call site, not per URL.
+    `search=` only: the batch fetch hits the same `/works` URL at a tenth the cost, so
+    the gate is per call site, not per URL.
     """
     await _search_gap.wait()
     return await _throttled_get(url, **kwargs)
@@ -174,9 +168,8 @@ def _author_path_id(author_id: str) -> str:
     return quote(bare, safe="")
 
 
-# A ROR is `0` then eight crockford-base32 characters, the last two a checksum — `i`,
-# `l`, `o` and `u` are not in the alphabet, which is what keeps this from matching a bare
-# OpenAlex ID. The URL form is the spelling papers and ROR itself print.
+# A ROR is `0` then eight crockford-base32 characters. The alphabet excludes
+# `i`/`l`/`o`/`u`, which is what keeps this from matching a bare OpenAlex ID.
 _ROR_RE = re.compile(r"^0[0-9a-hj-km-np-tv-z]{6}\d{2}$", re.IGNORECASE)
 _ROR_URL_RE = re.compile(r"^(?:https?://)?(?:www\.)?ror\.org/", re.IGNORECASE)
 
@@ -191,7 +184,7 @@ def _normalize_institution_id(institution_id: str) -> str:
 
     A bare OpenAlex ID (``I27837315``), any openalex.org URL ``_OPENALEX_URL_RE``
     covers, or a ROR in any spelling — bare, ``ror:``-prefixed, or a ror.org URL.
-    Idempotent, as the author and PMID normalizers are.
+    Idempotent.
     """
     institution_id = institution_id.strip()
     if m := _OPENALEX_URL_RE.match(institution_id):
@@ -499,7 +492,7 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
     works cache, exactly as ``crossref.search_works`` does.
 
     **No ``select=``, deliberately**: a projected work would poison the ``works``
-    key it warms. The unread bytes never leave this process, and cost nothing —
+    key it warms. The unread bytes never leave this process, and cost nothing:
     ``select=`` does not reduce what a query is metered.
 
     Paced by ``_search_gap``: this is the expensive call class.
@@ -585,37 +578,20 @@ async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
     return {"items": items, "total_results": count if isinstance(count, int) else None}
 
 
-# The entity collections `/autocomplete` serves that this server has a use for. Closed
-# deliberately: the value is a URL path segment, so an unvalidated one is a request-side
-# hole, and OpenAlex answers an unknown collection with a 404 either way. The tuple is
-# derived, never spelled twice — the tool annotates on the type, the provider tests
-# membership against the tuple.
+# Closed: the value reaches a URL path segment, so an unvalidated one is a request-side hole.
 AutocompleteEntity = Literal["works", "authors", "institutions", "sources"]
-AUTOCOMPLETE_ENTITIES: tuple[str, ...] = get_args(AutocompleteEntity)
-
-# Fixed upstream: `/autocomplete` rejects `per-page` outright ("not a valid parameter for
-# the entity autocomplete endpoint") and always serves ten. Named so the tool can report
-# the cap rather than a caller discovering it.
-AUTOCOMPLETE_RESULT_COUNT = 10
 
 
 async def autocomplete(query: str, *, entity_type: AutocompleteEntity = "works") -> dict[str, Any]:
     """Typeahead over one OpenAlex entity collection. Costs no credits.
 
     Returns ``{"items": [...], "total_results": N | None}`` — dict-shaped hits only — or
-    ``{"error": ...}`` on transport/HTTP failure or a wrong-shape body, matching
-    ``search_works``. Each hit is a projection: ``id``, ``display_name``, ``hint``,
-    ``entity_type``, ``external_id`` (the DOI for a work, the ROR for an institution) and
-    the two counts.
+    ``{"error": ...}`` on failure, as ``search_works`` does. Hits are projections, so this
+    **never warms the cache**: one written under a singleton key would answer a later
+    ``get_work`` / ``get_author`` / ``get_institution`` with a fraction of the object, the
+    hazard ``search_works`` refuses ``select=`` over.
 
-    **Never warms the cache**, unlike ``search_works`` and ``search_authors``. These are
-    projected records, and one written under a singleton key would answer a later
-    ``get_work`` / ``get_author`` / ``get_institution`` with a fraction of the object —
-    the hazard ``search_works`` refuses ``select=`` over.
-
-    ``entity_type`` is interpolated into the path, so the caller owes it a
-    ``AUTOCOMPLETE_ENTITIES`` membership test; there is no ``rows`` because OpenAlex
-    serves a fixed page.
+    No ``rows``: OpenAlex rejects ``per-page`` here and always serves ten.
     """
     params = _build_params()
     params["q"] = query
@@ -760,9 +736,8 @@ async def get_works_batch(
     resolved work is written to the singleton cache, so a later ``get_work`` is
     a free hit. ``force_refresh=True`` drops cached entries first.
 
-    **What batching buys is wall clock, not credits.** A `filter=` list costs 1 credit
-    where the singletons it replaces cost 0; at ``_MIN_REQUEST_GAP`` a chunk of 50 would
-    otherwise take seconds, which is the trade.
+    **Batching buys wall clock, not credits**: a `filter=` list costs 1 where the
+    singletons it replaces cost 0, but at ``_MIN_REQUEST_GAP`` a chunk of 50 takes seconds.
 
     A transient failure contaminates its whole chunk: one HTTP failure doesn't
     say which DOI the upstream meant to error on.

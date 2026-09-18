@@ -1059,13 +1059,12 @@ async def get_institution(
     works_count, cited_by_count, h_index, i10_index, city, region,
     alternative_names, parent_institutions}``. ``alternative_names`` merges
     OpenAlex's acronyms and alternative spellings, capped at 10;
-    ``parent_institutions`` is the lineage above this one, so a hospital or
-    campus names its university. ``works_count`` / ``cited_by_count`` /
-    ``h_index`` drift with time.
+    ``parent_institutions`` is the lineage above this one, so a hospital or campus
+    names its university. ``works_count`` / ``cited_by_count`` / ``h_index`` drift
+    with time.
 
-    Affiliations reported elsewhere are *current*, not paper-time — this tool
-    resolves what an affiliation string names, not where an author worked when a
-    given paper was written.
+    Resolves what an affiliation string names, not where an author worked when a
+    given paper was written — affiliations elsewhere are current, not paper-time.
 
     Errors: not found / bad ID → ``{error, suggestion}`` pointing at
     autocomplete_openalex or a ROR.

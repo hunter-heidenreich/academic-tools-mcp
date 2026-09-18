@@ -25,7 +25,7 @@ These are properties of the upstream providers rather than of this server, which
 
 - **Diacritics are dropped or mangled** in OpenAlex author names (`Alan Aspuru-Guzik` for `Alán Aspuru-Guzik`). Verify spellings against the publisher's page before quoting a name.
 - **Affiliations are current, not paper-time.** OpenAlex reports where an author works *now*, not where they were when the paper was published — the gap widens for older papers.
-- **OpenAlex meters credits, not requests.** Measured against the live API: a metadata lookup (`get_paper_metadata`, `get_author`, `get_institution`) and `autocomplete_openalex` cost nothing, a batched `get_papers_metadata` call costs 1, and `search_openalex` / `search_authors` cost 10 each — against a daily budget of 1000 anonymous, 10× that with a free `OPENALEX_API_KEY`. So roughly 100 searches a day without a key, and unlimited lookups. Reach for `autocomplete_openalex` when you know a name and want its ID; keep `search_openalex` for when you genuinely have a topic.
+- **OpenAlex meters credits, not requests.** Measured: metadata lookups and `autocomplete_openalex` cost nothing, a batched `get_papers_metadata` call costs 1, and `search_openalex` / `search_authors` cost 10 each, against 1000/day anonymous and 10× that with a free `OPENALEX_API_KEY`. So lookups are effectively unlimited and searches are not — roughly 100 a day without a key.
 - **A zero from OpenCitations is not a claim of absence.** OpenCitations answers a DOI it has never indexed and a DOI it indexed with zero edges identically — an empty list — so `get_paper_references(source="opencitations")` and `get_paper_citations` returning `total: 0` mean "no edges in this index", not "this paper has no references or citations". Cross-check against Crossref for references (`get_paper_references_count` reports both) and against OpenAlex for citations (`get_paper_citations_count` reports both).
 - **Papers with Code is a public beta with a per-IP rate limit** (120 req/min, 60 for list and search) and no uptime promise. Your browser and scripts share that limit, so browsing it heavily while an agent runs can still trigger a 429. It accepts arXiv IDs only, stops search at page 100, and fills the `hf_models` / `hf_datasets` / `hf_spaces` URL lists only for papers not from arXiv. Repository links, `is_official` and leaderboard rows are community-curated: cite a result's source paper, not the leaderboard.
 - **arXiv records almost no affiliations.** Neither its API nor its OAI-PMH record carries them for most papers, so `get_paper_authors` on an arXiv ID usually lists names only. Chain to the journal version with `follow_published=True`, or look the author up with `search_authors` / `get_author`, keeping in mind that OpenAlex's affiliations are current rather than paper-time.
@@ -53,7 +53,7 @@ All configuration is via environment variables in `.env`. Nothing is required to
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENALEX_API_KEY` | No | Free API key from [openalex.org](https://openalex.org/settings/api). OpenAlex meters a credit budget per ~24h window; a key raises it 10× (measured 1000 → 10000). `OPENALEX_MAILTO` does not raise it |
-| `OPENALEX_MAILTO` | No | Your email, appended to the OpenAlex User-Agent. Buys no rate tier — OpenAlex abolished the polite pool and the `mailto` parameter in Feb 2026 and meters by key — but leaves an operator reachable, which it still asks for. Only `OPENALEX_API_KEY` moves the budget. |
+| `OPENALEX_MAILTO` | No | Your email, appended to the OpenAlex User-Agent. Buys no rate tier: OpenAlex abolished the polite pool and the `mailto` parameter in Feb 2026 and meters by key. It leaves an operator reachable, which OpenAlex still asks for. |
 | `CROSSREF_MAILTO` | No | Your email — joins the Crossref [polite pool](https://www.crossref.org/documentation/retrieve-metadata/rest-api/), raising the rate limit to 10 req/sec singles / 3 search / 3 concurrent, from 5 / 1 / 1. Sent in the `User-Agent` and as a `mailto` parameter, since Crossref meters the pool by address. The client starts at the public rate and speeds up only once a response confirms it, so a typo costs throughput rather than earning a 429. |
 | `ARXIV_MAILTO` | No | Your email, appended to the arXiv User-Agent. A descriptive agent is sent either way — arXiv's edge throttles generic library agents far harder. |
 | `CACHE_DIR` | No | Where the on-disk cache lives (default: `.cache/` beside the project). Set it when running from an installed wheel. |
@@ -127,8 +127,8 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 | Tool | Description |
 |------|-------------|
 | `search_arxiv` | Search arXiv with field prefixes (`ti:`, `au:`, `abs:`, `cat:`), boolean operators and `submittedDate:[… TO …]` ranges; pages with `page`, sorts by relevance, submission or update date. arXiv serves only a query's first 10,000 results, so narrow the query rather than paging past them. |
-| `search_openalex` | Free-text search across all of OpenAlex, matched on title, abstract and fulltext. The broadest discovery tool here — use it when you have a topic rather than a title. Each hit warms the cache `get_paper_metadata` reads, so the follow-up is free. The one OpenAlex call that spends real credit budget; `autocomplete_openalex` is the cheap alternative when you have a name |
-| `autocomplete_openalex` | Match a name or title prefix to an OpenAlex ID, across works, authors, institutions or sources. Costs no credit budget, so it is the tool to reach for when you know what something is called; hits are *not* cached, so chaining one costs a request |
+| `search_openalex` | Free-text search across all of OpenAlex, matched on title, abstract and fulltext. The broadest discovery tool here — use it when you have a topic rather than a title. Each hit warms the cache `get_paper_metadata` reads, so the follow-up is free. The one OpenAlex call that spends real credit budget — use `autocomplete_openalex` when you have a name rather than a topic |
+| `autocomplete_openalex` | Match a name or title prefix to an OpenAlex ID, across works, authors, institutions or sources. Costs no credit budget, so reach for it when you know what something is called. Hits are *not* cached, so chaining one costs a request |
 
 ### Authors
 
@@ -144,8 +144,7 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 
 `get_institution` accepts OpenAlex institution IDs and RORs on the same terms —
 bare, `ror:`-prefixed, or a `ror.org` URL. It resolves what an affiliation string
-*names*; it does not tell you where an author worked when a given paper was
-written, which is the limitation above rather than a gap in this tool.
+*names*, not where an author worked when a given paper was written.
 
 ### PDF pipeline (unified)
 

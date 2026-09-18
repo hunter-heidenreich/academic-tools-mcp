@@ -412,30 +412,27 @@ async def autocomplete_openalex(
     ],
     entity_type: AUTOCOMPLETE_ENTITY = "works",
 ) -> dict[str, Any]:
-    """Match a name to an OpenAlex ID. The cheap way in — costs no credit budget.
+    """Match a name to an OpenAlex ID. Costs no credit budget.
 
-    Use it when you know what a thing is *called* and want its identifier:
-    search_openalex matches content and is metered ten times as heavily, so it is
-    the wrong tool for a name you already have. This is the only route to
-    get_institution.
+    Use it when you know what a thing is *called*; search_openalex matches content
+    and is metered ten times as heavily. The only route to get_institution.
 
     Returns ``{total_results, result_count, results: [{openalex_id, name, hint,
     entity_type, external_id, works_count, cited_by_count}, ...]}``.
-    ``external_id`` is the entity's other identifier — a DOI for a work, a ROR
-    for an institution, an ORCID for an author, an ISSN for a source — and may be
-    null. ``hint`` disambiguates: authors for a work, a location for an
-    institution. Every field but ``openalex_id`` may be null.
+    ``external_id`` is the entity's other identifier — a DOI for a work, a ROR for
+    an institution, an ORCID for an author, an ISSN for a source. ``hint``
+    disambiguates: authors for a work, a location for an institution. Every field
+    but ``openalex_id`` may be null.
 
-    OpenAlex serves a fixed page here, so ``result_count`` is capped at 10
-    whatever ``total_results`` reports; narrow the query rather than paging.
+    OpenAlex serves a fixed page, so ``result_count`` caps at 10 whatever
+    ``total_results`` reports; narrow the query rather than paging.
 
     Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
     parse failure.
 
     Chain get_paper_metadata(``external_id``) for a work, get_author /
-    get_institution(``openalex_id``) otherwise. **Unlike search_openalex, these
-    hits are not cached**, so that follow-up costs a request — a fair trade,
-    since this call costs no credits where search_openalex costs ten.
+    get_institution(``openalex_id``) otherwise. **These hits are not cached**,
+    unlike search_openalex's, so that follow-up costs a request.
     """
     response = await openalex.autocomplete(query, entity_type=entity_type)
     if "error" in response:

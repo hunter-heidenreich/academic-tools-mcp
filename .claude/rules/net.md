@@ -88,16 +88,13 @@ and `max_pending` *before* it sleeps, so a queued search is refused, not stacked
 - **A quota is observed, never assumed.** Only OpenAlex sends `X-RateLimit-*`, so
   no header, no deadline and an elapsed deadline all read as *proceed* — refusing
   on ignorance would strand every provider that publishes nothing.
-- **A header is an advertisement; a 429 is the observation. `blocked_for` needs
-  both, and each conjunct has its own failure mode.** Without `Quota.refused`, a
-  provider advertising an empty budget locks out the call classes it still serves
-  free — OpenAlex meters *credits*, and its singletons and `/autocomplete` spend
-  none, so gating on `remaining` alone refused the whole namespace, metadata
-  lookups included, for the length of the credit window. Without the `remaining`
-  test, a 429 raised by a momentary rate burst locks the provider out until the
-  *budget* window refills, hours later, over something a short retry clears. The
-  advertised `remaining` is recorded either way and still reaches `snapshot()`;
-  it just no longer gates on its own.
+- **A header is an advertisement, a 429 is the observation, and `blocked_for`
+  needs both.** Without `Quota.refused`, an advertised-empty budget locks out the
+  classes a provider still serves free — OpenAlex meters *credits*, and its
+  singletons spend none. Without `remaining`, a 429 from a momentary rate burst
+  locks it out until the *budget* refills, hours later. The advertised `remaining`
+  is recorded either way and still reaches `snapshot()`; it just no longer gates
+  on its own.
 - **A 429 with a usable `Retry-After` is an observation too.** Without
   `X-RateLimit-*` headers (which win), `http.record_quota` records the budget as
   spent until then, and `Throttle.slot` refuses every later caller for that

@@ -29,9 +29,8 @@ _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 class Quota:
     """A provider's last advertised budget. ``deadline`` is monotonic; all fields optional.
 
-    ``refused`` records that the response *was* a refusal, not merely that it advertised
-    an empty budget. Both are stored, so the operator row reports either; only the first
-    gates a later caller.
+    ``refused`` records that the response *was* a refusal, not just that it advertised an
+    empty budget; both are stored, but only the first gates a later caller.
     """
 
     limit: int | None
@@ -42,12 +41,10 @@ class Quota:
     def blocked_for(self, now: float) -> float | None:
         """Seconds until refill when refused *and* spent, else None. No deadline never blocks.
 
-        **Both conjuncts carry their own weight.** Without ``refused``, a provider
-        advertising an empty budget locks out the call classes it still serves for free
-        (openalex meters credits, and its singletons spend none). Without the
-        ``remaining`` test, a 429 raised by a momentary rate burst — where the budget is
-        nowhere near spent — locks the provider out until the budget window refills,
-        which can be hours away.
+        Both conjuncts earn their place: without ``refused``, an advertised-empty budget
+        locks out the classes a provider still serves free (openalex meters credits, and
+        its singletons spend none); without ``remaining``, a 429 from a momentary rate
+        burst locks it out until the budget refills, hours later.
         """
         if not self.refused or self.deadline is None:
             return None
@@ -78,8 +75,7 @@ def record_quota(
 ) -> None:
     """Store the budget a response advertised. ``reset_seconds`` is seconds-until-refill.
 
-    ``refused`` says the response *was* a refusal, which is what arms the local lockout;
-    a header alone only populates the operator row.
+    ``refused`` arms the local lockout; a header alone only populates the operator row.
     """
     if limit is None and remaining is None:
         return
