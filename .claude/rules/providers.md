@@ -39,8 +39,9 @@ Two things the shape does not make obvious:
   uniform `{error, retryable}` contract. **An annotation is not a guard here**:
   these values come from untyped JSON, so `raw: str | None` buys nothing at
   runtime. Each provider names its guard — `crossref._message_of`,
-  `wikipedia._summary_of`, `opencitations._edges_of`, `biorxiv._collection_of` —
-  so the check and the comprehension it protects stay one thought.
+  `wikipedia._summary_of` / `._search_of`, `opencitations._edges_of`,
+  `biorxiv._collection_of` — so the check and the comprehension it protects stay
+  one thought.
 - **A wrong shape is an error, never an empty result set.** Reported as "no
   matches", it ends the agent's search instead of prompting a retry.
 - **`safe=` is per-provider policy, not a default.** `openalex.get_work` keeps
@@ -299,10 +300,38 @@ keeps one cache key.
 
 **Requests without a `User-Agent` may be blocked outright.**
 
+**Two endpoint families, and the split is deliberate.** `get_summary` reads the
+Wikimedia REST API (`/api/rest_v1/page/summary`); `search` reads the MediaWiki
+Action API (`/w/api.php`). They are documented, versioned and rate-limited
+separately, so a fact about one is not a fact about the other — `addresses_a_record`
+guards the summary path, where the title *is* a path segment, and does not apply to
+search, whose input rides in a query parameter on a static path.
+
+**MediaWiki refuses a request under HTTP 200.** The Action API answers a malformed
+query with an `error` object in place of `query`, so `raise_for_status` never sees
+it. `_rejection_of` runs before `_search_of` for that reason: read as a shape
+failure it becomes `retryable: True` and sends the agent back at a request that
+cannot succeed; read as a result set it becomes "no matches". It is neither, and it
+is arXiv's `api/errors` entry one provider over.
+
+**`list=search` is full text, and that is the whole point.** `action=opensearch`,
+which this used through #146, is a title-prefix suggester: it answered `[]` to
+*"Vaswani attention"* and to any query phrased as a description rather than a
+title. A structurally valid empty list fires no guard and reads to the agent as
+"Wikipedia has no article on this" — the failure the rule above forbids, arriving
+without a wrong shape. `srinfo=totalhits|suggestion` is not optional garnish:
+`suggestion` is what keeps a misspelling from presenting as absence.
+
 **`canonical_title` is built from free-form user text rather than an identifier
 grammar** — the only canonicalizer here that is. It is the cache key *and* the
 URL path segment, so the two cannot drift; its three folding rules and the
-`"ß".upper()` length trap are in its own docstring.
+`"ß".upper()` length trap are in its own docstring. `_article_url` routes a search
+hit's link through it too, so a hit and the key `get_summary` later computes for it
+are one spelling.
+
+**A search hit warms nothing.** It carries a title and a snippet; written to
+`summaries` it would answer a later `get_summary` with a fraction of the record —
+the rule `paperswithcode` states as "never warm from search"..
 
 ## paperswithcode.py
 

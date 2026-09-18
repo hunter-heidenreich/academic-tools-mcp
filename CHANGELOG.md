@@ -122,6 +122,19 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **`search_wikipedia` searches article text, not just titles.** It ran on
+  `action=opensearch`, a title-prefix suggester: measured, it answered `[]` to
+  *"Vaswani attention"*, to *"neural network architecture for machine translation"*
+  and to *"the scientist who discovered CRISPR"*. That empty list is structurally
+  valid, so nothing flagged it — it simply read as "Wikipedia has no article on
+  this" and ended the search. It now runs on MediaWiki's full-text `list=search`,
+  and those three queries return `Ashish Vaswani`, `Neural machine translation` and
+  `Jennifer Doudna` respectively. Hits gain a plain-text `snippet` (CirrusSearch's
+  `<span class="searchmatch">` markup is stripped, as Crossref's JATS already is),
+  the response gains `total_results` from Wikipedia's own match count, and
+  `did_you_mean` carries its spelling correction — so a typo presents as a
+  correction to retry rather than as absence. A query MediaWiki refuses now comes
+  back `retryable: false`, which matters because it refuses under HTTP 200. ([#146])
 - **OpenAlex's `search=` queries are paced separately from everything else.** They
   are the one metered call class: measured against the live API, a `search=` list
   costs 10 credits where a `filter=` list costs 1 and a singleton or an autocomplete
@@ -2010,3 +2023,4 @@ say which.
 [#142]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/142
 [#144]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/144
 [#145]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/145
+[#146]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/146

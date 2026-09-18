@@ -156,7 +156,7 @@ Their `_fetch` bodies do share a skeleton — `addresses_a_record` →
 the skeleton is not what those lines *are*. Roughly half of them are comments
 naming what **this** provider's shortened path returns (crossref's `/works`
 collection clears its own shape ladder; wikipedia's `/page` answers 200 with a
-dict; opencitations' empty list is a real answer), and those neither move into a
+dict — its summary path only, since `search` is a different endpoint family; opencitations' empty list is a real answer), and those neither move into a
 helper nor survive without the branch they annotate. Two further tells: the
 extraction step needs a `dict | None` sentinel protocol invented for the
 occasion, splitting each guard from the comprehension or projection it protects;

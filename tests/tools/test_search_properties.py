@@ -370,7 +370,7 @@ def test_every_search_tool_reports_result_count_and_a_more_exist_signal(
     """`result_count` is `len(results)` everywhere, and no tool ships mute.
 
     Every search tool owes the agent some way to learn more matches exist:
-    `total_results` for the two with an upstream count, `truncated` for
+    `total_results` for those with an upstream count, `truncated` for
     find_in_paper, `result_count` alone where the provider reports no total.
     """
     _serve_crossref(monkeypatch, items)
@@ -379,7 +379,11 @@ def test_every_search_tool_reports_result_count_and_a_more_exist_signal(
     _serve_openalex_authors(monkeypatch, items)
 
     async def fake_wiki(query: str, limit: int = 5) -> dict[str, Any]:
-        return {"results": [{"title": t, "url": f"https://x/{t}"} for t in titles]}
+        return {
+            "results": [{"title": t, "url": f"https://x/{t}", "snippet": ""} for t in titles],
+            "total_results": len(titles),
+            "did_you_mean": None,
+        }
 
     monkeypatch.setattr(wikipedia, "search", fake_wiki)
 
@@ -409,8 +413,12 @@ def test_every_search_tool_reports_result_count_and_a_more_exist_signal(
     assert isinstance(cr["total_results"], int)
     assert isinstance(oa["total_results"], int)
     assert isinstance(au["total_results"], int)
-    # Wikipedia has no upstream total and must not invent one.
-    assert set(wk) == {"query", "result_count", "results"}
+    # Wikipedia reports one too, from `searchinfo.totalhits`, and folds an absent
+    # count to 0 so the key means one thing across every tool carrying it. It keeps
+    # `query` and adds `did_you_mean` — the correction that makes zero hits
+    # actionable rather than a verdict.
+    assert set(wk) == {"query", "total_results", "result_count", "did_you_mean", "results"}
+    assert isinstance(wk["total_results"], int)
 
 
 # ---------------------------------------------------------------------------

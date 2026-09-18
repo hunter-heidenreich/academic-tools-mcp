@@ -106,44 +106,94 @@ class TestCanonicalTitle:
 # ---------------------------------------------------------------------------
 
 
+def _search_body(*rows: Any, totalhits: int = 0, suggestion: str | None = None) -> dict[str, Any]:
+    """A ``list=search`` body, the shape ``formatversion=2`` returns."""
+    info: dict[str, Any] = {"totalhits": totalhits}
+    if suggestion is not None:
+        info["suggestion"] = suggestion
+    return {"batchcomplete": True, "query": {"searchinfo": info, "search": list(rows)}}
+
+
 class TestSearch:
     @pytest.mark.asyncio
-    async def test_parses_opensearch_response(self, monkeypatch):
-        """Should parse the 4-element OpenSearch array correctly."""
+    async def test_parses_a_search_page(self, monkeypatch):
+        """Hits carry a built url and a plain-text snippet; the total comes from upstream."""
         _stub(
             monkeypatch,
-            [
-                "test query",
-                ["Article One", "Article Two"],
-                ["", ""],
-                [
-                    "https://en.wikipedia.org/wiki/Article_One",
-                    "https://en.wikipedia.org/wiki/Article_Two",
-                ],
-            ],
+            _search_body(
+                {"ns": 0, "title": "Article One", "pageid": 1, "snippet": "first"},
+                {"ns": 0, "title": "Article Two", "pageid": 2, "snippet": "second"},
+                totalhits=1371,
+            ),
         )
 
-        results = (await wikipedia.search("test query", limit=5))["results"]
+        result = await wikipedia.search("test query", limit=5)
 
-        assert results == [
-            {"title": "Article One", "url": "https://en.wikipedia.org/wiki/Article_One"},
-            {"title": "Article Two", "url": "https://en.wikipedia.org/wiki/Article_Two"},
-        ]
+        assert result == {
+            "results": [
+                {
+                    "title": "Article One",
+                    "url": "https://en.wikipedia.org/wiki/Article_One",
+                    "snippet": "first",
+                },
+                {
+                    "title": "Article Two",
+                    "url": "https://en.wikipedia.org/wiki/Article_Two",
+                    "snippet": "second",
+                },
+            ],
+            "total_results": 1371,
+            "did_you_mean": None,
+        }
 
     @pytest.mark.asyncio
     async def test_empty_results(self, monkeypatch):
         """A well-formed response with no hits is an empty list, not an error."""
-        _stub(monkeypatch, ["xyzzy", [], [], []])
+        _stub(monkeypatch, _search_body())
 
-        assert await wikipedia.search("xyzzy nonexistent") == {"results": []}
+        result = await wikipedia.search("xyzzy nonexistent")
+
+        assert result == {"results": [], "total_results": 0, "did_you_mean": None}
 
     @pytest.mark.asyncio
     async def test_single_hit(self, monkeypatch):
-        _stub(monkeypatch, ["q", ["Only"], ["desc"], ["https://en.wikipedia.org/wiki/Only"]])
+        _stub(monkeypatch, _search_body({"title": "Only", "snippet": "x"}, totalhits=1))
 
         assert (await wikipedia.search("q"))["results"] == [
-            {"title": "Only", "url": "https://en.wikipedia.org/wiki/Only"}
+            {"title": "Only", "url": "https://en.wikipedia.org/wiki/Only", "snippet": "x"}
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_spelling_suggestion_survives_zero_hits(self, monkeypatch):
+        """A typo is zero hits *plus* a correction, and the correction is the recovery.
+
+        Without it the agent reads an empty list as "Wikipedia doesn't cover this",
+        which is the failure the full-text switch exists to end.
+        """
+        _stub(monkeypatch, _search_body(suggestion="transformer architecture"))
+
+        result = await wikipedia.search("transfomer architecure")
+
+        assert result["results"] == []
+        assert result["did_you_mean"] == "transformer architecture"
+
+    @pytest.mark.asyncio
+    async def test_snippet_markup_is_stripped_to_prose(self, monkeypatch):
+        """CirrusSearch marks matches up, and markup read as content is what gets quoted."""
+        _stub(
+            monkeypatch,
+            _search_body(
+                {
+                    "title": "Deep learning",
+                    "snippet": 'In <span class="searchmatch">deep</span>\nlearning, '
+                    "R&amp;D uses &lt;tensors&gt;",
+                }
+            ),
+        )
+
+        assert (await wikipedia.search("q"))["results"][0]["snippet"] == (
+            "In deep learning, R&D uses <tensors>"
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -159,11 +209,25 @@ class TestSearch:
     )
     async def test_limit_is_clamped_on_the_wire(self, monkeypatch, limit, sent):
         """The clamp must reach the outgoing request, not just a local variable."""
-        requests = _stub(monkeypatch, ["q", [], [], []])
+        requests = _stub(monkeypatch, _search_body())
 
         await wikipedia.search("q", limit=limit)
 
-        assert requests[0].url.params["limit"] == sent
+        assert requests[0].url.params["srlimit"] == sent
+
+    @pytest.mark.asyncio
+    async def test_the_request_asks_for_full_text_hits(self, monkeypatch):
+        """`list=search` is the whole point: opensearch matched titles only."""
+        requests = _stub(monkeypatch, _search_body())
+
+        await wikipedia.search("the scientist who discovered CRISPR")
+
+        params = requests[0].url.params
+        assert params["action"] == "query"
+        assert params["list"] == "search"
+        assert params["srsearch"] == "the scientist who discovered CRISPR"
+        # Without `suggestion`, a typo is indistinguishable from an absent topic.
+        assert params["srinfo"] == "totalhits|suggestion"
 
     def test_the_tool_validates_against_the_same_bound(self):
         """The tool's Field bound and the provider's clamp are one constant."""
@@ -207,19 +271,24 @@ class TestSearchHardening:
     @pytest.mark.parametrize(
         "payload",
         [
-            {"batchcomplete": ""},  # a dict, not the OpenSearch array
+            {"batchcomplete": True},  # no `query` at all
             None,
-            "not an array",
-            ["q", ["Only"]],  # truncated: no urls element
-            ["q", "Article One", ["d"], "https://en.wikipedia.org/wiki/Article_One"],
-            ["q", None, None, None],
+            "not an object",
+            ["q", ["Only"]],  # the old OpenSearch array
+            {"query": "not an object"},
+            {"query": {"search": "not a list"}},
+            {"query": {"searchinfo": {"totalhits": 1}}},  # no `search`
+            {"query": {"search": [None, 42]}},  # rows, none of them usable
+            {"query": {"search": [{"pageid": 7}]}},  # a row with no title
+            {"query": {"search": [{"title": "  "}]}},  # a title that isn't one
         ],
     )
     async def test_wrong_shape_is_an_error_never_an_empty_result(self, monkeypatch, payload):
         """Wrong shape must read as "retry", not as "no such article".
 
-        The string case is the sharp one: zipping two strings yields a
-        per-character "hit" list an agent would then chain a tool call onto.
+        The last three are the sharp ones: rows arrived, so the body is not an
+        empty result set — dropping them all and reporting `[]` would tell the
+        agent Wikipedia has nothing, ending a search a retry would have served.
         """
         _stub(monkeypatch, payload)
 
@@ -229,21 +298,46 @@ class TestSearchHardening:
         assert "results" not in result
 
     @pytest.mark.asyncio
-    async def test_non_string_entries_are_dropped(self, monkeypatch):
-        """A well-formed array with a junk entry keeps the usable hits."""
+    async def test_a_refused_request_is_not_retryable(self, monkeypatch):
+        """MediaWiki refuses under HTTP 200, so `raise_for_status` never sees it.
+
+        Read as a wrong shape it becomes `retryable: True`, sending the agent back
+        at a request that cannot succeed; read as a result set it becomes "no
+        matches". It is neither.
+        """
         _stub(
             monkeypatch,
-            [
-                "q",
-                ["Good", 42, None],
-                ["", "", ""],
-                ["https://en.wikipedia.org/wiki/Good", "https://x", None],
-            ],
+            {
+                "error": {"code": "missingparam", "info": 'The "srsearch" parameter must be set.'},
+                "servedby": "mw-api-ext",
+            },
+        )
+
+        result = await wikipedia.search("q")
+
+        assert result["retryable"] is False
+        assert "results" not in result
+        assert "srsearch" in result["error"]
+        assert result.get("not_found") is not True
+
+    @pytest.mark.asyncio
+    async def test_a_junk_row_beside_a_usable_one_keeps_the_usable_one(self, monkeypatch):
+        """Partial junk degrades; total junk is the wrong-shape case above."""
+        _stub(
+            monkeypatch,
+            _search_body({"title": "Good", "snippet": "s"}, {"pageid": 9}, None, totalhits=2),
         )
 
         assert (await wikipedia.search("q"))["results"] == [
-            {"title": "Good", "url": "https://en.wikipedia.org/wiki/Good"}
+            {"title": "Good", "url": "https://en.wikipedia.org/wiki/Good", "snippet": "s"}
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_total_is_unknown_not_zero(self, monkeypatch):
+        """`searchinfo` is not guaranteed, and 0 would be a claim the body never made."""
+        _stub(monkeypatch, {"query": {"search": [{"title": "Only"}]}})
+
+        assert (await wikipedia.search("q"))["total_results"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -422,22 +516,70 @@ class TestTitleAddressesARecord:
 class TestWikipediaTools:
     @pytest.mark.asyncio
     async def test_search_reports_result_count_alongside_the_hits(self, monkeypatch):
-        # Every search-list tool reports result_count = len(results). Wikipedia
-        # has no upstream-total concept, so it carries no total_results — an
-        # agent branching on that difference needs the absence to be reliable.
+        # Every search-list tool reports result_count = len(results), and
+        # total_results is MediaWiki's own count — a larger one means more exist.
         from academic_tools_mcp import server
 
         async def fake_search(query, limit=5):
-            return {"results": [{"title": "Photosynthesis", "url": "https://en.wikipedia.org/x"}]}
+            return {
+                "results": [
+                    {"title": "Photosynthesis", "url": "https://en.wikipedia.org/x", "snippet": "s"}
+                ],
+                "total_results": 42,
+                "did_you_mean": None,
+            }
 
         monkeypatch.setattr(wikipedia, "search", fake_search)
 
         result = await server.search_wikipedia("photosynthesis")
 
         assert result["query"] == "photosynthesis"
+        assert result["total_results"] == 42
         assert result["result_count"] == 1
         assert result["results"][0]["title"] == "Photosynthesis"
-        assert "total_results" not in result
+
+    @pytest.mark.asyncio
+    async def test_search_folds_an_unknown_total_to_an_int(self, monkeypatch):
+        """`total_results` means the same thing on every tool that reports it, so a
+        provider `None` cannot reach the agent as a second spelling of zero."""
+        from academic_tools_mcp import server
+
+        async def fake_search(query, limit=5):
+            return {"results": [], "total_results": None, "did_you_mean": None}
+
+        monkeypatch.setattr(wikipedia, "search", fake_search)
+
+        assert (await server.search_wikipedia("x"))["total_results"] == 0
+
+    @pytest.mark.asyncio
+    async def test_search_surfaces_the_spelling_correction(self, monkeypatch):
+        """`did_you_mean`, not `suggestion`: enrich_error owns that key on the error
+        branch, and one name meaning two things is a fork an agent cannot see."""
+        from academic_tools_mcp import server
+
+        async def fake_search(query, limit=5):
+            return {"results": [], "total_results": 0, "did_you_mean": "photosynthesis"}
+
+        monkeypatch.setattr(wikipedia, "search", fake_search)
+
+        result = await server.search_wikipedia("photosynthisis")
+
+        assert result["did_you_mean"] == "photosynthesis"
+        assert "suggestion" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_refused_query_is_told_to_rewrite_not_retry(self, monkeypatch):
+        from academic_tools_mcp import server
+
+        async def fake_search(query, limit=5):
+            return {"error": "Wikipedia rejected the search query: badvalue", "retryable": False}
+
+        monkeypatch.setattr(wikipedia, "search", fake_search)
+
+        result = await server.search_wikipedia("x")
+
+        assert "Rewrite" in result["suggestion"]
+        assert "retry" not in result["suggestion"].lower()
 
     @pytest.mark.asyncio
     async def test_search_passes_the_limit_through(self, monkeypatch):

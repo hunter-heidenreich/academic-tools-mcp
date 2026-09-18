@@ -14,7 +14,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [ACL Anthology](https://aclanthology.org/) | Metadata, authors, abstracts, BibTeX and PDF download for ACL venue papers | None |
 | [Crossref](https://www.crossref.org/) | Reference lists, retraction and correction notices, title search / DOI discovery | Optional email (for polite pool) |
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | Optional access token (free, usage statistics only) |
-| [Wikipedia](https://www.wikipedia.org/) | Article search, summaries | Optional email (for User-Agent) |
+| [Wikipedia](https://www.wikipedia.org/) | Full-text article search, summaries | Optional email (for User-Agent) |
 | [Papers with Code](https://paperswithcode.co/) | Code repositories, tasks, methods, benchmark results and leaderboards, Hugging Face links (arXiv papers) | None |
 
 All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry honouring `Retry-After`, and definitive 404s are negative-cached (24h; 1h for arXiv/bioRxiv, whose identifiers go live mid-session) so retry-happy agents don't burn rate budget on guaranteed misses.
@@ -214,7 +214,7 @@ The paper tools take an arXiv ID in any spelling; a DOI is refused without a req
 
 | Tool | Description |
 |------|-------------|
-| `search_wikipedia` | Search for articles matching a query |
+| `search_wikipedia` | Full-text search of article content, not just titles; hits carry a plain-text `snippet`, and `did_you_mean` returns Wikipedia's spelling correction when a query finds nothing |
 | `get_wikipedia_summary` | Title, description, extract, URL, page type (`standard` / `disambiguation`), and `pageid`; errors with `not_found` if the page doesn't exist |
 
 ## PDF Pipeline

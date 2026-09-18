@@ -1,5 +1,7 @@
-"""Wikipedia client. MediaWiki OpenSearch for titles, Wikimedia REST for summaries; no auth."""
+"""Wikipedia client. MediaWiki full-text search, Wikimedia REST for summaries; no auth."""
 
+import html
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -15,8 +17,13 @@ NAMESPACE = "wikipedia"
 # Agent-facing provider name; every site that names us reads it.
 LABEL = "Wikipedia"
 
-_OPENSEARCH_URL = "https://en.wikipedia.org/w/api.php"
+# One endpoint serves every ``action=``, so the name states the host rather than the
+# action it happens to be spelled with.
+_API_URL = "https://en.wikipedia.org/w/api.php"
 _SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary"
+
+# ``list=search`` rows carry no url, so a hit's link is built from its title.
+_ARTICLE_URL = "https://en.wikipedia.org/wiki"
 
 # Exported so ``search_wikipedia``'s validation bound isn't a second spelling of it.
 MAX_SEARCH_LIMIT = 10
@@ -87,22 +94,131 @@ def canonical_title(title: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def search(query: str, limit: int = 5) -> dict[str, Any]:
-    """Search Wikipedia for articles matching a query.
+# MediaWiki wraps every matched term in ``<span class="searchmatch">``, so a snippet is
+# markup, not text — ``crossref.abstract_text``'s problem, one provider over.
+_SEARCHMATCH_TAG_RE = re.compile(r"<[^>]*>")
 
-    Returns ``{"results": [{"title", "url"}, ...]}`` on success or
-    ``{"error": ...}`` on transport / HTTP failure or a wrong-shape body.
+
+def _snippet_text(raw: Any) -> str:
+    """A hit's ``snippet`` as plain text, ``""`` when absent or not a string.
+
+    Any tag, not just ``searchmatch``: markup read as content is what an agent quotes,
+    and upstream is free to add a second one. Substituting a space, not nothing, keeps
+    the words either side of a tag from fusing; the ``split()`` collapses it again.
+    """
+    if not isinstance(raw, str):
+        return ""
+    return " ".join(html.unescape(_SEARCHMATCH_TAG_RE.sub(" ", raw)).split())
+
+
+def _article_url(title: str) -> str:
+    """The desktop article URL for a hit, which ``list=search`` rows don't carry.
+
+    Through ``canonical_title`` so a hit's link and the key ``get_summary`` later
+    computes for it are one spelling; ``safe=""`` for the reason the summary path
+    uses it — a slash in "AC/DC" is part of the title, not a separator.
+    """
+    return f"{_ARTICLE_URL}/{quote(canonical_title(title), safe='')}"
+
+
+def _rejection_of(data: Any) -> str | None:
+    """MediaWiki's ``error`` detail when the body is a refused request, else ``None``.
+
+    The trap this exists for: a refusal arrives as **HTTP 200** carrying ``error`` and
+    no ``query``, so ``raise_for_status`` never sees it and ``_search_of`` would call it
+    a garbled body — selling a request that cannot succeed as worth retrying. arXiv's
+    ``api/errors`` entry, same shape.
+
+    ``""`` for a refusal naming neither code nor info; ``None`` is the discriminator,
+    so callers test ``is None``.
+    """
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    if not isinstance(error, dict):
+        return None
+    parts = [p for p in (error.get("code"), error.get("info")) if isinstance(p, str) and p]
+    return " ".join(" ".join(parts).split())
+
+
+def _search_of(data: Any) -> dict[str, Any] | None:
+    """The slice of a ``list=search`` body ``search`` returns, or ``None`` for a wrong shape.
+
+    ``Any``: an untyped body reaches ``.get`` here and ``.replace`` inside
+    ``canonical_title``, and ``AttributeError`` is in neither ``_PARSE_ERRORS`` nor
+    ``HTTPX_ERRORS`` — so an unguarded body escapes the provider entirely. A wrong shape
+    is never an empty result set: a zero-hit query is a well-formed body whose ``search``
+    is empty, and is not an error.
+    """
+    if not isinstance(data, dict):
+        return None
+    query = data.get("query")
+    if not isinstance(query, dict):
+        return None
+    rows = query.get("search")
+    if not isinstance(rows, list):
+        return None
+
+    # The title is the url's path segment and get_summary's key, so a row without a
+    # usable one is dropped rather than handed over as a link to nothing.
+    hits = [
+        {
+            "title": row["title"],
+            "url": _article_url(row["title"]),
+            "snippet": _snippet_text(row.get("snippet")),
+        }
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("title"), str) and row["title"].strip()
+    ]
+    # Rows that yielded nothing usable are malformed, not "no results".
+    if rows and not hits:
+        return None
+
+    info = query.get("searchinfo")
+    info = info if isinstance(info, dict) else {}
+    total = info.get("totalhits")
+    suggested = info.get("suggestion")
+    return {
+        "results": hits,
+        # A missing total is unknown, never zero; the tool layer folds it to an int.
+        "total_results": total if isinstance(total, int) else None,
+        # Not "suggestion": ``enrich_error`` owns that key on the error shape, and one
+        # name meaning "recovery advice" on one branch and "did you mean" on the other
+        # is a fork an agent cannot see.
+        "did_you_mean": suggested if isinstance(suggested, str) and suggested else None,
+    }
+
+
+async def search(query: str, limit: int = 5) -> dict[str, Any]:
+    """Full-text search of English Wikipedia — article text, not just titles.
+
+    Returns ``{"results": [{"title", "url", "snippet"}, ...], "total_results",
+    "did_you_mean"}``. ``total_results`` is MediaWiki's own match count and
+    ``did_you_mean`` the spelling it would have searched instead, which is how a typo
+    presents: zero hits plus a suggestion. A request MediaWiki refuses is ``{"error",
+    "retryable": False}``; transport, HTTP and wrong-shape failures are retryable.
+
+    Not cached, and warms nothing: a hit is a title and a snippet, and written to
+    ``summaries`` it would poison ``get_summary``'s key.
     """
     capped = min(max(limit, 1), MAX_SEARCH_LIMIT)
 
     try:
         response = await _throttled_get(
-            _OPENSEARCH_URL,
+            _API_URL,
             params={
-                "action": "opensearch",
-                "search": query,
-                "limit": str(capped),
+                "action": "query",
+                "list": "search",
+                "srsearch": query,
+                "srlimit": str(capped),
+                # The hit list is for triage; the article extract is get_summary's job.
+                "srprop": "snippet",
+                # `suggestion` is what keeps a misspelling from reading as absence.
+                "srinfo": "totalhits|suggestion",
                 "format": "json",
+                # Pins the shape the guards walk; the legacy format spells these fields
+                # differently.
+                "formatversion": "2",
             },
         )
 
@@ -113,22 +229,19 @@ async def search(query: str, limit: int = 5) -> dict[str, Any]:
     except http.HTTPX_ERRORS as e:
         return http.error_dict(LABEL, e)
 
-    # OpenSearch returns [query, [titles], [descriptions], [urls]].
-    if not isinstance(data, list) or len(data) < 4:
-        return _parse_error_dict()
+    # Before the shape guard: a refusal is a 200 whose body is well-formed JSON and not
+    # a result set, so the shape guard would sell it as worth retrying.
+    detail = _rejection_of(data)
+    if detail is not None:
+        return {
+            "error": f"{LABEL} rejected the search query: {detail or query}",
+            "retryable": False,
+        }
 
-    # Two strings zip into per-character "hits", and a wrong shape is never "no matches".
-    titles, urls = data[1], data[3]
-    if not isinstance(titles, list) or not isinstance(urls, list):
+    result = _search_of(data)
+    if result is None:
         return _parse_error_dict()
-
-    return {
-        "results": [
-            {"title": t, "url": u}
-            for t, u in zip(titles, urls, strict=False)
-            if isinstance(t, str) and isinstance(u, str)
-        ]
-    }
+    return result
 
 
 # ---------------------------------------------------------------------------
