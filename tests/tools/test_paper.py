@@ -1165,6 +1165,7 @@ class TestFlatMetadataFormatters:
             "published_doi": "10.1038/y",
             "published_journal": "Nature",
             "published_date": "2024-06-01",
+            "funding": [],
             "pdf_url": "https://biorxiv.org/x.full.pdf",
         }
 
@@ -1709,17 +1710,18 @@ class TestGetPaperVersions:
 
     @pytest.mark.parametrize("identifier", ["10.1038/nature12373", "pmid:20079334", "P16-1160"])
     @pytest.mark.asyncio
-    async def test_a_non_arxiv_identifier_is_refused_without_a_request(
+    async def test_a_non_preprint_identifier_is_refused_without_a_request(
         self, monkeypatch, identifier
     ):
         async def no_request(*args, **kwargs):
-            raise AssertionError("a non-arXiv identifier must not reach arXiv")
+            raise AssertionError("a non-preprint identifier must not reach a provider")
 
         monkeypatch.setattr(arxiv, "get_versions", no_request)
+        monkeypatch.setattr(biorxiv, "get_paper", no_request)
 
         result = await server.get_paper_versions(identifier)
 
-        assert "Not an arXiv ID" in result["error"]
+        assert "Not an arXiv ID or bioRxiv/medRxiv DOI" in result["error"]
         assert "search_arxiv" in result["suggestion"]
         # Unflagged would read as "unknown", not "can never work".
         assert result["not_found"] is True
@@ -1736,6 +1738,74 @@ class TestGetPaperVersions:
 
         assert result["not_found"] is True
         assert result["suggestion"] == paper._ARXIV_METADATA_HINT
+
+    @pytest.mark.asyncio
+    async def test_a_biorxiv_doi_reads_the_details_record(self, monkeypatch):
+        seen = []
+
+        async def fake_get_paper(doi, *, force_refresh=False):
+            seen.append((doi, force_refresh))
+            return {
+                "doi": "10.1101/2024.01.01.573838",
+                "server": "biorxiv",
+                "license": "cc_by",
+                "versions": [
+                    {"version": "1", "date": "2024-01-02", "license": "cc_no"},
+                    {"version": "2", "date": "2024-03-04", "license": "cc_by"},
+                ],
+            }
+
+        async def no_arxiv(*args, **kwargs):
+            raise AssertionError("a bioRxiv DOI must not reach arXiv")
+
+        monkeypatch.setattr(biorxiv, "get_paper", fake_get_paper)
+        monkeypatch.setattr(arxiv, "get_versions", no_arxiv)
+
+        result = await server.get_paper_versions(
+            "https://www.biorxiv.org/content/10.1101/2024.01.01.573838v2", force_refresh=True
+        )
+
+        assert result == {
+            "_source": "biorxiv",
+            "_canonical_id": "10.1101/2024.01.01.573838",
+            "doi": "10.1101/2024.01.01.573838",
+            "server": "biorxiv",
+            "submitter": None,
+            "license": "cc_by",
+            "versions": [
+                {"version": "1", "date": "2024-01-02", "license": "cc_no"},
+                {"version": "2", "date": "2024-03-04", "license": "cc_by"},
+            ],
+            "version_count": 2,
+        }
+        assert seen[0][1] is True
+
+    @pytest.mark.asyncio
+    async def test_a_record_cached_before_versions_existed_reports_none(self, monkeypatch):
+        async def fake_get_paper(doi, *, force_refresh=False):
+            return {"doi": doi, "server": "biorxiv", "license": "cc_by"}
+
+        monkeypatch.setattr(biorxiv, "get_paper", fake_get_paper)
+
+        result = await server.get_paper_versions("10.1101/2024.01.01.573838")
+
+        assert result["versions"] == []
+        assert result["version_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_biorxiv_error_gains_the_biorxiv_hint(self, monkeypatch):
+        async def fake_get_paper(doi, *, force_refresh=False):
+            return {
+                "error": "bioRxiv returned a response that could not be parsed.",
+                "retryable": True,
+            }
+
+        monkeypatch.setattr(biorxiv, "get_paper", fake_get_paper)
+
+        result = await server.get_paper_versions("10.1101/2024.01.01.573838")
+
+        assert result["retryable"] is True
+        assert result["suggestion"] == paper._BIORXIV_METADATA_HINT
 
 
 # ---------------------------------------------------------------------------

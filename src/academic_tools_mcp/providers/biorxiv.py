@@ -225,6 +225,41 @@ def _parse_publication(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _parse_funding(raw: dict[str, Any]) -> list[dict[str, str | None]]:
+    """Funders on a details entry as ``[{name, id, id_type, award}]``; ``[]`` for ``"NA"`` or junk.
+
+    The documented shape is unverified live (funders exist only for papers posted since
+    2025-04-10), so either key, and one object or a list, are accepted.
+    """
+    value = raw.get("funder", raw.get("funding"))
+    entries = [value] if isinstance(value, dict) else value if isinstance(value, list) else []
+    funders: list[dict[str, str | None]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        funder = {
+            "name": _text_or_none(entry, "name"),
+            "id": _text_or_none(entry, "id"),
+            "id_type": _text_or_none(entry, "id-type") or _text_or_none(entry, "id_type"),
+            "award": _text_or_none(entry, "award"),
+        }
+        if any(funder.values()):
+            funders.append(funder)
+    return funders
+
+
+def _parse_versions(collection: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every revision in a details collection, oldest first, as ``{version, date, license}``."""
+    return [
+        {
+            "version": _text_or_none(entry, "version"),
+            "date": _text_or_none(entry, "date"),
+            "license": _text_or_none(entry, "license"),
+        }
+        for entry in sorted(collection, key=_safe_version)
+    ]
+
+
 def _pick_latest_version(collection: list[dict[str, Any]]) -> dict[str, Any]:
     """Select the latest version from a bioRxiv API collection array."""
     return max(collection, key=_safe_version)
@@ -259,6 +294,7 @@ def _parse_paper(raw: dict[str, Any], requested_doi: str = "") -> dict[str, Any]
         "server": server,
         "published_doi": published if published and published != "NA" else None,
         "jatsxml": raw.get("jatsxml"),
+        "funding": _parse_funding(raw),
         "pdf_url": f"https://www.{server}.org/content/{doi}v{version}.full.pdf" if doi else None,
     }
 
@@ -388,6 +424,7 @@ async def _get_details(doi: str, *, force_refresh: bool = False) -> dict[str, An
                 collection = fallback
 
             paper = _parse_paper(_pick_latest_version(collection), bare)
+            paper["versions"] = _parse_versions(collection)
         except _PARSE_ERRORS:
             # A 200 body we couldn't parse is transient, not "not found" — never
             # negative-cached.

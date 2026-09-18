@@ -17,6 +17,10 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **bioRxiv/medRxiv papers report funders and revision history.**
+  `get_paper_metadata` adds `funding`, and `get_paper_versions` (parameter now
+  `identifier`) accepts bioRxiv/medRxiv DOIs at no extra request. ([#137])
+
 - **bioRxiv/medRxiv papers name their journal version.** `get_paper_metadata` adds
   `published_journal` and `published_date` from bioRxiv's `/pubs`, and
   `get_paper_bibtex`'s `@article` gains `journal` and the journal's year. ([#136])
@@ -1896,3 +1900,4 @@ say which.
 [#134]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/134
 [#135]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/135
 [#136]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/136
+[#137]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/137
