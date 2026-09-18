@@ -58,6 +58,13 @@ forever with no timeout, `max_pending=0` refuses every caller.
 - **`pending` counts in-flight *plus* queued callers.** With
   `max_concurrent=4, max_pending=5`, exactly one caller can be waiting before the
   sixth is refused.
+- **`widen` is the only runtime policy move, and `Throttle` and `SubGap` both
+  have one.** A `Semaphore` gains permits through `release` but cannot shed them,
+  so a policy is loosened in place and never tightened; a provider promoting
+  itself on a confirmed tier (crossref's `_observe_pool`) calls both rather than
+  assigning into `min_gap_seconds` or reaching for `_sem`. Narrowing back is a
+  test seam only (`crossref.reset_pool_tier`), which reassigns and then `reset`s
+  so the semaphore is rebuilt to match.
 - **`per_host=True` is opt-in for a reason.** Only `openaccess` uses it
   (`.claude/rules/download.md` says why). Opting in a single-host provider would
   silently widen its documented rate the day it gained a second hostname.

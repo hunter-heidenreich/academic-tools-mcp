@@ -31,12 +31,15 @@ def _reset_crossref(monkeypatch, tmp_path=None):
 _BAD_JSON = object()
 
 
-def _stub_json_responses(monkeypatch, *payloads, status_code=200, status_codes=None, slow=False):
+def _stub_json_responses(
+    monkeypatch, *payloads, status_code=200, status_codes=None, slow=False, headers=None
+):
     """Stub client returning ``payloads`` from successive GETs.
 
-    ``status_codes`` gives a per-response sequence (404 then 200); ``slow`` adds
-    a yield so concurrent callers interleave. The recorder exposes ``.urls`` /
-    ``.kwargs`` / ``.count``.
+    ``status_codes`` gives a per-response sequence (404 then 200); ``headers`` the
+    response headers every stubbed response carries, for the ``x-api-pool`` read;
+    ``slow`` adds a yield so concurrent callers interleave. The recorder exposes
+    ``.urls`` / ``.kwargs`` / ``.count``.
     """
     seq = list(payloads)
 
@@ -55,7 +58,7 @@ def _stub_json_responses(monkeypatch, *payloads, status_code=200, status_codes=N
         def __init__(self, payload, code):
             self._payload = payload
             self.status_code = code
-            self.headers: dict[str, str] = {}
+            self.headers: dict[str, str] = dict(headers or {})
 
         def raise_for_status(self):
             pass
@@ -347,6 +350,170 @@ class TestGetClientWiring:
         assert captured["name"] == crossref.NAMESPACE
         assert captured["headers"]["User-Agent"].startswith("academic-tools-mcp/")
         assert captured["timeout"] == 30.0
+
+
+class TestBuildParams:
+    """Crossref meters the polite pool by address, so the User-Agent alone left us
+    accounted anonymously even when a contact was configured."""
+
+    def test_sends_the_configured_contact(self, monkeypatch):
+        monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
+        assert crossref._build_params() == {"mailto": "test@example.com"}
+
+    def test_empty_without_a_contact(self, monkeypatch):
+        monkeypatch.delenv("CROSSREF_MAILTO", raising=False)
+        assert crossref._build_params() == {}
+
+    @pytest.mark.parametrize("junk", ["   ", "()", "mailto:"])
+    def test_a_contact_that_scrubs_to_nothing_is_not_sent(self, monkeypatch, junk):
+        monkeypatch.setenv("CROSSREF_MAILTO", junk)
+        assert crossref._build_params() == {}
+
+    def test_the_mailto_scheme_prefix_is_stripped(self, monkeypatch):
+        """The header path strips it; the two must not disagree about the address."""
+        monkeypatch.setenv("CROSSREF_MAILTO", "mailto:test@example.com")
+        assert crossref._build_params() == {"mailto": "test@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_get_work_sends_it(self, monkeypatch, tmp_path):
+        _reset_crossref(monkeypatch, tmp_path)
+        monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
+        recorder = _stub_json_responses(monkeypatch, _work_response())
+
+        await crossref.get_work("10.1234/x")
+
+        assert recorder.kwargs[0]["params"] == {"mailto": "test@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_search_sends_it_alongside_the_query(self, monkeypatch, tmp_path):
+        _reset_crossref(monkeypatch, tmp_path)
+        monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
+        recorder = _stub_json_responses(monkeypatch, _search_response([]))
+
+        await crossref.search_works("attention is all you need")
+
+        params = recorder.kwargs[0]["params"]
+        assert params["mailto"] == "test@example.com"
+        assert params["query.bibliographic"] == "attention is all you need"
+
+
+# ---------------------------------------------------------------------------
+# Pool confirmation
+# ---------------------------------------------------------------------------
+
+
+def _tier(module=crossref):
+    """The tier actually in force: ``(max_concurrent, singles gap, search gap)``."""
+    return (
+        module._throttle.max_concurrent,
+        module._throttle.min_gap_seconds,
+        module._search_gap.min_gap_seconds,
+    )
+
+
+class TestPoolConfirmation:
+    """The rate we take must follow the identity Crossref *confirms* it received.
+
+    The constants were resolved from config alone, so a mailto that never arrived —
+    or one Crossref declined — still bought the polite tier's 10 req/sec and 3
+    concurrent while the public pool served us at 5 and 1, earning a sustained 429.
+    Crossref stamps every response with ``x-api-pool``; these pin that we start
+    conservative and widen only on that stamp.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _public_tier(self, monkeypatch):
+        """Restore the starting tier; a promotion otherwise leaks into later tests."""
+        crossref.reset_pool_tier()
+        yield
+        crossref.reset_pool_tier()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stamp", ["polite-single", "polite-multi", "polite", "Polite-Single"])
+    async def test_a_confirmed_polite_pool_widens_every_gate(self, monkeypatch, tmp_path, stamp):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        monkeypatch.setattr(crossref, "_single_flight", singleflight.SingleFlight())
+        monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
+        _stub_json_responses(monkeypatch, _work_response(), headers={"x-api-pool": stamp})
+
+        assert _tier() == (1, pytest.approx(0.2), pytest.approx(1.0))
+        await crossref.get_work("10.1234/x")
+
+        assert _tier() == (3, pytest.approx(0.1), pytest.approx(0.334))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "response_headers",
+        [{"x-api-pool": "public"}, {"x-api-pool": "public-single"}, {}, None],
+    )
+    async def test_anything_but_a_polite_stamp_leaves_the_public_tier(
+        self, monkeypatch, tmp_path, response_headers
+    ):
+        """A missing header is not a grant — ``net/stats`` leaves an unadvertised
+        quota alone for the same reason."""
+        _reset_crossref(monkeypatch, tmp_path)
+        monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
+        _stub_json_responses(monkeypatch, _work_response(), headers=response_headers)
+
+        await crossref.get_work("10.1234/x")
+
+        assert crossref._throttle.max_concurrent == 1
+        assert crossref.in_confirmed_polite_pool() is False
+
+    @pytest.mark.asyncio
+    async def test_no_contact_means_no_promotion_whatever_crossref_says(
+        self, monkeypatch, tmp_path
+    ):
+        """Belt and braces: we cannot be in a pool we sent no address for, so a
+        stray header must not widen an anonymous client."""
+        _reset_crossref(monkeypatch, tmp_path)
+        monkeypatch.delenv("CROSSREF_MAILTO", raising=False)
+        _stub_json_responses(monkeypatch, _work_response(), headers={"x-api-pool": "polite"})
+
+        await crossref.get_work("10.1234/x")
+
+        assert crossref._throttle.max_concurrent == 1
+
+    @pytest.mark.asyncio
+    async def test_promotion_happens_once(self, monkeypatch, tmp_path):
+        """``Semaphore.release`` adds a permit per call, so a re-run would widen
+        concurrency without bound."""
+        _reset_crossref(monkeypatch, tmp_path)
+        monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
+        _stub_json_responses(
+            monkeypatch, _work_response("10.1234/a"), headers={"x-api-pool": "polite"}
+        )
+
+        await crossref.get_work("10.1234/a")
+        await crossref.get_work("10.1234/b")
+        await crossref.get_work("10.1234/c")
+
+        assert crossref._throttle.max_concurrent == 3
+
+    @pytest.mark.asyncio
+    async def test_a_search_response_confirms_it_too(self, monkeypatch, tmp_path):
+        _reset_crossref(monkeypatch, tmp_path)
+        monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
+        _stub_json_responses(monkeypatch, _search_response([]), headers={"x-api-pool": "polite"})
+
+        await crossref.search_works("anything")
+
+        assert crossref.in_confirmed_polite_pool() is True
+
+    @pytest.mark.asyncio
+    async def test_reset_pool_tier_restores_the_public_policy(self, monkeypatch, tmp_path):
+        """The conftest seam. Without it a promotion is the starting tier of every
+        later test, and the suite goes order-dependent."""
+        _reset_crossref(monkeypatch, tmp_path)
+        monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
+        _stub_json_responses(monkeypatch, _work_response(), headers={"x-api-pool": "polite"})
+        await crossref.get_work("10.1234/x")
+
+        crossref.reset_pool_tier()
+
+        assert _tier() == (1, pytest.approx(0.2), pytest.approx(1.0))
+        assert crossref.in_confirmed_polite_pool() is False
+        assert crossref._throttle._sem._value == 1
 
 
 # ---------------------------------------------------------------------------

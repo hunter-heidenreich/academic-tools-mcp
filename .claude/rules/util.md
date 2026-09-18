@@ -88,13 +88,14 @@ The roster, defaults and semantics of every setting live in `README.md`
   re-reads `os.environ` per call, so a read at the point of use
   (`streaming.resolve_max_pdf_bytes`, the `*_MAILTO` header builders) picks up an
   exported change immediately, while a value captured at import
-  (`server._DEBUG_TOOLS_ENABLED`, crossref's `_resolve_policy()` constants) is
-  fixed for the process. **Default to reading at the point of use**; capture at
+  (`server._DEBUG_TOOLS_ENABLED`, the headers `clients.get_client` bakes in at
+  first construction) is fixed for the process. **Default to reading at the point of use**; capture at
   import only when you want the startup snapshot.
 - **A blank setting is not a set one.** A present-but-blank or whitespace-only
   `CROSSREF_MAILTO=` behaves exactly like omitting the line — and that is not
-  cosmetic: it drops Crossref to the public tier, lowering concurrency *and* both
-  request rates (`.claude/rules/providers.md` § crossref.py).
+  cosmetic: it leaves Crossref on the public tier for the life of the process,
+  since nothing promotes a client that sent no address
+  (`.claude/rules/providers.md` § crossref.py).
 - **`ACADEMIC_TOOLS_ENV_FILE` is authoritative**: set means it is the only
   candidate, so a typo'd path is "no `.env`" rather than a silent fallback to a
   different operator's config. Editing the file needs a restart; real environment

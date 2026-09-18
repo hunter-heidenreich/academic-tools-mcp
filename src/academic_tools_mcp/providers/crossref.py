@@ -12,7 +12,7 @@ from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
 from ..util import config, doinorm, useragent
 
-CROSSREF_BASE_URL = "https://api.crossref.org"
+CROSSREF_BASE_URL = "https://api.crossref.org/v1"
 NAMESPACE = "crossref"
 
 # Agent-facing provider name; every site that names us reads it.
@@ -26,8 +26,8 @@ def _parse_error_dict() -> dict[str, Any]:
     return http.parse_error_dict(LABEL)
 
 
-# The rate we take must follow the identity we send: hardcoding the polite figures
-# would request at that rate anonymously.
+# A ceiling `_observe_pool` promotes to, never a starting point: the rate we take
+# must follow the identity Crossref *confirms* it received.
 _POLITE_MAX_CONCURRENT = 3
 _POLITE_REQUEST_GAP = 0.1  # 100ms -> 10 req/sec
 _POLITE_SEARCH_GAP = 0.334  # ~3 req/sec
@@ -43,18 +43,20 @@ MAX_SEARCH_ROWS = 20
 
 
 def in_polite_pool() -> bool:
-    """Whether a contact address is configured, admitting us to the polite pool."""
-    return bool(config.get("CROSSREF_MAILTO"))
+    """Whether a contact address survives scrubbing, making the polite pool reachable.
+
+    Through ``normalize_mailto``, so a value that scrubs to nothing — ``"()"`` — cannot
+    buy the rate that identifying ourselves earns.
+    """
+    return useragent.normalize_mailto(config.get("CROSSREF_MAILTO")) is not None
 
 
 def _resolve_policy() -> tuple[int, float, float]:
-    """Return ``(max_concurrent, request_gap, search_gap)`` for the active tier."""
+    """Return ``(max_concurrent, request_gap, search_gap)`` for the tier we may reach."""
     if in_polite_pool():
         return _POLITE_MAX_CONCURRENT, _POLITE_REQUEST_GAP, _POLITE_SEARCH_GAP
     return _PUBLIC_MAX_CONCURRENT, _PUBLIC_REQUEST_GAP, _PUBLIC_SEARCH_GAP
 
-
-_MAX_CONCURRENT, _MIN_REQUEST_GAP, _SEARCH_REQUEST_GAP = _resolve_policy()
 
 _single_flight = singleflight.SingleFlight()
 
@@ -71,31 +73,84 @@ def _build_headers() -> dict[str, str]:
     return useragent.headers(config.get("CROSSREF_MAILTO"))
 
 
+def _build_params() -> dict[str, str]:
+    """Query params carrying the contact address, or empty without one.
+
+    Either spelling admits us to the pool, but Crossref meters it *by address*, so the
+    header alone leaves us anonymous in its accounting. Scrubbed like the header —
+    ``openalex`` sends its raw value, which is not a licence for a new caller.
+    """
+    contact = useragent.normalize_mailto(config.get("CROSSREF_MAILTO"))
+    return {"mailto": contact} if contact else {}
+
+
 def _get_client() -> httpx.AsyncClient:
     """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``."""
     return clients.get_client(NAMESPACE, headers=_build_headers(), timeout=30.0)
 
 
+# Public whatever the config says; a Semaphore cannot shed permits, so starting wide
+# would be unrecoverable.
 _throttle = Throttle(
     namespace=NAMESPACE,
     label=LABEL,
-    max_concurrent=_MAX_CONCURRENT,
-    min_gap_seconds=_MIN_REQUEST_GAP,
+    max_concurrent=_PUBLIC_MAX_CONCURRENT,
+    min_gap_seconds=_PUBLIC_REQUEST_GAP,
     max_pending=_MAX_PENDING,
 )
 
 
+def in_confirmed_polite_pool() -> bool:
+    """Whether Crossref has confirmed the polite pool served us, and we took its rate."""
+    return _throttle.max_concurrent == _POLITE_MAX_CONCURRENT
+
+
+def _observe_pool(response: httpx.Response) -> None:
+    """Widen to the polite tier once Crossref confirms it served us from it.
+
+    ``x-api-pool`` is Crossref's own answer to what ``in_polite_pool`` can only guess
+    at: a mailto that never arrived, or one it declined, reads ``public`` here while
+    the config looks configured. A missing header is not a grant — it leaves the public
+    tier standing, as ``net/stats`` leaves an unadvertised quota alone.
+
+    **It names the request class too** (``polite-single``, ``public-multi``), so only
+    the part before the first ``-`` identifies the tier; matching the whole value never
+    fires. Both widenings are idempotent, so this re-runs rather than latching.
+    """
+    if not in_polite_pool():
+        return
+    pool = response.headers.get("x-api-pool", "").strip().lower()
+    if pool.split("-", 1)[0] != "polite":
+        return
+    _throttle.widen(max_concurrent=_POLITE_MAX_CONCURRENT, min_gap_seconds=_POLITE_REQUEST_GAP)
+    _search_gap.widen(min_gap_seconds=_POLITE_SEARCH_GAP)
+
+
 async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
     """GET at Crossref's rate. Url-only: ``_get_client`` is the only place to configure it."""
-    return await _throttle.get(_get_client(), url, **kwargs)
+    response = await _throttle.get(_get_client(), url, **kwargs)
+    _observe_pool(response)
+    return response
 
 
-_search_gap = SubGap(_throttle, min_gap_seconds=_SEARCH_REQUEST_GAP)
+_search_gap = SubGap(_throttle, min_gap_seconds=_PUBLIC_SEARCH_GAP)
 
 
 def reset_search_pacing() -> None:
     """Reset the search gap (test seam, called by conftest)."""
     _search_gap.reset()
+
+
+def reset_pool_tier() -> None:
+    """Drop back to the public tier (test seam, called by conftest).
+
+    ``Throttle.reset`` restores neither gap nor width, so without this one test's
+    promotion is the starting tier of every later one.
+    """
+    _throttle.max_concurrent = _PUBLIC_MAX_CONCURRENT
+    _throttle.min_gap_seconds = _PUBLIC_REQUEST_GAP
+    _search_gap.min_gap_seconds = _PUBLIC_SEARCH_GAP
+    _throttle.reset()
 
 
 async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
@@ -205,10 +260,9 @@ async def search_works(
     failure or a wrong-shape body. The list is not cached (ad-hoc queries), but each hit
     with a DOI warms the works cache.
     """
-    params: dict[str, str] = {
-        "query.bibliographic": bibliographic,
-        "rows": str(min(max(rows, 1), MAX_SEARCH_ROWS)),
-    }
+    params = _build_params()
+    params["query.bibliographic"] = bibliographic
+    params["rows"] = str(min(max(rows, 1), MAX_SEARCH_ROWS))
     if year is not None:
         # Year-only on purpose: a fully-specified date drops works whose deposited date
         # is itself year-only (CrossRef/rest-api-doc#7).
@@ -274,7 +328,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             return http.not_found(not_found_error)
 
         try:
-            response = await _throttled_get(url)
+            response = await _throttled_get(url, params=_build_params())
 
             if response.status_code == 404:
                 # Definitive, hence both the negative entry and the flag tools/graph.py forwards.

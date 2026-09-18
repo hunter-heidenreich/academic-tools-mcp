@@ -149,6 +149,11 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
         reset_content_pacing = getattr(module, "reset_content_pacing", None)
         if reset_content_pacing is not None:
             reset_content_pacing()
+        # crossref widens its own tier on a confirmed polite-pool response, and
+        # `Throttle.reset` above restores neither the gap nor the width.
+        reset_pool_tier = getattr(module, "reset_pool_tier", None)
+        if reset_pool_tier is not None:
+            reset_pool_tier()
         if hasattr(module, "_single_flight"):
             monkeypatch.setattr(
                 module,
