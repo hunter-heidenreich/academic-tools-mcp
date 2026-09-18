@@ -161,6 +161,11 @@ what sets the positive TTL and what `follow_published` consumes
 fallback, the version-is-not-identity rule, the two request-side checks, the
 both-servers-must-answer rule — is stated at length in its own comments.
 
+**Content hosts get a stricter pace.** Cloudflare rate-limits or challenges
+`www.biorxiv.org` / `www.medrxiv.org` at the API's pace, so content fetches wait
+out `_content_gap` — a `SubGap`, so both request classes share one concurrency
+budget.
+
 ## crossref.py
 
 **The tier is chosen from config, not assumed.** `_resolve_policy()` picks the

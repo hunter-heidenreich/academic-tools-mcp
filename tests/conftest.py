@@ -145,6 +145,10 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
         reset_search_pacing = getattr(module, "reset_search_pacing", None)
         if reset_search_pacing is not None:
             reset_search_pacing()
+        # biorxiv paces its content hosts the same way.
+        reset_content_pacing = getattr(module, "reset_content_pacing", None)
+        if reset_content_pacing is not None:
+            reset_content_pacing()
         if hasattr(module, "_single_flight"):
             monkeypatch.setattr(
                 module,

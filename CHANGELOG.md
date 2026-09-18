@@ -74,6 +74,11 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **bioRxiv/medRxiv DOIs answer from OpenAlex while bioRxiv is down.** A transient
+  bioRxiv failure falls back to OpenAlex in all four paper tools and
+  `get_papers_metadata`, flagged `biorxiv_unavailable: true`. PDF downloads from
+  bioRxiv's Cloudflare-fronted hosts are paced more slowly. ([#135])
+
 - **A rejected arXiv search is reported as a query to rewrite.** Since its cloud
   migration arXiv answers a malformed `search_query` or id with HTTP 400, which
   surfaced as `arXiv HTTP 400: <xml…>` with no `retryable` flag and advice to
@@ -1885,3 +1890,4 @@ say which.
 [#132]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/132
 [#133]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/133
 [#134]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/134
+[#135]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/135

@@ -371,7 +371,8 @@ FOLLOW_PUBLISHED = Annotated[
             "Not-yet-indexed "
             "falls back to the preprint with followed_published=False; a "
             "retryable lookup failure also sets published_lookup_retryable=True. "
-            "No effect on other shapes or unpublished preprints."
+            "No effect on other shapes, unpublished preprints, or a "
+            "biorxiv_unavailable answer."
         ),
     ),
 ]
