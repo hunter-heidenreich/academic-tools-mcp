@@ -359,17 +359,18 @@ async def get_paper_citations_count(
     the two apart. They routinely disagree by thousands; neither is a correction
     of the other.
 
-    Returns ``{doi, count, sources: {opencitations: {count} | error, openalex:
-    {count} | error}}``, the echoed ``doi`` canonical rather than the spelling you
-    passed. **``count`` is OpenCitations'**, and null when it failed: it is the
-    number get_paper_citations pages, which OpenAlex cannot serve. An error object
-    carries ``error`` plus whichever of ``retryable``, ``retry_after_seconds``,
-    ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion`` the
-    provider set; one source failing still reports the other's count.
+    Returns ``{doi, count, pageable, sources: {opencitations: {count} | error,
+    openalex: {count} | error}}``, the echoed ``doi`` canonical rather than the
+    spelling you passed. **``count`` is OpenCitations'**, and null when it failed;
+    OpenAlex cannot serve it. An error object carries ``error`` plus whichever of
+    ``retryable``, ``retry_after_seconds``, ``not_found``, ``backpressure``,
+    ``max_concurrency``, ``suggestion`` the provider set; one source failing still
+    reports the other's count.
 
-    OpenCitations times out on the most-cited papers. Its row then gains
-    ``pageable: false``: ``count`` is still real, but get_paper_citations cannot page
-    it — that paper's edge list is simply unavailable.
+    **``count`` is the number get_paper_citations pages only when ``pageable`` is
+    true.** OpenCitations times out on the most-cited papers; the count then comes
+    from its tally endpoint and both this key and its row read ``pageable: false``
+    — the number is real, but that paper's edge list is unavailable at any page.
 
     A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
     identifier is rejected locally, without a request, as
@@ -390,13 +391,16 @@ async def get_paper_citations_count(
     )
     sources["opencitations"] = oc_row
     count = oc_row.get("count")
+    # Hoisted beside `count`: an agent reading the tally must not have to find the
+    # nested row to learn the tally has no rows behind it.
+    pageable = oc_row.get("pageable", True) if count is not None else False
 
     if "error" in oa_work:
         sources["openalex"] = _source_error(oa_work)
     else:
         sources["openalex"] = {"count": _openalex_cited_by(oa_work)}
 
-    return {"doi": doi, "count": count, "sources": sources}
+    return {"doi": doi, "count": count, "pageable": pageable, "sources": sources}
 
 
 @mcp.tool

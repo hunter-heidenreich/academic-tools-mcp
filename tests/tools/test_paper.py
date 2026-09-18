@@ -2261,11 +2261,12 @@ class TestWorkIdRouting:
         assert "openalex.org" in result["suggestion"]
 
     @pytest.mark.asyncio
-    async def test_a_short_bare_id_stays_a_freeform_import_label(self, monkeypatch):
-        """``is_work_id``'s two tiers: claiming ``W1`` would hijack a label."""
+    @pytest.mark.parametrize("label", ["W1", "W2024", "W1234567"])
+    async def test_a_short_bare_id_stays_a_freeform_import_label(self, monkeypatch, label):
+        """``is_work_id``'s two tiers: claiming a sub-live-range run hijacks a label."""
         calls = _stub_work_id(monkeypatch, self.MAPPING)
 
-        result = await server.get_paper_metadata("W1")
+        result = await server.get_paper_metadata(label)
 
         assert calls == []
         assert "Cannot resolve paper provider" in result["error"]

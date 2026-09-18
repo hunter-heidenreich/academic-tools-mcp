@@ -1879,6 +1879,8 @@ class TestNormalizeWorkId:
             # A bare short run stays a freeform label (see `is_work_id`'s two tiers).
             "W1",
             "W123",
+            "W2024",
+            "W1234567",
         ],
     )
     def test_non_work_ids_are_not_claimed(self, identifier):
@@ -1890,9 +1892,15 @@ class TestNormalizeWorkId:
         assert openalex.is_work_id("openalex:W1") is True
         assert openalex.is_work_id("https://openalex.org/W1") is True
 
-    def test_the_bare_floor_is_exactly_four_digits(self):
-        assert openalex.is_work_id("W123") is False
-        assert openalex.is_work_id("W1234") is True
+    def test_the_bare_floor_is_exactly_eight_digits(self):
+        """The bottom of the live range: `W32193029` is real, nothing shorter is."""
+        assert openalex.is_work_id("W1234567") is False
+        assert openalex.is_work_id("W12345678") is True
+
+    @pytest.mark.parametrize("digits", [8, 9, 10])
+    def test_every_live_length_is_claimed_bare(self, digits):
+        """Sampling OpenAlex turns up 8-, 9- and 10-digit ids; all must route."""
+        assert openalex.is_work_id("W" + "1" * digits) is True
 
 
 class TestResolveWorkId:

@@ -29,14 +29,18 @@ grouped by milestone rather than per commit.
   report for exactly the papers a survey matters most for. Both now fall back to its
   tally-only endpoint when the edge list fails *retryably*, flagging the result
   `pageable: false`: the count is real, the rows behind it are not available. The list
-  stays primary, since it warms the pagination the survey exists to aim. ([#145])
+  stays primary, since it warms the pagination the survey exists to aim.
+  `get_paper_citations_count` carries `pageable` at the top level too, beside the
+  `count` it qualifies. ([#145])
 - **An OpenAlex work ID now works everywhere a DOI does.** `W4312223440`,
   `openalex:`-prefixed or as an `openalex.org` URL, across the paper tools, the PDF
   pipeline and the citation graph. It closes a dead end rather than adding a spelling:
   `search_openalex` reports an `openalex_id` on every hit where a `doi` is often
   absent, and roughly 1.4% of OpenCitations graph rows carry one and no DOI, so those
   rows could be read but never chained. Traded for the DOI on first use like a PMID, so
-  one paper keeps one `_canonical_id`. ([#145])
+  one paper keeps one `_canonical_id`. A bare run is claimed from 8 digits up — the
+  bottom of the live range, measured — so shorter freeform `import_paper` labels keep
+  meaning what they did. ([#145])
 
 - **`autocomplete_openalex`, a name-to-identifier lookup that spends no credit
   budget.** OpenAlex prices `/autocomplete` at zero credits where a `search=` query

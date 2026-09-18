@@ -1331,6 +1331,8 @@ class TestCountEndpointFallback:
         assert result["sources"]["opencitations"] == {"count": 68421, "pageable": False}
         # Still OpenCitations' own number, which is what `count` is documented to be.
         assert result["count"] == 68421
+        # Hoisted beside the count it qualifies, not only onto the nested row.
+        assert result["pageable"] is False
         assert result["sources"]["openalex"] == {"count": 70000}
 
     @pytest.mark.asyncio
@@ -1347,6 +1349,8 @@ class TestCountEndpointFallback:
 
         assert result["sources"]["opencitations"] == {"count": 3}
         assert "pageable" not in result["sources"]["opencitations"]
+        # The row stays bare; the top-level flag is the one an agent always reads.
+        assert result["pageable"] is True
         assert seen == ["edges"]
 
     @pytest.mark.parametrize(
@@ -1368,6 +1372,8 @@ class TestCountEndpointFallback:
         assert seen == ["edges"]
         assert result["sources"]["opencitations"]["error"] == edges["error"]
         assert result["count"] is None
+        # A null count is not a pageable one: nothing to page, and nothing to claim.
+        assert result["pageable"] is False
 
     @pytest.mark.asyncio
     async def test_both_endpoints_failing_reports_the_lists_error(self, monkeypatch):
