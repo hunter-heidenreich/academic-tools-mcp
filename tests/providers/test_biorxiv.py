@@ -1453,6 +1453,26 @@ class TestGetJats:
         assert waited == [1]
 
     @pytest.mark.asyncio
+    async def test_a_refused_gap_is_an_error_dict_not_an_exception(self, monkeypatch):
+        """A stacked caller gets bioRxiv's retryable error, not a raw backpressure raise."""
+        seen, _ = _jats_setup(monkeypatch, (200, _JATS_BODY))
+
+        async def refuse():
+            raise http.LocalBackpressureError(
+                biorxiv.LABEL, pending=5, max_pending=5, min_gap_seconds=3.0
+            )
+
+        monkeypatch.setattr(biorxiv._content_gap, "wait", refuse)
+
+        result = await biorxiv.get_jats(_DOI)
+
+        assert result["retryable"] is True
+        assert biorxiv.LABEL in result["error"]
+        assert seen == []
+        # Retryable: nothing may be negative-cached, or the retry serves the refusal.
+        assert cache.get_negative(biorxiv.NAMESPACE, "jats", biorxiv.canonical_key(_DOI)) is None
+
+    @pytest.mark.asyncio
     async def test_a_404_is_negative_cached(self, monkeypatch):
         seen, _ = _jats_setup(monkeypatch, (404, "gone"))
 

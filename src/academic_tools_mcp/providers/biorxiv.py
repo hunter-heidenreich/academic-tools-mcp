@@ -479,8 +479,10 @@ async def get_jats(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             cache.put_negative(NAMESPACE, "jats", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
             return err
 
-        await _content_gap.wait()
         try:
+            # In the try: the gap admits through the throttle, so it can refuse
+            # with an ``HTTPX_ERRORS`` member.
+            await _content_gap.wait()
             response = await _throttled_get(url, timeout=_PDF_TIMEOUT_SECONDS)
             if response.status_code == 404:
                 err = http.not_found(f"No JATS full text for DOI: {doi}")
