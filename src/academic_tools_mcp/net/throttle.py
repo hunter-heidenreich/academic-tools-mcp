@@ -213,6 +213,16 @@ class SubGap:
         self._last_start: float | None = None
         self._lock = asyncio.Lock()
 
+    def widen(self, *, min_gap_seconds: float) -> None:
+        """Loosen this gap in place, for a tier upstream has *confirmed* it granted.
+
+        The counterpart to ``Throttle.widen``, so a provider promoting itself moves both
+        of its gates the same way rather than assigning into this one. A narrower
+        argument, or a repeat, is a no-op. Read per ``wait``, so it takes effect on the
+        next caller; the one already sleeping keeps the gap it was admitted under.
+        """
+        self.min_gap_seconds = min(self.min_gap_seconds, max(0.0, min_gap_seconds))
+
     async def wait(self) -> None:
         """Wait out the gap, then return for the caller to take the throttle's slot.
 

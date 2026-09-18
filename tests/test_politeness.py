@@ -212,7 +212,9 @@ class TestCrossrefPoolSelection:
         # the two gaps are ordered. That `search_works` actually goes through
         # the search gate, and that the gate sleeps, is behaviour, and lives
         # with the rest of the module's behaviour in providers/test_crossref.py.
-        assert crossref._SEARCH_REQUEST_GAP > crossref._MIN_REQUEST_GAP
+        # In both tiers: promotion moves both gaps, so neither ordering may invert.
+        assert crossref._PUBLIC_SEARCH_GAP > crossref._PUBLIC_REQUEST_GAP
+        assert crossref._POLITE_SEARCH_GAP > crossref._POLITE_REQUEST_GAP
 
 
 def _response_with_retry_after(value):

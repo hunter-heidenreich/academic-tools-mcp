@@ -753,3 +753,41 @@ class TestWiden:
         async with t.slot("http://example.com"):
             pass  # would deadlock against a single permit
         await first
+
+
+class TestSubGapWiden:
+    """The sub-gap's half of a confirmed promotion: a provider moves both gates the
+    same way, so search pacing cannot stay at the public rate while singles speed up.
+    """
+
+    def test_lowers_the_gap(self):
+        gap = SubGap(_make(), min_gap_seconds=1.0)
+        gap.widen(min_gap_seconds=0.334)
+        assert gap.min_gap_seconds == pytest.approx(0.334)
+
+    def test_a_narrower_gap_is_a_no_op(self):
+        gap = SubGap(_make(), min_gap_seconds=0.334)
+        gap.widen(min_gap_seconds=1.0)
+        assert gap.min_gap_seconds == pytest.approx(0.334)
+
+    def test_the_floor_still_holds(self):
+        gap = SubGap(_make(), min_gap_seconds=1.0)
+        gap.widen(min_gap_seconds=-5.0)
+        assert gap.min_gap_seconds == 0.0
+
+    def test_repeating_it_changes_nothing(self):
+        gap = SubGap(_make(), min_gap_seconds=1.0)
+        for _ in range(4):
+            gap.widen(min_gap_seconds=0.334)
+        assert gap.min_gap_seconds == pytest.approx(0.334)
+
+    @pytest.mark.asyncio
+    async def test_the_next_caller_waits_the_widened_gap(self):
+        gap = SubGap(_make(), min_gap_seconds=10.0)
+        await gap.wait()  # stamps a start the next caller would queue 10s behind
+        gap.widen(min_gap_seconds=0.0)
+
+        started = time.monotonic()
+        await gap.wait()
+
+        assert time.monotonic() - started < 1.0

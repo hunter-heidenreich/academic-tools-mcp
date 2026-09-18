@@ -58,8 +58,6 @@ def _resolve_policy() -> tuple[int, float, float]:
     return _PUBLIC_MAX_CONCURRENT, _PUBLIC_REQUEST_GAP, _PUBLIC_SEARCH_GAP
 
 
-_MAX_CONCURRENT, _MIN_REQUEST_GAP, _SEARCH_REQUEST_GAP = _resolve_policy()
-
 _single_flight = singleflight.SingleFlight()
 
 # Same span as OpenAlex works: a reference list grows as publishers re-deposit.
@@ -125,7 +123,7 @@ def _observe_pool(response: httpx.Response) -> None:
     if pool.split("-", 1)[0] != "polite":
         return
     _throttle.widen(max_concurrent=_POLITE_MAX_CONCURRENT, min_gap_seconds=_POLITE_REQUEST_GAP)
-    _search_gap.min_gap_seconds = min(_search_gap.min_gap_seconds, _POLITE_SEARCH_GAP)
+    _search_gap.widen(min_gap_seconds=_POLITE_SEARCH_GAP)
 
 
 async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
