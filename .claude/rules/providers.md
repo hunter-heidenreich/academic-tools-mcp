@@ -166,6 +166,10 @@ both-servers-must-answer rule — is stated at length in its own comments.
 out `_content_gap` — a `SubGap`, so both request classes share one concurrency
 budget.
 
+**`/pubs` is per-server, like `/details`**, so `get_paper` asks with the record's
+`server`. It merges the journal fields outside the details cache entry, or a
+`/pubs` failure would stick for the record's 7 days.
+
 ## crossref.py
 
 **The tier is chosen from config, not assumed.** `_resolve_policy()` picks the

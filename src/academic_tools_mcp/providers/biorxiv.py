@@ -210,6 +210,21 @@ def _collection_of(data: Any) -> list[dict[str, Any]] | None:
     return entries
 
 
+def _text_or_none(raw: dict[str, Any], key: str) -> str | None:
+    """A stripped string field, ``None`` when missing, blank or not a string."""
+    value = raw.get(key)
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _parse_publication(raw: dict[str, Any]) -> dict[str, Any]:
+    """Convert a raw ``/pubs`` entry into the journal version's DOI, name and date."""
+    return {
+        "published_doi": _text_or_none(raw, "published_doi"),
+        "published_journal": _text_or_none(raw, "published_journal"),
+        "published_date": _text_or_none(raw, "published_date"),
+    }
+
+
 def _pick_latest_version(collection: list[dict[str, Any]]) -> dict[str, Any]:
     """Select the latest version from a bioRxiv API collection array."""
     return max(collection, key=_safe_version)
@@ -254,13 +269,81 @@ def _parse_paper(raw: dict[str, Any], requested_doi: str = "") -> dict[str, Any]
 
 
 async def get_paper(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """Fetch a paper by bioRxiv/medRxiv DOI, using cache when available.
+    """Fetch a paper by bioRxiv/medRxiv DOI, with its journal version's name and date.
+
+    ``published_journal`` / ``published_date`` come from ``get_publication``: ``None``
+    when unpublished or that lookup fails. Merged outside the details cache, so a
+    ``/pubs`` failure is not kept for the record's TTL.
+
+    ``force_refresh=True`` drops every cache half before fetching — how the agent picks
+    up a ``published_doi`` that has just appeared.
+    """
+    paper = await _get_details(doi, force_refresh=force_refresh)
+    if "error" in paper:
+        return paper
+
+    venue: dict[str, Any] = {"published_journal": None, "published_date": None}
+    if paper.get("published_doi") and paper.get("doi"):
+        publication = await get_publication(
+            paper["doi"], paper.get("server") or "biorxiv", force_refresh=force_refresh
+        )
+        if "error" not in publication:
+            venue = {key: publication.get(key) for key in venue}
+    return {**paper, **venue}
+
+
+async def get_publication(doi: str, server: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """The journal version bioRxiv links a preprint to: ``{published_doi, published_journal, published_date}``.
+
+    ``server`` is the record's own, as ``/pubs`` is per-server. "No journal version yet"
+    is negative-cached on the short TTL.
+    """
+    bare = _normalize_doi(doi)
+    canonical = bare.lower()
+    server = "medrxiv" if server == "medrxiv" else "biorxiv"
+    not_found_error = f"No published version found for DOI: {doi}"
+
+    async def _fetch() -> dict[str, Any]:
+        url = f"{_BASE_URL}/pubs/{server}/{quote(bare, safe='/')}/na/json"
+        if "" in bare.split("/") or not http.addresses_a_record(url):
+            return http.not_found(not_found_error)
+
+        try:
+            response = await _throttled_get(url)
+            response.raise_for_status()
+            collection = _collection_of(response.json())
+            if collection is None:
+                return _parse_error_dict()
+            if not collection:
+                err = http.not_found(not_found_error)
+                cache.put_negative(NAMESPACE, "pubs", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
+                return err
+            publication = _parse_publication(collection[0])
+        except _PARSE_ERRORS:
+            return _parse_error_dict()
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
+
+        cache.put(NAMESPACE, "pubs", canonical, publication)
+        return publication
+
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="pubs",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        sf_key=("pubs", canonical),
+    )
+
+
+async def _get_details(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """The ``/details`` record for a bioRxiv/medRxiv DOI, using cache when available.
 
     Tries bioRxiv, falling back to medRxiv unless bioRxiv answered with a non-empty
     well-formed collection. Concurrent callers for one DOI share a fetch.
-
-    ``force_refresh=True`` drops both cache halves before fetching — how the agent picks
-    up a ``published_doi`` that has just appeared.
     """
     bare = _normalize_doi(doi)
     canonical = bare.lower()

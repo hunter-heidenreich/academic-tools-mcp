@@ -1118,3 +1118,213 @@ class TestContentHostPacing:
     def test_the_content_gap_is_stricter_than_the_api_gap(self):
         assert biorxiv._content_gap.min_gap_seconds > biorxiv._throttle.min_gap_seconds
         assert biorxiv._content_gap.throttle is biorxiv._throttle
+
+
+def _stub_routes(monkeypatch, routes):
+    """Serve JSON by URL-path prefix (``/details/``, ``/pubs/``); records every request."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        for prefix, payload in routes.items():
+            if request.url.path.startswith(prefix):
+                if isinstance(payload, _Resp):
+                    return httpx.Response(payload.status_code, json=payload.payload)
+                if payload is _BAD_JSON:
+                    return httpx.Response(200, content=b"")
+                return httpx.Response(200, json=payload)
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+    return requests
+
+
+_PUBS = {
+    "messages": [{"status": "ok"}],
+    "collection": [
+        {
+            "preprint_doi": "10.1101/2024.01.01.573838",
+            "published_doi": "10.1038/s41586-024-00001-1",
+            "published_journal": "Nature",
+            "preprint_platform": "bioRxiv",
+            "published_date": "2024-06-01",
+        }
+    ],
+}
+
+_NO_PUBS = {"messages": [{"status": "no articles found"}], "collection": []}
+
+
+class TestParsePublication:
+    def test_fields(self):
+        assert biorxiv._parse_publication(_PUBS["collection"][0]) == {
+            "published_doi": "10.1038/s41586-024-00001-1",
+            "published_journal": "Nature",
+            "published_date": "2024-06-01",
+        }
+
+    @pytest.mark.parametrize("value", [None, "", "   ", 7, ["Nature"]])
+    def test_blank_or_non_string_fields_are_none(self, value):
+        parsed = biorxiv._parse_publication({"published_journal": value})
+        assert parsed["published_journal"] is None
+
+
+class TestGetPublication:
+    @pytest.fixture(autouse=True)
+    def _no_gap(self, monkeypatch):
+        _reset_biorxiv(monkeypatch)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("server", ["biorxiv", "medrxiv"])
+    async def test_asks_the_named_server(self, monkeypatch, server):
+        calls = _stub_routes(monkeypatch, {"/pubs/": _PUBS})
+
+        result = await biorxiv.get_publication(_DOI, server)
+
+        assert result["published_journal"] == "Nature"
+        assert calls[0].url.path == f"/pubs/{server}/{_DOI}/na/json"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_server_label_asks_biorxiv(self, monkeypatch):
+        calls = _stub_routes(monkeypatch, {"/pubs/": _PUBS})
+
+        await biorxiv.get_publication(_DOI, "bioRxiv ")
+
+        assert calls[0].url.path.startswith("/pubs/biorxiv/")
+
+    @pytest.mark.asyncio
+    async def test_is_cached(self, monkeypatch):
+        calls = _stub_routes(monkeypatch, {"/pubs/": _PUBS})
+
+        await biorxiv.get_publication(_DOI, "biorxiv")
+        await biorxiv.get_publication(_DOI, "biorxiv")
+
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_empty_collection_is_a_negative_cached_miss(self, monkeypatch):
+        calls = _stub_routes(monkeypatch, {"/pubs/": _NO_PUBS})
+
+        result = await biorxiv.get_publication(_DOI, "biorxiv")
+        await biorxiv.get_publication(_DOI, "biorxiv")
+
+        assert result["not_found"] is True
+        assert (
+            cache.get_negative(biorxiv.NAMESPACE, "pubs", biorxiv.canonical_key(_DOI)) is not None
+        )
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [{"collection": "nope"}, [], _BAD_JSON])
+    async def test_a_wrong_shape_is_transient_and_uncached(self, monkeypatch, payload):
+        _stub_routes(monkeypatch, {"/pubs/": payload})
+
+        result = await biorxiv.get_publication(_DOI, "biorxiv")
+
+        assert result["retryable"] is True
+        canonical = biorxiv.canonical_key(_DOI)
+        assert cache.get_negative(biorxiv.NAMESPACE, "pubs", canonical) is None
+        assert cache.get(biorxiv.NAMESPACE, "pubs", canonical) is None
+
+    @pytest.mark.asyncio
+    async def test_a_5xx_is_retryable(self, monkeypatch):
+        monkeypatch.setattr(biorxiv._throttle, "retry_attempts", 1)
+        _stub_routes(monkeypatch, {"/pubs/": _Resp(503, {})})
+
+        result = await biorxiv.get_publication(_DOI, "biorxiv")
+
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_empty_path_segment_is_refused_without_a_request(self, monkeypatch):
+        calls = _stub_routes(monkeypatch, {"/pubs/": _PUBS})
+
+        result = await biorxiv.get_publication("10.1101/", "biorxiv")
+
+        assert result["not_found"] is True
+        assert calls == []
+
+
+class TestGetPaperMergesPublication:
+    @pytest.fixture(autouse=True)
+    def _no_gap(self, monkeypatch):
+        _reset_biorxiv(monkeypatch)
+
+    @pytest.mark.asyncio
+    async def test_a_published_record_gains_journal_and_date(self, monkeypatch):
+        _stub_routes(
+            monkeypatch,
+            {"/details/": _collection(published="10.1038/s41586-024-00001-1"), "/pubs/": _PUBS},
+        )
+
+        paper = await biorxiv.get_paper(_DOI)
+
+        assert paper["published_journal"] == "Nature"
+        assert paper["published_date"] == "2024-06-01"
+
+    @pytest.mark.asyncio
+    async def test_an_unpublished_record_never_asks_pubs(self, monkeypatch):
+        calls = _stub_routes(monkeypatch, {"/details/": _collection()})
+
+        paper = await biorxiv.get_paper(_DOI)
+
+        assert [c.url.path.split("/")[1] for c in calls] == ["details"]
+        assert paper["published_journal"] is None
+        assert paper["published_date"] is None
+
+    @pytest.mark.asyncio
+    async def test_pubs_asks_the_records_own_server(self, monkeypatch):
+        calls = _stub_routes(
+            monkeypatch,
+            {
+                "/details/": _collection(server="medRxiv", published="10.1038/x"),
+                "/pubs/": _PUBS,
+            },
+        )
+
+        await biorxiv.get_paper(_DOI)
+
+        assert calls[-1].url.path.startswith("/pubs/medrxiv/")
+
+    @pytest.mark.asyncio
+    async def test_a_pubs_failure_leaves_nulls_and_is_not_frozen_into_the_record(self, monkeypatch):
+        monkeypatch.setattr(biorxiv._throttle, "retry_attempts", 1)
+        _stub_routes(
+            monkeypatch,
+            {"/details/": _collection(published="10.1038/x"), "/pubs/": _Resp(503, {})},
+        )
+
+        paper = await biorxiv.get_paper(_DOI)
+
+        assert "error" not in paper
+        assert paper["published_journal"] is None
+        cached = cache.get(biorxiv.NAMESPACE, "papers", biorxiv.canonical_key(_DOI))
+        assert "published_journal" not in cached
+
+        _stub_routes(
+            monkeypatch,
+            {"/details/": _collection(published="10.1038/x"), "/pubs/": _PUBS},
+        )
+        assert (await biorxiv.get_paper(_DOI))["published_journal"] == "Nature"
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_reaches_pubs(self, monkeypatch):
+        calls = _stub_routes(
+            monkeypatch,
+            {"/details/": _collection(published="10.1038/x"), "/pubs/": _PUBS},
+        )
+
+        await biorxiv.get_paper(_DOI)
+        await biorxiv.get_paper(_DOI, force_refresh=True)
+
+        assert [c.url.path.split("/")[1] for c in calls] == ["details", "pubs", "details", "pubs"]
+
+    @pytest.mark.asyncio
+    async def test_a_details_error_skips_pubs(self, monkeypatch):
+        calls = _stub_routes(monkeypatch, {"/details/": _EMPTY})
+
+        paper = await biorxiv.get_paper(_DOI)
+
+        assert paper["not_found"] is True
+        assert all(c.url.path.startswith("/details/") for c in calls)

@@ -17,6 +17,10 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **bioRxiv/medRxiv papers name their journal version.** `get_paper_metadata` adds
+  `published_journal` and `published_date` from bioRxiv's `/pubs`, and
+  `get_paper_bibtex`'s `@article` gains `journal` and the journal's year. ([#136])
+
 - **`convert_paper` reads arXiv papers from arXiv's own HTML.** For an arXiv ID
   it first fetches the LaTeXML rendering and converts it in-process, in seconds
   and with no PDF: sections as headings, equations as LaTeX, tables as pipe
@@ -1891,3 +1895,4 @@ say which.
 [#133]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/133
 [#134]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/134
 [#135]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/135
+[#136]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/136

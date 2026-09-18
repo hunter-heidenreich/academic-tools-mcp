@@ -10,7 +10,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 |----------|-----------------|---------------|
 | [OpenAlex](https://openalex.org/) | Paper metadata, authors, abstracts, topics, citations, BibTeX | Optional API key (free) |
 | [arXiv](https://arxiv.org/) | Preprint metadata, authors, abstracts, BibTeX, license and revision history, PDF download, HTML full text | None |
-| [bioRxiv/medRxiv](https://www.biorxiv.org/) | Preprint metadata, authors, abstracts, BibTeX, PDF download | None |
+| [bioRxiv/medRxiv](https://www.biorxiv.org/) | Preprint metadata, authors, abstracts, journal version, BibTeX, PDF download | None |
 | [ACL Anthology](https://aclanthology.org/) | Metadata, authors, abstracts, BibTeX and PDF download for ACL venue papers | None |
 | [Crossref](https://www.crossref.org/) | Reference lists, title search / DOI discovery | Optional email (for polite pool) |
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
@@ -265,6 +265,7 @@ API responses and downloaded files are cached under `.cache/`:
   arxiv/markdown/          # Converted markdown
   arxiv/sections/          # Section indices (JSON)
   biorxiv/papers/          # bioRxiv paper entries (JSON)
+  biorxiv/pubs/            # Journal versions (JSON)
   biorxiv/pdfs/            # Downloaded PDFs
   biorxiv/markdown/        # Converted markdown
   biorxiv/sections/        # Section indices (JSON)
@@ -298,6 +299,7 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 | arxiv | 14d | 1h | New versions land under a new key; preprint IDs go live mid-session. |
 | arxiv (versions) | 1d | 1h | The revision history changes exactly when a new version lands. |
 | biorxiv | 7d | 1h | `published_doi` appears asynchronously once a preprint is published. |
+| biorxiv (pubs) | 7d | 1h | A preprint can gain a journal link any day. |
 | openalex (works, authors, pmids) | 30d | 24h | Citation counts, topics, h-index all drift. |
 | crossref | 30d | 24h | Reference lists grow as publishers re-deposit metadata. |
 | opencitations | 7d | 24h | The citation graph grows continuously. |
