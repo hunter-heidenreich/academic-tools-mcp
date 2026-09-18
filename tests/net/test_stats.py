@@ -424,7 +424,7 @@ class TestQuota:
         assert stats.quota_refusal("openalex") is None
 
     def test_a_spent_budget_refuses_until_it_refills(self):
-        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
 
         refusal = stats.quota_refusal("openalex")
 
@@ -435,22 +435,46 @@ class TestQuota:
 
     def test_an_elapsed_deadline_stops_refusing(self):
         """The refusal must lift itself, or one window bricks the provider."""
-        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=-1.0)
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=-1.0, refused=True)
 
         assert stats.quota_refusal("openalex") is None
 
     def test_a_spent_budget_with_no_refill_instant_does_not_refuse(self):
         """No deadline means the refusal could never lift, so it must not start."""
-        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=None)
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=None, refused=True)
 
         assert stats.quota_refusal("openalex") is None
         assert stats.snapshot()["providers"]["openalex"]["quota"]["resets_in_seconds"] is None
+
+    def test_an_advertised_empty_budget_alone_does_not_refuse(self):
+        """A header is an advertisement; only a 429 is the observation that blocks.
+
+        OpenAlex meters credits, and its singleton and autocomplete endpoints spend
+        none — so a spent credit budget must not brick the free path.
+        """
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+
+        assert stats.quota_refusal("openalex") is None
+        # Still reported to the operator, though it does not gate.
+        assert stats.snapshot()["providers"]["openalex"]["quota"]["remaining"] == 0
+
+    def test_a_refusal_with_budget_left_does_not_lock_out_the_window(self):
+        """A 429 from a momentary rate burst is not a spent budget.
+
+        Regression: blocking on `refused` alone locked the provider out until the
+        *budget* window refilled — hours — over a burst that a short retry clears.
+        """
+        stats.record_quota(
+            "openalex", limit=10000, remaining=9000, reset_seconds=24000.0, refused=True
+        )
+
+        assert stats.quota_refusal("openalex") is None
 
     def test_an_unseen_provider_never_refuses(self):
         assert stats.quota_refusal("never-heard-of-it") is None
 
     def test_reset_drops_the_quota(self):
-        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
 
         stats.reset()
 

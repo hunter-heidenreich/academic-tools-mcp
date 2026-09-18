@@ -394,6 +394,78 @@ async def search_authors(
     }
 
 
+AUTOCOMPLETE_ENTITY = Annotated[
+    openalex.AutocompleteEntity,
+    Field(description="Which OpenAlex entity collection to match the name against."),
+]
+
+
+@mcp.tool
+async def autocomplete_openalex(
+    query: Annotated[
+        str,
+        Field(
+            description="A name or title prefix, e.g. 'university of mich' or "
+            "'attention is all'. Matched as typeahead, not full text.",
+            min_length=1,
+        ),
+    ],
+    entity_type: AUTOCOMPLETE_ENTITY = "works",
+) -> dict[str, Any]:
+    """Match a name to an OpenAlex ID. The cheap way in — costs no credit budget.
+
+    Use it when you know what a thing is *called* and want its identifier:
+    search_openalex matches content and is metered ten times as heavily, so it is
+    the wrong tool for a name you already have. This is the only route to
+    get_institution.
+
+    Returns ``{total_results, result_count, results: [{openalex_id, name, hint,
+    entity_type, external_id, works_count, cited_by_count}, ...]}``.
+    ``external_id`` is the entity's other identifier — a DOI for a work, a ROR
+    for an institution, an ORCID for an author, an ISSN for a source — and may be
+    null. ``hint`` disambiguates: authors for a work, a location for an
+    institution. Every field but ``openalex_id`` may be null.
+
+    OpenAlex serves a fixed page here, so ``result_count`` is capped at 10
+    whatever ``total_results`` reports; narrow the query rather than paging.
+
+    Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
+    parse failure.
+
+    Chain get_paper_metadata(``external_id``) for a work, get_author /
+    get_institution(``openalex_id``) otherwise. **Unlike search_openalex, these
+    hits are not cached**, so that follow-up costs a request — a fair trade,
+    since this call costs no credits where search_openalex costs ten.
+    """
+    response = await openalex.autocomplete(query, entity_type=entity_type)
+    if "error" in response:
+        return enrich_error(
+            response,
+            "Retry if OpenAlex is temporarily unavailable, or shorten the query — "
+            "this matches a name from its start, not words anywhere in a record.",
+        )
+
+    results = [
+        {
+            "openalex_id": item.get("id"),
+            "name": item.get("display_name"),
+            "hint": item.get("hint"),
+            "entity_type": item.get("entity_type"),
+            "external_id": item.get("external_id"),
+            "works_count": item.get("works_count"),
+            "cited_by_count": item.get("cited_by_count"),
+        }
+        for item in response.get("items", [])
+    ]
+
+    return {
+        # An int on every search tool that reports it, so agents can branch on it.
+        "total_results": response.get("total_results") or 0,
+        "result_count": len(results),
+        "results": results,
+    }
+
+
 @mcp.tool
 async def find_in_paper(
     identifier: PAPER_ID,

@@ -50,6 +50,9 @@ def _reset_openalex(monkeypatch):
     """
     monkeypatch.setattr(openalex._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(openalex._throttle, "retry_attempts", 1)
+    # The search gap is a module constant, not a throttle attribute; without this a
+    # single search test sleeps out `_SEARCH_REQUEST_GAP` for real.
+    monkeypatch.setattr(openalex._search_gap, "min_gap_seconds", 0.0)
 
 
 def _stub_json_responses(monkeypatch, *payloads, slow=False):
@@ -270,18 +273,24 @@ class TestBuildParams:
         monkeypatch.setenv("OPENALEX_API_KEY", "k1")
         assert openalex._build_params() == {"api_key": "k1"}
 
-    def test_mailto_only(self, monkeypatch):
+    def test_mailto_is_not_a_query_parameter(self, monkeypatch):
+        """OpenAlex retired `mailto` with the polite pool; only the key is metered."""
         monkeypatch.setenv("OPENALEX_MAILTO", "a@b.example")
-        assert openalex._build_params() == {"mailto": "a@b.example"}
+        assert openalex._build_params() == {}
 
     def test_both(self, monkeypatch):
         monkeypatch.setenv("OPENALEX_API_KEY", "k1")
         monkeypatch.setenv("OPENALEX_MAILTO", "a@b.example")
-        assert openalex._build_params() == {"api_key": "k1", "mailto": "a@b.example"}
+        assert openalex._build_params() == {"api_key": "k1"}
 
     def test_blank_is_unset(self, monkeypatch):
-        monkeypatch.setenv("OPENALEX_MAILTO", "   ")
+        monkeypatch.setenv("OPENALEX_API_KEY", "   ")
         assert openalex._build_params() == {}
+
+    def test_the_contact_still_reaches_the_user_agent(self, monkeypatch):
+        """Dropping the parameter must not drop the contact OpenAlex asks clients to send."""
+        monkeypatch.setenv("OPENALEX_MAILTO", "a@b.example")
+        assert "a@b.example" in openalex._build_headers()["User-Agent"]
 
 
 class TestReconstructAbstract:
@@ -1522,3 +1531,232 @@ class TestSearchAuthors:
         await openalex.search_authors("q")
 
         assert len(requests) == 2
+
+
+class TestSearchGate:
+    """Only `search=` queries pay the search gap; the cheap call classes must not."""
+
+    @pytest.mark.asyncio
+    async def test_search_passes_the_gate_and_get_work_does_not(self, monkeypatch):
+        _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+        calls: list[str] = []
+
+        plain = openalex._throttled_get
+
+        async def spy_search(url, **kwargs):
+            calls.append("search")
+            return await plain(url, **kwargs)
+
+        async def spy_plain(url, **kwargs):
+            calls.append("plain")
+            return await plain(url, **kwargs)
+
+        monkeypatch.setattr(openalex, "_throttled_search_get", spy_search)
+        monkeypatch.setattr(openalex, "_throttled_get", spy_plain)
+
+        await openalex.search_works("attention")
+        assert calls == ["search"]
+
+        await openalex.get_work("10.1234/a")
+        assert calls[1:] == ["plain"]
+
+    @pytest.mark.asyncio
+    async def test_the_batch_fetch_skips_the_gate(self, monkeypatch):
+        """`get_works_batch` GETs the same /works URL, at a tenth the credit cost.
+
+        Regression: gating on the URL rather than the call site would have paced every
+        reference-graph enrichment at the search rate.
+        """
+        _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        async def gate(url, **kwargs):
+            raise AssertionError(f"batch fetch took the search gate: {url}")
+
+        monkeypatch.setattr(openalex, "_throttled_search_get", gate)
+
+        await openalex.get_works_batch(["10.1234/a", "10.1234/b"])
+
+    @pytest.mark.asyncio
+    async def test_autocomplete_skips_the_gate(self, monkeypatch):
+        """It costs no credits, so pacing it as though it did would be a pure loss."""
+        _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        async def gate(url, **kwargs):
+            raise AssertionError(f"autocomplete took the search gate: {url}")
+
+        monkeypatch.setattr(openalex, "_throttled_search_get", gate)
+
+        await openalex.autocomplete("attention")
+
+
+class TestNormalizeInstitutionId:
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "I27837315",
+            "  I27837315  ",
+            "https://openalex.org/I27837315",
+            "https://openalex.org/institutions/I27837315",
+            "http://api.openalex.org/institutions/I27837315",
+        ],
+    )
+    def test_openalex_spellings_fold_to_the_bare_id(self, raw):
+        assert openalex.canonical_institution_id(raw) == "i27837315"
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "00jmfr291",
+            "ror:00jmfr291",
+            "ROR:00jmfr291",
+            "https://ror.org/00jmfr291",
+            "ror.org/00jmfr291",
+        ],
+    )
+    def test_ror_spellings_fold_to_the_bare_ror(self, raw):
+        assert openalex.canonical_institution_id(raw) == "00jmfr291"
+
+    def test_a_doubled_prefix_still_folds(self):
+        assert openalex.canonical_institution_id("ror:ror:00jmfr291") == "00jmfr291"
+
+    def test_normalization_is_idempotent(self):
+        once = openalex._normalize_institution_id("https://ror.org/00jmfr291")
+        assert openalex._normalize_institution_id(once) == once
+
+    def test_a_bare_ror_takes_the_scheme_prefix_in_the_path(self):
+        """A bare ROR 404s on OpenAlex, exactly as a bare ORCID does."""
+        assert openalex._institution_path_id("00jmfr291") == "ror:00jmfr291"
+        assert openalex._institution_path_id("I27837315") == "I27837315"
+
+    def test_an_openalex_id_is_not_mistaken_for_a_ror(self):
+        """The crockford alphabet excludes i/l/o/u, which is what separates the shapes."""
+        assert not openalex._looks_like_ror("I27837315")
+
+
+class TestGetInstitution:
+    @pytest.mark.asyncio
+    async def test_returns_the_record_and_caches_it(self, monkeypatch):
+        payload = {"id": "https://openalex.org/I27837315", "display_name": "University of Michigan"}
+        requests = _stub_json_responses(monkeypatch, payload)
+
+        first = await openalex.get_institution("I27837315")
+        second = await openalex.get_institution("https://openalex.org/institutions/I27837315")
+
+        assert first["display_name"] == "University of Michigan"
+        assert second == first
+        assert len(requests) == 1, "the second spelling must hit the same cache key"
+
+    @pytest.mark.asyncio
+    async def test_a_ror_resolves_through_the_prefixed_path(self, monkeypatch):
+        payload = {"id": "https://openalex.org/I27837315", "ror": "https://ror.org/00jmfr291"}
+        requests = _stub_json_responses(monkeypatch, payload)
+
+        await openalex.get_institution("https://ror.org/00jmfr291")
+
+        assert requests[0].url.path == "/institutions/ror:00jmfr291"
+
+    @pytest.mark.asyncio
+    async def test_a_404_is_a_definitive_miss(self, monkeypatch):
+        _stub_json_responses(monkeypatch, _Resp(404, {}))
+
+        result = await openalex.get_institution("I999999999")
+
+        assert result["not_found"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_institution_and_an_author_do_not_share_a_single_flight_slot(
+        self, monkeypatch
+    ):
+        """One SingleFlight serves the module, so an un-namespaced key would collide."""
+        payloads = [
+            {"id": "https://openalex.org/A1", "display_name": "author"},
+            {"id": "https://openalex.org/I1", "display_name": "institution"},
+        ]
+        _stub_json_responses(monkeypatch, *payloads)
+
+        author = await openalex.get_author("A1")
+        institution = await openalex.get_institution("I1")
+
+        assert author["display_name"] == "author"
+        assert institution["display_name"] == "institution"
+
+
+class TestAutocomplete:
+    @pytest.mark.asyncio
+    async def test_returns_items_and_the_upstream_count(self, monkeypatch):
+        _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 16534}, "results": [{"id": "https://openalex.org/I1"}]},
+        )
+
+        result = await openalex.autocomplete("univ", entity_type="institutions")
+
+        assert result["total_results"] == 16534
+        assert [i["id"] for i in result["items"]] == ["https://openalex.org/I1"]
+
+    @pytest.mark.asyncio
+    async def test_sends_the_query_on_the_entity_path(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.autocomplete("univ of mich", entity_type="institutions")
+
+        assert requests[0].url.path == "/autocomplete/institutions"
+        assert parse_qs(requests[0].url.query.decode())["q"] == ["univ of mich"]
+
+    @pytest.mark.asyncio
+    async def test_sends_no_per_page(self, monkeypatch):
+        """OpenAlex rejects `per-page` on this endpoint outright and always serves ten."""
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.autocomplete("univ")
+
+        assert "per-page" not in parse_qs(requests[0].url.query.decode())
+
+    @pytest.mark.asyncio
+    async def test_never_warms_the_cache(self, monkeypatch):
+        """Regression: these are projected records and would answer a later singleton.
+
+        `search_works` refuses `select=` over exactly this hazard; autocomplete *is*
+        a projection, so the only safe answer is to warm nothing.
+        """
+        warmed: list[tuple] = []
+        monkeypatch.setattr(openalex.cache, "warm", lambda *a, **kw: warmed.append(a) or None)
+        _stub_json_responses(
+            monkeypatch,
+            {
+                "meta": {"count": 1},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W1",
+                        "external_id": "https://doi.org/10.1234/a",
+                        "display_name": "A paper",
+                    }
+                ],
+            },
+        )
+
+        await openalex.autocomplete("a paper")
+
+        assert warmed == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload", [[], {"results": "nope"}, _BAD_JSON, {"meta": {"count": 1}}]
+    )
+    async def test_a_wrong_shape_is_an_error_not_an_empty_result(self, monkeypatch, payload):
+        _stub_json_responses(monkeypatch, payload)
+
+        result = await openalex.autocomplete("univ")
+
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_non_dict_entries_are_dropped(self, monkeypatch):
+        _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 2}, "results": ["nope", {"id": "https://openalex.org/I1"}]},
+        )
+
+        result = await openalex.autocomplete("univ")
+
+        assert [i["id"] for i in result["items"]] == ["https://openalex.org/I1"]

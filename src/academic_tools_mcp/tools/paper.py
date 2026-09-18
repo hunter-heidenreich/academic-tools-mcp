@@ -15,6 +15,7 @@ from ..app import (
     FALLBACK_CROSSREF,
     FOLLOW_PUBLISHED,
     FORCE_REFRESH,
+    INSTITUTION_ID,
     PAPER_ID,
     as_dict,
     crossref_date,
@@ -1044,6 +1045,73 @@ async def get_author(
         "current_institutions": current_institutions,
         "top_topics": top_topics,
         "affiliations": affiliations,
+    }
+
+
+@mcp.tool
+async def get_institution(
+    institution_id: INSTITUTION_ID,
+    force_refresh: FORCE_REFRESH = False,
+) -> dict[str, Any]:
+    """Fetch an institution's OpenAlex profile (chain from autocomplete_openalex).
+
+    Returns ``{name, openalex_id, ror, country_code, type, homepage_url,
+    works_count, cited_by_count, h_index, i10_index, city, region,
+    alternative_names, parent_institutions}``. ``alternative_names`` merges
+    OpenAlex's acronyms and alternative spellings, capped at 10;
+    ``parent_institutions`` is the lineage above this one, so a hospital or
+    campus names its university. ``works_count`` / ``cited_by_count`` /
+    ``h_index`` drift with time.
+
+    Affiliations reported elsewhere are *current*, not paper-time — this tool
+    resolves what an affiliation string names, not where an author worked when a
+    given paper was written.
+
+    Errors: not found / bad ID → ``{error, suggestion}`` pointing at
+    autocomplete_openalex or a ROR.
+    """
+    institution = await openalex.get_institution(institution_id, force_refresh=force_refresh)
+    if "error" in institution:
+        return enrich_error(
+            institution,
+            "Use an OpenAlex institution ID (from autocomplete_openalex or "
+            "get_paper_authors), or a ROR in any spelling.",
+        )
+
+    stats = as_dict(institution.get("summary_stats"))
+    geo = as_dict(institution.get("geo"))
+    names = institution.get("display_name_acronyms"), institution.get("display_name_alternatives")
+    alternative_names = [
+        name
+        for group in names
+        if isinstance(group, list)
+        for name in group
+        if isinstance(name, str)
+    ]
+    # Lineage includes the institution itself; the rest is what sits above it.
+    lineage = institution.get("lineage")
+    self_id = institution.get("id")
+    parent_institutions = [
+        oa_id
+        for oa_id in (lineage if isinstance(lineage, list) else [])
+        if isinstance(oa_id, str) and oa_id != self_id
+    ]
+
+    return {
+        "name": institution.get("display_name"),
+        "openalex_id": self_id,
+        "ror": institution.get("ror"),
+        "country_code": institution.get("country_code"),
+        "type": institution.get("type"),
+        "homepage_url": institution.get("homepage_url"),
+        "works_count": institution.get("works_count"),
+        "cited_by_count": institution.get("cited_by_count"),
+        "h_index": stats.get("h_index"),
+        "i10_index": stats.get("i10_index"),
+        "city": geo.get("city"),
+        "region": geo.get("region"),
+        "alternative_names": alternative_names[:10],
+        "parent_institutions": parent_institutions,
     }
 
 

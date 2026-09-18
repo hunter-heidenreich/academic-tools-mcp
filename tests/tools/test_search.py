@@ -939,3 +939,80 @@ class TestSearchAuthors:
         # The cap belongs to openalex, not to a number transcribed here.
         field = server.search_authors.__annotations__["max_results"].__metadata__[0]
         assert field.metadata[1].le == openalex.MAX_SEARCH_RESULTS
+
+
+class TestAutocompleteOpenalex:
+    """Pins the triage shape and the chain handles: `openalex_id` and `external_id`."""
+
+    @staticmethod
+    def _hit(**over):
+        return {
+            "id": "https://openalex.org/I27837315",
+            "display_name": "University of Michigan",
+            "hint": "Ann Arbor, USA",
+            "entity_type": "institution",
+            "external_id": "https://ror.org/00jmfr291",
+            "works_count": 993484,
+            "cited_by_count": 67912675,
+            **over,
+        }
+
+    def _stub(self, monkeypatch, response):
+        async def fake_autocomplete(query, **kwargs):
+            return response
+
+        monkeypatch.setattr(openalex, "autocomplete", fake_autocomplete)
+
+    @pytest.mark.asyncio
+    async def test_returns_the_slim_triage_shape(self, monkeypatch):
+        self._stub(monkeypatch, {"items": [self._hit()], "total_results": 16534})
+
+        result = await server.autocomplete_openalex("univ of mich", entity_type="institutions")
+
+        assert result["total_results"] == 16534
+        assert result["result_count"] == 1
+        assert result["results"] == [
+            {
+                "openalex_id": "https://openalex.org/I27837315",
+                "name": "University of Michigan",
+                "hint": "Ann Arbor, USA",
+                "entity_type": "institution",
+                "external_id": "https://ror.org/00jmfr291",
+                "works_count": 993484,
+                "cited_by_count": 67912675,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_passes_the_entity_type_through(self, monkeypatch):
+        seen: list[str] = []
+
+        async def fake_autocomplete(query, **kwargs):
+            seen.append(kwargs.get("entity_type"))
+            return {"items": [], "total_results": 0}
+
+        monkeypatch.setattr(openalex, "autocomplete", fake_autocomplete)
+
+        await server.autocomplete_openalex("ada")
+        await server.autocomplete_openalex("ada", entity_type="authors")
+
+        assert seen == ["works", "authors"]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_total_still_reports_an_int(self, monkeypatch):
+        """Every search tool owes a `more exist` signal, and agents branch on the type."""
+        self._stub(monkeypatch, {"items": [], "total_results": None})
+
+        result = await server.autocomplete_openalex("nothing at all")
+
+        assert result["total_results"] == 0
+        assert result["result_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_an_error_carries_a_suggestion(self, monkeypatch):
+        self._stub(monkeypatch, {"error": "OpenAlex timed out.", "retryable": True})
+
+        result = await server.autocomplete_openalex("univ")
+
+        assert result["retryable"] is True
+        assert "suggestion" in result

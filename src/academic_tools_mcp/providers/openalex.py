@@ -3,13 +3,13 @@
 import asyncio
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal, get_args
 from urllib.parse import quote
 
 import httpx
 
 from ..net import clients, http, stats
-from ..net.throttle import Throttle
+from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
 from ..util import config, doinorm, orcidnorm, useragent
 
@@ -28,21 +28,31 @@ def _parse_error_dict() -> dict[str, Any]:
     return http.parse_error_dict(LABEL)
 
 
-# The gap paces us at OpenAlex's documented 10 req/sec; the concurrency cap lets a
-# reference-graph traversal run lookups in parallel (OpenAlex documents no concurrency
-# limit); the burst cap, as with every other provider, gives a stacked caller feedback
-# instead of silent queueing. Pace is not budget — the credit ceiling is `net/stats`'.
+# A deliberate 10x margin under OpenAlex's documented 100 req/sec: pace is no longer the
+# binding constraint, the credit budget is, so the gap buys politeness rather than
+# headroom. The concurrency cap lets a reference-graph traversal run lookups in parallel
+# (OpenAlex documents no concurrency limit); the burst cap, as with every other provider,
+# gives a stacked caller feedback instead of silent queueing.
 _MAX_CONCURRENT = 4
 _MIN_REQUEST_GAP = 0.1
 _MAX_PENDING = 5
+
+# Search is the one metered class here: a `search=` list costs 10 credits where a
+# `filter=` list costs 1 and a singleton 0, against 1000 credits/day anonymous (10x with
+# a key). Pacing it by that ratio spends the budget no faster per second than the cheap
+# path does. Measured — OpenAlex publishes the credit tiers, not the per-endpoint cost.
+_SEARCH_CREDITS = 10
+_LIST_CREDITS = 1
+_SEARCH_REQUEST_GAP = _MIN_REQUEST_GAP * (_SEARCH_CREDITS / _LIST_CREDITS)
 
 # Coalesces concurrent calls for one DOI / author ID: the four unified paper tools
 # and the OpenAlex-only ones share a single fetch per paper.
 _single_flight = singleflight.SingleFlight()
 
 # Long: a work's citation count and topics drift slowly, an author's h_index and
-# works_count on the same timescale — long enough to amortise a session's reads, short
-# enough that neither entity is frozen. Both entities share this TTL.
+# works_count on the same timescale, an institution's works_count and cited_by_count on
+# the same clock again — long enough to amortise a session's reads, short enough that no
+# entity is frozen. All three share this TTL.
 _POSITIVE_TTL_SECONDS = 30 * 86400.0
 
 
@@ -76,19 +86,23 @@ def best_pdf_url(work: dict[str, Any]) -> str | None:
 
 
 def _build_params() -> dict[str, str]:
-    """Build query params from environment config."""
+    """Build query params from environment config.
+
+    The key is the whole of it. OpenAlex retired the `mailto` parameter with the polite
+    pool in Feb 2026 and meters by key; sending it bought nothing.
+    """
     params: dict[str, str] = {}
     api_key = config.get("OPENALEX_API_KEY")
     if api_key:
         params["api_key"] = api_key
-    mailto = config.get("OPENALEX_MAILTO")
-    if mailto:
-        params["mailto"] = mailto
     return params
 
 
 def _build_headers() -> dict[str, str]:
-    """The polite-pool User-Agent. Sent either way; the mailto is what joins."""
+    """The User-Agent, carrying the contact OpenAlex asks a client to be reachable at.
+
+    It buys no rate tier — only `OPENALEX_API_KEY` raises the credit budget.
+    """
     return useragent.headers(config.get("OPENALEX_MAILTO"))
 
 
@@ -109,6 +123,24 @@ _throttle = Throttle(
 async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
     """GET at OpenAlex's rate. Url-only: it builds the pooled client itself."""
     return await _throttle.get(_get_client(), url, **kwargs)
+
+
+_search_gap = SubGap(_throttle, min_gap_seconds=_SEARCH_REQUEST_GAP)
+
+
+def reset_search_pacing() -> None:
+    """Reset the search gap (test seam, called by conftest)."""
+    _search_gap.reset()
+
+
+async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
+    """GET at OpenAlex's tighter *search* rate, then through the ordinary slot.
+
+    For a `search=` query only. The batch fetch hits the same `/works` URL with `filter=`
+    at a tenth the cost, so the gate is per call site, not per URL.
+    """
+    await _search_gap.wait()
+    return await _throttled_get(url, **kwargs)
 
 
 # The openalex.org URL spellings an entity ID is pasted in — the latitude
@@ -140,6 +172,48 @@ def _author_path_id(author_id: str) -> str:
     if orcidnorm.looks_like_orcid(bare):
         return f"orcid:{quote(bare, safe='')}"
     return quote(bare, safe="")
+
+
+# A ROR is `0` then eight crockford-base32 characters, the last two a checksum — `i`,
+# `l`, `o` and `u` are not in the alphabet, which is what keeps this from matching a bare
+# OpenAlex ID. The URL form is the spelling papers and ROR itself print.
+_ROR_RE = re.compile(r"^0[0-9a-hj-km-np-tv-z]{6}\d{2}$", re.IGNORECASE)
+_ROR_URL_RE = re.compile(r"^(?:https?://)?(?:www\.)?ror\.org/", re.IGNORECASE)
+
+
+def _looks_like_ror(value: str) -> bool:
+    """Whether ``value`` is a bare ROR, once any URL or scheme prefix is off."""
+    return bool(_ROR_RE.match(value))
+
+
+def _normalize_institution_id(institution_id: str) -> str:
+    """Normalize an institution identifier to its bare form.
+
+    A bare OpenAlex ID (``I27837315``), any openalex.org URL ``_OPENALEX_URL_RE``
+    covers, or a ROR in any spelling — bare, ``ror:``-prefixed, or a ror.org URL.
+    Idempotent, as the author and PMID normalizers are.
+    """
+    institution_id = institution_id.strip()
+    if m := _OPENALEX_URL_RE.match(institution_id):
+        return m.group(1)
+
+    # In a loop, as `normalize_pmid` does: doubled prefixes occur in pasted citations.
+    while institution_id[:4].lower() == "ror:":
+        institution_id = institution_id[4:].strip()
+    return _ROR_URL_RE.sub("", institution_id).strip()
+
+
+def _institution_path_id(institution_id: str) -> str:
+    """The encoded path segment OpenAlex resolves; a bare ROR takes ``ror:``, as an ORCID does."""
+    bare = _normalize_institution_id(institution_id)
+    if _looks_like_ror(bare):
+        return f"ror:{quote(bare, safe='')}"
+    return quote(bare, safe="")
+
+
+def canonical_institution_id(institution_id: str) -> str:
+    """Return a canonical institution ID for cache keying."""
+    return _normalize_institution_id(institution_id).lower()
 
 
 def canonical_author_id(author_id: str) -> str:
@@ -326,6 +400,37 @@ async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str
     )
 
 
+async def get_institution(institution_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """Fetch an institution by OpenAlex ID or ROR, using cache when available.
+
+    Concurrent callers for the same ID share one fetch. ``force_refresh=True``
+    drops both cache halves first — works_count and cited_by_count drift.
+    """
+    canonical = canonical_institution_id(institution_id)
+
+    async def _fetch() -> dict[str, Any]:
+        bare_id = _normalize_institution_id(institution_id)
+        # Neither shape holds a `/`, which `quote(safe="")` would hide from the URL guard.
+        return await _fetch_singleton(
+            entity="institutions",
+            url=f"{OPENALEX_BASE_URL}/institutions/{_institution_path_id(institution_id)}",
+            bare="" if "/" in bare_id else bare_id,
+            canonical=canonical,
+            not_found_error=f"No institution found for ID: {institution_id}",
+        )
+
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="institutions",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        sf_key=("institution", canonical),
+    )
+
+
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a work by DOI, using cache when available.
 
@@ -394,7 +499,10 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
     works cache, exactly as ``crossref.search_works`` does.
 
     **No ``select=``, deliberately**: a projected work would poison the ``works``
-    key it warms. The unread bytes never leave this process.
+    key it warms. The unread bytes never leave this process, and cost nothing —
+    ``select=`` does not reduce what a query is metered.
+
+    Paced by ``_search_gap``: this is the expensive call class.
     """
     params = _build_params()
     params["search"] = query
@@ -403,7 +511,7 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
         params["filter"] = f"publication_year:{year}"
 
     try:
-        response = await _throttled_get(f"{OPENALEX_BASE_URL}/works", params=params)
+        response = await _throttled_search_get(f"{OPENALEX_BASE_URL}/works", params=params)
         response.raise_for_status()
         data = response.json()
     except _PARSE_ERRORS:
@@ -441,13 +549,14 @@ async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
 
     **No ``select=``**, as in ``search_works``: a projected author would poison
     the ``authors`` key it warms. No year filter — it does not narrow a person.
+    Paced by ``_search_gap``, as ``search_works`` is.
     """
     params = _build_params()
     params["search"] = query
     params["per-page"] = str(min(max(rows, 1), MAX_SEARCH_RESULTS))
 
     try:
-        response = await _throttled_get(f"{OPENALEX_BASE_URL}/authors", params=params)
+        response = await _throttled_search_get(f"{OPENALEX_BASE_URL}/authors", params=params)
         response.raise_for_status()
         data = response.json()
     except _PARSE_ERRORS:
@@ -474,6 +583,68 @@ async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
     meta = data.get("meta")
     count = meta.get("count") if isinstance(meta, dict) else None
     return {"items": items, "total_results": count if isinstance(count, int) else None}
+
+
+# The entity collections `/autocomplete` serves that this server has a use for. Closed
+# deliberately: the value is a URL path segment, so an unvalidated one is a request-side
+# hole, and OpenAlex answers an unknown collection with a 404 either way. The tuple is
+# derived, never spelled twice — the tool annotates on the type, the provider tests
+# membership against the tuple.
+AutocompleteEntity = Literal["works", "authors", "institutions", "sources"]
+AUTOCOMPLETE_ENTITIES: tuple[str, ...] = get_args(AutocompleteEntity)
+
+# Fixed upstream: `/autocomplete` rejects `per-page` outright ("not a valid parameter for
+# the entity autocomplete endpoint") and always serves ten. Named so the tool can report
+# the cap rather than a caller discovering it.
+AUTOCOMPLETE_RESULT_COUNT = 10
+
+
+async def autocomplete(query: str, *, entity_type: AutocompleteEntity = "works") -> dict[str, Any]:
+    """Typeahead over one OpenAlex entity collection. Costs no credits.
+
+    Returns ``{"items": [...], "total_results": N | None}`` — dict-shaped hits only — or
+    ``{"error": ...}`` on transport/HTTP failure or a wrong-shape body, matching
+    ``search_works``. Each hit is a projection: ``id``, ``display_name``, ``hint``,
+    ``entity_type``, ``external_id`` (the DOI for a work, the ROR for an institution) and
+    the two counts.
+
+    **Never warms the cache**, unlike ``search_works`` and ``search_authors``. These are
+    projected records, and one written under a singleton key would answer a later
+    ``get_work`` / ``get_author`` / ``get_institution`` with a fraction of the object —
+    the hazard ``search_works`` refuses ``select=`` over.
+
+    ``entity_type`` is interpolated into the path, so the caller owes it a
+    ``AUTOCOMPLETE_ENTITIES`` membership test; there is no ``rows`` because OpenAlex
+    serves a fixed page.
+    """
+    params = _build_params()
+    params["q"] = query
+
+    try:
+        # `safe=""`: a collection name has no path structure, so a stray slash is an escape.
+        url = f"{OPENALEX_BASE_URL}/autocomplete/{quote(entity_type, safe='')}"
+        response = await _throttled_get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+    except _PARSE_ERRORS:
+        return _parse_error_dict()
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(LABEL, e)
+
+    # A wrong shape here either raises out of the provider or reads as an empty
+    # result set, and "no matches" ends the agent's search.
+    if not isinstance(data, dict):
+        return _parse_error_dict()
+    results = data.get("results")
+    if not isinstance(results, list):
+        return _parse_error_dict()
+
+    meta = data.get("meta")
+    count = meta.get("count") if isinstance(meta, dict) else None
+    return {
+        "items": [item for item in results if isinstance(item, dict)],
+        "total_results": count if isinstance(count, int) else None,
+    }
 
 
 async def _fetch_chunk(
@@ -588,6 +759,10 @@ async def get_works_batch(
     ``/works?filter=doi:...|...`` calls of up to ``_BATCH_CHUNK_SIZE``, and each
     resolved work is written to the singleton cache, so a later ``get_work`` is
     a free hit. ``force_refresh=True`` drops cached entries first.
+
+    **What batching buys is wall clock, not credits.** A `filter=` list costs 1 credit
+    where the singletons it replaces cost 0; at ``_MIN_REQUEST_GAP`` a chunk of 50 would
+    otherwise take seconds, which is the trade.
 
     A transient failure contaminates its whole chunk: one HTTP failure doesn't
     say which DOI the upstream meant to error on.

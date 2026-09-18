@@ -56,6 +56,30 @@ Two things the shape does not make obvious:
 
 ## openalex.py
 
+**The budget is credits, not requests, and the classes are priced very differently.**
+Measured, because OpenAlex documents the tiers but not the per-endpoint cost: a
+singleton and `/autocomplete` cost **0**, a `filter=` list **1**, a `search=` list
+**10**, against 1000 credits/day anonymous and 10x that with `OPENALEX_API_KEY`. Three
+consequences, none of them obvious from the code: `_search_gap` exists because `search=`
+is the only metered class worth pacing; `get_works_batch` buys *wall clock* rather than
+credits, since the singletons its one `filter=` call replaces were already free; and
+`select=` is free to refuse, because it does not reduce what a query is metered. The
+polite pool and the `mailto` parameter were abolished in Feb 2026 — only the key moves
+the budget, and the contact now rides the User-Agent alone.
+
+**A ROR is a key and a path, and they differ** — the ORCID rule again.
+`canonical_institution_id` folds every spelling to the bare form; the request rebuilds
+`ror:<bare>`, which is what OpenAlex resolves. `_looks_like_ror` is what keeps the two
+shapes apart, and it leans on the crockford alphabet excluding `i`/`l`/`o`/`u`: without
+that, `I27837315` reads as a ROR and takes the wrong path prefix.
+
+**`autocomplete` warms nothing, and that is not an oversight.** Its records are
+projections, so one written under a singleton key would answer a later `get_work` /
+`get_author` / `get_institution` with a fraction of the object — the same hazard
+`search_works` refuses `select=` over, and the rule paperswithcode states as "never warm
+from search". `search_works` and `search_authors` warm precisely because they do *not*
+project.
+
 **Guards reach the elements, not just the top-level object.** Four values come
 from untyped JSON and are consumed where nothing above catches an
 `AttributeError`/`TypeError`: `best_pdf_url`'s sub-objects and URLs (the OA

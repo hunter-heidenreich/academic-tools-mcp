@@ -20,7 +20,7 @@ import pytest
 import academic_tools_mcp
 from academic_tools_mcp.download import openaccess
 from academic_tools_mcp.net import http
-from academic_tools_mcp.providers import crossref, opencitations, paperswithcode
+from academic_tools_mcp.providers import crossref, openalex, opencitations, paperswithcode
 
 
 def _discover_clients():
@@ -215,6 +215,14 @@ class TestCrossrefPoolSelection:
         # In both tiers: promotion moves both gaps, so neither ordering may invert.
         assert crossref._PUBLIC_SEARCH_GAP > crossref._PUBLIC_REQUEST_GAP
         assert crossref._POLITE_SEARCH_GAP > crossref._POLITE_REQUEST_GAP
+
+    def test_openalex_paces_search_above_its_ordinary_rate(self):
+        # OpenAlex's constraint is a credit budget, not a rate: a `search=` list costs
+        # ten credits where a `filter=` list costs one and a singleton none. This pins
+        # the policy — that the metered class is paced by that ratio — not the behaviour,
+        # which lives in providers/test_openalex.py.
+        assert openalex._SEARCH_REQUEST_GAP > openalex._MIN_REQUEST_GAP
+        assert openalex._search_gap.min_gap_seconds == pytest.approx(openalex._SEARCH_REQUEST_GAP)
 
 
 def _response_with_retry_after(value):

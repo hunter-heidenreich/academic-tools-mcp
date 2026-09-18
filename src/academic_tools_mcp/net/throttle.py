@@ -18,8 +18,8 @@ Gating order (see ``slot``):
    the GET happen outside it.
 
 A provider with a stricter limit for one class of request (crossref and Papers with
-Code search) puts a ``SubGap`` in front of the slot; it answers to the same quota and
-``max_pending``.
+Code search, openalex's credit-metered ``search=``) puts a ``SubGap`` in front of the
+slot; it answers to the same quota and ``max_pending``.
 
 ``slot`` is an async context manager, so a streaming PDF download holds it for
 the whole stream and its open connection counts against the concurrency cap.
