@@ -17,6 +17,18 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`get_paper_updates` checks a DOI for retraction and correction notices.** From
+  Crossref's `updated-by`, which carries both publisher-registered notices and the
+  Retraction Watch database Crossref has owned since 2023, so it costs no request on
+  a paper already cached. Returns `retracted` plus each notice's DOI, type, source
+  and date, and any preprint/published DOIs the publisher deposited under
+  `relation`. A `retracted: false` means Crossref lists no notice, not that the
+  paper stands. ([#142])
+
+- **A Crossref DOI that isn't Crossref's says so.** A miss now names the registering
+  agency, so a DataCite identifier — a dataset, a Zenodo record, software — reads as
+  out of scope instead of as an index gap worth retrying. ([#142])
+
 - **`convert_paper` reads bioRxiv/medRxiv papers from bioRxiv's JATS XML**:
   section-structured markdown in seconds with no PDF, recorded as
   `conversion_mode: "jats"` and kept across a PDF download. Papers without JATS
@@ -1922,3 +1934,4 @@ say which.
 [#138]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/138
 [#139]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/139
 [#141]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/141
+[#142]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/142

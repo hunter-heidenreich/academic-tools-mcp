@@ -158,6 +158,14 @@ because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`
 (nothing was tried), and an unknown `mode` is rejected with no `conversion_mode`
 (the requested value is not in the published vocabulary).
 
+## DOI-only tools
+
+- **`app.resolve_doi_identifier` is the one front door**, so the PMID trade, the
+  Anthology trade, the rejection and canonicalisation keep one order across every
+  DOI-only tool. It sits in `app` because a second tool module needs it and no
+  `tools/*` module may import another; its `subject` names the refusing tool, which
+  are DOI-only for different reasons.
+
 ## Reference / citation graph tools
 
 - **`auto` is biased toward Crossref by `_CROSSREF_HYSTERESIS`, not a plain max.**

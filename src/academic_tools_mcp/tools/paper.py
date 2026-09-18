@@ -11,6 +11,7 @@ from ..app import (
     AUTHOR_ID,
     AUTHORS_PAGE,
     AUTHORS_PAGE_SIZE,
+    DOI,
     FALLBACK_CROSSREF,
     FOLLOW_PUBLISHED,
     FORCE_REFRESH,
@@ -21,6 +22,7 @@ from ..app import (
     enrich_error,
     mcp,
     page_bounds,
+    resolve_doi_identifier,
     resolve_paper_identifier,
     unwrap_first,
 )
@@ -1042,4 +1044,61 @@ async def get_author(
         "current_institutions": current_institutions,
         "top_topics": top_topics,
         "affiliations": affiliations,
+    }
+
+
+# Names this tool in the DOI-only refusal `resolve_doi_identifier` builds.
+_UPDATES_SUBJECT = "Crossref update notices"
+
+
+@mcp.tool
+async def get_paper_updates(doi: DOI, force_refresh: FORCE_REFRESH = False) -> dict[str, Any]:
+    """Check a DOI for retraction and correction notices, and for related preprint DOIs.
+
+    Returns ``{doi, retracted, updates, relations}``, the echoed ``doi`` canonical
+    rather than the spelling you passed. ``updates`` is
+    [{doi, type, label, source, year, date}] — ``type`` is Crossref's (``retraction``,
+    ``correction``, ``expression_of_concern``), ``source`` is ``publisher`` or
+    ``retraction-watch``, and ``doi`` is the notice, which get_paper_metadata reads
+    like any other paper. ``relations`` maps Crossref's relation names to DOIs
+    (``is-preprint-of``, ``has-preprint``, ``is-version-of``).
+
+    **``retracted: false`` means Crossref lists no retraction, not that the paper
+    stands** — it answers an undeposited DOI and a sound paper identically, so it
+    clears a citation rather than certifying one. ``relations`` is ``{}`` for most
+    papers, publisher deposit being thin, so an absent ``is-preprint-of`` is no claim
+    that no preprint exists; get_paper_metadata's ``follow_published`` answers that
+    more fully.
+
+    Crossref-only, and free on a paper already cached. Errors: a non-DOI identifier is
+    rejected locally without a request, and a DOI Crossref has no record for returns
+    ``{error, not_found, suggestion}``, naming the registering agency when it is not
+    Crossref.
+    """
+    doi, bad = await resolve_doi_identifier(
+        doi, subject=_UPDATES_SUBJECT, force_refresh=force_refresh
+    )
+    if bad is not None:
+        return bad
+
+    work = await crossref.get_work(doi, force_refresh=force_refresh)
+    if "error" in work:
+        return enrich_error(
+            work,
+            "Check the DOI, or use search_crossref_by_title to find the right one. "
+            "Only Crossref-registered DOIs carry update notices.",
+        )
+
+    updates = []
+    for update in crossref.updates(work):
+        # `crossref_date` walks a work, so the notice's date-parts ride in under a
+        # key it knows rather than growing a second walker.
+        year, date = crossref_date({"issued": update.pop("updated")})
+        updates.append({**update, "year": year, "date": date})
+
+    return {
+        "doi": doi,
+        "retracted": any(u["type"] == crossref.RETRACTION_UPDATE_TYPE for u in updates),
+        "updates": updates,
+        "relations": crossref.relations(work),
     }

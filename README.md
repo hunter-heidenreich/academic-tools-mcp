@@ -12,7 +12,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [arXiv](https://arxiv.org/) | Preprint metadata, authors, abstracts, BibTeX, license and revision history, PDF download, HTML full text | None |
 | [bioRxiv/medRxiv](https://www.biorxiv.org/) | Preprint metadata, authors, abstracts, journal version, funders, revision history, BibTeX, PDF download | None |
 | [ACL Anthology](https://aclanthology.org/) | Metadata, authors, abstracts, BibTeX and PDF download for ACL venue papers | None |
-| [Crossref](https://www.crossref.org/) | Reference lists, title search / DOI discovery | Optional email (for polite pool) |
+| [Crossref](https://www.crossref.org/) | Reference lists, retraction and correction notices, title search / DOI discovery | Optional email (for polite pool) |
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
 | [Wikipedia](https://www.wikipedia.org/) | Article search, summaries | Optional email (for User-Agent) |
 | [Papers with Code](https://paperswithcode.co/) | Code repositories, tasks, methods, benchmark results and leaderboards, Hugging Face links (arXiv papers) | None |
@@ -31,6 +31,7 @@ These are properties of the upstream providers rather than of this server, which
 - **ACL Anthology papers without a DOI have no reference or citation graph**, and a just-minted hosted DOI (`10.1162/tacl…`) answers from OpenAlex until the weekly index refresh.
 - **Not every arXiv paper has an HTML rendering.** arXiv renders LaTeX source with LaTeXML; a paper submitted as PDF only, or whose conversion failed, has none, and `convert_paper` then needs the PDF. The rendering itself can lose content LaTeXML could not parse — an undefined macro, a complex table, a figure drawn in TikZ.
 - **bioRxiv has outages and bot protection.** Its `/details` API has served empty responses for every query; bioRxiv DOIs then answer from OpenAlex, without `published_doi` or corresponding-author fields. Its PDF hosts sit behind Cloudflare; when `download_pdf` is refused, fetch the PDF in a browser and use `import_paper`.
+- **A `retracted: false` from `get_paper_updates` is not a clean bill of health.** Crossref answers a DOI nobody has deposited a notice against and a sound paper identically, so it clears a citation rather than certifying one. Its `relations` field is `{}` for most papers — `is-preprint-of` / `has-preprint` depend on thin publisher deposit — so an absent relation is not a claim that no preprint exists.
 - **Preprint and published author lists diverge.** arXiv and the published DOI can list different author sets for the same work. `get_paper_metadata(identifier, follow_published=True)` chains a bioRxiv or arXiv preprint to its journal version — arXiv's only when the authors recorded that DOI — but only once OpenAlex has indexed that version; until then the response carries `followed_published: false` so you can tell you are looking at preprint-era metadata.
 
 ## Setup
@@ -163,6 +164,7 @@ Every tool above except `search_cached_papers` (which takes a query, not a paper
 | `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from the better-covered one, biased toward Crossref for its richer per-entry metadata (OpenCitations wins only on a materially larger reference list); pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
 | `get_paper_citations_count` | Survey incoming-citation coverage across OpenCitations and OpenAlex in one call — the cross-check that tells an OpenCitations zero from a genuinely uncited paper |
 | `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
+| `get_paper_updates` | Retraction and correction notices for a DOI, from Crossref and the Retraction Watch database, plus any preprint/published DOIs the publisher deposited. Free on a paper already in the Crossref cache |
 | `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); `max_results` widens the triage list up to Crossref's cap. Each hit warms the Crossref works cache, so a follow-up `get_paper_references(doi, source="crossref")` is free |
 
 For citations, follow the **count-then-page** pattern: call `get_paper_citations_count` first to see the total, then page through with `page` and `page_size`. For references the `source="auto"` default does the survey for you on the first call. Paginated responses include `_source` and `has_more` so agents know which shape to expect and when to stop, and echo `doi` in canonical form so every spelling of one paper correlates to a single value across calls. This prevents token blowouts on papers with long bibliographies or many citations.
@@ -344,7 +346,7 @@ server.py            thin entry: re-exports mcp + tools, registers the
   ├── bibtex.py        BibTeX generation
   ├── fast_extract.py  bundled pymupdf text extractor (a `python -m` target)
   │
-  ├── tools/         29 @mcp.tool functions, split by job
+  ├── tools/         31 @mcp.tool functions, split by job
   │                    paper.py     metadata / authors / abstract / bibtex
   │                    pipeline.py  download → convert → sections → section
   │                    graph.py     references and citations

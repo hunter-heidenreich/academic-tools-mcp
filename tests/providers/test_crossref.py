@@ -685,7 +685,9 @@ class TestGetWorkNotFound:
 
         assert first == second
         assert second["not_found"] is True
-        assert recorder.count == 1
+        # The miss costs a second request to name the registering agency; the
+        # negative entry carries the answer, so the repeat costs nothing.
+        assert recorder.count == 2
 
     @pytest.mark.asyncio
     async def test_the_negative_entry_is_keyed_canonically(self, tmp_path, monkeypatch):
@@ -697,7 +699,7 @@ class TestGetWorkNotFound:
         again = await crossref.get_work("https://doi.org/10.1234/missing")
 
         assert again["not_found"] is True
-        assert recorder.count == 1
+        assert recorder.count == 2  # the work and its agency, once between them
 
     @pytest.mark.asyncio
     async def test_force_refresh_drops_the_negative_entry(self, tmp_path, monkeypatch):
@@ -713,7 +715,219 @@ class TestGetWorkNotFound:
         found = await crossref.get_work("10.1234/missing", force_refresh=True)
 
         assert found["DOI"] == "10.1234/missing"
-        assert recorder.count == 2
+        # The 404, the agency probe behind it, then the refreshed hit.
+        assert recorder.count == 3
+
+
+def _agency_response(agency_id, label=None):
+    """A minimal valid Crossref /works/{doi}/agency response."""
+    return {
+        "message": {"DOI": "10.1234/x", "agency": {"id": agency_id, "label": label or agency_id}}
+    }
+
+
+class TestGetAgency:
+    """Which registrar minted a DOI — the difference between "Crossref hasn't
+    indexed this yet" and "this is a dataset nothing here will ever index"."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_agency_object(self, tmp_path, monkeypatch):
+        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, _agency_response("datacite", "DataCite"))
+
+        assert await crossref.get_agency("10.5281/zenodo.1") == {
+            "id": "datacite",
+            "label": "DataCite",
+        }
+
+    @pytest.mark.asyncio
+    async def test_is_cached(self, tmp_path, monkeypatch):
+        _reset_crossref(monkeypatch, tmp_path)
+        recorder = _stub_json_responses(monkeypatch, _agency_response("crossref", "Crossref"))
+
+        await crossref.get_agency("10.1234/x")
+        await crossref.get_agency("10.1234/X")
+
+        assert recorder.count == 1  # and keyed canonically
+
+    @pytest.mark.asyncio
+    async def test_a_missing_agency_key_is_a_parse_error(self, tmp_path, monkeypatch):
+        """A 200 whose message lacks `agency` is a wrong shape, not an empty answer."""
+        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, {"message": {"DOI": "10.1234/x"}})
+
+        result = await crossref.get_agency("10.1234/x")
+
+        assert result["retryable"] is True
+        assert cache.get(crossref.NAMESPACE, "agency", "10.1234/x") is None
+
+    @pytest.mark.asyncio
+    async def test_404_is_negative_cached(self, tmp_path, monkeypatch):
+        _reset_crossref(monkeypatch, tmp_path)
+        recorder = _stub_json_responses(monkeypatch, {}, status_code=404)
+
+        first = await crossref.get_agency("10.1234/missing")
+        await crossref.get_agency("10.1234/missing")
+
+        assert first["not_found"] is True
+        assert recorder.count == 1
+
+
+class TestNotFoundNamesTheRegistrar:
+    """A DataCite DOI — a dataset, a Zenodo record, software — used to read as an
+    ordinary Crossref miss, sending an agent back to retry a DOI no client here
+    will ever answer."""
+
+    @pytest.mark.asyncio
+    async def test_a_datacite_doi_says_so(self, tmp_path, monkeypatch):
+        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(
+            monkeypatch,
+            {},
+            _agency_response("datacite", "DataCite"),
+            status_codes=[404, 200],
+        )
+
+        result = await crossref.get_work("10.5281/zenodo.1")
+
+        assert result["not_found"] is True
+        assert "DataCite" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_crossref_doi_adds_nothing(self, tmp_path, monkeypatch):
+        """Naming Crossref in a Crossref refusal is noise: the DOI is registered
+        here and simply not deposited yet."""
+        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(
+            monkeypatch,
+            {},
+            _agency_response("crossref", "Crossref"),
+            status_codes=[404, 200],
+        )
+
+        result = await crossref.get_work("10.1234/notyet")
+
+        assert result["error"] == "No work found on Crossref for DOI: 10.1234/notyet"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_agency_probe_degrades_to_the_plain_refusal(self, tmp_path, monkeypatch):
+        """The miss is definitive whatever the probe does; a transient failure
+        there must not turn it into something an agent reads as retryable."""
+        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, {}, status_codes=[404, 500])
+
+        result = await crossref.get_work("10.1234/missing")
+
+        assert result["not_found"] is True
+        assert "retryable" not in result
+        assert result["error"] == "No work found on Crossref for DOI: 10.1234/missing"
+
+
+# ---------------------------------------------------------------------------
+# updated-by / relation readers
+# ---------------------------------------------------------------------------
+
+
+_RETRACTED = {
+    "DOI": "10.1016/s0140-6736(97)11096-0",
+    "updated-by": [
+        {
+            "DOI": "10.1016/s0140-6736(04)15715-2",
+            "type": "correction",
+            "label": "Correction",
+            "source": "retraction-watch",
+            "updated": {"date-parts": [[2004, 3, 6]]},
+        },
+        {
+            "DOI": "10.1016/S0140-6736(10)60175-4",
+            "type": "retraction",
+            "label": "Retraction",
+            "source": "retraction-watch",
+            "updated": {"date-parts": [[2010, 2, 6]]},
+        },
+    ],
+}
+
+
+class TestUpdates:
+    def test_reads_every_notice(self):
+        found = crossref.updates(_RETRACTED)
+        assert [u["type"] for u in found] == ["correction", "retraction"]
+        assert [u["source"] for u in found] == ["retraction-watch", "retraction-watch"]
+
+    def test_the_notice_doi_is_canonical(self):
+        """So it correlates with every other DOI this server hands back."""
+        assert crossref.updates(_RETRACTED)[1]["doi"] == "10.1016/s0140-6736(10)60175-4"
+
+    def test_the_raw_date_parts_ride_along(self):
+        """The year walk is `app.crossref_date`'s, a layer above this module."""
+        assert crossref.updates(_RETRACTED)[0]["updated"] == {"date-parts": [[2004, 3, 6]]}
+
+    def test_a_work_with_no_notices_is_empty(self):
+        assert crossref.updates({"DOI": "10.1234/x"}) == []
+
+    @pytest.mark.parametrize("raw", [None, 7, "retraction", {}, [], [None], [7], ["x"]])
+    def test_a_wrong_shape_degrades(self, raw):
+        assert crossref.updates({"updated-by": raw}) == []
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"type": "retraction"},  # no DOI
+            {"DOI": "10.1/x"},  # no type
+            {"DOI": "", "type": "retraction"},  # empty DOI
+            {"DOI": 7, "type": "retraction"},
+            {"DOI": "10.1/x", "type": 7},
+        ],
+    )
+    def test_an_entry_missing_either_required_field_is_dropped(self, entry):
+        assert crossref.updates({"updated-by": [entry]}) == []
+
+    def test_optional_fields_degrade_to_none(self):
+        found = crossref.updates({"updated-by": [{"DOI": "10.1/x", "type": "retraction"}]})
+        assert found[0]["label"] is None
+        assert found[0]["source"] is None
+        assert found[0]["updated"] == {}
+
+
+class TestRelations:
+    def test_reads_the_hashmap(self):
+        """Crossref deposits `relation` as a map of name to list, not the flat
+        list `author` and `title` carry."""
+        work = {
+            "relation": {
+                "is-preprint-of": [
+                    {"id-type": "doi", "id": "10.1364/OE.572415", "asserted-by": "subject"}
+                ]
+            }
+        }
+        assert crossref.relations(work) == {"is-preprint-of": ["10.1364/oe.572415"]}
+
+    def test_keeps_every_named_relation(self):
+        work = {
+            "relation": {
+                "references": [{"id-type": "doi", "id": "10.2337/ds24-0025"}],
+                "is-preprint-of": [{"id-type": "doi", "id": "10.2337/ds24-0025"}],
+            }
+        }
+        assert set(crossref.relations(work)) == {"references", "is-preprint-of"}
+
+    def test_non_doi_ids_are_dropped(self):
+        """Every consumer downstream takes a DOI."""
+        work = {"relation": {"is-same-as": [{"id-type": "issn", "id": "1234-5678"}]}}
+        assert crossref.relations(work) == {}
+
+    def test_an_empty_relation_map_is_empty(self):
+        """The common case: publisher deposit is thin."""
+        assert crossref.relations({"relation": {}}) == {}
+
+    @pytest.mark.parametrize("raw", [None, 7, [], "is-preprint-of"])
+    def test_a_wrong_shape_degrades(self, raw):
+        assert crossref.relations({"relation": raw}) == {}
+
+    @pytest.mark.parametrize("entries", [None, 7, {}, [None], [7], [{}], [{"id": "10.1/x"}]])
+    def test_wrong_shaped_entries_degrade(self, entries):
+        assert crossref.relations({"relation": {"is-preprint-of": entries}}) == {}
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from typing import Any
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from academic_tools_mcp import app
 from academic_tools_mcp.tools import graph
 from academic_tools_mcp.util import doinorm
 from tests.util.test_doinorm_properties import dois
@@ -257,4 +258,4 @@ def test_every_spelling_of_one_doi_echoes_one_value(doi: str) -> None:
         f"  {doi}  ",
     ):
         assert doinorm.canonical(spelling) == canonical
-        assert graph._reject_non_doi(spelling) is None
+        assert app.reject_non_doi(spelling, subject=graph._SUBJECT) is None

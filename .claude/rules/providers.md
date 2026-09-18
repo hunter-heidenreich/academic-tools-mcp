@@ -205,6 +205,11 @@ reaches `_build_headers` / `_build_params` live, but `clients.get_client` bakes
 headers in at construction and ignores later kwargs. Restart, same as
 `ENABLE_DEBUG_TOOLS`.
 
+**A getter this module calls from inside another's fetch needs its own `sf_key`.**
+`get_work` leaves it defaulted to the bare DOI, so a second getter sharing that key
+awaits the future it is itself leading — a hang, not an error. `get_agency`, called
+from the 404 branch, is the standing instance.
+
 **The year filter is deliberately year-only.** Crossref does not document how it
 pads a partial date, and CrossRef/rest-api-doc#7 reports the fully-specified form
 dropping works whose deposited date is itself year-only — so spelling out

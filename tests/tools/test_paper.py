@@ -13,7 +13,7 @@ from typing import ClassVar
 import pytest
 
 from academic_tools_mcp import manual, server
-from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
+from academic_tools_mcp.providers import acl, arxiv, biorxiv, crossref, openalex
 from academic_tools_mcp.tools import paper
 
 # ---------------------------------------------------------------------------
@@ -1902,3 +1902,154 @@ class TestFollowPublishedArxiv:
         assert result["title"] == "String Junctions (preprint)"
         assert result["followed_published"] is False
         assert result.get("published_lookup_retryable", False) is retryable
+
+
+# ---------------------------------------------------------------------------
+# get_paper_updates
+# ---------------------------------------------------------------------------
+
+
+_RETRACTED_WORK = {
+    "DOI": "10.1016/s0140-6736(97)11096-0",
+    "updated-by": [
+        {
+            "DOI": "10.1016/s0140-6736(04)15715-2",
+            "type": "correction",
+            "label": "Correction",
+            "source": "retraction-watch",
+            "updated": {"date-parts": [[2004, 3, 6]]},
+        },
+        {
+            "DOI": "10.1016/s0140-6736(10)60175-4",
+            "type": "retraction",
+            "label": "Retraction",
+            "source": "retraction-watch",
+            "updated": {"date-parts": [[2010, 2, 6]]},
+        },
+    ],
+}
+
+
+def _stub_work(monkeypatch, work):
+    """Answer every get_work with ``work``, recording the DOIs asked for."""
+    seen: list[str] = []
+
+    async def fake_get_work(doi, **kwargs):
+        seen.append(doi)
+        return work
+
+    monkeypatch.setattr(crossref, "get_work", fake_get_work)
+    return seen
+
+
+class TestGetPaperUpdates:
+    @pytest.mark.asyncio
+    async def test_a_retracted_paper_says_so(self, monkeypatch):
+        _stub_work(monkeypatch, _RETRACTED_WORK)
+
+        result = await server.get_paper_updates("10.1016/S0140-6736(97)11096-0")
+
+        assert result["retracted"] is True
+        assert [u["type"] for u in result["updates"]] == ["correction", "retraction"]
+
+    @pytest.mark.asyncio
+    async def test_the_notice_carries_its_date_and_source(self, monkeypatch):
+        _stub_work(monkeypatch, _RETRACTED_WORK)
+
+        retraction = (await server.get_paper_updates("10.1234/x"))["updates"][1]
+
+        assert retraction["doi"] == "10.1016/s0140-6736(10)60175-4"
+        assert retraction["year"] == 2010
+        assert retraction["date"] == "2010-02-06"
+        assert retraction["source"] == "retraction-watch"
+        assert retraction["label"] == "Retraction"
+        # The raw date-parts are an implementation detail of the provider reader.
+        assert "updated" not in retraction
+
+    @pytest.mark.asyncio
+    async def test_a_correction_alone_is_not_a_retraction(self, monkeypatch):
+        """`retracted` keys on the update type, not on there being any notice."""
+        _stub_work(monkeypatch, {"updated-by": [_RETRACTED_WORK["updated-by"][0]]})
+
+        result = await server.get_paper_updates("10.1234/x")
+
+        assert result["retracted"] is False
+        assert len(result["updates"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_clean_paper_emits_the_empty_shapes(self, monkeypatch):
+        """Symmetric keys: a paginating agent never feature-detects."""
+        _stub_work(monkeypatch, {"DOI": "10.1234/x"})
+
+        result = await server.get_paper_updates("10.1234/x")
+
+        assert result["retracted"] is False
+        assert result["updates"] == []
+        assert result["relations"] == {}
+
+    @pytest.mark.asyncio
+    async def test_relations_are_reported(self, monkeypatch):
+        _stub_work(
+            monkeypatch,
+            {"relation": {"is-preprint-of": [{"id-type": "doi", "id": "10.1364/OE.572415"}]}},
+        )
+
+        result = await server.get_paper_updates("10.1234/x")
+
+        assert result["relations"] == {"is-preprint-of": ["10.1364/oe.572415"]}
+
+    @pytest.mark.asyncio
+    async def test_the_echoed_doi_is_canonical(self, monkeypatch):
+        """So every spelling of one paper correlates to a single value."""
+        _stub_work(monkeypatch, {"DOI": "10.1234/x"})
+
+        result = await server.get_paper_updates("https://doi.org/10.1234/X")
+
+        assert result["doi"] == "10.1234/x"
+
+    @pytest.mark.asyncio
+    async def test_a_non_doi_is_refused_without_a_request(self, monkeypatch):
+        seen = _stub_work(monkeypatch, {"DOI": "10.1234/x"})
+
+        result = await server.get_paper_updates("2301.00001")
+
+        assert result["not_found"] is True
+        assert "suggestion" in result
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_a_pmid_trades_for_its_doi_first(self, monkeypatch):
+        async def fake_resolve_pmid(pmid, **kwargs):
+            return {"doi": "10.1234/traded", "openalex_id": "W1"}
+
+        monkeypatch.setattr(openalex, "resolve_pmid", fake_resolve_pmid)
+        seen = _stub_work(monkeypatch, {"DOI": "10.1234/traded"})
+
+        result = await server.get_paper_updates("12345678")
+
+        assert seen == ["10.1234/traded"]
+        assert result["doi"] == "10.1234/traded"
+
+    @pytest.mark.asyncio
+    async def test_a_provider_error_keeps_its_verdict_and_gains_a_hint(self, monkeypatch):
+        _stub_work(monkeypatch, {"error": "No work found on Crossref", "not_found": True})
+
+        result = await server.get_paper_updates("10.1234/missing")
+
+        assert result["not_found"] is True
+        assert "suggestion" in result
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_passthrough(self, monkeypatch):
+        seen: list[bool] = []
+
+        async def fake_get_work(doi, **kwargs):
+            seen.append(kwargs.get("force_refresh"))
+            return {"DOI": doi}
+
+        monkeypatch.setattr(crossref, "get_work", fake_get_work)
+
+        await server.get_paper_updates("10.1234/x")
+        await server.get_paper_updates("10.1234/x", force_refresh=True)
+
+        assert seen == [False, True]
