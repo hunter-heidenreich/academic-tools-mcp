@@ -195,8 +195,32 @@ def test_any_body_yields_one_of_two_shapes_and_never_raises(monkeypatch, body: A
         assert "not_found" not in result
         return
 
-    assert set(result) == {"title", "description", "extract", "url", "type", "pageid"}
+    assert set(result) == {
+        "title",
+        "canonical_title",
+        "description",
+        "extract",
+        "url",
+        "permalink",
+        "revision",
+        "timestamp",
+        "type",
+        "pageid",
+        "wikibase_item",
+    }
     assert isinstance(result["url"], str)
+    # Both are built here rather than echoed, so their shape is ours to guarantee.
+    assert isinstance(result["canonical_title"], str)
+    assert result["permalink"] == "" or result["permalink"].startswith(
+        "https://en.wikipedia.org/w/index.php?title="
+    )
+    # A permalink without a revision resolves to the live page — the thing it exists
+    # to not be — so the two are present or absent together.
+    assert bool(result["permalink"]) == (
+        isinstance(result["revision"], int) and bool(result["canonical_title"])
+    )
+    # An extract can only come from a page that summarises one article.
+    assert result["extract"] == "" or result["type"] == "standard"
 
 
 @_SETTINGS

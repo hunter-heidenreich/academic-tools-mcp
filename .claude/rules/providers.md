@@ -331,7 +331,24 @@ are one spelling.
 
 **A search hit warms nothing.** It carries a title and a snippet; written to
 `summaries` it would answer a later `get_summary` with a fraction of the record —
-the rule `paperswithcode` states as "never warm from search"..
+the rule `paperswithcode` states as "never warm from search". A *redirect* is the
+one thing that does warm a second key, and it is the opposite case: the record is
+the target's own, complete, filed under an alias.
+
+**`revision` arrives as a string, beside a `pageid` that is an int.** Measured —
+`"1366944922"`. An `isinstance(..., int)` guard on it is not conservative, it is
+wrong for every live response, and it fails silently: the permalink is simply
+never built. `_revision_of` coerces a decimal string the way
+`arxiv._total_results` does, and rejects `bool`, which `isinstance(True, int)`
+would otherwise admit.
+
+**The extract is suppressed for a non-`standard` page, deliberately.** A
+disambiguation page's own lead — "A transformer is a device that transfers
+electrical energy" for `Transformer` — is well-formed prose about one candidate
+meaning, so the `type` field is the only thing separating it from an article
+summary, and a field an agent must remember to branch on is a field it will
+sometimes not. Suppressing the text makes the miscitation impossible rather than
+documented.
 
 ## paperswithcode.py
 

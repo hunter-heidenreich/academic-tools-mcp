@@ -72,7 +72,8 @@ don't "fix" them in code.** Operators correct them by hand, under a "published
 version is authoritative" rule. `README.md` § Known upstream limitations
 enumerates them (mangled author diacritics, present-vs-paper-time affiliation,
 arXiv's missing affiliations, an empty OpenCitations result that is not a claim of
-absence, diverging preprint/published author sets); read it before treating any
+absence, diverging preprint/published author sets, a Wikipedia summary being a
+lead extract rather than a source); read it before treating any
 of them as a bug.
 
 ## APIs NOT to Use

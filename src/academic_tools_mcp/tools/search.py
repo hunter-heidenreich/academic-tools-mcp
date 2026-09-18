@@ -744,9 +744,18 @@ async def get_wikipedia_summary(
 ) -> dict[str, Any]:
     """Fetch the structured summary (extract) of a Wikipedia article.
 
-    Returns ``{title, description, extract, url, type, pageid}``. ``type`` is
-    ``"standard"``, or ``"disambiguation"`` when ``extract`` lists candidate
-    meanings in prose instead of summarising one article.
+    Returns ``{title, canonical_title, description, extract, url, permalink,
+    revision, timestamp, type, pageid, wikibase_item}``.
+
+    ``wikibase_item`` is the Wikidata QID — the join from an article to the
+    identifiers the rest of this server takes, so a person resolves on to ORCID and
+    get_author, an institution to ROR and get_institution. ``permalink`` pins the
+    ``revision`` this call read and is what to cite: ``url`` tracks the live page,
+    which is whatever the article later becomes. ``canonical_title`` is what the
+    request resolved to, so it differs from the title you asked for when that title
+    is a redirect. ``extract`` is empty unless ``type`` is ``"standard"`` — a
+    disambiguation page's extract describes one candidate meaning and would be
+    miscited as the article's.
 
     Errors: page not found → ``{error, not_found: true, suggestion}``; an outage →
     ``{error, retryable: true, suggestion}``. Use search_wikipedia first if you

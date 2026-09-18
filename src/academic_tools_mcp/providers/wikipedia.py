@@ -22,6 +22,9 @@ LABEL = "Wikipedia"
 _API_URL = "https://en.wikipedia.org/w/api.php"
 _SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary"
 
+# Where a revision is citable from; `?oldid=` is the only stable spelling of a page.
+_INDEX_URL = "https://en.wikipedia.org/w/index.php"
+
 # ``list=search`` rows carry no url, so a hit's link is built from its title.
 _ARTICLE_URL = "https://en.wikipedia.org/wiki"
 
@@ -264,6 +267,47 @@ def _desktop_page_url(content_urls: Any) -> str:
     return page if isinstance(page, str) else ""
 
 
+def _canonical_of(titles: Any) -> str:
+    """The redirect-resolved title from a summary's ``titles``, or ``""``.
+
+    ``Any``: ``_desktop_page_url``'s argument again — a non-dict degrades rather than
+    raising the ``AttributeError`` neither error tuple catches.
+    """
+    if not isinstance(titles, dict):
+        return ""
+    canonical = titles.get("canonical")
+    return canonical if isinstance(canonical, str) else ""
+
+
+def _revision_of(data: Any) -> int | None:
+    """A summary's ``revision`` as a number, or ``None``.
+
+    **The REST summary sends it as a string** — `"1366944922"`, beside a `pageid` that
+    is a real int — so an `isinstance(..., int)` test rejects every live response and
+    silently costs every permalink. `arxiv._total_results` reads its count the same way.
+    """
+    if not isinstance(data, dict):
+        return None
+    revision = data.get("revision")
+    if isinstance(revision, bool):
+        return None
+    if isinstance(revision, int):
+        return revision
+    return int(revision) if isinstance(revision, str) and revision.isdecimal() else None
+
+
+def _permalink(canonical: str, revision: int | None) -> str:
+    """The ``oldid`` URL naming the revision read, or ``""`` when either half is missing.
+
+    ``url`` tracks the live page, so it is not what a note can cite: the reader sees
+    whatever the article became, which for a contested topic is not what was read.
+    This is the only URL here that names a fixed text.
+    """
+    if not canonical or revision is None:
+        return ""
+    return f"{_INDEX_URL}?title={quote(canonical, safe='')}&oldid={revision}"
+
+
 def _summary_of(data: Any) -> dict[str, Any] | None:
     """The slice of a REST summary ``get_summary`` returns, or ``None`` for a wrong shape.
 
@@ -272,13 +316,30 @@ def _summary_of(data: Any) -> dict[str, Any] | None:
     """
     if not isinstance(data, dict):
         return None
+    page_type = data.get("type", "")
+    canonical = _canonical_of(data.get("titles"))
+    revision = _revision_of(data)
+    timestamp = data.get("timestamp")
+    wikibase_item = data.get("wikibase_item")
     return {
         "title": data.get("title", ""),
+        # What the request resolved *to*: a redirect answers under the target's title.
+        "canonical_title": canonical,
         "description": data.get("description"),
-        "extract": data.get("extract", ""),
+        # A disambiguation page's extract is one candidate meaning in prose, and reads
+        # exactly like a real summary — "A transformer is a device that transfers
+        # electrical energy" for `Transformer`. Cited as the article's, it is wrong.
+        "extract": data.get("extract", "") if page_type == "standard" else "",
         "url": _desktop_page_url(data.get("content_urls")),
-        "type": data.get("type", ""),
+        "permalink": _permalink(canonical, revision),
+        "revision": revision,
+        "timestamp": timestamp if isinstance(timestamp, str) else None,
+        "type": page_type,
         "pageid": data.get("pageid"),
+        # The Wikidata QID, and the reason this provider earns a place in a paper
+        # server: it is the join from an article to the ORCID and ROR that
+        # `get_author` and `get_institution` already take.
+        "wikibase_item": wikibase_item if isinstance(wikibase_item, str) else None,
     }
 
 
@@ -320,6 +381,16 @@ async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, A
             return _parse_error_dict()
 
         cache.put(NAMESPACE, "summaries", canonical, result)
+
+        # A redirect answers under the target's title, so the record we just fetched is
+        # the target's record filed under the alias. Warming the resolved key spares the
+        # next caller a request for a page already on disk. `warm`, not `put`: the
+        # target may have been fetched directly and more recently than this alias.
+        resolved = canonical_title(result["canonical_title"]) if result["canonical_title"] else ""
+        if resolved and resolved != canonical:
+            cache.warm(
+                NAMESPACE, "summaries", resolved, result, max_age_seconds=_POSITIVE_TTL_SECONDS
+            )
         return result
 
     return await cache.cached_lookup(
