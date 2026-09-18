@@ -132,10 +132,8 @@ class TestCrossrefPoolSelection:
     .env requested at 2x the public rate, 3x its concurrency, 3x its search
     rate — anonymously.
 
-    Documented limits (.claude/rules/providers.md):
-                 singles      search      concurrent
-        polite   10 req/sec   3 req/sec   3
-        public    5 req/sec   1 req/sec   1
+    The two tiers are pinned by the assertions below, against Crossref's
+    documented limits; ``_POLITE_*`` / ``_PUBLIC_*`` are where they live.
     """
 
     def test_public_pool_policy_without_mailto(self, monkeypatch):

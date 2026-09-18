@@ -5,86 +5,36 @@ paths:
 
 # BibTeX generation
 
-**Each helper's own docstring covers what it does.** This file covers the
-output-correctness contracts that span them — the rules that keep a generated
-entry compiling.
+**Every value reaching a field is escaped, including the ones that look numeric.**
+Each escaper documents its own split; this is the module-wide rule none of them can
+state, and Crossref's freeform `volume` / `issue` / `pages` are why it matters.
 
-Five entry points, one per provider shape (`generate_bibtex` /
-`generate_arxiv_bibtex` / `generate_biorxiv_bibtex` / `generate_crossref_bibtex` /
-`generate_acl_bibtex`); entry-type selection per source is in
-`get_paper_bibtex`'s docstring. Author
-formatting is parameterised by a `name_of` accessor, so OpenAlex's nested
-`author.display_name`, arXiv/bioRxiv's flat `name` and Crossref's
-`given`/`family` (rejoined by `crossref.author_name`) reuse one code path.
+**An arXiv DOI is recognised through the provider's grammar, never by splitting on
+`/`.** The id of an old-style work *contains* a slash
+(`10.48550/arXiv.hep-th/9901001`), and a DOI merely containing "arxiv" in its
+suffix is not an arXiv DOI.
 
-## Escaping and keys
+**Never merge `_TYPE_MAP` with `_CROSSREF_TYPE_MAP`.** Their keys are two different
+upstream vocabularies; anything unlisted falls through to `@misc`.
 
-- **Citation keys are ASCII `[a-z0-9]`.** `_key_token` gates the word components
-  and `_key_year` gates the year — digits or nothing, so a null or malformed
-  upstream year drops out instead of printing `None` into the key. **A new key
-  component routes through one of the two.**
-- **Every value reaching a field is escaped, including the ones that look
-  numeric**: `biblio`'s volume / issue / pages arrive from Crossref as freeform
-  strings and occasionally as numbers.
-- **Three escapers, and the split is deliberate.** `_escape_bibtex` treats field
-  text as literal (braces stripped, whitespace runs collapsed — an Atom-wrapped
-  `journal_ref` would otherwise split the one-field-per-line layout).
-  `_escape_doi` escapes braces rather than stripping them, because a DOI must
-  stay resolvable; it also guards the identifier-shaped `eprint` and
-  `primaryclass`. A URL inside `\url{}` takes neither — url.sty gives it verbatim
-  catcodes, so `_url_field` percent-encodes the fatal characters instead, since a
-  backslash escape would land in the link target.
-- **Escaping is single-pass, never chained `str.replace`**: escaping `\` first
-  would emit braces a later brace-pass re-escapes.
-- **Titles are double-braced**, so no `.bst` can case-fold `NaCl` to `nacl`.
+**Don't grow `_PARTICLES` to chase the long tail.** In real OpenAlex records a
+capitalized `Du`, `Den`, `Bin`, `E.` or `I.` is a Chinese given name or an initial,
+not a particle, and the lowercase spellings (`da Costa`, `ter Braak`) are already
+handled by `_is_particle`'s case rule.
 
-## Vocabularies
+**An ACL key is generated, never the Anthology's hyphenated `bibkey`.**
 
-- **Invariant: `_TYPE_MAP`'s keys are OpenAlex's `type` vocabulary, not
-  Crossref's.** A conference paper is `conference-paper`; `proceedings-article`,
-  `posted-content` and `monograph` are Crossref spellings and belong in
-  `_CROSSREF_TYPE_MAP`, which `generate_crossref_bibtex` reads — **never merge
-  the two.** Re-derive from `api.openalex.org/works?group_by=type` and
-  `api.crossref.org/types` when adding a type, and let anything unlisted fall
-  through to `@misc`. The preprint-only `eprint` / `howpublished` block keys on
-  the *work type*, not on `@misc` — datasets and software land in `@misc` too.
-- **Surname particles have two detectors, and the split is deliberate.**
-  `_PARTICLES` holds only the particles publishers *capitalize*; `_is_particle`'s
-  case rule — BibTeX's own "a lowercase word before the last one is the von part"
-  — covers the rest, gated on the surname being capitalized so an all-lowercase
-  display name doesn't collapse into one particle run. **Don't grow the wordlist
-  to chase the long tail**: in real OpenAlex records a capitalized `Du`, `Den`,
-  `Bin`, `E.` or `I.` is a Chinese given name or an initial, not a particle, and
-  the lowercase spellings (`da Costa`, `ter Braak`) are already handled.
-- **`_TITLE_SKIP` is closed-class only** — English plus the articles,
-  prepositions and conjunctions of the major publication languages, because
-  OpenAlex carries the original-language title.
+**OpenAlex nulls are load-bearing** — it emits `"author": null` /
+`"authorships": null` rather than dropping the key, so no `.get(k, default)` alone
+is trusted. The same rule binds `tools/paper.py`, which reads the same objects.
 
-## Provider quirks
-
-- **An arXiv DOI is recognised through the provider's grammar**
-  (`_arxiv_eprint_from_doi` → `arxiv.is_arxiv_id` / `normalize_arxiv_id`), never
-  by splitting on `/`: the id of an old-style work *contains* a slash
-  (`10.48550/arXiv.hep-th/9901001`), and a DOI merely containing "arxiv" in its
-  suffix is not an arXiv DOI. Any other preprint gets a `howpublished` URL built
-  from the **normalized** DOI, falling back to the OpenAlex landing page, and
-  omitted when there is neither — never a bare `\url{}`.
-- **A Crossref record's field shapes are not uniform**, and each one's accessor
-  is `providers/crossref`'s. `title` and `container-title` are lists of
-  *strings*, `institution` a list of *objects* — so `school` reads through
-  `crossref.institution_name`, never the string-list accessor beside it.
-- **OpenAlex nulls are load-bearing.** It emits `"author": null` /
-  `"display_name": null` / `"authorships": null` rather than dropping the key, so
-  every read is `or`-defaulted and no `.get(k, default)` alone is trusted. The
-  same rule binds `tools/paper.py`, which reads the same objects
-  (`.claude/rules/server.md`).
-- **Organisational authors are brace-wrapped** so BibTeX treats them atomically
-  instead of splitting off a fake surname.
-- **An ACL key is generated, never the Anthology's hyphenated `bibkey`.**
+**A Crossref record's field shapes are not uniform**, and each one's accessor is
+`providers/crossref`'s: `title` and `container-title` are lists of *strings*,
+`institution` a list of *objects*.
 
 ## Scope
 
-**Cross-entry key disambiguation is out of scope.** These functions are stateless
-— one paper per call — and cannot see sibling entries, so two papers sharing
-author+year+title-word collide on one key. A caller concatenating many entries
-into a single `.bib` must deduplicate keys itself.
+**Cross-entry key disambiguation is out of scope.** These functions are stateless —
+one paper per call — so two papers sharing author+year+title-word collide on one
+key. A caller concatenating many entries into a single `.bib` must deduplicate
+keys itself.

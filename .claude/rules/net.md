@@ -5,115 +5,55 @@ paths:
 
 # HTTP: clients, retry, throttling, stats
 
-**Per-function behaviour lives in the docstrings.** This file covers only what no
-single docstring can: the cross-module contracts, the upstream facts, and the
-edits that look safe and aren't.
+## clients.py
 
-## net/clients.py
-
-`aclose_all()`'s bound must stay hard *and* concurrent. The trap is
+**`aclose_all()`'s bound must stay hard *and* concurrent.** The trap is
 `asyncio.wait_for` per client: it awaits the coroutine it just cancelled, so it
 cannot bound a teardown that keeps awaiting past cancellation. Serial closes have
 the other failure — they sum the bound and pin the lifespan.
 
-## net/http.py
+## http.py
 
-- **`addresses_a_record` is necessary, not sufficient, and it tests only the
-  *trailing* segment.** A provider that interpolates its identifier anywhere else
-  owns a second check: `opencitations._fetch_direction` and
-  `openalex._fetch_singleton` test the bare identifier (a `doi:` scheme prefix
-  keeps the last segment non-empty); `biorxiv.get_paper` tests for an empty
-  segment anywhere, since its identifier sits mid-path. **Deliberately not folded
-  in here** — `biorxiv`'s identifier sits mid-path where the others sit last, so
-  "no empty segments" is per-provider policy, not a shared rule. This is the one home for that argument;
-  a provider section states only what its own shortened path lands on.
-- **The three-state error vocabulary.** `retryable: True` (transient),
+- **The error vocabulary has three states**: `retryable: True` (transient),
   `not_found: True` (definitive), and an unclassified 4xx carrying neither.
-  `retryable is True` is the only test that means "a retry might work" —
-  inverting `not_found` collapses three states into two and sends an agent back
-  at a call that cannot succeed. Every classifier downstream reads these flags:
-  `tools/graph._FORWARDED_ERROR_KEYS`, `tools/paper`'s `fallback_crossref` gate,
-  `openaccess`'s import-suggestion allowlist. A hand-spelled dict that omits the
-  flag reads to all of them as "unknown".
-- **`LocalBackpressureError`: two naming traps.** `max_concurrency` in the error
-  dict carries `max_pending`, not `max_concurrent` — it is the burst cap despite
-  the name. And `error_dict` takes the provider name off the exception in
-  preference to its own `provider` argument, so the throttle's `label` wins over
-  the call site's literal when they disagree.
-- **`error_dict` clamps the agent-facing `retry_after_seconds` to
-  `_MAX_RETRY_AFTER_SECONDS`, the same ceiling `get_with_retry` sleeps under —
-  change one, change both.** Both bounds are pinned as properties, so widening
-  either fails without a new example.
+  `error_dict` never emits a fourth — an explicit `retryable: False` is a
+  deliberate definitive verdict a caller writes, and `tools/search` branches on it.
+  **`retryable is True` is the only test meaning "a retry might work"**; inverting
+  `not_found` collapses three states into two.
+- **Every downstream classifier reads these flags** — `tools/graph._FORWARDED_ERROR_KEYS`,
+  `tools/paper`'s `fallback_crossref` gate, `openaccess`'s import-suggestion
+  allowlist. A hand-spelled dict that omits one reads to all three as "unknown".
+- **`max_concurrency` in the backpressure dict carries `max_pending`.** It is the
+  burst cap despite the name, and nothing but this line says so.
 
-## net/throttle.py — the shared `Throttle`
+## throttle.py
 
-Every numeric argument is clamped in `__init__` because nothing validates a
-provider's constants and the failure modes are silent: `Semaphore(0)` waits
-forever with no timeout, `max_pending=0` refuses every caller.
+- **Moving the sleep inside the lock collapses per-host pacing back to one global
+  rate** — host A's sleep would block host B from even computing its own wait.
+- **`per_host=True` is opt-in for a reason.** Only `openaccess` uses it; opting in
+  a single-host provider would silently widen its documented rate the day it gained
+  a second hostname. **`max_concurrent` stays global in both modes**: it bounds
+  *our* egress — sockets, fds, in-flight streams — not any one host's load.
+- **The last-start map's two prune branches are both load-bearing.** Global mode is
+  the degenerate single-key case, which is why the age sweep never fires there; a
+  fan-out that leaves every entry fresh falls back to dropping the oldest, at a cost
+  of one request starting early.
 
-- **The lock is held only to compute and reserve this caller's start; the sleep
-  happens outside it.** Moving the sleep inside collapses per-host pacing back to
-  one global rate — host A's sleep would block host B from even computing its
-  own wait.
-- **`pending` counts in-flight *plus* queued callers.** With
-  `max_concurrent=4, max_pending=5`, exactly one caller can be waiting before the
-  sixth is refused.
-- **`widen` is the only runtime policy move, and `Throttle` and `SubGap` both
-  have one.** A `Semaphore` gains permits through `release` but cannot shed them,
-  so a policy is loosened in place and never tightened; a provider promoting
-  itself on a confirmed tier (crossref's `_observe_pool`) calls both rather than
-  assigning into `min_gap_seconds` or reaching for `_sem`. Narrowing back is a
-  test seam only (`crossref.reset_pool_tier`), which reassigns and then `reset`s
-  so the semaphore is rebuilt to match.
-- **`per_host=True` is opt-in for a reason.** Only `openaccess` uses it
-  (`.claude/rules/download.md` says why). Opting in a single-host provider would
-  silently widen its documented rate the day it gained a second hostname.
-  `max_concurrent` stays global in both modes: it bounds *our* egress — sockets,
-  fds, simultaneous in-flight streams — not any one host's load.
-- **The last-start map's two prune branches are both load-bearing.** Global mode
-  is the degenerate single-key case, which is why the age sweep never fires
-  there; a fan-out that leaves every entry fresh falls back to dropping the
-  oldest, at a cost of one request starting early.
+**Test seams:** each provider keeps thin module-level wrappers (`_throttled_get`,
+`_request_slot`) because tests monkeypatch those names and override pacing via
+`mod._throttle.min_gap_seconds`. crossref, paperswithcode and openalex add a
+`SubGap` for search, paced via `mod._search_gap.min_gap_seconds` and reset through
+`reset_search_pacing()`, which the conftest fixture must also call.
 
-Each provider keeps thin module-level wrappers (`_throttled_get`,
-`_request_slot`) that exist to preserve the test seams: tests monkeypatch those
-names, and override pacing via `mod._throttle.min_gap_seconds`. crossref,
-paperswithcode and openalex add a stricter `throttle.SubGap` for search (`_throttled_search_get`,
-paced via `mod._search_gap.min_gap_seconds`), reset through `reset_search_pacing()`,
-which the conftest fixture must also call. A `SubGap` answers to its throttle's quota
-and `max_pending` *before* it sleeps, so a queued search is refused, not stacked.
-
-## net/stats.py
+## stats.py
 
 - **A quota is observed, never assumed.** Only OpenAlex sends `X-RateLimit-*`, so
   no header, no deadline and an elapsed deadline all read as *proceed* — refusing
   on ignorance would strand every provider that publishes nothing.
-- **A header is an advertisement, a 429 is the observation, and `blocked_for`
-  needs both.** Without `Quota.refused`, an advertised-empty budget locks out a
-  provider that is still answering. Without `remaining`, a 429 from a momentary rate
-  burst locks it out until the *budget* refills, hours later. The advertised
-  `remaining` is recorded either way and still reaches `snapshot()`; it just no
-  longer gates on its own.
-- **The quota answers *whether* a budget is spent; `admit(metered=)` answers *whom
-  that stops*.** A provider pricing its classes apart exempts the free ones, which
-  skip the quota gate and no other. Both halves are load-bearing where they meet:
-  an armed lockout refuses the requests whose response would clear it, so gating a
-  free class strands it for the whole window rather than until the next reply.
-- **A 429 with a usable `Retry-After` is an observation too.** Without
-  `X-RateLimit-*` headers (which win), `http.record_quota` records the budget as
-  spent until then, and `Throttle.slot` refuses every later caller for that
-  namespace. A retry already inside `get_with_retry` holds its slot, so it is not
-  refused; it waits out `Retry-After` itself, up to the sleep ceiling. The
-  lockout is unclamped, like `_quota_dict`, and ends only at its deadline: a later
-  header-less success does not clear it.
-- **`_quota_dict`'s `retry_after_seconds` escapes `_MAX_RETRY_AFTER_SECONDS`.**
-  That ceiling bounds a sleep, and a quota refusal never sleeps; clamping an
-  hours-away refill to 10 minutes advertises a retry that cannot succeed.
-- **`env_file` rides the `ENABLE_DEBUG_TOOLS` gate**, so exposing it changes no
-  agent-facing surface — a config path is operator data.
-- **`DEBUG_REQUESTS` is re-read per call**, through `config.flag`, so it flips
-  without a restart.
+- **An armed lockout refuses the requests whose response would clear it**, so
+  gating a free class strands it for the whole window rather than until the next
+  reply. This is why `admit(metered=)` exempts the zero-priced classes.
 - **A failed disk write is `cache_write_failures`, wherever it happens** —
-  `cache.put` / `put_negative`, `streaming.stream_to_file`,
-  `manual.import_local_pdf`. A PDF is the largest write the server makes;
-  leaving it uncounted hid a full disk from the one counter that exists to show it.
+  `cache.put` / `put_negative`, `streaming.stream_to_file`, `manual.import_local_pdf`.
+  A PDF is the largest write the server makes; leaving it uncounted hid a full disk
+  from the one counter that exists to show it.

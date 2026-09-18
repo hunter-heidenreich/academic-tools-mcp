@@ -1,7 +1,6 @@
 """The package's layer order and module-naming rule, machine-checked.
 
-Both are also stated in prose — ``.claude/rules/python-design.md`` and the
-README's architecture diagram — and prose does not fail CI, so a back-edge
+Both are also stated in prose, and prose does not fail CI — so a back-edge
 added in good faith survives review and a convention nothing checks drifts
 back into chronology.
 

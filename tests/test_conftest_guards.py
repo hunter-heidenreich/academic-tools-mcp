@@ -68,7 +68,7 @@ def _src_trees() -> list[ast.Module]:
 
     Not ``Path(config.__file__).parent`` — that is ``util/``, five files, and
     the scan below then reports nothing while every assertion on it still
-    passes. Not ``parents[n]`` either (`.claude/rules/python-design.md`): the
+    passes. Not ``parents[n]`` either, which encodes this file's own depth: the
     package root is the directory ``academic_tools_mcp`` names, at any depth.
     """
     src = Path(academic_tools_mcp.__file__).parent

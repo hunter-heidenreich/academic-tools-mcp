@@ -31,19 +31,22 @@ version `2026.5.29`), and tag the commit `vYYYY.MM.DD`.
 
 ## Where the detail lives
 
-**Design detail lives in `.claude/rules/*.md`, each auto-loading from its own
-`paths:` frontmatter when you touch a matching file.** Those files state only
-what a docstring beside the code cannot: cross-module contracts, upstream API
-facts, accepted limitations, and prohibitions.
+**Design detail lives in `.claude/rules/`, each file auto-loading from its own
+`paths:` frontmatter when you read a matching file.** They state only what a
+docstring beside the code cannot: rejected alternatives, upstream API facts,
+cross-module rosters, and accepted limitations. Anything a docstring already says
+is deleted from them rather than summarised there.
 
 | File | Loads for |
 |---|---|
 | `python-design.md` | every `.py` under `src/` — layering, naming, single-homed infrastructure |
+| `docs.md` | `.claude/rules/**`, `CLAUDE.md`, `README.md`, `CHANGELOG.md` |
 | `testing.md` | `tests/**` |
 | `net.md` · `store.md` · `download.md` | `net/` · `store/` · `download/` |
-| `providers.md` | `providers/*` |
-| `pipeline.md` | `papers/*`, `manual.py`, `fast_extract.py` |
-| `server.md` · `bibtex.md` · `corpus.md` · `util.md` | `server.py` + `app.py` + `tools/*` · `bibtex.py` · `corpus.py` · `util/*` |
+| `providers/common.md` + one file per provider | `providers/*` — only the module you opened |
+| `pipeline.md` | `papers/*`, `manual.py` |
+| `tools.md` | `server.py` + `app.py` + `tools/*` |
+| `bibtex.md` · `corpus.md` · `util.md` | `bibtex.py` · `corpus.py` · `util/*` |
 
 **Where a new file goes, and what to call it, is machine-checked.**
 `tests/test_layering.py` owns the layer order in its `_LAYERS` table and asserts
