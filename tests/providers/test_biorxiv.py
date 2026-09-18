@@ -4,7 +4,7 @@ from typing import Any, NamedTuple
 import httpx
 import pytest
 
-from academic_tools_mcp.net import clients
+from academic_tools_mcp.net import clients, http
 from academic_tools_mcp.providers import biorxiv
 from academic_tools_mcp.store import cache
 
@@ -1088,6 +1088,32 @@ class TestContentHostPacing:
         await biorxiv.download_pdf(_DOI)
 
         assert order == ["gap", "stream"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_gap_is_an_error_dict_not_an_exception(self, monkeypatch):
+        """A stacked caller gets the retryable error dict, not a raw backpressure raise."""
+
+        async def _fake_get_paper(doi, *, force_refresh=False):
+            return {"doi": doi, "pdf_url": f"https://www.biorxiv.org/content/{doi}v1.full.pdf"}
+
+        async def _refuse():
+            raise http.LocalBackpressureError(
+                biorxiv.LABEL, pending=5, max_pending=5, min_gap_seconds=3.0
+            )
+
+        async def _fake_stream(*args, **kwargs):
+            raise AssertionError("streamed despite a refused gap")
+
+        monkeypatch.setattr(biorxiv, "get_paper", _fake_get_paper)
+        monkeypatch.setattr(biorxiv._content_gap, "wait", _refuse)
+        monkeypatch.setattr(biorxiv.streaming, "stream_to_file", _fake_stream)
+
+        result = await biorxiv.download_pdf(_DOI)
+
+        assert result["retryable"] is True
+        assert biorxiv.LABEL in result["error"]
+        # Retryable: a negative entry would serve the refusal back on retry.
+        assert cache.get_negative(biorxiv.NAMESPACE, biorxiv._NEG_ENTITY, _DOI) is None
 
     def test_the_content_gap_is_stricter_than_the_api_gap(self):
         assert biorxiv._content_gap.min_gap_seconds > biorxiv._throttle.min_gap_seconds

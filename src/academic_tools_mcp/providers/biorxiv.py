@@ -353,7 +353,13 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
             # Definitive: the record exists but carries no PDF URL.
             return {"error": f"No PDF URL found for DOI: {doi}", "retryable": False}
 
-        await _content_gap.wait()
+        # The gap admits through the throttle, so it refuses with an ``HTTPX_ERRORS``
+        # member — and ``stream_to_file``'s own try starts too late to catch it.
+        try:
+            await _content_gap.wait()
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
+
         return await streaming.stream_to_file(
             _get_client(),
             pdf_url,
