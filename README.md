@@ -13,7 +13,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [bioRxiv/medRxiv](https://www.biorxiv.org/) | Preprint metadata, authors, abstracts, journal version, funders, revision history, BibTeX, PDF download | None |
 | [ACL Anthology](https://aclanthology.org/) | Metadata, authors, abstracts, BibTeX and PDF download for ACL venue papers | None |
 | [Crossref](https://www.crossref.org/) | Reference lists, retraction and correction notices, title search / DOI discovery | Optional email (for polite pool) |
-| [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | None |
+| [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | Optional access token (free, usage statistics only) |
 | [Wikipedia](https://www.wikipedia.org/) | Article search, summaries | Optional email (for User-Agent) |
 | [Papers with Code](https://paperswithcode.co/) | Code repositories, tasks, methods, benchmark results and leaderboards, Hugging Face links (arXiv papers) | None |
 
@@ -27,6 +27,7 @@ These are properties of the upstream providers rather than of this server, which
 - **Affiliations are current, not paper-time.** OpenAlex reports where an author works *now*, not where they were when the paper was published — the gap widens for older papers.
 - **OpenAlex meters credits, not requests.** Measured: metadata lookups and `autocomplete_openalex` cost nothing, a batched `get_papers_metadata` call costs 1, and `search_openalex` / `search_authors` cost 10 each, against 1000/day anonymous and 10× that with a free `OPENALEX_API_KEY`. So lookups are effectively unlimited and searches are not — roughly 100 a day without a key.
 - **A zero from OpenCitations is not a claim of absence.** OpenCitations answers a DOI it has never indexed and a DOI it indexed with zero edges identically — an empty list — so `get_paper_references(source="opencitations")` and `get_paper_citations` returning `total: 0` mean "no edges in this index", not "this paper has no references or citations". Cross-check against Crossref for references (`get_paper_references_count` reports both) and against OpenAlex for citations (`get_paper_citations_count` reports both).
+- **OpenCitations cannot answer for the most-cited papers.** It times out or returns HTTP 504 on works with tens of thousands of citations — measured, `10.1038/nature14539` 504s after 280s on even its cheap count endpoint — so `get_paper_citations` errors for them. The `_count` tools fall back to a tally-only endpoint and flag it `pageable: false`, on the source row and beside `get_paper_citations_count`'s top-level `count`: the count is real, the edge list is not available at all. Take the magnitude from OpenAlex, and the references from the paper's own bibliography.
 - **Papers with Code is a public beta with a per-IP rate limit** (120 req/min, 60 for list and search) and no uptime promise. Your browser and scripts share that limit, so browsing it heavily while an agent runs can still trigger a 429. It accepts arXiv IDs only, stops search at page 100, and fills the `hf_models` / `hf_datasets` / `hf_spaces` URL lists only for papers not from arXiv. Repository links, `is_official` and leaderboard rows are community-curated: cite a result's source paper, not the leaderboard.
 - **arXiv records almost no affiliations.** Neither its API nor its OAI-PMH record carries them for most papers, so `get_paper_authors` on an arXiv ID usually lists names only. Chain to the journal version with `follow_published=True`, or look the author up with `search_authors` / `get_author`, keeping in mind that OpenAlex's affiliations are current rather than paper-time.
 - **ACL Anthology papers without a DOI have no reference or citation graph**, and a just-minted hosted DOI (`10.1162/tacl…`) answers from OpenAlex until the weekly index refresh.
@@ -55,6 +56,8 @@ All configuration is via environment variables in `.env`. Nothing is required to
 | `OPENALEX_API_KEY` | No | Free API key from [openalex.org](https://openalex.org/settings/api). OpenAlex meters a credit budget per ~24h window; a key raises it 10× (measured 1000 → 10000). `OPENALEX_MAILTO` does not raise it |
 | `OPENALEX_MAILTO` | No | Your email, appended to the OpenAlex User-Agent. Buys no rate tier: OpenAlex abolished the polite pool and the `mailto` parameter in Feb 2026 and meters by key. It leaves an operator reachable, which OpenAlex still asks for. |
 | `CROSSREF_MAILTO` | No | Your email — joins the Crossref [polite pool](https://www.crossref.org/documentation/retrieve-metadata/rest-api/), raising the rate limit to 10 req/sec singles / 3 search / 3 concurrent, from 5 / 1 / 1. Sent in the `User-Agent` and as a `mailto` parameter, since Crossref meters the pool by address. The client starts at the public rate and speeds up only once a response confirms it, so a typo costs throughput rather than earning a 429. |
+| `OPENCITATIONS_ACCESS_TOKEN` | No | Free token from [opencitations.net](https://opencitations.net/accesstoken), sent in the `authorization` header. Buys no rate tier — OpenCitations issues it to count unique users — but those counts are how the project evidences its own relevance. A token it rejects 403s every request, so leave it blank rather than guessing; the error then names this variable. |
+| `OPENCITATIONS_MAILTO` | No | Your email, appended to the OpenCitations User-Agent. Buys no rate tier either; it leaves an operator reachable. |
 | `ARXIV_MAILTO` | No | Your email, appended to the arXiv User-Agent. A descriptive agent is sent either way — arXiv's edge throttles generic library agents far harder. |
 | `CACHE_DIR` | No | Where the on-disk cache lives (default: `.cache/` beside the project). Set it when running from an installed wheel. |
 | `ACADEMIC_TOOLS_ENV_FILE` | No | Explicit path to the `.env` to load. Authoritative: when set it is the *only* candidate, so a path that isn't there means no `.env` rather than a silent fallback to another file. |
@@ -122,6 +125,8 @@ bioRxiv needs no flag: a *transient* bioRxiv failure on a `10.1101/...` DOI is a
 
 A **PubMed ID** works anywhere a DOI does — the paper tools, the PDF pipeline, and the reference/citation graph, whose OpenCitations rows hand PMIDs back. Spell it `pmid:20079334`, as a `pubmed.ncbi.nlm.nih.gov` URL, or as a bare 7–8 digit run; shorter runs need the `pmid:` prefix, so a short freeform `import_paper` label keeps meaning what it did. A PMID is traded for the paper's DOI on first use and never becomes a cache key of its own, so `pmid:20079334` and `10.1016/j.cell.2009.11.006` are one paper with one `_canonical_id`. OpenAlex is the resolver: a paper it has not indexed does not resolve, and PMCIDs are unsupported.
 
+An **OpenAlex work ID** works the same way, and closes a dead end: `search_openalex` reports an `openalex_id` on every hit where a `doi` is often absent, and roughly 1.4% of OpenCitations graph rows carry one and no DOI. Spell it `W4312223440`, `openalex:`-prefixed, or as an `openalex.org` URL; a bare run under eight digits needs the prefix, so a short freeform `import_paper` label keeps meaning what it did. It too trades for the paper's DOI on first use rather than becoming a second cache key, and a work OpenAlex indexes without a DOI is refused by name rather than 404'd.
+
 An arXiv ID is accepted in every spelling that names the same paper, so one paper never caches twice: bare (`2301.00001`, `2301.00001v2`, `hep-th/9901001`), arXiv's `arXiv:` "Cite as" prefix, an `abs`/`pdf`/`html` URL (any scheme or none, with or without a `www.`/`export.` host label), and arXiv's own DataCite DOI (`10.48550/arXiv.2301.00001`). The version suffix is part of the identity: `2301.00001` means "whatever is current" and `2301.00001v2` means that revision, and the two cache separately.
 
 | Tool | Description |
@@ -167,9 +172,9 @@ Every tool above except `search_cached_papers` (which takes a query, not a paper
 
 | Tool | Description |
 |------|-------------|
-| `get_paper_references_count` | Survey outgoing-reference coverage across both Crossref and OpenCitations in one call — returns per-source counts so you can pick which to page through |
+| `get_paper_references_count` | Survey outgoing-reference coverage across both Crossref and OpenCitations in one call — returns per-source counts so you can pick which to page through; a count marked `pageable: false` is real but has no rows behind it |
 | `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from the better-covered one, biased toward Crossref for its richer per-entry metadata (OpenCitations wins only on a materially larger reference list); pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
-| `get_paper_citations_count` | Survey incoming-citation coverage across OpenCitations and OpenAlex in one call — the cross-check that tells an OpenCitations zero from a genuinely uncited paper |
+| `get_paper_citations_count` | Survey incoming-citation coverage across OpenCitations and OpenAlex in one call — the cross-check that tells an OpenCitations zero from a genuinely uncited paper, and the only tool that answers when the citation list is too large to fetch |
 | `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
 | `get_paper_updates` | Retraction and correction notices for a DOI, from Crossref and the Retraction Watch database, plus any preprint/published DOIs the publisher deposited. Free on a paper already in the Crossref cache |
 | `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); `max_results` widens the triage list up to Crossref's cap. Each hit warms the Crossref works cache, so a follow-up `get_paper_references(doi, source="crossref")` is free |
@@ -287,6 +292,8 @@ API responses and downloaded files are cached under `.cache/`:
   crossref/works/          # Crossref work objects (JSON)
   opencitations/references/# OpenCitations reference lists (JSON)
   opencitations/citations/ # OpenCitations citation lists (JSON)
+  opencitations/reference-count/ # Reference tallies (JSON, the fallback endpoint)
+  opencitations/citation-count/  # Citation tallies (JSON, the fallback endpoint)
   wikipedia/summaries/     # Wikipedia page summaries (JSON)
   paperswithcode/papers/   # Papers with Code catalog records (JSON)
   paperswithcode/evaluations/  # Evaluation / leaderboard pages (JSON)
@@ -312,7 +319,7 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 | arxiv (versions) | 1d | 1h | The revision history changes exactly when a new version lands. |
 | biorxiv | 7d | 1h | `published_doi` appears asynchronously once a preprint is published. |
 | biorxiv (pubs) | 7d | 1h | A preprint can gain a journal link any day. |
-| openalex (works, authors, institutions, pmids) | 30d | 24h | Citation counts, topics, h-index all drift. |
+| openalex (works, authors, institutions, pmids, work_ids) | 30d | 24h | Citation counts, topics, h-index all drift. |
 | crossref | 30d | 24h | Reference lists grow as publishers re-deposit metadata. |
 | opencitations | 7d | 24h | The citation graph grows continuously. |
 | wikipedia | 30d | 24h | Articles change as they're edited. |

@@ -1448,3 +1448,68 @@ class TestRefileHostedDoiStems:
 
     def test_nothing_to_move_is_a_no_op(self):
         assert manual.refile_hosted_doi_stems("10.1162/tacl.a.63", "2026.tacl-1.1") == 0
+
+
+class TestRefileWorkIdStems:
+    """A bare ``W…`` was a valid freeform import label before it resolved, so an
+    import under one would orphan the day the trade started. Same two tiers as the
+    PMID re-file: an explicit marker moves, a bare id links.
+    """
+
+    DOI = "10.1234/example"
+
+    @pytest.fixture
+    def orphans(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+        for entity in ("pdfs", "markdown"):
+            (tmp_path / "manual" / entity).mkdir(parents=True)
+        return tmp_path
+
+    @staticmethod
+    def _seed(root, canonical, text="orphan"):
+        for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
+            path = root / "manual" / entity / (stems.safe_stem(canonical) + suffix)
+            path.write_text(text)
+
+    def test_a_prefixed_stem_is_moved_onto_the_doi_stem(self, orphans):
+        self._seed(orphans, "openalex:w4312223440")
+
+        assert manual.refile_work_id_stems("openalex:W4312223440", self.DOI) == 2
+
+        assert stems.markdown_path("manual", self.DOI).read_text() == "orphan"
+        assert not stems.markdown_path("manual", "openalex:w4312223440").exists()
+
+    def test_a_bare_id_stem_is_linked_so_a_label_reading_survives(self, orphans):
+        self._seed(orphans, "w4312223440")
+
+        assert manual.refile_work_id_stems("W4312223440", self.DOI) == 2
+
+        source = stems.markdown_path("manual", "w4312223440")
+        target = stems.markdown_path("manual", self.DOI)
+        assert source.exists()
+        assert source.stat().st_ino == target.stat().st_ino
+
+    def test_the_callers_own_url_spelling_is_re_filed(self, orphans):
+        """The URL forms are unbounded, so only the caller's spelling reaches one."""
+        url = "https://openalex.org/W4312223440"
+        self._seed(orphans, url.lower())
+
+        assert manual.refile_work_id_stems(url, self.DOI) == 2
+        assert stems.markdown_path("manual", self.DOI).read_text() == "orphan"
+
+    def test_nothing_to_re_file_is_zero_not_an_error(self, orphans):
+        assert manual.refile_work_id_stems("W4312223440", self.DOI) == 0
+
+    def test_it_is_idempotent(self, orphans):
+        self._seed(orphans, "openalex:w4312223440")
+
+        assert manual.refile_work_id_stems("openalex:W4312223440", self.DOI) == 2
+        assert manual.refile_work_id_stems("openalex:W4312223440", self.DOI) == 0
+
+    def test_the_destination_asks_the_router_too(self, orphans):
+        """A bioRxiv DOI is bioRxiv's stem, not another ``manual`` one."""
+        self._seed(orphans, "openalex:w4312223440")
+
+        assert manual.refile_work_id_stems("openalex:W4312223440", "10.1101/2024.01.01.573000") == 2

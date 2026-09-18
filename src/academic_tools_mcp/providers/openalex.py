@@ -230,6 +230,13 @@ _PUBMED_URL_RE = re.compile(
 # The whole live PMID range fits in 8 digits; ``is_pmid`` owns the bare-run floor.
 _PMID_RE = re.compile(r"^\d{1,8}$")
 
+# The entity letter ``_OPENALEX_URL_RE`` deliberately does not check.
+# ``is_work_id`` owns the bare-run floor, as with PMIDs.
+_WORK_ID_RE = re.compile(r"^W\d{1,12}$", re.IGNORECASE)
+
+# Live work ids run 8-10 digits; nothing shorter resolves. Sampled, not documented.
+_BARE_WORK_ID_FLOOR = 9
+
 
 def normalize_pmid(pmid: str) -> str:
     """Normalize a PubMed identifier to bare digits.
@@ -266,8 +273,48 @@ def is_pmid(identifier: str) -> bool:
     return normalized != stripped or len(normalized) >= 7
 
 
-def _pmid_ids(work: dict[str, Any]) -> dict[str, Any]:
-    """The id mapping ``pmids`` caches: what a PMID trades itself for.
+def normalize_work_id(work_id: str) -> str:
+    """Normalize an OpenAlex work identifier to its bare form (``W4312223440``).
+
+    Accepts a bare ID, an any-case ``openalex:`` prefix (OpenCitations' own spelling
+    on every graph row) and any openalex.org URL ``_OPENALEX_URL_RE`` covers. Anything
+    unrecognised comes back stripped of whitespace and any prefix; ``is_work_id``
+    decides whether that is an error. Idempotent.
+    """
+    work_id = work_id.strip()
+
+    # In a loop, as ``normalize_pmid`` does: doubled prefixes occur in pasted citations.
+    while work_id[:9].lower() == "openalex:":
+        work_id = work_id[9:].strip()
+
+    if m := _OPENALEX_URL_RE.match(work_id):
+        return m.group(1)
+    return work_id
+
+
+def is_work_id(identifier: str) -> bool:
+    """The shape test the tool layer resolves on, over the normalized form.
+
+    **Two tiers, as with ``is_pmid``.** An explicit ``openalex:`` prefix or an
+    openalex.org URL is unambiguous, so any work-shaped id is claimed. A *bare* run is
+    claimed only from ``_BARE_WORK_ID_FLOOR`` up, so a freeform
+    ``import_paper(file, "W2024")`` label keeps routing to ``manual``.
+    """
+    stripped = identifier.strip()
+    normalized = normalize_work_id(stripped)
+    if not _WORK_ID_RE.match(normalized):
+        return False
+    # An explicit marker is what ``normalize_work_id`` removed; a bare id is unchanged.
+    return normalized != stripped or len(normalized) >= _BARE_WORK_ID_FLOOR
+
+
+def canonical_work_id(work_id: str) -> str:
+    """Cache-key form: ``normalize_work_id`` plus a case fold, as the other two IDs do."""
+    return normalize_work_id(work_id).lower()
+
+
+def _traded_ids(work: dict[str, Any]) -> dict[str, Any]:
+    """The id mapping ``pmids`` and ``work_ids`` cache: what a non-DOI id trades for.
 
     Not the work — that is warmed into ``works`` under its DOI, so the paper
     keeps one full entry on one TTL clock. ``doi`` is bare and canonical, or
@@ -300,7 +347,7 @@ async def resolve_pmid(pmid: str, *, force_refresh: bool = False) -> dict[str, A
             bare=canonical,
             canonical=canonical,
             not_found_error=f"No work found for PMID: {pmid}",
-            store=_pmid_ids,
+            store=_traded_ids,
         )
 
     return await cache.cached_lookup(
@@ -312,6 +359,41 @@ async def resolve_pmid(pmid: str, *, force_refresh: bool = False) -> dict[str, A
         fetch=_fetch,
         force_refresh=force_refresh,
         sf_key=("pmid", canonical),
+    )
+
+
+async def resolve_work_id(work_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """Trade an OpenAlex work ID for the paper's DOI, so no paper caches twice.
+
+    Same contract as :func:`resolve_pmid`, for the id every OpenCitations graph row and
+    every ``search_openalex`` hit carries — including the rows that carry no DOI, which
+    is what made them unchainable. ``{doi, openalex_id}``, ``doi`` ``None`` for a work
+    OpenAlex indexes without one, or the shared ``{error, ...}`` contract.
+    """
+    canonical = canonical_work_id(work_id)
+
+    async def _fetch() -> dict[str, Any]:
+        # ``safe=""``: a work ID has no path structure, so a stray slash is an escape.
+        # No ``openalex:`` prefix — OpenAlex resolves the bare id under ``/works/``.
+        api_id = quote(canonical, safe="")
+        return await _fetch_singleton(
+            entity="work_ids",
+            url=f"{OPENALEX_BASE_URL}/works/{api_id}",
+            bare=canonical,
+            canonical=canonical,
+            not_found_error=f"No work found for OpenAlex ID: {work_id}",
+            store=_traded_ids,
+        )
+
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="work_ids",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        sf_key=("work_id", canonical),
     )
 
 

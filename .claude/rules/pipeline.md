@@ -141,14 +141,16 @@ state.
   Deliberately **not** `corpus._filename_to_canonical`: that one repairs the
   slash with each namespace's own *anchored* grammar, which can never match a
   stem carrying the `arXiv:` prefix the legacy `manual` key kept.
-- **Every pipeline entry point resolves a PMID before routing, `import_paper`
-  included** — it is the one that *writes*, so a spelling it files under and the
-  readers resolve away is an import nothing reads back. `refile_pmid_stems`
-  catches up with what an older build stranded, linking a bare digit run rather
-  than moving it for the reason `_misrouted_arxiv_id` links a repaired slash.
+- **Every pipeline entry point trades a non-DOI identifier before routing,
+  `import_paper` included** — it is the one that *writes*, so a spelling it files
+  under and the readers resolve away is an import nothing reads back. The
+  `refile_*_stems` pair catches up with what an older build stranded, linking a bare
+  id rather than moving it for the reason `_misrouted_arxiv_id` links a repaired
+  slash. **A new traded shape owes a re-filer**, or every import already made under
+  it orphans the day it starts resolving.
 - **An identifier changes identity only in `app.resolve_paper_identifier`**
-  (PMID → DOI → hosted DOI's Anthology ID), each trade lazily re-filing old
-  stems. Graph tools skip the Anthology trade: they are DOI-keyed.
+  (PMID or OpenAlex work ID → DOI → hosted DOI's Anthology ID), each trade lazily
+  re-filing old stems. Graph tools skip the Anthology trade: they are DOI-keyed.
 - **`migrate_acl_stems` asks the router too.** It cannot reach opaque hosted
   DOIs; only the network index names their ID, so readers repair those.
 - **Both import functions stay synchronous; the async boundary is the tool

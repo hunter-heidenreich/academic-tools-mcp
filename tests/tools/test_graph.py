@@ -838,6 +838,7 @@ class TestGraphSingleSourceErrors:
             return {"error": "OpenCitations 503", "retryable": True}
 
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        monkeypatch.setattr(opencitations, "get_citation_count", fake_oc)
         _stub_openalex_work(monkeypatch, {"id": "W1", "cited_by_count": 42})
 
         result = await server.get_paper_citations_count("10.1234/x")
@@ -1094,14 +1095,20 @@ class TestCitationsCountSurvey:
     """
 
     @staticmethod
-    def _stub(monkeypatch, *, oc, oa):
+    def _stub(monkeypatch, *, oc, oa, oc_count=None):
         async def fake_oc(doi, **kwargs):
             return oc
 
         async def fake_oa(doi, **kwargs):
             return oa
 
+        async def fake_oc_count(doi, **kwargs):
+            # A retryable `oc` reaches the count endpoint, so every case must answer
+            # it; the default keeps the fallback failing too, leaving the list's error.
+            return oc_count if oc_count is not None else {"error": "count down"}
+
         monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        monkeypatch.setattr(opencitations, "get_citation_count", fake_oc_count)
         monkeypatch.setattr(openalex, "get_work", fake_oa)
 
     @pytest.mark.asyncio
@@ -1253,3 +1260,209 @@ class TestGraphToolsAcceptAnthologyIds:
 
         assert result["not_found"] is True
         assert "Retry" not in result["suggestion"]
+
+
+# ---------------------------------------------------------------------------
+# The count-endpoint fallback
+# ---------------------------------------------------------------------------
+
+
+class TestCountEndpointFallback:
+    """OpenCitations times out or 504s on the most-cited works, at either endpoint.
+    A 38-byte tally beats no answer for choosing a source — but it cannot be paged,
+    so it says so.
+    """
+
+    @staticmethod
+    def _stub(monkeypatch, *, edges, tally, direction):
+        """Stub one direction's list getter and its tally getter."""
+        seen: list[str] = []
+
+        async def fake_edges(doi, **kwargs):
+            seen.append("edges")
+            return edges
+
+        async def fake_tally(doi, **kwargs):
+            seen.append("tally")
+            return tally
+
+        list_name, count_name = {
+            "references": ("get_references", "get_reference_count"),
+            "citations": ("get_citations", "get_citation_count"),
+        }[direction]
+        monkeypatch.setattr(opencitations, list_name, fake_edges)
+        monkeypatch.setattr(opencitations, count_name, fake_tally)
+        return seen
+
+    @staticmethod
+    def _stub_crossref(monkeypatch):
+        async def fake(doi, **kwargs):
+            return {"reference": []}
+
+        monkeypatch.setattr(crossref, "get_work", fake)
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_reference_list_still_yields_a_count(self, monkeypatch):
+        seen = self._stub(
+            monkeypatch,
+            edges={"error": "OpenCitations request timed out.", "retryable": True},
+            tally={"count": 68421},
+            direction="references",
+        )
+        self._stub_crossref(monkeypatch)
+
+        result = await server.get_paper_references_count("10.1234/x")
+
+        assert result["sources"]["opencitations"] == {"count": 68421, "pageable": False}
+        assert seen == ["edges", "tally"]
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_citation_list_still_yields_a_count(self, monkeypatch):
+        self._stub(
+            monkeypatch,
+            edges={"error": "OpenCitations server error (HTTP 504).", "retryable": True},
+            tally={"count": 68421},
+            direction="citations",
+        )
+        _stub_openalex_work(monkeypatch, {"id": "W1", "cited_by_count": 70000})
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["sources"]["opencitations"] == {"count": 68421, "pageable": False}
+        # Still OpenCitations' own number, which is what `count` is documented to be.
+        assert result["count"] == 68421
+        # Beside the count it qualifies, not only on the nested row.
+        assert result["pageable"] is False
+        assert result["sources"]["openalex"] == {"count": 70000}
+
+    @pytest.mark.asyncio
+    async def test_the_happy_path_spends_no_second_request(self, monkeypatch):
+        seen = self._stub(
+            monkeypatch,
+            edges={"citations": [], "count": 3},
+            tally={"count": 999},
+            direction="citations",
+        )
+        _stub_openalex_work(monkeypatch)
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert result["sources"]["opencitations"] == {"count": 3}
+        assert "pageable" not in result["sources"]["opencitations"]
+        # The row stays bare; the top-level flag is the one an agent always reads.
+        assert result["pageable"] is True
+        assert seen == ["edges"]
+
+    @pytest.mark.parametrize(
+        "edges",
+        [
+            {"error": "No citations found on OpenCitations for DOI: x", "not_found": True},
+            {"error": "OpenCitations HTTP 400: bad id"},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_definitive_or_unclassified_failure_is_not_retried(self, monkeypatch, edges):
+        """Gated on ``retryable is True``, so neither a miss nor an unclassified 4xx
+        spends a request asking again for what upstream already refused."""
+        seen = self._stub(monkeypatch, edges=edges, tally={"count": 5}, direction="citations")
+        _stub_openalex_work(monkeypatch)
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        assert seen == ["edges"]
+        assert result["sources"]["opencitations"]["error"] == edges["error"]
+        assert result["count"] is None
+        # A null count is not a pageable one.
+        assert result["pageable"] is False
+
+    @pytest.mark.asyncio
+    async def test_both_endpoints_failing_reports_the_lists_error(self, monkeypatch):
+        """The list is the error the agent asked for, and both carry the same verdict."""
+        self._stub(
+            monkeypatch,
+            edges={"error": "OpenCitations 504", "retryable": True, "retry_after_seconds": 30.0},
+            tally={"error": "OpenCitations 504 again", "retryable": True},
+            direction="citations",
+        )
+        _stub_openalex_work(monkeypatch)
+
+        result = await server.get_paper_citations_count("10.1234/x")
+
+        row = result["sources"]["opencitations"]
+        assert row["error"] == "OpenCitations 504"
+        assert row["retryable"] is True
+        assert row["retry_after_seconds"] == 30.0
+        assert result["count"] is None
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_reaches_the_fallback(self, monkeypatch):
+        seen: dict[str, bool] = {}
+
+        async def fake_edges(doi, *, force_refresh=False):
+            return {"error": "timed out", "retryable": True}
+
+        async def fake_tally(doi, *, force_refresh=False):
+            seen["tally"] = force_refresh
+            return {"count": 1}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_edges)
+        monkeypatch.setattr(opencitations, "get_citation_count", fake_tally)
+        _stub_openalex_work(monkeypatch)
+
+        await server.get_paper_citations_count("10.1234/x", force_refresh=True)
+
+        assert seen == {"tally": True}
+
+    @pytest.mark.asyncio
+    async def test_the_page_tool_never_falls_back(self, monkeypatch):
+        """`_page` slices the list it was handed, so a tally cannot stand in for one."""
+        seen = self._stub(
+            monkeypatch,
+            edges={"error": "timed out", "retryable": True},
+            tally={"count": 68421},
+            direction="citations",
+        )
+
+        result = await server.get_paper_citations("10.1234/x")
+
+        assert seen == ["edges"]
+        assert result["retryable"] is True
+
+
+class TestGraphToolsAcceptWorkIds:
+    """The graph tools hand out an ``openalex`` id on every row, including the rows
+    that carry no ``doi`` — so they have to take one back."""
+
+    @pytest.mark.asyncio
+    async def test_a_work_id_resolves_to_its_doi(self, monkeypatch):
+        seen: list[str] = []
+
+        async def fake_resolve(work_id, **kwargs):
+            return {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W4312223440"}
+
+        async def fake_oc(doi, **kwargs):
+            seen.append(doi)
+            return {"citations": [], "count": 0}
+
+        monkeypatch.setattr(openalex, "resolve_work_id", fake_resolve)
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations("openalex:W4312223440")
+
+        assert seen == ["10.1234/x"]
+        assert result["doi"] == "10.1234/x"
+
+    @pytest.mark.asyncio
+    async def test_a_work_id_with_no_doi_is_refused_before_a_request(self, monkeypatch):
+        async def fake_resolve(work_id, **kwargs):
+            return {"doi": None, "openalex_id": "https://openalex.org/W1"}
+
+        async def fake_oc(doi, **kwargs):
+            raise AssertionError("must not reach OpenCitations")
+
+        monkeypatch.setattr(openalex, "resolve_work_id", fake_resolve)
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations("W4312223440")
+
+        assert result["not_found"] is True

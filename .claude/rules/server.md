@@ -160,11 +160,15 @@ because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`
 
 ## DOI-only tools
 
-- **`app.resolve_doi_identifier` is the one front door**, so the PMID trade, the
+- **`app.resolve_doi_identifier` is the one front door**, so the non-DOI trades, the
   Anthology trade, the rejection and canonicalisation keep one order across every
   DOI-only tool. It sits in `app` because a second tool module needs it and no
   `tools/*` module may import another; its `subject` names the refusing tool, which
   are DOI-only for different reasons.
+- **`_trade_non_doi` holds both non-DOI trades**, so the two front doors cannot
+  drift on which identifiers they accept — and the point of trading an id the graph
+  tools *emit* is that those tools take it back. A third one goes there, not into a
+  caller.
 
 ## Reference / citation graph tools
 
@@ -184,10 +188,15 @@ because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`
   `partial_failure` so a short or empty result isn't read as a confident "no
   references". The both-sources-failed envelope carries a top-level `retryable`
   that is the disjunction of the nested ones.
+- **A count can outlive its list, and says so with `pageable: False`.** Only the
+  count tools fall back to OpenCitations' tally endpoint — a page tool has no use for
+  a number, and an agent told a count is pageable when it isn't walks into an empty
+  list. **`get_paper_citations_count` carries the flag at the top level too**, beside
+  the `count` it qualifies — a caveat one level below the claim goes unread.
 - **The citations *count* surveys two sources; the *page* tool has no `source`.**
   OpenAlex cross-checks a count it cannot page. So `count` stays OpenCitations' —
-  the number `get_paper_citations` slices, null when that source failed; the
-  larger tally there would send an agent to page an empty list.
+  the number `get_paper_citations` slices *when `pageable`*, null when that source
+  failed; the larger tally there would send an agent to page an empty list.
 
 ## Pagination
 

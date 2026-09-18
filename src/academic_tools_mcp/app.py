@@ -45,11 +45,12 @@ mcp = FastMCP(
         "Academic paper research: OpenAlex, arXiv, bioRxiv/medRxiv, Crossref, "
         "OpenCitations, ACL Anthology, Wikipedia, Papers with Code.\n\n"
         "get_paper_metadata / _authors / _abstract / _bibtex take an arXiv ID, "
-        "an ACL Anthology ID (P16-1160, 2023.acl-long.1) or URL, any DOI, or a "
-        "PMID and route to the right provider; each response tags `_source`. "
-        "A DOI the Anthology hosts answers from it. A PMID works "
-        "everywhere a DOI does, including the graph tools, whose OpenCitations "
-        "rows hand PMIDs back. Batch many "
+        "an ACL Anthology ID (P16-1160, 2023.acl-long.1) or URL, any DOI, a "
+        "PMID or an OpenAlex work ID and route to the right provider; each "
+        "response tags `_source`. "
+        "A DOI the Anthology hosts answers from it. Both work everywhere a DOI does, "
+        "including the graph tools — so an OpenCitations row with no `doi` is still "
+        "chainable on its `openalex`. Batch many "
         "identifiers with get_papers_metadata.\n\n"
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
         "get_paper_section, all auto-detecting the provider. download_pdf "
@@ -98,8 +99,9 @@ DOI = Annotated[
     Field(
         description="Paper DOI. Full URL, doi:-prefixed, or bare (10.1234/example). "
         "A PMID works too — pmid:20079334, a pubmed.ncbi.nlm.nih.gov URL, or a "
-        "bare 7-8 digit run — so a `pmid` from an OpenCitations row pastes back in. "
-        "An ACL Anthology ID or URL works too."
+        "bare 7-8 digit run — as does an OpenAlex work ID (W4312223440, "
+        "openalex:-prefixed, or an openalex.org URL), so a `pmid` or `openalex` from "
+        "an OpenCitations row pastes back in. An ACL Anthology ID or URL works too."
     ),
 ]
 
@@ -134,8 +136,9 @@ PAPER_ID = Annotated[
         description="Paper identifier — bare, doi:-prefixed, or a full URL. "
         "Auto-routed by shape: arXiv ID (2301.00001, hep-th/9901001), "
         "bioRxiv/medRxiv DOI (10.1101/...), ACL Anthology ID (P16-1160, "
-        "2023.acl-long.1) or URL, any other DOI, or a PMID (pmid:20079334, a "
-        "pubmed.ncbi.nlm.nih.gov URL, or a bare 7-8 digit run). Pipeline and "
+        "2023.acl-long.1) or URL, any other DOI, a PMID (pmid:20079334, a "
+        "pubmed.ncbi.nlm.nih.gov URL, or a bare 7-8 digit run), or an OpenAlex "
+        "work ID (W4312223440, openalex:-prefixed, or an openalex.org URL). Pipeline and "
         "markdown tools (download_pdf, "
         "convert_paper, import_paper, get_paper_sections, get_paper_section, "
         "find_in_paper) also take a freeform label for a manually imported "
@@ -210,18 +213,34 @@ def enrich_error(result: dict[str, Any], suggestion: str) -> dict[str, Any]:
 async def resolve_paper_identifier(
     identifier: str, *, force_refresh: bool = False
 ) -> tuple[str, dict[str, Any] | None]:
-    """Trade an identifier for the one its paper is stored under: PMID → DOI → Anthology ID.
+    """Trade an identifier for the one its paper is stored under.
+
+    PMID or OpenAlex work ID → DOI → Anthology ID.
 
     Returns ``(identifier, None)`` or ``(identifier, error)``. **The one place an
     identifier changes identity**, so no paper gets a second cache key. Graph tools
-    use :func:`resolve_pmid_identifier`: they stay DOI-keyed.
+    use the two non-DOI trades directly: they stay DOI-keyed.
 
     Not in ``manual.resolve_target``, which is pure and synchronous.
+    """
+    identifier, trade_error = await _trade_non_doi(identifier, force_refresh=force_refresh)
+    if trade_error is not None:
+        return identifier, trade_error
+    return await _trade_hosted_doi(identifier), None
+
+
+async def _trade_non_doi(
+    identifier: str, *, force_refresh: bool
+) -> tuple[str, dict[str, Any] | None]:
+    """The PMID and OpenAlex-work-ID trades, in one order every caller shares.
+
+    The shapes are disjoint and each passes anything else through, so the order is not
+    load-bearing; sharing it is.
     """
     identifier, pmid_error = await resolve_pmid_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
         return identifier, pmid_error
-    return await _trade_hosted_doi(identifier), None
+    return await resolve_work_id_identifier(identifier, force_refresh=force_refresh)
 
 
 async def _trade_hosted_doi(identifier: str) -> str:
@@ -276,6 +295,45 @@ async def resolve_pmid_identifier(
     return doi, None
 
 
+async def resolve_work_id_identifier(
+    identifier: str, *, force_refresh: bool = False
+) -> tuple[str, dict[str, Any] | None]:
+    """Trade an OpenAlex work ID for its DOI; pass every other identifier through untouched.
+
+    Returns ``(identifier, None)`` or ``(identifier, error)``. Sibling of
+    :func:`resolve_pmid_identifier`, kept separate so each trade's error names the
+    identifier the caller actually passed.
+    """
+    if not openalex.is_work_id(identifier):
+        return identifier, None
+
+    resolved = await openalex.resolve_work_id(identifier, force_refresh=force_refresh)
+    if "error" in resolved:
+        return identifier, enrich_error(
+            resolved,
+            "Check the ID on openalex.org, or pass the paper's DOI directly. Only "
+            "works OpenAlex still indexes under that ID resolve.",
+        )
+
+    doi = resolved.get("doi")
+    if not doi:
+        # A real record with no DOI: nothing below can key on it, so name it
+        # rather than 404 — this is what a DOI-less graph row resolves to.
+        return identifier, {
+            **http.not_found(
+                f"OpenAlex indexes {openalex.normalize_work_id(identifier)} without a "
+                "DOI, and these tools are DOI-keyed."
+            ),
+            "suggestion": (
+                "Fetch the PDF yourself and call import_paper with a label of "
+                "your choosing to read the full text."
+            ),
+        }
+
+    await _repair_import(manual.refile_work_id_stems, identifier, doi)
+    return doi, None
+
+
 def reject_non_doi(doi: str, *, subject: str) -> dict[str, Any] | None:
     """Error dict when ``doi`` is not DOI-shaped, else ``None``.
 
@@ -290,7 +348,7 @@ def reject_non_doi(doi: str, *, subject: str) -> dict[str, Any] | None:
         **http.not_found(f"Not a DOI: {doi!r}. {subject} are DOI-only."),
         "suggestion": (
             "Pass a DOI (e.g. 10.1038/nature12373), in bare, doi: or "
-            "https://doi.org/ form, or a PMID. For an arXiv paper, call "
+            "https://doi.org/ form, a PMID, or an OpenAlex work ID. For an arXiv paper, call "
             "get_paper_metadata first and use the doi field, or "
             "search_crossref_by_title to find one."
         ),
@@ -302,14 +360,14 @@ async def resolve_doi_identifier(
 ) -> tuple[str, dict[str, Any] | None]:
     """Canonical DOI for a DOI-only tool, or the error that ends the call.
 
-    The one entry every such tool takes, so the PMID trade and the rejection keep one
-    order across all of them — resolving first is what makes the ``pmid`` the graph
-    tools hand out on every OpenCitations row one they also take. An Anthology ID
-    trades for the DOI on its record.
+    The one entry every such tool takes, so the non-DOI trades and the rejection keep
+    one order across all of them — resolving first is what makes the ``pmid`` and
+    ``openalex`` ids the graph tools hand out on every OpenCitations row ones they also
+    take. An Anthology ID trades for the DOI on its record.
     """
-    doi, pmid_error = await resolve_pmid_identifier(doi, force_refresh=force_refresh)
-    if pmid_error is not None:
-        return doi, pmid_error
+    doi, trade_error = await _trade_non_doi(doi, force_refresh=force_refresh)
+    if trade_error is not None:
+        return doi, trade_error
     if not doinorm.looks_like_doi(doi) and acl.is_anthology_id(doi):
         doi, acl_error = await _anthology_doi(doi, subject=subject, force_refresh=force_refresh)
         if acl_error is not None:

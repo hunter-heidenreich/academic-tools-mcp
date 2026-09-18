@@ -235,26 +235,28 @@ def _misrouted_arxiv_id(stem: str) -> tuple[str, RefileOutcome] | None:
     return None
 
 
-def _pmid_sources(raw_identifier: str) -> list[tuple[Target, RefileOutcome]]:
-    """Candidate targets a PMID import may sit under, and how to re-file each.
+def _traded_sources(
+    raw_identifier: str, *, normalize: Callable[[str], str], prefix: str
+) -> list[tuple[Target, RefileOutcome]]:
+    """Candidate targets a non-DOI import may sit under, and how to re-file each.
 
-    The caller's spelling first — ``_PUBMED_URL_RE`` takes an unbounded set of
-    URL forms, so a URL key is reachable no other way — then the two a
-    hand-written label plausibly takes. Deduped, order preserved.
+    The caller's spelling first — each ``normalize`` takes an unbounded set of URL
+    forms, so a URL key is reachable no other way — then the two a hand-written label
+    plausibly takes. Deduped, order preserved.
 
-    The outcome reuses ``is_pmid``'s two tiers rather than respelling them: a
-    key still carrying an explicit marker moves, a bare digit run is linked.
+    The outcome reuses ``is_pmid`` / ``is_work_id``'s two tiers rather than respelling
+    them: a key still carrying an explicit marker moves, a bare id is linked.
     """
-    bare = openalex.normalize_pmid(raw_identifier)
+    bare = normalize(raw_identifier)
 
     sources: list[tuple[Target, RefileOutcome]] = []
     seen: set[str] = set()
-    for spelling in (raw_identifier, f"pmid:{bare}", bare):
+    for spelling in (raw_identifier, f"{prefix}{bare}", bare):
         target = resolve_target(spelling)
         if target["canonical"] in seen:
             continue
         seen.add(target["canonical"])
-        exclusive = openalex.normalize_pmid(target["canonical"]) != target["canonical"]
+        exclusive = normalize(target["canonical"]) != target["canonical"]
         sources.append((target, "moved" if exclusive else "linked"))
     return sources
 
@@ -270,7 +272,22 @@ def refile_pmid_stems(raw_identifier: str, doi: str) -> int:
     The destination asks the router too — that DOI is usually another ``manual``
     stem, but ``10.1101/…`` is bioRxiv's and ``10.18653/v1/…`` the Anthology's.
     """
-    return _refile_onto(_pmid_sources(raw_identifier), resolve_target(doi))
+    return _refile_onto(
+        _traded_sources(raw_identifier, normalize=openalex.normalize_pmid, prefix="pmid:"),
+        resolve_target(doi),
+    )
+
+
+def refile_work_id_stems(raw_identifier: str, doi: str) -> int:
+    """Re-file an import filed under an OpenAlex work ID onto its DOI stem.
+
+    Lazy, like :func:`refile_pmid_stems`. A bare ``W…`` was a valid freeform label
+    before it resolved, so an import under one orphans without this.
+    """
+    return _refile_onto(
+        _traded_sources(raw_identifier, normalize=openalex.normalize_work_id, prefix="openalex:"),
+        resolve_target(doi),
+    )
 
 
 def refile_hosted_doi_stems(doi: str, anthology_id: str) -> int:

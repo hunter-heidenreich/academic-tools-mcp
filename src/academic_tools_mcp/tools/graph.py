@@ -1,6 +1,7 @@
 """Reference & citation graph tools."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..app import (
@@ -46,6 +47,34 @@ def _source_error(result: dict[str, Any]) -> dict[str, Any]:
     refused locally, and this is how much parallelism is safe.
     """
     return {k: result[k] for k in _FORWARDED_ERROR_KEYS if k in result}
+
+
+async def _oc_count(
+    result: dict[str, Any],
+    fallback: Callable[..., Awaitable[dict[str, Any]]],
+    doi: str,
+    *,
+    force_refresh: bool,
+) -> dict[str, Any]:
+    """OpenCitations' tally for a survey row, from the edge list or from ``fallback``.
+
+    The list is primary: it warms the page tool the survey exists to aim, so the
+    second request is spent only where the first bought nothing. Gated on ``retryable
+    is True`` — a definitive miss and an unclassified 4xx would only be asking again
+    for what upstream refused. A tally reached that way carries ``pageable: False``,
+    since ``_page`` slices the list it was handed.
+    """
+    if "error" not in result:
+        return {"count": result.get("count", 0)}
+    if result.get("retryable") is not True:
+        return _source_error(result)
+
+    counted = await fallback(doi, force_refresh=force_refresh)
+    if "error" in counted:
+        # The list's error, not the tally's: it is the one the agent asked for, and
+        # both carry the same verdict when the fallback was reached at all.
+        return _source_error(result)
+    return {"count": counted.get("count", 0), "pageable": False}
 
 
 def _crossref_refs(work: dict[str, Any]) -> list[dict[str, Any]]:
@@ -105,9 +134,13 @@ async def get_paper_references_count(
     ``suggestion`` the provider set; one source erroring still reports the other's
     count. The echoed ``doi`` is canonical, not the spelling you passed.
 
-    A PMID resolves to its DOI first; any other non-DOI identifier is rejected
-    locally, without a request, as ``{error, not_found: true, suggestion}`` — the
-    graph tools are DOI-only.
+    OpenCitations times out on the most-cited papers. Its row then gains
+    ``pageable: false``: the count is real, but get_paper_references cannot serve
+    those rows — page from Crossref instead.
+
+    A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
+    identifier is rejected locally, without a request, as
+    ``{error, not_found: true, suggestion}`` — the graph tools are DOI-only.
     """
     doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
@@ -123,10 +156,9 @@ async def get_paper_references_count(
     else:
         sources["crossref"] = {"count": len(_crossref_refs(cr_result))}
 
-    if "error" in oc_result:
-        sources["opencitations"] = _source_error(oc_result)
-    else:
-        sources["opencitations"] = {"count": oc_result.get("count", 0)}
+    sources["opencitations"] = await _oc_count(
+        oc_result, opencitations.get_reference_count, doi, force_refresh=force_refresh
+    )
 
     return {"doi": doi, "sources": sources}
 
@@ -327,16 +359,22 @@ async def get_paper_citations_count(
     the two apart. They routinely disagree by thousands; neither is a correction
     of the other.
 
-    Returns ``{doi, count, sources: {opencitations: {count} | error, openalex:
-    {count} | error}}``, the echoed ``doi`` canonical rather than the spelling you
-    passed. **``count`` is OpenCitations'**, and null when it failed: it is the
-    number get_paper_citations pages, which OpenAlex cannot serve. An error object
-    carries ``error`` plus whichever of ``retryable``, ``retry_after_seconds``,
-    ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion`` the
-    provider set; one source failing still reports the other's count.
+    Returns ``{doi, count, pageable, sources: {opencitations: {count} | error,
+    openalex: {count} | error}}``, the echoed ``doi`` canonical rather than the
+    spelling you passed. **``count`` is OpenCitations'**, and null when it failed;
+    OpenAlex cannot serve it. An error object carries ``error`` plus whichever of
+    ``retryable``, ``retry_after_seconds``, ``not_found``, ``backpressure``,
+    ``max_concurrency``, ``suggestion`` the provider set; one source failing still
+    reports the other's count.
 
-    A PMID resolves to its DOI first; any other non-DOI identifier is rejected
-    locally, without a request, as ``{error, not_found: true, suggestion}``.
+    **get_paper_citations pages ``count`` only when ``pageable`` is true.**
+    OpenCitations times out on the most-cited papers; the count then comes from its
+    tally endpoint, and this key and the source row both read false. The number is
+    real, the edge list unavailable at any page.
+
+    A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
+    identifier is rejected locally, without a request, as
+    ``{error, not_found: true, suggestion}``.
     """
     doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
@@ -348,19 +386,20 @@ async def get_paper_citations_count(
     )
 
     sources: dict[str, dict[str, Any]] = {}
-    count = None
-    if "error" in oc_data:
-        sources["opencitations"] = _source_error(oc_data)
-    else:
-        count = oc_data.get("count", 0)
-        sources["opencitations"] = {"count": count}
+    oc_row = await _oc_count(
+        oc_data, opencitations.get_citation_count, doi, force_refresh=force_refresh
+    )
+    sources["opencitations"] = oc_row
+    count = oc_row.get("count")
+    # Beside `count`, not only on the row: a caveat one level down goes unread.
+    pageable = oc_row.get("pageable", True) if count is not None else False
 
     if "error" in oa_work:
         sources["openalex"] = _source_error(oa_work)
     else:
         sources["openalex"] = {"count": _openalex_cited_by(oa_work)}
 
-    return {"doi": doi, "count": count, "sources": sources}
+    return {"doi": doi, "count": count, "pageable": pageable, "sources": sources}
 
 
 @mcp.tool

@@ -67,6 +67,20 @@ the `mailto` parameter went in Feb 2026 — only the key moves the budget.
 **The price is also what the quota gate runs on**, via `_throttled_get(metered=)`: a
 spent budget refuses the `search=` and `filter=` calls that spend it, and nothing else.
 
+**`pmids` and `work_ids` are views of a work, never second copies of one.** A
+second entity holding the work itself would double every citation count's staleness
+window.
+
+**`_OPENALEX_URL_RE` accepts any entity letter, deliberately**: for authors and
+institutions, which getter you called is the discriminator. `is_work_id` has no
+getter to speak for it — it decides whether `app` trades the identifier at all — so
+`_WORK_ID_RE` carries the `W`.
+
+**`_BARE_WORK_ID_FLOOR` tracks the live id range, not `_WORK_ID_RE`'s bound.** A
+bare length OpenAlex never mints can only 404, and claiming it costs a freeform
+`import_paper` label — `is_pmid`'s floor sits on its own live range for the same
+reason. **Don't lower it to the regex.**
+
 **A ROR is a key and a path, and they differ** — the ORCID rule again.
 `canonical_institution_id` folds every spelling to the bare form; the request rebuilds
 `ror:<bare>`, which is what OpenAlex resolves. `_looks_like_ror` separates the two shapes
@@ -254,6 +268,10 @@ whose `pending` `stats.throttles()` would then sum into this namespace's
 
 ## opencitations.py
 
+**The access token is upstream's ask and buys nothing.** No tier to widen, so no
+confirm-then-widen gate of the kind `crossref` needs — **don't "optimise" the rate
+constants against a configured token.**
+
 **An empty list is a real answer, positive-cached.** An unknown-but-well-formed
 DOI answers 200 with `[]`, never 404 — OpenCitations cannot tell "never indexed"
 from "indexed with zero edges", so neither can this module. **Don't "fix" it into
@@ -264,6 +282,18 @@ collection means the DOI is absent, OpenCitations' does not.
 and `tools/graph.py`, so a blank `doi` would read as a real identifier to chain
 the next tool call onto — hence the drops. A repeated prefix takes the last
 token: not a decision anyone made, and pinned by a test rather than relied on.
+
+**The count endpoints are a fallback, and they rescue nothing at the top end.**
+Both time out or 504 on works with tens of thousands of citations, past any wait
+worth handing an agent — so the list stays primary, **the 30s timeout is deliberate
+rather than an oversight to widen**, and no tally may stand in for a list.
+
+**OpenCitations Meta is deliberately unused.** `/meta/v1/metadata/{ids}` is
+batch-capable and returns title/author/pub_date/venue — precisely the deficit that
+costs OpenCitations the `auto` survey. Left out because graph rows are lean triage
+output and provider-specific metadata wants its own tool, not because nobody noticed
+it. The Index likewise accepts `pmid:` and `omid:` directly, declined so one paper
+keeps one cache key.
 
 ## wikipedia.py
 

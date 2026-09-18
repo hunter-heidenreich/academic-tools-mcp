@@ -665,3 +665,240 @@ class TestNormalizedIdentifierReachesThePath:
 
         path = unquote(urlsplit(str(requests[-1].url)).path)
         assert path.endswith("/references/doi:10.1038/nature12373")
+
+
+# ---------------------------------------------------------------------------
+# Access token
+# ---------------------------------------------------------------------------
+
+
+class TestBuildHeaders:
+    """Free and statistics-only, but OpenCitations asks for it and this client was
+    the one here sending its upstream nothing.
+    """
+
+    def test_the_token_is_sent_when_configured(self, monkeypatch):
+        monkeypatch.setenv("OPENCITATIONS_ACCESS_TOKEN", "tok-123")
+        assert opencitations._build_headers()["authorization"] == "tok-123"
+
+    def test_no_authorization_header_without_one(self, monkeypatch):
+        monkeypatch.delenv("OPENCITATIONS_ACCESS_TOKEN", raising=False)
+        assert "authorization" not in opencitations._build_headers()
+
+    @pytest.mark.parametrize("blank", ["   ", "\t", "\n"])
+    def test_a_blank_token_is_unset(self, monkeypatch, blank):
+        monkeypatch.setenv("OPENCITATIONS_ACCESS_TOKEN", blank)
+        assert "authorization" not in opencitations._build_headers()
+
+    @pytest.mark.parametrize("token", [None, "tok-123"])
+    def test_the_descriptive_user_agent_is_sent_either_way(self, monkeypatch, token):
+        # Gating the whole header dict on the token would send `python-httpx/x.y`
+        # in the default configuration.
+        if token is None:
+            monkeypatch.delenv("OPENCITATIONS_ACCESS_TOKEN", raising=False)
+        else:
+            monkeypatch.setenv("OPENCITATIONS_ACCESS_TOKEN", token)
+        assert opencitations._build_headers()["User-Agent"].startswith("academic-tools-mcp/")
+
+    def test_a_contact_reaches_the_user_agent(self, monkeypatch):
+        monkeypatch.setenv("OPENCITATIONS_MAILTO", "ops@example.com")
+        assert "mailto:ops@example.com" in opencitations._build_headers()["User-Agent"]
+
+    def test_the_token_buys_no_rate_tier(self, monkeypatch):
+        # OpenCitations issues the token for usage statistics and says it is not
+        # compulsory, so there is no widened tier to take with one.
+        monkeypatch.setenv("OPENCITATIONS_ACCESS_TOKEN", "tok-123")
+        assert opencitations._MIN_REQUEST_GAP >= 60.0 / 180.0
+        assert opencitations._MAX_CONCURRENT == 2
+
+
+# ---------------------------------------------------------------------------
+# Count endpoints
+# ---------------------------------------------------------------------------
+
+# The API path every request shares, so a test can assert only the endpoint segment.
+_PATH_PREFIX = urlsplit(opencitations.OPENCITATIONS_BASE_URL).path
+
+# The two tallies, and the getter for each.
+_COUNTS = [
+    (opencitations.get_reference_count, "reference-count"),
+    (opencitations.get_citation_count, "citation-count"),
+]
+
+
+class TestCountOf:
+    """The tally arrives as a *string* in a single-element list, so coercing it is
+    the guard's whole job.
+    """
+
+    def test_a_string_count_becomes_an_int(self):
+        assert opencitations._count_of([{"count": "217"}]) == {"count": 217}
+
+    def test_an_int_count_survives(self):
+        # A future API version sending a real number must not read as malformed.
+        assert opencitations._count_of([{"count": 5}]) == {"count": 5}
+
+    def test_zero_is_a_real_answer(self):
+        # An unknown DOI answers `[{"count": "0"}]`, exactly as the list endpoints
+        # answer `[]`: "no edges in this index", not "never indexed".
+        assert opencitations._count_of([{"count": "0"}]) == {"count": 0}
+
+    @pytest.mark.parametrize(
+        "records",
+        [
+            [],  # always carries a row; a missing tally must not read as 0
+            {},
+            None,
+            5,
+            "217",
+            [None],
+            [["count", "1"]],
+            [{}],
+            [{"count": None}],
+            [{"count": "many"}],
+            [{"count": []}],
+        ],
+    )
+    def test_every_other_shape_is_a_wrong_shape(self, records):
+        assert opencitations._count_of(records) is None
+
+
+class TestCountFetch:
+    @pytest.mark.parametrize(("fetch", "kind"), _COUNTS)
+    @pytest.mark.asyncio
+    async def test_the_tally_is_returned_and_positive_cached(self, monkeypatch, fetch, kind):
+        requests = _stub_json_responses(monkeypatch, [{"count": "217"}])
+
+        assert await fetch("10.1234/x") == {"count": 217}
+        assert await fetch("10.1234/x") == {"count": 217}
+
+        assert len(requests) == 1
+        assert cache.get(opencitations.NAMESPACE, kind, "10.1234/x") == {"count": 217}
+
+    @pytest.mark.parametrize(("fetch", "kind"), _COUNTS)
+    @pytest.mark.asyncio
+    async def test_the_path_is_the_count_endpoint(self, monkeypatch, fetch, kind):
+        requests = _stub_json_responses(monkeypatch, [{"count": "0"}])
+
+        await fetch("10.1038/nature12373")
+
+        path = unquote(urlsplit(str(requests[-1].url)).path)
+        assert path.endswith(f"/{kind}/doi:10.1038/nature12373")
+
+    @pytest.mark.parametrize(("fetch", "kind"), _COUNTS)
+    @pytest.mark.asyncio
+    async def test_a_zero_is_not_negative_cached(self, monkeypatch, fetch, kind):
+        _stub_json_responses(monkeypatch, [{"count": "0"}])
+
+        result = await fetch("10.1234/x")
+
+        assert "not_found" not in result
+        assert cache.get_negative(opencitations.NAMESPACE, kind, "10.1234/x") is None
+
+    @pytest.mark.parametrize(("fetch", "kind"), _COUNTS)
+    @pytest.mark.asyncio
+    async def test_a_wrong_shape_is_retryable_and_uncached(self, monkeypatch, fetch, kind):
+        requests = _stub_json_responses(monkeypatch, [], [{"count": "7"}])
+
+        first = await fetch("10.1234/x")
+
+        assert first["retryable"] is True
+        assert "not_found" not in first
+        assert cache.get(opencitations.NAMESPACE, kind, "10.1234/x") is None
+        # Uncached, so a retry re-fetches rather than serving the error.
+        assert await fetch("10.1234/x") == {"count": 7}
+        assert len(requests) == 2
+
+    @pytest.mark.parametrize(("fetch", "kind"), _COUNTS)
+    @pytest.mark.asyncio
+    async def test_a_path_shortening_identifier_costs_no_request(self, monkeypatch, fetch, kind):
+        _stub_no_network(monkeypatch)
+
+        result = await fetch("10.1234/..")
+
+        assert result["not_found"] is True
+        assert cache.get_negative(opencitations.NAMESPACE, kind, "10.1234/..") is None
+
+    @pytest.mark.asyncio
+    async def test_a_tally_and_its_list_are_two_in_flight_slots(self, monkeypatch):
+        # One SingleFlight serves the module, so a shared key would hand a caller
+        # the other endpoint's payload.
+        requests = _stub_json_responses(monkeypatch, _citations_response(), slow=True)
+
+        edges, tally = await asyncio.gather(
+            opencitations.get_citations("10.1234/x"),
+            opencitations.get_citation_count("10.1234/x"),
+        )
+
+        assert {unquote(urlsplit(str(r.url)).path).split("/doi:")[0] for r in requests} == {
+            f"{_PATH_PREFIX}/citations",
+            f"{_PATH_PREFIX}/citation-count",
+        }
+        # Each caller got its own endpoint's answer, not the other's.
+        assert "citations" in edges
+        assert "citations" not in tally
+
+    @pytest.mark.asyncio
+    async def test_a_tally_and_its_list_cache_separately(self, monkeypatch):
+        _stub_json_responses(monkeypatch, [{"count": "99"}])
+
+        await opencitations.get_citation_count("10.1234/x")
+
+        assert cache.get(opencitations.NAMESPACE, "citation-count", "10.1234/x") is not None
+        assert cache.get(opencitations.NAMESPACE, "citations", "10.1234/x") is None
+
+
+class TestRejectedToken:
+    """A token OpenCitations refuses 403s *every* call — measured — and a 403 is
+    neither retryable nor a miss, so a typo takes the provider dark silently.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_403_names_the_setting_holding_the_token(self, monkeypatch):
+        monkeypatch.setenv("OPENCITATIONS_ACCESS_TOKEN", "bad-token")
+        _stub_json_responses(monkeypatch, _Resp(403, {"detail": "Invalid token"}))
+
+        result = await opencitations.get_citations("10.1234/x")
+
+        assert "OPENCITATIONS_ACCESS_TOKEN" in result["suggestion"]
+        # An unclassified 4xx: not transient, and not a claim the DOI is absent.
+        assert "retryable" not in result
+        assert "not_found" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_tally_endpoint_carries_the_same_hint(self, monkeypatch):
+        monkeypatch.setenv("OPENCITATIONS_ACCESS_TOKEN", "bad-token")
+        _stub_json_responses(monkeypatch, _Resp(403, {"detail": "Invalid token"}))
+
+        result = await opencitations.get_citation_count("10.1234/x")
+
+        assert "OPENCITATIONS_ACCESS_TOKEN" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_a_403_without_a_token_gets_no_token_hint(self, monkeypatch):
+        """Some other refusal; blaming a setting that is unset would misdirect."""
+        monkeypatch.delenv("OPENCITATIONS_ACCESS_TOKEN", raising=False)
+        _stub_json_responses(monkeypatch, _Resp(403, {"detail": "Forbidden"}))
+
+        result = await opencitations.get_citations("10.1234/x")
+
+        assert "suggestion" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_token_is_not_cached_as_a_miss(self, monkeypatch):
+        """The DOI is fine; the config is not. Negative-caching it would outlast the fix."""
+        monkeypatch.setenv("OPENCITATIONS_ACCESS_TOKEN", "bad-token")
+        _stub_json_responses(monkeypatch, _Resp(403, {"detail": "Invalid token"}))
+
+        await opencitations.get_citations("10.1234/x")
+
+        assert cache.get_negative(opencitations.NAMESPACE, "citations", "10.1234/x") is None
+
+    @pytest.mark.asyncio
+    async def test_another_4xx_keeps_its_own_suggestion(self, monkeypatch):
+        monkeypatch.setenv("OPENCITATIONS_ACCESS_TOKEN", "bad-token")
+        _stub_json_responses(monkeypatch, _Resp(400, {"detail": "not valid for parameter 'id'"}))
+
+        result = await opencitations.get_citations("10.1234/x")
+
+        assert "suggestion" not in result
