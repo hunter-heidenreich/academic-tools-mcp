@@ -218,9 +218,9 @@ def test_only_a_well_formed_body_is_ever_positive_cached(monkeypatch, body: Any)
 @_SETTINGS
 @given(body=_json_values)
 def test_search_never_reports_a_wrong_shape_as_no_matches(monkeypatch, body: Any) -> None:
-    """Every hit must be a title/url pair of strings, and a body that isn't the
-    OpenSearch array must read as "retry" rather than "no such article" — two
-    strings zip into per-character hits an agent would chain onto."""
+    """Every hit is a title/url/snippet triple of strings, and a body that isn't a
+    `list=search` page must read as "retry" (or, for a refusal, "rewrite") rather
+    than "no such article" — an empty list is the one thing neither ever means."""
     _stub(monkeypatch, body)
 
     result = asyncio.run(wikipedia.search("photosynthesis"))
@@ -228,10 +228,17 @@ def test_search_never_reports_a_wrong_shape_as_no_matches(monkeypatch, body: Any
     assert isinstance(result, dict)
     if "results" not in result:
         assert "error" in result
+        # A refusal is definitive-but-not-missing; everything else is transient.
+        assert result["retryable"] in (True, False)
+        assert "not_found" not in result
         return
 
     assert isinstance(result["results"], list)
     for hit in result["results"]:
-        assert set(hit) == {"title", "url"}
+        assert set(hit) == {"title", "url", "snippet"}
         assert isinstance(hit["title"], str)
-        assert isinstance(hit["url"], str)
+        assert isinstance(hit["snippet"], str)
+        # The url is built here, not echoed, so it is always ours to guarantee.
+        assert hit["url"].startswith("https://en.wikipedia.org/wiki/")
+    assert result["total_results"] is None or isinstance(result["total_results"], int)
+    assert result["did_you_mean"] is None or isinstance(result["did_you_mean"], str)

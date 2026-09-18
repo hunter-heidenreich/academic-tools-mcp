@@ -93,6 +93,14 @@ def _arxiv_search_suggestion(result: dict[str, Any]) -> str:
     return "Refine the query or retry if arXiv is temporarily unavailable."
 
 
+def _wikipedia_search_suggestion(result: dict[str, Any]) -> str:
+    """Recovery advice for a failed Wikipedia search, one per cause."""
+    # A refused request is `retryable: False`; a wait cannot help.
+    if result.get("retryable") is False:
+        return "Rewrite the query — Wikipedia rejected this one. Plain keywords work best."
+    return "Wikipedia is temporarily unavailable; retry in a few seconds."
+
+
 @mcp.tool
 async def search_arxiv(
     query: Annotated[
@@ -692,23 +700,35 @@ async def search_wikipedia(
         ),
     ] = 5,
 ) -> dict[str, Any]:
-    """Search Wikipedia for articles matching a query.
+    """Search the full text of Wikipedia articles. Returns a slim triage list.
 
-    Returns ``{query, result_count, results: [{title, url}, ...]}``. Wikipedia
-    reports no upstream total, so ``result_count`` is the only "more exist"
-    signal: a full page means refine the query. Pass a hit's title to
-    get_wikipedia_summary for the article extract.
+    Matches article content, not just titles, so a description of a topic finds it
+    without naming its article. Use it to situate a concept, method or person
+    encountered in a paper.
 
-    Errors: outage / rate limit → ``{error, retryable: true, suggestion}``, with
-    ``retry_after_seconds`` when the server advertises one.
+    Returns ``{query, total_results, result_count, did_you_mean, results: [{title,
+    url, snippet}, ...]}``. ``total_results`` is Wikipedia's own match count,
+    ``result_count`` what this call returned. ``snippet`` is the matched text as
+    plain prose. ``did_you_mean`` is Wikipedia's spelling correction, null when it
+    offers none — on zero hits it is the retry to make, not evidence the topic is
+    absent. Pass a hit's title to get_wikipedia_summary for the article extract.
+
+    Errors: ``{error, suggestion}`` plus Wikipedia's verdict — ``retryable: false``
+    for a query it rejected, ``retryable: true`` for a transport or parse failure,
+    with ``retry_after_seconds`` when the server advertises one.
     """
     response = await wikipedia.search(query, limit=limit)
     if "error" in response:
-        return enrich_error(
-            response, "Wikipedia is temporarily unavailable; retry in a few seconds."
-        )
+        return enrich_error(response, _wikipedia_search_suggestion(response))
     results = response.get("results", [])
-    return {"query": query, "result_count": len(results), "results": results}
+    return {
+        "query": query,
+        # An int on every search tool that reports it, so agents can branch on it.
+        "total_results": response.get("total_results") or 0,
+        "result_count": len(results),
+        "did_you_mean": response.get("did_you_mean"),
+        "results": results,
+    }
 
 
 @mcp.tool

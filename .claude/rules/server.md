@@ -244,9 +244,12 @@ instead.
   `wikipedia.MAX_SEARCH_LIMIT`, `corpus.MAX_TOP_K` are the `le=` of their `Field`.
   A docstring that spells the cap out instead drifts the moment the provider
   moves it.
-- **`total_results` is an `int` on both tools that report it.** Crossref omits
-  `total-results` on some responses, so the tool defaults it to `0` — a key that
-  means two things across the pair is a key an agent cannot branch on.
+- **`total_results` is an `int` on every tool that reports it.** Crossref omits
+  `total-results` on some responses and Wikipedia omits `searchinfo` on others, so
+  each tool defaults it to `0` — a key that means two things across the set is a key
+  an agent cannot branch on. Wikipedia's spelling correction is `did_you_mean` and
+  not `suggestion` for the same reason: `enrich_error` owns `suggestion` on the
+  error branch.
 - **`_UNINDEXABLE_REASONS`' keys equal `corpus.UNINDEXABLE_REASONS`**, pinned in
   CI. Each explanation is hand-written, so the key set is a duplicate CI keeps
   honest rather than a derivation — which is what stops a reason added to the
