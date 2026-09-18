@@ -367,10 +367,10 @@ async def get_paper_citations_count(
     ``max_concurrency``, ``suggestion`` the provider set; one source failing still
     reports the other's count.
 
-    **``count`` is the number get_paper_citations pages only when ``pageable`` is
-    true.** OpenCitations times out on the most-cited papers; the count then comes
-    from its tally endpoint and both this key and its row read ``pageable: false``
-    — the number is real, but that paper's edge list is unavailable at any page.
+    **get_paper_citations pages ``count`` only when ``pageable`` is true.**
+    OpenCitations times out on the most-cited papers; the count then comes from its
+    tally endpoint, and this key and the source row both read false. The number is
+    real, the edge list unavailable at any page.
 
     A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
     identifier is rejected locally, without a request, as
@@ -391,8 +391,7 @@ async def get_paper_citations_count(
     )
     sources["opencitations"] = oc_row
     count = oc_row.get("count")
-    # Hoisted beside `count`: an agent reading the tally must not have to find the
-    # nested row to learn the tally has no rows behind it.
+    # Beside `count`, not only on the row: a caveat one level down goes unread.
     pageable = oc_row.get("pageable", True) if count is not None else False
 
     if "error" in oa_work:

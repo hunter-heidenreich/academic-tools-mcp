@@ -192,8 +192,7 @@ because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`
   count tools fall back to OpenCitations' tally endpoint — a page tool has no use for
   a number, and an agent told a count is pageable when it isn't walks into an empty
   list. **`get_paper_citations_count` carries the flag at the top level too**, beside
-  the `count` it qualifies: a claim an agent can read without reading its caveat is
-  the failure mode this exists to prevent.
+  the `count` it qualifies — a caveat one level below the claim goes unread.
 - **The citations *count* surveys two sources; the *page* tool has no `source`.**
   OpenAlex cross-checks a count it cannot page. So `count` stays OpenCitations' —
   the number `get_paper_citations` slices *when `pageable`*, null when that source

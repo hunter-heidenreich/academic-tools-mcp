@@ -1893,13 +1893,13 @@ class TestNormalizeWorkId:
         assert openalex.is_work_id("https://openalex.org/W1") is True
 
     def test_the_bare_floor_is_exactly_eight_digits(self):
-        """The bottom of the live range: `W32193029` is real, nothing shorter is."""
+        """`W32193029` is a real id; nothing shorter resolves."""
         assert openalex.is_work_id("W1234567") is False
         assert openalex.is_work_id("W12345678") is True
 
     @pytest.mark.parametrize("digits", [8, 9, 10])
     def test_every_live_length_is_claimed_bare(self, digits):
-        """Sampling OpenAlex turns up 8-, 9- and 10-digit ids; all must route."""
+        """All three lengths OpenAlex mints must route, not just the common one."""
         assert openalex.is_work_id("W" + "1" * digits) is True
 
 

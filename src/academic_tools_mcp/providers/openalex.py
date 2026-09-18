@@ -234,8 +234,7 @@ _PMID_RE = re.compile(r"^\d{1,8}$")
 # ``is_work_id`` owns the bare-run floor, as with PMIDs.
 _WORK_ID_RE = re.compile(r"^W\d{1,12}$", re.IGNORECASE)
 
-# Measured over ~1600 sampled works: 8, 9 and 10 digits occur, nothing shorter, and
-# every shorter run probed 404s. ``W`` + 8 digits, hence 9.
+# Live work ids run 8-10 digits; nothing shorter resolves. Sampled, not documented.
 _BARE_WORK_ID_FLOOR = 9
 
 
@@ -298,12 +297,8 @@ def is_work_id(identifier: str) -> bool:
 
     **Two tiers, as with ``is_pmid``.** An explicit ``openalex:`` prefix or an
     openalex.org URL is unambiguous, so any work-shaped id is claimed. A *bare* run is
-    claimed only from 8 digits up — the bottom of the live range, as ``is_pmid``'s 7 is
-    — so a freeform ``import_paper(file, "W2024")`` label keeps routing to ``manual``.
-
-    The floor has to sit on the live range rather than on the regex, since claiming a
-    length OpenAlex never mints costs a label and can buy nothing: the id it claims
-    only ever 404s.
+    claimed only from ``_BARE_WORK_ID_FLOOR`` up, so a freeform
+    ``import_paper(file, "W2024")`` label keeps routing to ``manual``.
     """
     stripped = identifier.strip()
     normalized = normalize_work_id(stripped)

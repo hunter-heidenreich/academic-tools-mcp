@@ -76,6 +76,11 @@ institutions, which getter you called is the discriminator. `is_work_id` has no
 getter to speak for it — it decides whether `app` trades the identifier at all — so
 `_WORK_ID_RE` carries the `W`.
 
+**`_BARE_WORK_ID_FLOOR` tracks the live id range, not `_WORK_ID_RE`'s bound.** A
+bare length OpenAlex never mints can only 404, and claiming it costs a freeform
+`import_paper` label — `is_pmid`'s floor sits on its own live range for the same
+reason. **Don't lower it to the regex.**
+
 **A ROR is a key and a path, and they differ** — the ORCID rule again.
 `canonical_institution_id` folds every spelling to the bare form; the request rebuilds
 `ror:<bare>`, which is what OpenAlex resolves. `_looks_like_ror` separates the two shapes

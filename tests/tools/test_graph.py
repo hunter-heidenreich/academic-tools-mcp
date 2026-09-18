@@ -1331,7 +1331,7 @@ class TestCountEndpointFallback:
         assert result["sources"]["opencitations"] == {"count": 68421, "pageable": False}
         # Still OpenCitations' own number, which is what `count` is documented to be.
         assert result["count"] == 68421
-        # Hoisted beside the count it qualifies, not only onto the nested row.
+        # Beside the count it qualifies, not only on the nested row.
         assert result["pageable"] is False
         assert result["sources"]["openalex"] == {"count": 70000}
 
@@ -1372,7 +1372,7 @@ class TestCountEndpointFallback:
         assert seen == ["edges"]
         assert result["sources"]["opencitations"]["error"] == edges["error"]
         assert result["count"] is None
-        # A null count is not a pageable one: nothing to page, and nothing to claim.
+        # A null count is not a pageable one.
         assert result["pageable"] is False
 
     @pytest.mark.asyncio
