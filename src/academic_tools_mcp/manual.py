@@ -281,9 +281,8 @@ def refile_pmid_stems(raw_identifier: str, doi: str) -> int:
 def refile_work_id_stems(raw_identifier: str, doi: str) -> int:
     """Re-file an import filed under an OpenAlex work ID onto its DOI stem.
 
-    Lazy, like :func:`refile_pmid_stems`, and needed for the same reason: a bare
-    ``W…`` was a valid freeform import label before it resolved, so an import made
-    under one would orphan the day it started trading for a DOI.
+    Lazy, like :func:`refile_pmid_stems`. A bare ``W…`` was a valid freeform label
+    before it resolved, so an import under one orphans without this.
     """
     return _refile_onto(
         _traded_sources(raw_identifier, normalize=openalex.normalize_work_id, prefix="openalex:"),

@@ -1452,9 +1452,8 @@ class TestRefileHostedDoiStems:
 
 class TestRefileWorkIdStems:
     """A bare ``W…`` was a valid freeform import label before it resolved, so an
-    import made under one would orphan the day the trade started. Same two tiers as
-    the PMID re-file: moved for a spelling nothing but a work ID writes, linked for a
-    bare id a freeform label could have written.
+    import under one would orphan the day the trade started. Same two tiers as the
+    PMID re-file: an explicit marker moves, a bare id links.
     """
 
     DOI = "10.1234/example"

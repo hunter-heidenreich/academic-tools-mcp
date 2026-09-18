@@ -48,10 +48,9 @@ mcp = FastMCP(
         "an ACL Anthology ID (P16-1160, 2023.acl-long.1) or URL, any DOI, a "
         "PMID or an OpenAlex work ID and route to the right provider; each "
         "response tags `_source`. "
-        "A DOI the Anthology hosts answers from it. A PMID and an OpenAlex work ID "
-        "(W4312223440) both work everywhere a DOI does, including the graph tools, "
-        "whose OpenCitations rows hand both back — so a citing row with no `doi` is "
-        "still chainable on its `openalex`. Batch many "
+        "A DOI the Anthology hosts answers from it. Both work everywhere a DOI does, "
+        "including the graph tools — so an OpenCitations row with no `doi` is still "
+        "chainable on its `openalex`. Batch many "
         "identifiers with get_papers_metadata.\n\n"
         "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
         "get_paper_section, all auto-detecting the provider. download_pdf "
@@ -235,9 +234,8 @@ async def _trade_non_doi(
 ) -> tuple[str, dict[str, Any] | None]:
     """The PMID and OpenAlex-work-ID trades, in one order every caller shares.
 
-    Both shapes are disjoint and each passes anything else through, so the order is
-    not load-bearing — sharing it is, since the two front doors would otherwise drift
-    on which identifiers they accept.
+    The shapes are disjoint and each passes anything else through, so the order is not
+    load-bearing; sharing it is.
     """
     identifier, pmid_error = await resolve_pmid_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
@@ -319,8 +317,8 @@ async def resolve_work_id_identifier(
 
     doi = resolved.get("doi")
     if not doi:
-        # A real record with no DOI — the case that makes a DOI-less graph row
-        # unchainable at all. Nothing below can key on it; say so rather than 404.
+        # A real record with no DOI: nothing below can key on it, so name it
+        # rather than 404 — this is what a DOI-less graph row resolves to.
         return identifier, {
             **http.not_found(
                 f"OpenAlex indexes {openalex.normalize_work_id(identifier)} without a "

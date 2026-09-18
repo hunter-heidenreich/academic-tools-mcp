@@ -18,29 +18,25 @@ grouped by milestone rather than per commit.
 ### Added
 
 - **OpenCitations gets the access token it asks for.** The optional
-  `OPENCITATIONS_ACCESS_TOKEN` is sent in the `authorization` header when set, with
+  `OPENCITATIONS_ACCESS_TOKEN` goes out in the `authorization` header, with
   `OPENCITATIONS_MAILTO` beside it on the User-Agent. Neither buys a rate tier —
-  OpenCitations issues the token to count unique users and states it is not compulsory —
-  so the documented 180 req/min pacing is unchanged; those counts are how the project
-  evidences its own relevance, and this was the one client here sending its upstream
-  nothing. ([#145])
+  OpenCitations issues the token to count unique users — so the documented 180 req/min
+  pacing is unchanged, but those counts are how the project evidences its own
+  relevance, and this was the one client here sending its upstream nothing. ([#145])
 - **A count for papers whose citation list is too large to fetch.** OpenCitations times
-  out or returns HTTP 504 on the most-cited works — measured, `10.1038/nature14539` 504s
-  after 280s — which left `get_paper_citations_count` and `get_paper_references_count`
-  with nothing to report for exactly the papers a survey matters most for. Both now fall
-  back to OpenCitations' tally-only endpoint (38 bytes against megabytes) when the edge
-  list fails *retryably*, and flag the result `pageable: false`: the count is real, but
-  the rows behind it are unavailable. The list stays the primary, since it warms the
-  pagination the survey exists to aim, and a definitive miss still spends no second
-  request. ([#145])
+  out or 504s on the most-cited works — measured, `10.1038/nature14539` 504s after 280s
+  — leaving `get_paper_citations_count` and `get_paper_references_count` nothing to
+  report for exactly the papers a survey matters most for. Both now fall back to its
+  tally-only endpoint when the edge list fails *retryably*, flagging the result
+  `pageable: false`: the count is real, the rows behind it are not available. The list
+  stays primary, since it warms the pagination the survey exists to aim. ([#145])
 - **An OpenAlex work ID now works everywhere a DOI does.** `W4312223440`,
   `openalex:`-prefixed or as an `openalex.org` URL, across the paper tools, the PDF
-  pipeline and the reference/citation graph. It closes a dead end rather than adding a
-  spelling: `search_openalex` reports an `openalex_id` on every hit where a `doi` is
-  often absent, and roughly 1.4% of OpenCitations graph rows carry an OpenAlex ID and no
-  DOI, so those rows could be read but never chained. Traded for the paper's DOI on
-  first use like a PMID, so one paper keeps one `_canonical_id`; a work OpenAlex indexes
-  without a DOI is refused by name instead of 404'ing. ([#145])
+  pipeline and the citation graph. It closes a dead end rather than adding a spelling:
+  `search_openalex` reports an `openalex_id` on every hit where a `doi` is often
+  absent, and roughly 1.4% of OpenCitations graph rows carry one and no DOI, so those
+  rows could be read but never chained. Traded for the DOI on first use like a PMID, so
+  one paper keeps one `_canonical_id`. ([#145])
 
 - **`autocomplete_openalex`, a name-to-identifier lookup that spends no credit
   budget.** OpenAlex prices `/autocomplete` at zero credits where a `search=` query

@@ -24,10 +24,8 @@ _PARSE_ERRORS = http.JSON_PARSE_ERRORS
 def _build_headers() -> dict[str, str]:
     """The User-Agent, plus the access token when configured.
 
-    The token buys no rate tier — OpenCitations issues it to count unique users and
-    says so — so ``crossref``'s confirm-then-widen dance has no analogue here and the
-    rate constants below are the same with one as without. Set on the dict rather than
-    threaded through ``useragent.headers``, whose one job is the User-Agent.
+    Set on the dict rather than threaded through ``useragent.headers``, whose one job
+    is the User-Agent.
     """
     headers = useragent.headers(config.get("OPENCITATIONS_MAILTO"))
     if token := config.get("OPENCITATIONS_ACCESS_TOKEN"):
@@ -48,10 +46,9 @@ def _parse_error_dict() -> dict[str, Any]:
 def _error_dict(exc: Exception) -> dict[str, Any]:
     """The shared error dict, plus the one hint only this module can give.
 
-    A rejected token 403s **every** call, and a 403 is neither retryable nor a miss,
-    so the whole provider goes dark on a typo with nothing naming the cause. Upstream's
-    own body says the token is invalid; this names the setting holding it. Gated on a
-    token being configured — a 403 without one is some other refusal.
+    A rejected token 403s *every* call and a 403 is neither retryable nor a miss, so
+    the provider goes dark on a typo with nothing naming the cause. Gated on a token
+    being configured: a 403 without one is some other refusal.
     """
     result = http.error_dict(LABEL, exc)
     if (
@@ -144,14 +141,11 @@ def _edges_of(records: Any, *, kind: str, id_field: str) -> dict[str, Any] | Non
 def _count_of(records: Any) -> dict[str, Any] | None:
     """``{count: N}`` from a raw count response, or ``None`` for a wrong shape.
 
-    The count endpoints answer ``[{"count": "217"}]`` — the tally is a *string*
-    inside a single-element list, so it is coerced here rather than forwarded to an
-    agent that would then compare it against ``_edges_of``'s int. ``[{"count": "0"}]``
-    is an unknown DOI and a genuinely edgeless one alike, exactly as ``[]`` is on the
-    list endpoints; it stays a real answer.
-
-    Unlike ``_edges_of``, an empty list is a wrong shape here: these endpoints always
-    carry a row, and a missing tally reported as ``0`` would invent an answer.
+    The tally arrives as a *string* in a single-element list — ``[{"count": "217"}]``
+    — so it is coerced here rather than reaching an agent that compares it against
+    ``_edges_of``'s int. ``[{"count": "0"}]`` carries the empty list's "never indexed
+    or genuinely edgeless" ambiguity and stays a real answer; an *empty* list does
+    not, since these endpoints always carry a row.
     """
     if not isinstance(records, list) or not records or not isinstance(records[0], dict):
         return None
@@ -176,10 +170,9 @@ async def _fetch_kind(
 
     ``kind`` is the API path segment, the cache entity and the single-flight
     discriminator at once — one ``SingleFlight`` serves the module, so two endpoints
-    sharing a key would collide. ``noun`` is only the wording of a miss, since
-    ``reference-count`` does not read as English. ``parse`` maps the validated body to
-    what this endpoint caches and returns: ``_edges_of`` for a direction,
-    ``_count_of`` for a tally. Mirrors ``openalex._fetch_singleton``'s ``store=``.
+    sharing a key would collide. ``noun`` only words a miss, since ``reference-count``
+    is not English. ``parse`` maps the validated body to what this endpoint caches,
+    as ``openalex._fetch_singleton``'s ``store=`` does.
     """
     canonical = canonical_doi(doi)
     not_found_error = f"No {noun} found on OpenCitations for DOI: {doi}"
@@ -286,9 +279,8 @@ async def get_citations(doi: str, *, force_refresh: bool = False) -> dict[str, A
 async def get_reference_count(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch the outgoing-reference tally for a DOI: ``{"count": N}``.
 
-    The tally only — the edge list this cannot serve is :func:`get_references`', and a
-    ``0`` here carries that function's ambiguity unchanged. A separate entity and TTL
-    clock from the list, so warming one does not warm the other.
+    The tally only, on its own entity and TTL clock — a ``0`` carries
+    :func:`get_references`' ambiguity unchanged.
     """
     return await _fetch_count(doi, kind="reference-count", force_refresh=force_refresh)
 
@@ -296,8 +288,7 @@ async def get_reference_count(doi: str, *, force_refresh: bool = False) -> dict[
 async def get_citation_count(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch the incoming-citation tally for a DOI: ``{"count": N}``.
 
-    The cheap answer for a work whose citation list is too large to fetch: 38 bytes
-    against megabytes. Not reliably *faster* — OpenCitations' own caching dominates
-    latency — so :func:`get_citations` stays the primary and this is its fallback.
+    Bytes instead of megabytes, for a work whose citation list is too large to fetch.
+    A fallback, not a faster path: :func:`get_citations` stays the primary.
     """
     return await _fetch_count(doi, kind="citation-count", force_refresh=force_refresh)

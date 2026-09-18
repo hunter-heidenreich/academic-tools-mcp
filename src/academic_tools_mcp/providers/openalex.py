@@ -230,8 +230,7 @@ _PUBMED_URL_RE = re.compile(
 # The whole live PMID range fits in 8 digits; ``is_pmid`` owns the bare-run floor.
 _PMID_RE = re.compile(r"^\d{1,8}$")
 
-# A work ID's own letter. ``_OPENALEX_URL_RE`` deliberately accepts any entity letter —
-# which getter you called is what discriminates there — so the check lives here.
+# The entity letter ``_OPENALEX_URL_RE`` deliberately does not check.
 # ``is_work_id`` owns the bare-run floor, as with PMIDs.
 _WORK_ID_RE = re.compile(r"^W\d{1,12}$", re.IGNORECASE)
 

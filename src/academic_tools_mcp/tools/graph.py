@@ -56,18 +56,13 @@ async def _oc_count(
     *,
     force_refresh: bool,
 ) -> dict[str, Any]:
-    """OpenCitations' tally for a survey row, from the edge list or from the count endpoint.
+    """OpenCitations' tally for a survey row, from the edge list or from ``fallback``.
 
-    The list is the primary because it warms the page tool the survey exists to aim,
-    so the fallback costs a second request only where the first bought nothing:
-    OpenCitations times out or 504s on the most-cited works, at either endpoint, and a
-    count-only answer beats no answer for choosing a source.
-
-    Gated on ``retryable is True``, never on ``not_found``'s absence — an unclassified
-    4xx and a definitive miss both stay put, and spending a request on either would
-    ask again for what upstream already refused. The tally returned that way is
-    ``pageable: False``: ``_page`` slices the list it was handed, so a count with no
-    list behind it must not read as one.
+    The list is primary: it warms the page tool the survey exists to aim, so the
+    second request is spent only where the first bought nothing. Gated on ``retryable
+    is True`` — a definitive miss and an unclassified 4xx would only be asking again
+    for what upstream refused. A tally reached that way carries ``pageable: False``,
+    since ``_page`` slices the list it was handed.
     """
     if "error" not in result:
         return {"count": result.get("count", 0)}
@@ -139,10 +134,9 @@ async def get_paper_references_count(
     ``suggestion`` the provider set; one source erroring still reports the other's
     count. The echoed ``doi`` is canonical, not the spelling you passed.
 
-    OpenCitations times out on the most-cited papers; when its reference list is
-    unreachable its row falls back to a tally-only endpoint and gains
-    ``pageable: false``, meaning that count is real but get_paper_references cannot
-    serve those rows — page from Crossref instead.
+    OpenCitations times out on the most-cited papers. Its row then gains
+    ``pageable: false``: the count is real, but get_paper_references cannot serve
+    those rows — page from Crossref instead.
 
     A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
     identifier is rejected locally, without a request, as
@@ -373,10 +367,9 @@ async def get_paper_citations_count(
     ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion`` the
     provider set; one source failing still reports the other's count.
 
-    OpenCitations times out on the most-cited papers; when its citation list is
-    unreachable its row falls back to a tally-only endpoint and gains
-    ``pageable: false``. ``count`` is still real, but get_paper_citations cannot page
-    it — the edge list for such a paper is simply unavailable.
+    OpenCitations times out on the most-cited papers. Its row then gains
+    ``pageable: false``: ``count`` is still real, but get_paper_citations cannot page
+    it — that paper's edge list is simply unavailable.
 
     A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
     identifier is rejected locally, without a request, as

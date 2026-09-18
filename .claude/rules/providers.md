@@ -67,21 +67,14 @@ the `mailto` parameter went in Feb 2026 — only the key moves the budget.
 **The price is also what the quota gate runs on**, via `_throttled_get(metered=)`: a
 spent budget refuses the `search=` and `filter=` calls that spend it, and nothing else.
 
-**Three non-DOI identifiers trade down to a DOI, and none becomes a key of its
-own.** `pmids` and `work_ids` are *views* of a work: both cache only
-`_traded_ids`' mapping and warm `works` under the canonical DOI, so a paper holds
-one full entry on one TTL clock and the `get_work` that follows the trade is free.
-**A second entity caching the work itself would double every citation count's
-staleness window.** Each needs its own tuple `sf_key` — one `SingleFlight` serves
-the module.
+**`pmids` and `work_ids` are views of a work, never second copies of one.** A
+second entity holding the work itself would double every citation count's staleness
+window.
 
-**`_OPENALEX_URL_RE` does not discriminate entity letters, deliberately** — which
-getter you called is what does, for authors and institutions. A work ID is the
-exception, because `is_work_id` is a *routing* predicate rather than a getter
-argument: it decides whether `app` trades the identifier at all, so `_WORK_ID_RE`
-carries the `W` the URL pattern won't. Both shape tests then owe the two-tier
-split `is_pmid` documents — an explicit marker claims anything, a bare run only
-above a floor — or a freeform `import_paper` label stops routing to `manual`.
+**`_OPENALEX_URL_RE` accepts any entity letter, deliberately**: for authors and
+institutions, which getter you called is the discriminator. `is_work_id` has no
+getter to speak for it — it decides whether `app` trades the identifier at all — so
+`_WORK_ID_RE` carries the `W`.
 
 **A ROR is a key and a path, and they differ** — the ORCID rule again.
 `canonical_institution_id` folds every spelling to the bare form; the request rebuilds
@@ -270,11 +263,9 @@ whose `pending` `stats.throttles()` would then sum into this namespace's
 
 ## opencitations.py
 
-**The access token is upstream's ask and buys nothing.** OpenCitations issues it to
-count unique users and states it is not compulsory, so there is no tier to widen and
-no confirm-then-widen gate of the kind `crossref` needs — **don't "optimise" the rate
-constants against a configured token.** Fixed at import like `CROSSREF_MAILTO`, for
-the same `clients.get_client` reason.
+**The access token is upstream's ask and buys nothing.** No tier to widen, so no
+confirm-then-widen gate of the kind `crossref` needs — **don't "optimise" the rate
+constants against a configured token.**
 
 **An empty list is a real answer, positive-cached.** An unknown-but-well-formed
 DOI answers 200 with `[]`, never 404 — OpenCitations cannot tell "never indexed"
@@ -287,35 +278,17 @@ and `tools/graph.py`, so a blank `doi` would read as a real identifier to chain
 the next tool call onto — hence the drops. A repeated prefix takes the last
 token: not a decision anyone made, and pinned by a test rather than relied on.
 
-**The count endpoints are a fallback, not an optimisation.** `_count_of`'s two
-endpoints answer in 38 bytes where a list runs to megabytes, but they are **not
-reliably faster** — OpenCitations' own server-side caching dominates latency, and
-a cold tally can outrun its own warm list. So the list stays primary (it warms the
-page tool the survey exists to aim) and `tools/graph._oc_count` reaches for a
-tally only on a `retryable` list failure. **Don't promote them to the default**,
-and don't let a tally stand in for a list: it carries `pageable: False` because
-`_page` slices what it was handed.
-
-**Neither endpoint saves the most-cited papers.** Both time out or 504 upstream on
-works with tens of thousands of citations, past any timeout worth handing an agent.
-`README.md` § Known upstream limitations is where that is stated; the 30s client
-timeout is deliberate, not an oversight to widen.
-
-**The tally is a string inside a single-element list** — `[{"count": "217"}]` — and
-an unknown DOI answers `[{"count": "0"}]`, carrying the empty list's ambiguity
-exactly. But an *empty* list from a count endpoint is a wrong shape, not a zero:
-these always carry a row, so reporting a missing tally as `0` would invent an
-answer where `_edges_of`'s empty list is a real one.
+**The count endpoints are a fallback, and they rescue nothing at the top end.**
+Both time out or 504 on works with tens of thousands of citations, past any wait
+worth handing an agent — so the list stays primary, **the 30s timeout is deliberate
+rather than an oversight to widen**, and no tally may stand in for a list.
 
 **OpenCitations Meta is deliberately unused.** `/meta/v1/metadata/{ids}` is
-batch-capable over `__`-joined doi/pmid/omid/openalex/pmcid and returns
-title/author/pub_date/venue/type/publisher — precisely the deficit that costs
-OpenCitations the `auto` survey through `tools/graph._CROSSREF_HYSTERESIS`. Left
-out because graph rows are lean triage output and provider-specific metadata would
-want its own tool (`CLAUDE.md` § one paper tool per job), not because nobody
-noticed it. The Index also accepts `pmid:` and `omid:` directly, which we decline
-for the same reason every other identifier trades down to a DOI: one paper, one
-cache key.
+batch-capable and returns title/author/pub_date/venue — precisely the deficit that
+costs OpenCitations the `auto` survey. Left out because graph rows are lean triage
+output and provider-specific metadata wants its own tool, not because nobody noticed
+it. The Index likewise accepts `pmid:` and `omid:` directly, declined so one paper
+keeps one cache key.
 
 ## wikipedia.py
 

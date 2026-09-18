@@ -673,8 +673,8 @@ class TestNormalizedIdentifierReachesThePath:
 
 
 class TestBuildHeaders:
-    """The token is OpenCitations' own ask — free, statistics-only, and the one
-    thing this client sent nothing of.
+    """Free and statistics-only, but OpenCitations asks for it and this client was
+    the one here sending its upstream nothing.
     """
 
     def test_the_token_is_sent_when_configured(self, monkeypatch):
@@ -727,8 +727,8 @@ _COUNTS = [
 
 
 class TestCountOf:
-    """The tally arrives as a *string* in a single-element list, so the coercion
-    is the guard's whole job.
+    """The tally arrives as a *string* in a single-element list, so coercing it is
+    the guard's whole job.
     """
 
     def test_a_string_count_becomes_an_int(self):
@@ -849,9 +849,8 @@ class TestCountFetch:
 
 
 class TestRejectedToken:
-    """A token OpenCitations refuses 403s *every* call, and a 403 is neither
-    retryable nor a miss — so without a hint the provider goes dark on a typo with
-    nothing naming the cause. Measured against the live API.
+    """A token OpenCitations refuses 403s *every* call — measured — and a 403 is
+    neither retryable nor a miss, so a typo takes the provider dark silently.
     """
 
     @pytest.mark.asyncio
