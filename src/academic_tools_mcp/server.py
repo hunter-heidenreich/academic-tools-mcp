@@ -35,6 +35,7 @@ from .tools.graph import (
 )
 from .tools.paper import (
     get_author,
+    get_institution,
     get_paper_abstract,
     get_paper_authors,
     get_paper_bibtex,
@@ -51,6 +52,7 @@ from .tools.pipeline import (
     import_paper,
 )
 from .tools.search import (
+    autocomplete_openalex,
     find_in_paper,
     get_wikipedia_summary,
     search_arxiv,
@@ -65,6 +67,7 @@ from .util import config
 __all__ = [
     "_DEBUG_TOOLS_ENABLED",
     "arxiv",
+    "autocomplete_openalex",
     "biorxiv",
     "convert_paper",
     "crossref",
@@ -72,6 +75,7 @@ __all__ = [
     "find_in_paper",
     "get_author",
     "get_benchmark_leaderboard",
+    "get_institution",
     "get_paper_abstract",
     "get_paper_authors",
     "get_paper_bibtex",

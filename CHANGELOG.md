@@ -17,6 +17,23 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`autocomplete_openalex`, a name-to-identifier lookup that spends no credit
+  budget.** OpenAlex prices `/autocomplete` at zero credits where a `search=` query
+  costs ten, so knowing what something is *called* no longer costs what searching by
+  topic does. Matches works, authors, institutions or sources, returning
+  `{openalex_id, name, hint, entity_type, external_id, works_count, cited_by_count}`.
+  Hits are deliberately **not** cached — they are projections, and one written under a
+  singleton key would answer a later `get_paper_metadata` with a fraction of the
+  object. OpenAlex serves a fixed page of ten and rejects `per-page`, so narrow the
+  query rather than paging. ([#144])
+- **`get_institution`, resolving an OpenAlex institution ID or a ROR.** Returns
+  `{name, openalex_id, ror, country_code, type, homepage_url, works_count,
+  cited_by_count, h_index, i10_index, city, region, alternative_names,
+  parent_institutions}`, the last naming the university above a hospital or campus.
+  Accepts a ROR bare, `ror:`-prefixed or as a `ror.org` URL, as `get_author` already
+  does for ORCIDs. Chain it from `autocomplete_openalex` to turn an affiliation string
+  into a record; affiliations remain current rather than paper-time. ([#144])
+
 - **`get_paper_updates` checks a DOI for retraction and correction notices.** From
   Crossref's `updated-by`, which carries both publisher-registered notices and the
   Retraction Watch database Crossref has owned since 2023, so it costs no request on
@@ -80,6 +97,18 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **OpenAlex's `search=` queries are paced separately from everything else.** They
+  are the one metered call class: measured against the live API, a `search=` list
+  costs 10 credits where a `filter=` list costs 1 and a singleton or an autocomplete
+  costs 0, against 1000 credits/day anonymous. A `throttle.SubGap` now paces search
+  by that same ratio, so a burst of them cannot strand the budget — the gate
+  crossref and Papers with Code already use. `get_papers_metadata`' batched
+  `filter=` calls hit the same `/works` URL and deliberately do *not* take it. ([#144])
+- **`OPENALEX_MAILTO` no longer goes out as a query parameter.** OpenAlex retired the
+  polite pool and the `mailto` parameter in February 2026 and meters by API key. The
+  contact still rides the User-Agent, where it leaves an operator reachable, but buys
+  no rate tier; only `OPENALEX_API_KEY` moves the budget, and it raises it 10×. ([#144])
+
 - **A medRxiv DOI costs one metadata request, not two.** The likelier of bioRxiv
   and medRxiv is asked first; a miss still needs both. ([#139])
 
@@ -102,6 +131,24 @@ grouped by milestone rather than per commit.
   ([#127])
 
 ### Fixed
+
+- **A spent OpenAlex credit budget no longer refuses the calls that cost nothing.**
+  `X-RateLimit-Remaining` counts *credits*, and OpenAlex charges none for singleton
+  lookups or autocomplete — but the local quota gate read an advertised zero as "stop
+  everything" and refused the whole namespace, `get_paper_metadata` and `get_author`
+  included, until the window refilled roughly seven hours later. The lockout now arms
+  only on an actual 429 whose budget is also spent — the rule the rest of the quota
+  handling already followed: a quota is observed, never assumed, and a burst 429 is not
+  a spent budget. It is then consulted only by the classes that spend credits, so an
+  armed lockout stops `search=` and the batched `filter=` list while metadata lookups
+  and autocomplete keep resolving. The advertised remaining is still reported by
+  `get_server_stats`. ([#144])
+- **A `ror.org` URL with a trailing slash resolves.** `get_institution` read the slash
+  as part of the identifier and reported the institution missing; the OpenAlex URL
+  spelling already tolerated one. ([#144])
+- **The README no longer promises an OpenAlex polite pool**, abolished in February
+  2026. The entry contradicted the one above it, which already noted that
+  `OPENALEX_MAILTO` raises nothing. ([#144])
 
 - **Crossref's rate tier is confirmed before it is taken.** The client picked its
   limits from whether `CROSSREF_MAILTO` was set, so an address Crossref never
@@ -1936,3 +1983,4 @@ say which.
 [#139]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/139
 [#141]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/141
 [#142]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/142
+[#144]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/144

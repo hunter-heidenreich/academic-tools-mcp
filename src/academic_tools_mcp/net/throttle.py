@@ -9,6 +9,7 @@ construction.
 Gating order (see ``slot``):
 
 1. **Quota** — a spent budget raises ``QuotaExhaustedError``; waiting cannot help.
+   A ``metered=False`` caller skips it; the other three still bind.
 2. **Burst cap** — ``pending >= max_pending`` raises ``LocalBackpressureError``
    before any sem/lock acquisition, so a fan-out fails fast instead of
    silently queueing.
@@ -18,8 +19,8 @@ Gating order (see ``slot``):
    the GET happen outside it.
 
 A provider with a stricter limit for one class of request (crossref and Papers with
-Code search) puts a ``SubGap`` in front of the slot; it answers to the same quota and
-``max_pending``.
+Code search, openalex's credit-metered ``search=``) puts a ``SubGap`` in front of the
+slot; it answers to the same quota and ``max_pending``.
 
 ``slot`` is an async context manager, so a streaming PDF download holds it for
 the whole stream and its open connection counts against the concurrency cap.
@@ -120,13 +121,17 @@ class Throttle:
             self.max_concurrent = max_concurrent
         self.min_gap_seconds = min(self.min_gap_seconds, max(0.0, min_gap_seconds))
 
-    def admit(self, *, queued_ahead: int = 0, gap_seconds: float | None = None) -> None:
+    def admit(
+        self, *, queued_ahead: int = 0, gap_seconds: float | None = None, metered: bool = True
+    ) -> None:
         """Refuse a caller locally: a spent quota first, then a full queue.
 
         ``queued_ahead`` counts callers waiting in front of this throttle (a ``SubGap``'s
         queue), so they share its ``max_pending``; ``gap_seconds`` is the gap they wait on.
+        ``metered=False`` exempts a call class its provider prices at nothing from the
+        quota gate alone; the queue still refuses it.
         """
-        if (refusal := stats.quota_refusal(self.namespace)) is not None:
+        if metered and (refusal := stats.quota_refusal(self.namespace)) is not None:
             stats.incr(self.namespace, "quota_refusals")
             raise http.QuotaExhaustedError(self.label, *refusal)
         pending = self.pending + queued_ahead
@@ -140,7 +145,9 @@ class Throttle:
             )
 
     @contextlib.asynccontextmanager
-    async def slot(self, url: str, *, count_request: bool = True) -> AsyncGenerator[None]:
+    async def slot(
+        self, url: str, *, count_request: bool = True, metered: bool = True
+    ) -> AsyncGenerator[None]:
         """Acquire the rate-limit slot for the lifetime of the with-block.
 
         Raises ``LocalBackpressureError`` past ``max_pending`` *admitted* callers
@@ -149,9 +156,9 @@ class Throttle:
 
         ``count_request`` records one ``http_calls``, right for a streaming download
         (one slot, one request); ``get`` passes ``False`` so ``get_with_retry``
-        counts the attempts it makes.
+        counts the attempts it makes. ``metered`` reaches ``admit``.
         """
-        self.admit()
+        self.admit(metered=metered)
         self.pending += 1
         try:
             async with self._sem:
@@ -175,13 +182,16 @@ class Throttle:
         finally:
             self.pending -= 1
 
-    async def get(self, client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+    async def get(
+        self, client: httpx.AsyncClient, url: str, *, metered: bool = True, **kwargs: Any
+    ) -> httpx.Response:
         """Fire one GET inside the slot, retried per ``retry_attempts``.
 
         The backoff floor is the provider's own gap, floored at one second, so a
-        retry cannot undercut the documented rate.
+        retry cannot undercut the documented rate. ``metered`` is consumed here, not
+        forwarded to httpx.
         """
-        async with self.slot(url, count_request=False):
+        async with self.slot(url, count_request=False, metered=metered):
             return await http.get_with_retry(
                 client,
                 url,

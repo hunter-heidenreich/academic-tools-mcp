@@ -77,8 +77,8 @@ forever with no timeout, `max_pending=0` refuses every caller.
 
 Each provider keeps thin module-level wrappers (`_throttled_get`,
 `_request_slot`) that exist to preserve the test seams: tests monkeypatch those
-names, and override pacing via `mod._throttle.min_gap_seconds`. crossref and
-paperswithcode add a stricter `throttle.SubGap` for search (`_throttled_search_get`,
+names, and override pacing via `mod._throttle.min_gap_seconds`. crossref,
+paperswithcode and openalex add a stricter `throttle.SubGap` for search (`_throttled_search_get`,
 paced via `mod._search_gap.min_gap_seconds`), reset through `reset_search_pacing()`,
 which the conftest fixture must also call. A `SubGap` answers to its throttle's quota
 and `max_pending` *before* it sleeps, so a queued search is refused, not stacked.
@@ -88,6 +88,17 @@ and `max_pending` *before* it sleeps, so a queued search is refused, not stacked
 - **A quota is observed, never assumed.** Only OpenAlex sends `X-RateLimit-*`, so
   no header, no deadline and an elapsed deadline all read as *proceed* — refusing
   on ignorance would strand every provider that publishes nothing.
+- **A header is an advertisement, a 429 is the observation, and `blocked_for`
+  needs both.** Without `Quota.refused`, an advertised-empty budget locks out a
+  provider that is still answering. Without `remaining`, a 429 from a momentary rate
+  burst locks it out until the *budget* refills, hours later. The advertised
+  `remaining` is recorded either way and still reaches `snapshot()`; it just no
+  longer gates on its own.
+- **The quota answers *whether* a budget is spent; `admit(metered=)` answers *whom
+  that stops*.** A provider pricing its classes apart exempts the free ones, which
+  skip the quota gate and no other. Both halves are load-bearing where they meet:
+  an armed lockout refuses the requests whose response would clear it, so gating a
+  free class strands it for the whole window rather than until the next reply.
 - **A 429 with a usable `Retry-After` is an observation too.** Without
   `X-RateLimit-*` headers (which win), `http.record_quota` records the budget as
   spent until then, and `Throttle.slot` refuses every later caller for that

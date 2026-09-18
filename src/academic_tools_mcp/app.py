@@ -76,7 +76,11 @@ mcp = FastMCP(
         "search_crossref_by_title finds a DOI from a title, and warms the "
         "reference tools rather than get_paper_metadata. search_authors is the "
         "way into get_author when you have a person rather than one of their "
-        "papers; chain its hits on openalex_id.\n\n"
+        "papers; chain its hits on openalex_id. autocomplete_openalex is the "
+        "cheap way from a name to an OpenAlex ID — it is the route into "
+        "get_institution, and the one OpenAlex search that spends no credit "
+        "budget, though its hits are not cached. Prefer it to search_openalex "
+        "when you know the name and want the identifier.\n\n"
         "Papers with Code (arXiv IDs only): get_paper_code for repositories and HF "
         "artifacts, get_paper_catalog for tasks, methods and best leaderboard ranks, "
         "get_paper_evaluations for every reported result, get_pwc_task and "
@@ -104,6 +108,14 @@ AUTHOR_ID = Annotated[
     Field(
         description="OpenAlex author ID (A5023888391) or an ORCID in any "
         "spelling — bare (0000-0002-1825-0097), orcid:-prefixed, or an orcid.org URL."
+    ),
+]
+
+INSTITUTION_ID = Annotated[
+    str,
+    Field(
+        description="OpenAlex institution ID (I27837315) or a ROR in any "
+        "spelling — bare (00jmfr291), ror:-prefixed, or a ror.org URL."
     ),
 ]
 

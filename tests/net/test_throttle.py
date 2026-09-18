@@ -561,7 +561,7 @@ class TestQuotaGate:
 
     @pytest.mark.asyncio
     async def test_a_spent_budget_refuses_before_any_request(self):
-        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
 
         with pytest.raises(http.QuotaExhaustedError) as excinfo:
             async with self._throttle().slot("https://api.openalex.org/works"):
@@ -569,6 +569,41 @@ class TestQuotaGate:
 
         assert excinfo.value.provider == "OpenAlex"
         assert excinfo.value.limit == 1000
+
+    @pytest.mark.asyncio
+    async def test_an_unmetered_caller_passes_a_spent_budget(self):
+        """A spent budget is a claim about credits, and a free class spends none.
+
+        Regression: the lockout was namespace-wide, so one 429 earned by a paid call
+        refused openalex's zero-credit classes until the window refilled.
+        """
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
+        admitted = False
+
+        async with self._throttle().slot("https://api.openalex.org/works/W1", metered=False):
+            admitted = True
+
+        assert admitted
+
+    @pytest.mark.asyncio
+    async def test_an_unmetered_caller_still_answers_the_burst_cap(self):
+        """Only the quota gate is skipped; the local caps are not a budget claim."""
+        throttle = self._throttle()
+        throttle.pending = throttle.max_pending
+
+        with pytest.raises(http.LocalBackpressureError):
+            throttle.admit(metered=False)
+
+    @pytest.mark.asyncio
+    async def test_a_metered_caller_is_still_refused_alongside_a_free_one(self):
+        """The two classes part company at the gate, in the same window."""
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
+        throttle = self._throttle()
+
+        throttle.admit(metered=False)
+
+        with pytest.raises(http.QuotaExhaustedError):
+            throttle.admit()
 
     @pytest.mark.asyncio
     async def test_remaining_budget_admits_the_caller(self):
@@ -586,7 +621,7 @@ class TestQuotaGate:
 
     @pytest.mark.asyncio
     async def test_the_refusal_is_counted_and_costs_no_http_call(self):
-        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
 
         with pytest.raises(http.QuotaExhaustedError):
             async with self._throttle().slot("https://api.openalex.org/works"):
@@ -599,7 +634,7 @@ class TestQuotaGate:
     @pytest.mark.asyncio
     async def test_the_refusal_does_not_leak_a_pending_slot(self):
         """Raised before `pending += 1`, so it cannot also exhaust the burst cap."""
-        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
         throttle = self._throttle()
 
         for _ in range(10):
@@ -612,7 +647,7 @@ class TestQuotaGate:
     @pytest.mark.asyncio
     async def test_quota_outranks_the_burst_cap(self):
         """Both would refuse; the quota verdict is the one an agent can act on."""
-        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0)
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
         throttle = self._throttle()
         throttle.pending = throttle.max_pending
 
@@ -656,7 +691,9 @@ class TestSubGap:
     @pytest.mark.asyncio
     async def test_a_spent_quota_refuses_without_sleeping_or_stamping(self, monkeypatch):
         gap = SubGap(_make(), min_gap_seconds=10.0)
-        stats.record_quota("testprovider", limit=None, remaining=0, reset_seconds=100.0)
+        stats.record_quota(
+            "testprovider", limit=None, remaining=0, reset_seconds=100.0, refused=True
+        )
         sleep = AsyncMock()
         monkeypatch.setattr(asyncio, "sleep", sleep)
 
@@ -675,7 +712,9 @@ class TestSubGap:
         async with gap._lock:  # hold the gap so the next caller queues
             waiter = asyncio.create_task(gap.wait())
             await _until(lambda: gap.pending == 1)
-            stats.record_quota("testprovider", limit=None, remaining=0, reset_seconds=100.0)
+            stats.record_quota(
+                "testprovider", limit=None, remaining=0, reset_seconds=100.0, refused=True
+            )
 
         with pytest.raises(http.QuotaExhaustedError):
             await waiter

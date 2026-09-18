@@ -27,15 +27,30 @@ _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
 @dataclass(frozen=True)
 class Quota:
-    """A provider's last advertised budget. ``deadline`` is monotonic; all fields optional."""
+    """A provider's last advertised budget. ``deadline`` is monotonic; all fields optional.
+
+    ``refused`` records that the response *was* a refusal, not just that it advertised an
+    empty budget; both are stored, but only the first gates a later caller.
+    """
 
     limit: int | None
     remaining: int | None
     deadline: float | None
+    refused: bool = False
 
     def blocked_for(self, now: float) -> float | None:
-        """Seconds until refill when spent, else None. No deadline never blocks."""
-        if self.remaining is None or self.remaining > 0 or self.deadline is None:
+        """Seconds until refill when refused *and* spent, else None. No deadline never blocks.
+
+        Both conjuncts earn their place: without ``refused``, an advertised-empty budget
+        locks out a provider that is still answering; without ``remaining``, a 429 from a
+        momentary rate burst locks it out until the budget refills, hours later.
+
+        Says *whether* a budget is spent, never *whom that stops* — that is
+        ``throttle.Throttle.admit(metered=)``.
+        """
+        if not self.refused or self.deadline is None:
+            return None
+        if self.remaining is not None and self.remaining > 0:
             return None
         return remaining if (remaining := self.deadline - now) > 0 else None
 
@@ -53,13 +68,21 @@ def incr(provider: str, metric: str) -> None:
 
 
 def record_quota(
-    provider: str, *, limit: int | None, remaining: int | None, reset_seconds: float | None
+    provider: str,
+    *,
+    limit: int | None,
+    remaining: int | None,
+    reset_seconds: float | None,
+    refused: bool = False,
 ) -> None:
-    """Store the budget a response advertised. ``reset_seconds`` is seconds-until-refill."""
+    """Store the budget a response advertised. ``reset_seconds`` is seconds-until-refill.
+
+    ``refused`` arms the local lockout; a header alone only populates the operator row.
+    """
     if limit is None and remaining is None:
         return
     deadline = None if reset_seconds is None else time.monotonic() + reset_seconds
-    _quotas[provider] = Quota(limit=limit, remaining=remaining, deadline=deadline)
+    _quotas[provider] = Quota(limit=limit, remaining=remaining, deadline=deadline, refused=refused)
 
 
 def quota_refusal(provider: str) -> tuple[float, int | None] | None:

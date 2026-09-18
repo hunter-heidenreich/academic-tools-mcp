@@ -2082,3 +2082,94 @@ class TestGetPaperUpdates:
         await server.get_paper_updates("10.1234/x", force_refresh=True)
 
         assert seen == [False, True]
+
+
+class TestGetInstitutionShape:
+    @staticmethod
+    def _institution(**over):
+        return {
+            "id": "https://openalex.org/I27837315",
+            "display_name": "University of Michigan",
+            "ror": "https://ror.org/00jmfr291",
+            "country_code": "US",
+            "type": "education",
+            "homepage_url": "https://www.umich.edu",
+            "works_count": 993484,
+            "cited_by_count": 67912675,
+            "summary_stats": {"h_index": 1200, "i10_index": 400000},
+            "geo": {"city": "Ann Arbor", "region": "Michigan"},
+            "display_name_acronyms": ["UMich"],
+            "display_name_alternatives": ["University of Michigan–Ann Arbor"],
+            "lineage": ["https://openalex.org/I27837315"],
+            **over,
+        }
+
+    def _stub(self, monkeypatch, record):
+        async def fake(institution_id, **kwargs):
+            return record
+
+        monkeypatch.setattr(openalex, "get_institution", fake)
+
+    @pytest.mark.asyncio
+    async def test_projects_the_lean_slice(self, monkeypatch):
+        self._stub(monkeypatch, self._institution())
+
+        result = await server.get_institution("I27837315")
+
+        assert result["name"] == "University of Michigan"
+        assert result["ror"] == "https://ror.org/00jmfr291"
+        assert result["city"] == "Ann Arbor"
+        assert result["h_index"] == 1200
+        assert result["alternative_names"] == ["UMich", "University of Michigan–Ann Arbor"]
+        # The raw record is megabytes of counts_by_year / topic_share; none of it leaks.
+        assert "counts_by_year" not in result
+        assert "topic_share" not in result
+
+    @pytest.mark.asyncio
+    async def test_lineage_excludes_the_institution_itself(self, monkeypatch):
+        """Lineage includes self; what an agent wants is the university above a campus."""
+        self._stub(
+            monkeypatch,
+            self._institution(
+                id="https://openalex.org/I999",
+                lineage=["https://openalex.org/I999", "https://openalex.org/I27837315"],
+            ),
+        )
+
+        result = await server.get_institution("I999")
+
+        assert result["parent_institutions"] == ["https://openalex.org/I27837315"]
+
+    @pytest.mark.asyncio
+    async def test_a_sparse_record_nulls_rather_than_raises(self, monkeypatch):
+        self._stub(monkeypatch, {"id": "https://openalex.org/I1"})
+
+        result = await server.get_institution("I1")
+
+        assert result["name"] is None
+        assert result["city"] is None
+        assert result["alternative_names"] == []
+        assert result["parent_institutions"] == []
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_passthrough(self, monkeypatch):
+        seen: list[bool] = []
+
+        async def fake(institution_id, **kwargs):
+            seen.append(kwargs.get("force_refresh"))
+            return {"id": "https://openalex.org/I1"}
+
+        monkeypatch.setattr(openalex, "get_institution", fake)
+
+        await server.get_institution("I1")
+        await server.get_institution("I1", force_refresh=True)
+
+        assert seen == [False, True]
+
+    @pytest.mark.asyncio
+    async def test_an_error_carries_a_suggestion(self, monkeypatch):
+        self._stub(monkeypatch, {"error": "No institution found for ID: I9", "not_found": True})
+
+        result = await server.get_institution("I9")
+
+        assert "suggestion" in result

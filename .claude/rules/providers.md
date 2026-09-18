@@ -56,6 +56,28 @@ Two things the shape does not make obvious:
 
 ## openalex.py
 
+**The budget is credits, not requests, and the classes are priced far apart.** Measured,
+because OpenAlex documents the tiers but not the per-endpoint cost: a singleton and
+`/autocomplete` cost **0**, a `filter=` list **1**, a `search=` list **10**, against
+1000/day anonymous and 10x with `OPENALEX_API_KEY`. Hence `_search_gap` paces the one
+metered class; `get_works_batch` buys *wall clock*, not credits, since the singletons it
+replaces were already free; and `select=` costs nothing to refuse. The polite pool and
+the `mailto` parameter went in Feb 2026 — only the key moves the budget.
+
+**The price is also what the quota gate runs on**, via `_throttled_get(metered=)`: a
+spent budget refuses the `search=` and `filter=` calls that spend it, and nothing else.
+
+**A ROR is a key and a path, and they differ** — the ORCID rule again.
+`canonical_institution_id` folds every spelling to the bare form; the request rebuilds
+`ror:<bare>`, which is what OpenAlex resolves. `_looks_like_ror` separates the two shapes
+on the crockford alphabet excluding `i`/`l`/`o`/`u`; without that, `I27837315` reads as a
+ROR and takes the wrong prefix.
+
+**`autocomplete` warms nothing.** Its records are projections, so one written under a
+singleton key would answer a later `get_work` / `get_author` / `get_institution` with a
+fraction of the object — the hazard `search_works` refuses `select=` over, and the rule
+paperswithcode states as "never warm from search".
+
 **Guards reach the elements, not just the top-level object.** Four values come
 from untyped JSON and are consumed where nothing above catches an
 `AttributeError`/`TypeError`: `best_pdf_url`'s sub-objects and URLs (the OA

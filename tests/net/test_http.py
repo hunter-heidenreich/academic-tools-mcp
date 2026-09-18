@@ -700,6 +700,31 @@ class TestQuotaHeaders:
         assert row["remaining"] == 0
         assert row["limit"] is None
 
+    def test_a_200_advertising_an_empty_budget_does_not_arm_the_lockout(self):
+        """Singletons and autocomplete cost no credits, so a spent budget still serves them.
+
+        Regression: gating on the header refused the whole namespace — every free
+        `get_work` / `get_author` included — for the length of the credit window.
+        """
+        http.record_quota(
+            "openalex",
+            _response(200, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "3600"}),
+        )
+
+        assert stats.quota_refusal("openalex") is None
+
+    def test_a_429_advertising_an_empty_budget_arms_the_lockout(self):
+        """The observation, as against the advertisement above."""
+        http.record_quota(
+            "openalex",
+            _response(429, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "3600"}),
+        )
+
+        refusal = stats.quota_refusal("openalex")
+
+        assert refusal is not None
+        assert 0 < refusal[0] <= 3600.0
+
     @pytest.fixture(autouse=True)
     def _patch_sleep(self, monkeypatch):
         async def fake_sleep(seconds):
