@@ -1,6 +1,7 @@
 """Reference & citation graph tools."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..app import (
@@ -46,6 +47,39 @@ def _source_error(result: dict[str, Any]) -> dict[str, Any]:
     refused locally, and this is how much parallelism is safe.
     """
     return {k: result[k] for k in _FORWARDED_ERROR_KEYS if k in result}
+
+
+async def _oc_count(
+    result: dict[str, Any],
+    fallback: Callable[..., Awaitable[dict[str, Any]]],
+    doi: str,
+    *,
+    force_refresh: bool,
+) -> dict[str, Any]:
+    """OpenCitations' tally for a survey row, from the edge list or from the count endpoint.
+
+    The list is the primary because it warms the page tool the survey exists to aim,
+    so the fallback costs a second request only where the first bought nothing:
+    OpenCitations times out or 504s on the most-cited works, at either endpoint, and a
+    count-only answer beats no answer for choosing a source.
+
+    Gated on ``retryable is True``, never on ``not_found``'s absence — an unclassified
+    4xx and a definitive miss both stay put, and spending a request on either would
+    ask again for what upstream already refused. The tally returned that way is
+    ``pageable: False``: ``_page`` slices the list it was handed, so a count with no
+    list behind it must not read as one.
+    """
+    if "error" not in result:
+        return {"count": result.get("count", 0)}
+    if result.get("retryable") is not True:
+        return _source_error(result)
+
+    counted = await fallback(doi, force_refresh=force_refresh)
+    if "error" in counted:
+        # The list's error, not the tally's: it is the one the agent asked for, and
+        # both carry the same verdict when the fallback was reached at all.
+        return _source_error(result)
+    return {"count": counted.get("count", 0), "pageable": False}
 
 
 def _crossref_refs(work: dict[str, Any]) -> list[dict[str, Any]]:
@@ -105,9 +139,14 @@ async def get_paper_references_count(
     ``suggestion`` the provider set; one source erroring still reports the other's
     count. The echoed ``doi`` is canonical, not the spelling you passed.
 
-    A PMID resolves to its DOI first; any other non-DOI identifier is rejected
-    locally, without a request, as ``{error, not_found: true, suggestion}`` — the
-    graph tools are DOI-only.
+    OpenCitations times out on the most-cited papers; when its reference list is
+    unreachable its row falls back to a tally-only endpoint and gains
+    ``pageable: false``, meaning that count is real but get_paper_references cannot
+    serve those rows — page from Crossref instead.
+
+    A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
+    identifier is rejected locally, without a request, as
+    ``{error, not_found: true, suggestion}`` — the graph tools are DOI-only.
     """
     doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
@@ -123,10 +162,9 @@ async def get_paper_references_count(
     else:
         sources["crossref"] = {"count": len(_crossref_refs(cr_result))}
 
-    if "error" in oc_result:
-        sources["opencitations"] = _source_error(oc_result)
-    else:
-        sources["opencitations"] = {"count": oc_result.get("count", 0)}
+    sources["opencitations"] = await _oc_count(
+        oc_result, opencitations.get_reference_count, doi, force_refresh=force_refresh
+    )
 
     return {"doi": doi, "sources": sources}
 
@@ -335,8 +373,14 @@ async def get_paper_citations_count(
     ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion`` the
     provider set; one source failing still reports the other's count.
 
-    A PMID resolves to its DOI first; any other non-DOI identifier is rejected
-    locally, without a request, as ``{error, not_found: true, suggestion}``.
+    OpenCitations times out on the most-cited papers; when its citation list is
+    unreachable its row falls back to a tally-only endpoint and gains
+    ``pageable: false``. ``count`` is still real, but get_paper_citations cannot page
+    it — the edge list for such a paper is simply unavailable.
+
+    A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
+    identifier is rejected locally, without a request, as
+    ``{error, not_found: true, suggestion}``.
     """
     doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
@@ -348,12 +392,11 @@ async def get_paper_citations_count(
     )
 
     sources: dict[str, dict[str, Any]] = {}
-    count = None
-    if "error" in oc_data:
-        sources["opencitations"] = _source_error(oc_data)
-    else:
-        count = oc_data.get("count", 0)
-        sources["opencitations"] = {"count": count}
+    oc_row = await _oc_count(
+        oc_data, opencitations.get_citation_count, doi, force_refresh=force_refresh
+    )
+    sources["opencitations"] = oc_row
+    count = oc_row.get("count")
 
     if "error" in oa_work:
         sources["openalex"] = _source_error(oa_work)

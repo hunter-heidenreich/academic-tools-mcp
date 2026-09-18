@@ -2173,3 +2173,99 @@ class TestGetInstitutionShape:
         result = await server.get_institution("I9")
 
         assert "suggestion" in result
+
+
+# ---------------------------------------------------------------------------
+# OpenAlex work-ID resolution: the DOI-less graph row, made chainable
+# ---------------------------------------------------------------------------
+
+
+def _stub_work_id(monkeypatch, mapping, *, work=None):
+    """Route ``resolve_work_id`` through *mapping* and answer ``get_work`` with *work*.
+
+    Patches the provider module object, as ``_stub_pmid`` does.
+    """
+    calls: list[str] = []
+
+    async def fake_resolve_work_id(work_id, **kwargs):
+        calls.append(work_id)
+        return mapping
+
+    async def fake_get_work(doi, **kwargs):
+        return dict(work or {}, doi=f"https://doi.org/{doi}")
+
+    monkeypatch.setattr(openalex, "resolve_work_id", fake_resolve_work_id)
+    monkeypatch.setattr(openalex, "get_work", fake_get_work)
+    return calls
+
+
+class TestWorkIdRouting:
+    """``search_openalex`` reports an ``openalex_id`` on every hit and OpenCitations
+    on every graph row, including the ~1.4% that carry no DOI. Traded for the DOI
+    before dispatch, so neither spelling acquires a second cache identity."""
+
+    MAPPING: ClassVar[dict] = {
+        "doi": "10.1234/x",
+        "openalex_id": "https://openalex.org/W4312223440",
+    }
+
+    @pytest.mark.asyncio
+    async def test_metadata_answers_under_the_doi(self, monkeypatch):
+        _stub_work_id(monkeypatch, self.MAPPING)
+
+        result = await server.get_paper_metadata("W4312223440")
+
+        assert result["_source"] == "openalex"
+        assert result["_canonical_id"] == "10.1234/x"
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["W4312223440", "openalex:W4312223440", "https://openalex.org/W4312223440"],
+    )
+    @pytest.mark.asyncio
+    async def test_every_spelling_agrees_with_the_doi(self, monkeypatch, spelling):
+        _stub_work_id(monkeypatch, self.MAPPING)
+
+        via_id = await server.get_paper_metadata(spelling)
+        via_doi = await server.get_paper_metadata("10.1234/x")
+
+        assert via_id["_canonical_id"] == via_doi["_canonical_id"]
+
+    @pytest.mark.asyncio
+    async def test_a_doi_never_reaches_the_work_id_trade(self, monkeypatch):
+        calls = _stub_work_id(monkeypatch, self.MAPPING)
+
+        await server.get_paper_metadata("10.1234/x")
+
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_record_without_a_doi_is_a_definitive_miss_naming_the_id(self, monkeypatch):
+        """Every tool below is DOI-keyed, so naming the id beats inventing a key
+        the cache would then own."""
+        _stub_work_id(monkeypatch, {"doi": None, "openalex_id": "https://openalex.org/W1"})
+
+        result = await server.get_paper_metadata("W4312223440")
+
+        assert result["not_found"] is True
+        assert "W4312223440" in result["error"]
+        assert "import_paper" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_a_provider_error_is_forwarded_with_a_suggestion(self, monkeypatch):
+        _stub_work_id(monkeypatch, {"error": "OpenAlex 503", "retryable": True})
+
+        result = await server.get_paper_metadata("W4312223440")
+
+        assert result["retryable"] is True
+        assert "openalex.org" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_a_short_bare_id_stays_a_freeform_import_label(self, monkeypatch):
+        """``is_work_id``'s two tiers: claiming ``W1`` would hijack a label."""
+        calls = _stub_work_id(monkeypatch, self.MAPPING)
+
+        result = await server.get_paper_metadata("W1")
+
+        assert calls == []
+        assert "Cannot resolve paper provider" in result["error"]

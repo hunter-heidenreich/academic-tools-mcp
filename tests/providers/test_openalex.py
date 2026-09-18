@@ -1817,3 +1817,157 @@ class TestAutocomplete:
         result = await openalex.autocomplete("univ")
 
         assert [i["id"] for i in result["items"]] == ["https://openalex.org/I1"]
+
+
+class TestNormalizeWorkId:
+    """Every OpenCitations graph row and every ``search_openalex`` hit carries one of
+    these, so each spelling must reach one key — and ``is_work_id``'s two tiers are
+    what keep a freeform ``import_paper`` label out."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "W4312223440",
+            "  W4312223440  ",
+            "w4312223440",
+            "openalex:W4312223440",
+            "OPENALEX:W4312223440",
+            "openalex: W4312223440",
+            # The prefix loop: a single pass would leave this keying separately.
+            "openalex:openalex:W4312223440",
+            "https://openalex.org/W4312223440",
+            "https://openalex.org/W4312223440/",
+            "http://www.openalex.org/W4312223440",
+            "https://api.openalex.org/works/W4312223440",
+            "openalex.org/W4312223440",
+            "HTTPS://OPENALEX.ORG/W4312223440",
+            "openalex:https://openalex.org/W4312223440",
+        ],
+    )
+    def test_every_spelling_claims_and_folds_to_one_key(self, spelling):
+        assert openalex.is_work_id(spelling) is True
+        assert openalex.canonical_work_id(spelling) == "w4312223440"
+
+    def test_normalize_keeps_the_callers_case(self):
+        # As `doinorm.normalize` does: the request keeps it, only the key folds.
+        assert openalex.normalize_work_id("openalex:W4312223440") == "W4312223440"
+
+    def test_normalize_is_idempotent(self):
+        for spelling in ("openalex:W1", "https://openalex.org/W4312223440/", "nonsense"):
+            once = openalex.normalize_work_id(spelling)
+            assert openalex.normalize_work_id(once) == once
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            # Every other identifier shape the server routes must fall through.
+            "2301.00001",
+            "hep-th/9901001",
+            "10.1234/x",
+            "10.1101/2020.01.01.000001",
+            "20079334",
+            "pmid:20079334",
+            # Another entity's ID: `_OPENALEX_URL_RE` accepts any letter, so the
+            # bare-shape regex is the only thing discriminating here.
+            "A5023888391",
+            "I27837315",
+            "https://openalex.org/A5023888391",
+            "my-thesis",
+            "",
+            "W",
+            "Wabc",
+            # A bare short run stays a freeform label (see `is_work_id`'s two tiers).
+            "W1",
+            "W123",
+        ],
+    )
+    def test_non_work_ids_are_not_claimed(self, identifier):
+        assert openalex.is_work_id(identifier) is False
+
+    def test_explicit_prefix_claims_a_short_work_id(self):
+        """The tier split: bare "W1" is a label, ``openalex:W1`` is unambiguous."""
+        assert openalex.is_work_id("W1") is False
+        assert openalex.is_work_id("openalex:W1") is True
+        assert openalex.is_work_id("https://openalex.org/W1") is True
+
+    def test_the_bare_floor_is_exactly_four_digits(self):
+        assert openalex.is_work_id("W123") is False
+        assert openalex.is_work_id("W1234") is True
+
+
+class TestResolveWorkId:
+    @pytest.mark.asyncio
+    async def test_returns_doi_and_warms_the_work_cache(self, monkeypatch):
+        """Same bargain as ``resolve_pmid``: one request answers the ID *and* pays
+        for the ``get_work`` that follows."""
+        requests = _stub_json_responses(monkeypatch, _work_response("10.1234/x"))
+
+        resolved = await openalex.resolve_work_id("W4312223440")
+        assert resolved == {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"}
+
+        work = await openalex.get_work("10.1234/x")
+        assert work["id"] == "https://openalex.org/W1"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_every_spelling_is_one_fetch(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _work_response())
+
+        await openalex.resolve_work_id("W4312223440")
+        await openalex.resolve_work_id("openalex:w4312223440")
+        await openalex.resolve_work_id("https://openalex.org/W4312223440")
+
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_caches_the_mapping_not_the_work(self, monkeypatch):
+        """``work_ids`` is a view of a work, so it must not be a second full copy
+        on a second TTL clock."""
+        _stub_json_responses(monkeypatch, _work_response("10.1234/x"))
+
+        await openalex.resolve_work_id("W4312223440")
+
+        entry = cache.get(openalex.NAMESPACE, "work_ids", "w4312223440", max_age_seconds=3600)
+        assert entry == {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W1"}
+
+    @pytest.mark.asyncio
+    async def test_requests_the_bare_id_under_works(self, monkeypatch):
+        """No ``openalex:`` prefix in the path — OpenAlex resolves the bare id, and a
+        prefix that reached the URL would be part of the record it asked for."""
+        requests = _stub_json_responses(monkeypatch, _work_response())
+
+        await openalex.resolve_work_id("openalex:W4312223440")
+
+        assert requests[0].url.path == "/works/w4312223440"
+
+    @pytest.mark.asyncio
+    async def test_404_carries_not_found_and_negative_caches(self, monkeypatch):
+        _stub_json_responses(monkeypatch, _Resp(404))
+
+        result = await openalex.resolve_work_id("W9999999999")
+        assert result.get("not_found") is True
+        assert "No work found for OpenAlex ID" in result["error"]
+        assert cache.get_negative(openalex.NAMESPACE, "work_ids", "w9999999999") is not None
+
+    @pytest.mark.asyncio
+    async def test_a_work_without_a_doi_resolves_to_a_null_doi(self, monkeypatch):
+        """The case that made a DOI-less OpenCitations row unchainable: a real
+        record, no DOI, so nothing below can key on it."""
+        _stub_json_responses(monkeypatch, {"id": "https://openalex.org/W1", "doi": None})
+
+        resolved = await openalex.resolve_work_id("W4312223440")
+
+        assert resolved == {"doi": None, "openalex_id": "https://openalex.org/W1"}
+
+    @pytest.mark.asyncio
+    async def test_the_pmid_and_work_id_entities_are_two_in_flight_slots(self, monkeypatch):
+        # One SingleFlight serves the module, so a shared key would hand one caller
+        # the other entity's fetch.
+        requests = _stub_json_responses(monkeypatch, _work_response(), slow=True)
+
+        await asyncio.gather(
+            openalex.resolve_pmid("pmid:20079334"),
+            openalex.resolve_work_id("W4312223440"),
+        )
+
+        assert {r.url.path for r in requests} == {"/works/pmid:20079334", "/works/w4312223440"}

@@ -160,11 +160,16 @@ because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`
 
 ## DOI-only tools
 
-- **`app.resolve_doi_identifier` is the one front door**, so the PMID trade, the
+- **`app.resolve_doi_identifier` is the one front door**, so the non-DOI trades, the
   Anthology trade, the rejection and canonicalisation keep one order across every
   DOI-only tool. It sits in `app` because a second tool module needs it and no
   `tools/*` module may import another; its `subject` names the refusing tool, which
   are DOI-only for different reasons.
+- **`_trade_non_doi` holds the PMID and OpenAlex-work-ID trades together**, because
+  the two front doors (`resolve_paper_identifier` and `resolve_doi_identifier`) would
+  otherwise drift on which identifiers they accept — and the whole point of trading
+  an id the graph tools *emit* is that those tools then take it back. Adding a third
+  such identifier goes there, not into one caller.
 
 ## Reference / citation graph tools
 
@@ -184,6 +189,14 @@ because the key would be a lie: `app.pdf_not_cached_error` has no `retryable`
   `partial_failure` so a short or empty result isn't read as a confident "no
   references". The both-sources-failed envelope carries a top-level `retryable`
   that is the disjunction of the nested ones.
+- **A count may outlive its list, and says so with `pageable: False`.**
+  `_oc_count` falls back to OpenCitations' tally endpoint when the edge list fails
+  *retryably* — the gate is `retryable is True`, so a definitive miss and an
+  unclassified 4xx each stay put rather than spending a second request. The flag is
+  the survey's whole point inverted: it aims an agent at a source, and a tally with
+  no list behind it is a source that cannot be paged. **Only the count tools fall
+  back**; `_page` slices the list it was handed, so a page tool has nothing to do
+  with a number.
 - **The citations *count* surveys two sources; the *page* tool has no `source`.**
   OpenAlex cross-checks a count it cannot page. So `count` stays OpenCitations' —
   the number `get_paper_citations` slices, null when that source failed; the
