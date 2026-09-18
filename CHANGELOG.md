@@ -17,6 +17,19 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **A Wikipedia summary you can cite and join on.** `get_wikipedia_summary` now
+  returns `wikibase_item` — the Wikidata QID — which is the join from an article to
+  the identifiers the rest of this server already takes: `Jennifer Doudna` →
+  `Q56068` → ORCID `0000-0001-9161-999X` → `get_author`, `UC Berkeley` → `Q168756` →
+  ROR `01an7q238` → `get_institution`. It also returns the `revision` and `timestamp`
+  it read and a `permalink` pinning them, because the plain `url` tracks the live
+  page: a note citing it cites whatever the article later becomes. `canonical_title`
+  reports what a redirect resolved to, and the resolved key is warmed so the redirect
+  pays for both. All of it came back in the same response already — none of it costs
+  a request. A disambiguation page's `extract` is now empty rather than its lead
+  sentence, which describes one candidate meaning and reads exactly like a real
+  summary. ([#147])
+
 - **OpenCitations gets the access token it asks for.** The optional
   `OPENCITATIONS_ACCESS_TOKEN` goes out in the `authorization` header, with
   `OPENCITATIONS_MAILTO` beside it on the User-Agent. Neither buys a rate tier —
@@ -2024,3 +2037,4 @@ say which.
 [#144]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/144
 [#145]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/145
 [#146]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/146
+[#147]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/147

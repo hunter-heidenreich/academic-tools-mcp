@@ -58,10 +58,15 @@ def _stub_no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 _SUMMARY_PAYLOAD = {
     "type": "standard",
     "title": "Cytochrome P450",
+    "titles": {"canonical": "Cytochrome_P450", "normalized": "Cytochrome P450"},
     "description": "Class of enzymes",
     "extract": "Cytochromes P450 are a superfamily of enzymes.",
     "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Cytochrome_P450"}},
     "pageid": 709137,
+    # Upstream sends this as a string, beside an int `pageid`.
+    "revision": "1373673012",
+    "timestamp": "2026-09-14T07:11:03Z",
+    "wikibase_item": "Q407693",
 }
 
 
@@ -358,7 +363,86 @@ class TestGetSummary:
         assert "superfamily" in result["extract"]
         assert result["url"] == "https://en.wikipedia.org/wiki/Cytochrome_P450"
         assert result["pageid"] == 709137
+        assert result["canonical_title"] == "Cytochrome_P450"
+        # Coerced from upstream's string, so an agent can compare and sort it.
+        assert result["revision"] == 1373673012
+        assert result["timestamp"] == "2026-09-14T07:11:03Z"
+        assert result["wikibase_item"] == "Q407693"
         assert cache.get(wikipedia.NAMESPACE, "summaries", "Cytochrome_P450") is not None
+
+    @pytest.mark.asyncio
+    async def test_the_permalink_names_the_revision_read(self, monkeypatch):
+        """`url` is whatever the article later becomes; only this names what was read.
+
+        A note citing the live URL cites a moving target — the point of carrying a
+        revision at all.
+        """
+        _stub(monkeypatch, _SUMMARY_PAYLOAD)
+
+        result = await wikipedia.get_summary("Cytochrome P450")
+
+        assert result["permalink"] == (
+            "https://en.wikipedia.org/w/index.php?title=Cytochrome_P450&oldid=1373673012"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("revision", [None, "", "abc", "12.5", 1.5, {"id": 1}, True])
+    async def test_a_permalink_is_omitted_rather_than_guessed(self, monkeypatch, revision):
+        """Half a permalink resolves to the live page, which is the thing it exists
+        to not be — so an unusable revision yields no link at all."""
+        _stub(monkeypatch, {**_SUMMARY_PAYLOAD, "revision": revision})
+
+        result = await wikipedia.get_summary("Cytochrome P450")
+
+        assert result["permalink"] == ""
+        assert result["revision"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_disambiguation_page_carries_no_extract(self, monkeypatch):
+        """Its extract describes one candidate meaning and reads exactly like a real
+        summary, so an agent that doesn't branch on `type` cites it as the article's."""
+        _stub(
+            monkeypatch,
+            {
+                **_SUMMARY_PAYLOAD,
+                "type": "disambiguation",
+                "title": "Transformer",
+                "titles": {"canonical": "Transformer_(disambiguation)"},
+                "extract": "A transformer is a device that transfers electrical energy.",
+            },
+        )
+
+        result = await wikipedia.get_summary("Transformer (disambiguation)")
+
+        assert result["type"] == "disambiguation"
+        assert result["extract"] == ""
+        # The rest of the record still answers "which page did I land on".
+        assert result["url"] == "https://en.wikipedia.org/wiki/Cytochrome_P450"
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_warms_the_target_key(self, monkeypatch):
+        """A redirect answers under the target's title, so the record is the target's
+        filed under an alias — warming the resolved key spares the next caller a
+        request for a page already on disk."""
+        requests = _stub(
+            monkeypatch,
+            {
+                **_SUMMARY_PAYLOAD,
+                "title": "Transformer (deep learning)",
+                "titles": {"canonical": "Transformer_(deep_learning)"},
+            },
+        )
+
+        await wikipedia.get_summary("Transformer model")
+
+        assert cache.get(wikipedia.NAMESPACE, "summaries", "Transformer_model") is not None
+        assert (
+            cache.get(wikipedia.NAMESPACE, "summaries", "Transformer_(deep_learning)") is not None
+        )
+
+        # The target now serves from cache: the redirect paid for both.
+        await wikipedia.get_summary("Transformer (deep learning)")
+        assert len(requests) == 1
 
     @pytest.mark.asyncio
     async def test_404_is_a_definitive_miss_and_is_negative_cached(self, monkeypatch):
@@ -463,6 +547,36 @@ class TestSummaryHardening:
 
         assert result["url"] == ""
         assert result["title"] == "X"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "titles", [None, "Cytochrome_P450", [], 42, {}, {"canonical": None}, {"canonical": 7}]
+    )
+    async def test_wrong_shape_titles_degrades_to_an_empty_canonical(self, monkeypatch, titles):
+        """`titles` is the `content_urls` hazard again, and it feeds the permalink —
+        a canonical of the wrong type would build a link to nothing."""
+        _stub(monkeypatch, {**_SUMMARY_PAYLOAD, "titles": titles})
+
+        result = await wikipedia.get_summary("X")
+
+        assert result["canonical_title"] == ""
+        assert result["permalink"] == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [None, 42, [], {"id": "Q1"}])
+    async def test_a_wrong_typed_wikibase_item_degrades_to_none(self, monkeypatch, value):
+        """A QID is chained on to Wikidata, so a non-string must not reach the agent
+        looking like one."""
+        _stub(monkeypatch, {**_SUMMARY_PAYLOAD, "wikibase_item": value})
+
+        assert (await wikipedia.get_summary("X"))["wikibase_item"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [None, 42, [], {"at": "now"}])
+    async def test_a_wrong_typed_timestamp_degrades_to_none(self, monkeypatch, value):
+        _stub(monkeypatch, {**_SUMMARY_PAYLOAD, "timestamp": value})
+
+        assert (await wikipedia.get_summary("X"))["timestamp"] is None
 
 
 class TestTitleAddressesARecord:
