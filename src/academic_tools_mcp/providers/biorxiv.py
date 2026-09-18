@@ -375,11 +375,22 @@ async def get_publication(doi: str, server: str, *, force_refresh: bool = False)
     )
 
 
+# medRxiv ids are 8 digits, bioRxiv's 6 (900 sampled DOIs, 2019-2025). Orders the
+# requests only; a miss still needs both servers.
+_MEDRXIV_ID_RE = re.compile(r"(?:^|\.)\d{8}$")
+
+
+def _servers_for(bare: str) -> tuple[str, str]:
+    """The two servers in the order to ask them: the likelier one first."""
+    suffix = bare.removeprefix(DOI_PREFIX)
+    return ("medrxiv", "biorxiv") if _MEDRXIV_ID_RE.search(suffix) else ("biorxiv", "medrxiv")
+
+
 async def _get_details(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """The ``/details`` record for a bioRxiv/medRxiv DOI, using cache when available.
 
-    Tries bioRxiv, falling back to medRxiv unless bioRxiv answered with a non-empty
-    well-formed collection. Concurrent callers for one DOI share a fetch.
+    Asks the likelier server first, then the other unless the first returned a
+    non-empty well-formed collection. Concurrent callers share a fetch.
     """
     bare = _normalize_doi(doi)
     canonical = bare.lower()
@@ -388,25 +399,27 @@ async def _get_details(doi: str, *, force_refresh: bool = False) -> dict[str, An
     async def _fetch() -> dict[str, Any]:
         # Quoted so a reserved character in the DOI can't split the path.
         path_doi = quote(bare, safe="/")
-        biorxiv_url = f"{_BASE_URL}/details/biorxiv/{path_doi}/na/json"
+        first, second = (
+            f"{_BASE_URL}/details/{server}/{path_doi}/na/json" for server in _servers_for(bare)
+        )
 
         # The DOI is a *middle* segment, so an empty one needs catching too: both
         # shorten the path to a live route. Uncached — no request was spent.
-        if "" in bare.split("/") or not http.addresses_a_record(biorxiv_url):
+        if "" in bare.split("/") or not http.addresses_a_record(first):
             return http.not_found(not_found_error)
 
         try:
-            response = await _throttled_get(biorxiv_url)
+            response = await _throttled_get(first)
             response.raise_for_status()
             collection = _collection_of(response.json())
 
             if not collection:
                 # The details API answers an unknown DOI with 200 and an empty
-                # collection, never a 404, so the medRxiv fallback always gets a chance.
-                # A wrong-shape first response falls through here too: medRxiv may still
-                # answer cleanly. (A body that doesn't parse at all never reaches this
-                # branch — it raises at `.json()`.)
-                response = await _throttled_get(f"{_BASE_URL}/details/medrxiv/{path_doi}/na/json")
+                # collection, never a 404, so the other server always gets a chance.
+                # A wrong-shape first response falls through here too: the other may
+                # still answer cleanly. (A body that doesn't parse at all never reaches
+                # this branch — it raises at `.json()`.)
+                response = await _throttled_get(second)
                 response.raise_for_status()
                 fallback = _collection_of(response.json())
 
