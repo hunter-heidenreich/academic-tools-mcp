@@ -13,6 +13,8 @@ Images are dropped and captions kept, as for converter output.
 import re
 from html.parser import HTMLParser
 
+from .blocks import escape_headings, pipe_table, span
+
 # HTML elements that never take an end tag.
 _VOID = frozenset(
     {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "wbr"}
@@ -60,12 +62,6 @@ _TITLE_LEVELS = {
 _DEEPEST_LEVEL = 4
 
 _WHITESPACE_RE = re.compile(r"\s+")
-
-# A body line starting with ``#`` (a code comment) would parse as a heading.
-_LEADING_HASH_RE = re.compile(r"^#", re.MULTILINE)
-
-# Caps a malformed span so one cell can't inflate the table.
-_MAX_SPAN = 100
 
 
 class _Node:
@@ -169,50 +165,20 @@ def _equation(node: _Node) -> str:
     return "\n".join(rows)
 
 
-def _span(cell: _Node, attr: str) -> int:
-    value = cell.attrs.get(attr, "1")
-    return min(int(value), _MAX_SPAN) if value.isdecimal() and int(value) > 1 else 1
-
-
 def _table(node: _Node) -> str:
-    """A tabular as a pipe table, the first row taken as the header.
-
-    Spanned columns and rows are blank, keeping every cell under its header.
-    """
-    rows = []
-    # Column -> rows a rowspan above still covers.
-    covered: dict[int, int] = {}
-
-    def skip_covered(cells: list[str]) -> None:
-        while covered.get(len(cells), 0) > 0:
-            covered[len(cells)] -= 1
-            cells.append("")
-
-    for row in _descendants(node, "tr"):
-        cells: list[str] = []
-        for cell in row.children:
-            if not (isinstance(cell, _Node) and cell.tag in ("td", "th")):
-                continue
-            skip_covered(cells)
-            start = len(cells)
-            colspan, rowspan = _span(cell, "colspan"), _span(cell, "rowspan")
-            cells.append(_collapse(_inline(cell)).replace("|", "\\|"))
-            cells.extend([""] * (colspan - 1))
-            if rowspan > 1:
-                covered.update(dict.fromkeys(range(start, start + colspan), rowspan - 1))
-        # Covered columns past this row's last cell.
-        while any(n > 0 and col >= len(cells) for col, n in covered.items()):
-            if covered.get(len(cells), 0) > 0:
-                covered[len(cells)] -= 1
-            cells.append("")
-        if any(cells):
-            rows.append(cells)
-    if not rows:
-        return ""
-    width = max(len(r) for r in rows)
-    lines = ["| " + " | ".join(r + [""] * (width - len(r))) + " |" for r in rows]
-    lines.insert(1, "|" + " --- |" * width)
-    return "\n".join(lines)
+    """A tabular as a pipe table (``blocks.pipe_table``)."""
+    return pipe_table(
+        [
+            (
+                _collapse(_inline(cell)),
+                span(cell.attrs.get("colspan")),
+                span(cell.attrs.get("rowspan")),
+            )
+            for cell in row.children
+            if isinstance(cell, _Node) and cell.tag in ("td", "th")
+        ]
+        for row in _descendants(node, "tr")
+    )
 
 
 def _descendants(node: _Node, tag: str) -> list[_Node]:
@@ -236,12 +202,12 @@ class _Renderer:
         text = _collapse("".join(self._inline))
         self._inline = []
         if text:
-            self.blocks.append(_LEADING_HASH_RE.sub(r"\\#", text))
+            self.blocks.append(escape_headings(text))
 
     def block(self, text: str) -> None:
         self.flush()
         if text.strip():
-            self.blocks.append(_LEADING_HASH_RE.sub(r"\\#", text.strip()))
+            self.blocks.append(escape_headings(text.strip()))
 
     def heading(self, level: int, text: str) -> None:
         self.flush()

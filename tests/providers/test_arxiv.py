@@ -2094,7 +2094,7 @@ class TestGetHtml:
 
         result = await arxiv.get_html("arXiv:1706.03762v7")
 
-        assert result == {"html": _RENDERING}
+        assert result == {"markup": _RENDERING}
         assert seen == [{"url": "https://arxiv.org/html/1706.03762v7"}]
 
     @pytest.mark.asyncio
@@ -2121,7 +2121,7 @@ class TestGetHtml:
         await arxiv.get_html("2401.00005")
         result = await arxiv.get_html("2401.00005", force_refresh=True)
 
-        assert result == {"html": _RENDERING}
+        assert result == {"markup": _RENDERING}
         assert len(seen) == 2
 
     @pytest.mark.asyncio

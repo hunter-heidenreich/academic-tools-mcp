@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from academic_tools_mcp import manual, papers, server
-from academic_tools_mcp.providers import acl, arxiv, openalex
+from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 from academic_tools_mcp.store import cache, stems
 
 
@@ -827,7 +827,7 @@ def _no_pdf_conversion(monkeypatch):
 class TestConvertPaperHtmlFirst:
     @pytest.mark.asyncio
     async def test_an_arxiv_paper_converts_from_html_with_no_pdf(self, isolated_cache, monkeypatch):
-        calls = _serve_html(monkeypatch, {"html": _RENDERING})
+        calls = _serve_html(monkeypatch, {"markup": _RENDERING})
         _no_pdf_conversion(monkeypatch)
 
         result = await server.convert_paper("arXiv:2301.00001")
@@ -911,10 +911,12 @@ class TestConvertPaperHtmlFirst:
         assert "download_pdf" in result["suggestion"]
 
     @pytest.mark.asyncio
-    async def test_non_arxiv_papers_never_ask_for_html(self, isolated_cache, monkeypatch):
-        calls = _serve_html(monkeypatch, {"html": _RENDERING})
+    async def test_papers_without_native_markup_never_ask_for_html(
+        self, isolated_cache, monkeypatch
+    ):
+        calls = _serve_html(monkeypatch, {"markup": _RENDERING})
 
-        await server.convert_paper("10.1101/2024.01.01.123")
+        await server.convert_paper("10.1234/generic.doi")
 
         assert calls == []
 
@@ -922,7 +924,7 @@ class TestConvertPaperHtmlFirst:
     async def test_html_markdown_survives_a_download_but_not_a_forced_one(
         self, isolated_cache, monkeypatch
     ):
-        _serve_html(monkeypatch, {"html": _RENDERING})
+        _serve_html(monkeypatch, {"markup": _RENDERING})
         await server.convert_paper("2301.00001")
         target = manual.resolve_target("2301.00001")
 
@@ -938,3 +940,97 @@ class TestConvertPaperHtmlFirst:
         dropped = await server.download_pdf("2301.00001", force_refresh=True)
         assert dropped["cascaded_invalidated"] == ["markdown", "sections"]
         assert not stems.markdown_path("arxiv", "2301.00001").exists()
+
+
+_JATS = (
+    "<article><front><article-meta><title-group><article-title>T</article-title>"
+    "</title-group></article-meta></front><body><sec><title>Introduction</title>"
+    "<p>Body.</p></sec></body></article>"
+)
+_BIORXIV_DOI = "10.1101/2024.01.01.573838"
+
+
+def _serve_jats(monkeypatch, result):
+    calls = []
+
+    async def fake_get_jats(doi, *, force_refresh=False):
+        calls.append((doi, force_refresh))
+        return result
+
+    monkeypatch.setattr(biorxiv, "get_jats", fake_get_jats)
+    return calls
+
+
+class TestConvertPaperJatsFirst:
+    @pytest.mark.asyncio
+    async def test_a_biorxiv_paper_converts_from_jats_with_no_pdf(
+        self, isolated_cache, monkeypatch
+    ):
+        calls = _serve_jats(monkeypatch, {"markup": _JATS})
+        _no_pdf_conversion(monkeypatch)
+
+        result = await server.convert_paper(f"doi:{_BIORXIV_DOI}")
+
+        assert result["conversion_mode"] == "jats"
+        assert [s["title"] for s in result["sections"]] == ["Introduction"]
+        assert "markdown_path" not in result
+        assert calls == [(f"doi:{_BIORXIV_DOI}", False)]
+
+    @pytest.mark.asyncio
+    async def test_a_transient_jats_failure_without_a_pdf_names_biorxiv(
+        self, isolated_cache, monkeypatch
+    ):
+        _serve_jats(monkeypatch, {"error": "bioRxiv HTTP 503", "retryable": True})
+        _no_pdf_conversion(monkeypatch)
+
+        result = await server.convert_paper(_BIORXIV_DOI)
+
+        assert result["retryable"] is True
+        assert result["conversion_mode"] == "jats"
+        assert result["suggestion"].startswith(
+            "bioRxiv's JATS full text is temporarily unavailable"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_jats_falls_through_to_the_pdf(self, isolated_cache, monkeypatch):
+        _serve_jats(monkeypatch, {"error": "No JATS full text", "not_found": True})
+        target = manual.resolve_target(_BIORXIV_DOI)
+        target["pdf_path"].parent.mkdir(parents=True, exist_ok=True)
+        target["pdf_path"].write_bytes(b"%PDF-1.4 stub")
+        seen = []
+
+        async def fake_convert(pdf, ns, canonical, **kwargs):
+            seen.append(ns)
+            return {
+                "sections": [],
+                "sections_detected": False,
+                "cached": False,
+                "conversion_mode": "full",
+            }
+
+        monkeypatch.setattr(papers, "convert_pdf", fake_convert)
+
+        result = await server.convert_paper(_BIORXIV_DOI)
+
+        assert result["conversion_mode"] == "full"
+        assert seen == ["biorxiv"]
+
+    @pytest.mark.asyncio
+    async def test_jats_markdown_survives_a_download_but_not_a_forced_one(
+        self, isolated_cache, monkeypatch
+    ):
+        _serve_jats(monkeypatch, {"markup": _JATS})
+        await server.convert_paper(_BIORXIV_DOI)
+        target = manual.resolve_target(_BIORXIV_DOI)
+
+        async def fresh_download(identifier, *, force_refresh=False):
+            return {"path": str(target["pdf_path"]), "size_bytes": 9, "cached": False}
+
+        monkeypatch.setattr(biorxiv, "download_pdf", fresh_download)
+
+        kept = await server.download_pdf(_BIORXIV_DOI)
+        assert "cascaded_invalidated" not in kept
+        assert stems.markdown_path("biorxiv", target["canonical"]).exists()
+
+        dropped = await server.download_pdf(_BIORXIV_DOI, force_refresh=True)
+        assert dropped["cascaded_invalidated"] == ["markdown", "sections"]

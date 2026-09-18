@@ -4,7 +4,7 @@ import re
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -444,6 +444,68 @@ async def _get_details(doi: str, *, force_refresh: bool = False) -> dict[str, An
         fetch=_fetch,
         force_refresh=force_refresh,
     )
+
+
+# The only hosts a ``jatsxml`` URL is fetched from.
+_JATS_HOSTS = frozenset({"www.biorxiv.org", "www.medrxiv.org"})
+
+# In every JATS article; a 200 without it is a challenge or error page.
+_JATS_MARKER = "<article"
+
+
+async def get_jats(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """bioRxiv's JATS XML full text, from the record's ``jatsxml``, as ``{"markup": text}``.
+
+    A 404 is negative-cached on the short TTL; the markdown made from it is the only
+    positive cache.
+    """
+    canonical = canonical_key(doi)
+    if force_refresh:
+        cache.invalidate(NAMESPACE, "jats", canonical)
+    elif (neg := cache.get_negative(NAMESPACE, "jats", canonical)) is not None:
+        return neg
+
+    async def _fetch() -> dict[str, Any]:
+        # Threaded through: a stale record's URL names the revision being replaced.
+        paper = await get_paper(doi, force_refresh=force_refresh)
+        if "error" in paper:
+            return paper
+
+        url = paper.get("jatsxml")
+        if not isinstance(url, str) or (
+            (parts := urlsplit(url)).scheme != "https" or parts.hostname not in _JATS_HOSTS
+        ):
+            err = http.not_found(f"No JATS full text for DOI: {doi}")
+            cache.put_negative(NAMESPACE, "jats", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
+            return err
+
+        try:
+            # In the try: the gap admits through the throttle, so it can refuse
+            # with an ``HTTPX_ERRORS`` member.
+            await _content_gap.wait()
+            response = await _throttled_get(url, timeout=_PDF_TIMEOUT_SECONDS)
+            if response.status_code == 404:
+                err = http.not_found(f"No JATS full text for DOI: {doi}")
+                cache.put_negative(NAMESPACE, "jats", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
+                return err
+            response.raise_for_status()
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
+
+        max_bytes = streaming.resolve_max_pdf_bytes()
+        if max_bytes is not None and len(response.content) > max_bytes:
+            return {
+                "error": f"{LABEL} JATS XML exceeds MAX_PDF_BYTES ({max_bytes} bytes).",
+                "retryable": False,
+                "max_bytes": max_bytes,
+            }
+        text = response.text
+        if _JATS_MARKER not in text:
+            return http.parse_error_dict(LABEL, detail="was not a JATS article")
+        return {"markup": text}
+
+    # Tuple-keyed to stay distinct from get_paper's slot, which _fetch awaits.
+    return await _single_flight.do(("jats", canonical), _fetch)
 
 
 def pdf_path(doi: str) -> Path:

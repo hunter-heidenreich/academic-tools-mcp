@@ -122,9 +122,9 @@ consistent); a *failed* refresh does not either, keeping the preserved PDF and
 its markdown consistent.
 
 **The exceptions are markdown the PDF did not produce** — `pipeline._NOT_FROM_PDF`,
-`"imported"` and `"html"`: no converter can reproduce an operator's own markdown,
-and arXiv's rendering does not change with the PDF bytes, so an implicit cascade
-must not destroy either. An explicit `force_refresh=True` still replaces them —
+`"imported"`, `"html"` and `"jats"`: no converter can reproduce an operator's own
+markdown, and provider markup does not change with the PDF bytes, so an implicit
+cascade must not destroy them. An explicit `force_refresh=True` still replaces them —
 that is what the flag means.
 
 `sections_note` is what stops `sections_detected: false` being read as "this
@@ -143,12 +143,13 @@ either guard.
 
 ## Conversion modes
 
-**`CONVERT_MODE` stays `Literal["full", "fast"]`.** `"imported"` and `"html"` are
-provenance you can *receive* — a pre-converted file handed to `import_paper`, or
-arXiv's rendering, which `convert_paper` tries before either mode — not backends
-you can request. **The HTML attempt runs before the PDF gate**, so an arXiv paper
-converts with no PDF; only a definitive "no rendering" (`convert_html` returning
-`None`) falls through, and a transient failure falls through only when a PDF is
+**`CONVERT_MODE` stays `Literal["full", "fast"]`.** `"imported"`, `"html"` and
+`"jats"` are provenance you can *receive* — a pre-converted file handed to
+`import_paper`, or a provider's own markup (arXiv's HTML, bioRxiv's JATS), which
+`convert_paper` tries before either mode — not backends you can request. **The
+markup attempt runs before the PDF gate**, so an arXiv or bioRxiv paper converts
+with no PDF; only a definitive "no rendering" (`convert_markup` returning `None`)
+falls through, and a transient failure falls through only when a PDF is
 there to convert. `null` appears only for papers converted before the field existed.
 
 **Invariant: every `convert_pdf` error carries `retryable` and `conversion_mode`,

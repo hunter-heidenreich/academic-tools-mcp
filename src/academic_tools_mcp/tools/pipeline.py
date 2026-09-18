@@ -1,6 +1,7 @@
 """PDF pipeline tools: download / convert / sections / section / import."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -31,7 +32,31 @@ from ..providers import acl, arxiv, biorxiv
 _INTERNAL_PATH_KEYS = ("path", "markdown_path")
 
 # Conversion modes whose markdown a new PDF did not produce, so a download keeps it.
-_NOT_FROM_PDF = frozenset({"imported", "html"})
+_NOT_FROM_PDF = frozenset({"imported", "html", "jats"})
+
+
+def _markup_source(
+    namespace: str, identifier: str, *, force_refresh: bool
+) -> tuple[Callable[[], Awaitable[dict[str, Any]]], papers.MarkupMode, str] | None:
+    """The provider markup to try before the PDF — fetch, provenance, name — or ``None``.
+
+    Getters are looked up at call time, so a patched provider applies.
+    """
+    if namespace == arxiv.NAMESPACE:
+        return (
+            lambda: arxiv.get_html(identifier, force_refresh=force_refresh),
+            "html",
+            "arXiv's HTML rendering",
+        )
+    if namespace == biorxiv.NAMESPACE:
+        return (
+            lambda: biorxiv.get_jats(identifier, force_refresh=force_refresh),
+            "jats",
+            f"{biorxiv.LABEL}'s JATS full text",
+        )
+    return None
+
+
 _MARKDOWN_EXTS = {".md", ".markdown"}
 
 # Single-homed: three failure paths offer the same escape hatch.
@@ -56,7 +81,7 @@ async def _download_pdf_by_provider(
     Fresh bytes (``cached is False``) invalidate the markdown and section index they
     replaced, so
     the next ``convert_paper`` re-runs. Markdown that did not come from those
-    bytes — ``"imported"``, or ``"html"`` — is exempt unless ``force_refresh``.
+    bytes — ``"imported"``, ``"html"`` or ``"jats"`` — is exempt unless ``force_refresh``.
 
     A PMID is traded for its DOI before routing, so storage and metadata agree
     on which paper it names.
@@ -185,24 +210,24 @@ async def convert_paper(
     modes write the same cache slot, so ``mode="full"`` with ``force_refresh``
     upgrades a fast conversion.
 
-    **arXiv papers try arXiv's own HTML rendering first**, in either mode: real
-    headings, equations as LaTeX and tables, in seconds, with no PDF needed.
-    Papers without one — non-LaTeX source or a failed rendering — fall through to
-    the PDF path, which then needs download_pdf.
+    **arXiv and bioRxiv/medRxiv papers try their provider's markup first** (arXiv's
+    HTML, bioRxiv's JATS), in either mode: real headings, LaTeX equations and captions
+    in seconds, with no PDF. Papers without it fall through to the PDF path, which
+    needs download_pdf.
 
     Returns ``{sections, sections_detected, cached, conversion_mode}``, each
     section entry ``{index, title, h3s, approx_tokens}``. ``cached`` is true
     whenever the expensive conversion was skipped, re-parses included.
     ``conversion_mode`` is provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's
-    rendering), ``"imported"`` (a file handed to import_paper), or null (converted
-    before the field existed).
+    rendering), ``"jats"`` (bioRxiv's JATS XML), ``"imported"`` (a file handed to
+    import_paper), or null (converted before the field existed).
 
     Errors: ``{error, retryable, conversion_mode, pdf_size_mb?, suggestion}``,
     where ``conversion_mode`` names the mode that *failed*.
       - No usable PDF cached → ``{error, suggestion}`` only, pointing at
         download_pdf / import_paper; nothing was tried, so no ``retryable``.
-      - arXiv's HTML failed transiently and no PDF is cached → that error, with
-        ``retryable: True`` and ``conversion_mode: "html"``.
+      - The provider's markup failed transiently and no PDF is cached → that
+        error, ``retryable: True``, ``conversion_mode`` ``"html"`` / ``"jats"``.
       - Another conversion in flight (full mode only) → ``{busy: True,
         retryable: True, in_progress: {...}}``; retry, or use ``mode="fast"``.
       - Timeout → ``{timed_out: True, timeout_seconds}``; the suggestion points
@@ -216,24 +241,28 @@ async def convert_paper(
     target = manual.resolve_target(identifier)
     pdf = target["pdf_path"]
 
-    html_error: dict[str, Any] | None = None
-    if target["namespace"] == arxiv.NAMESPACE:
-        converted = await papers.convert_html(
+    markup_error: dict[str, Any] | None = None
+    markup_label = ""
+    source = _markup_source(target["namespace"], identifier, force_refresh=force_refresh)
+    if source is not None:
+        fetch_markup, markup_mode, markup_label = source
+        converted = await papers.convert_markup(
             target["namespace"],
             target["canonical"],
-            lambda: arxiv.get_html(identifier, force_refresh=force_refresh),
+            fetch_markup,
+            mode=markup_mode,
             force_refresh=force_refresh,
         )
         if converted is not None and "error" not in converted:
             return _strip_internal_paths(converted)
-        html_error = converted
+        markup_error = converted
 
     # Not merely absent: a 0-byte or non-%PDF- leftover is a miss too.
     if not streaming.is_usable_pdf(pdf):
-        if html_error is not None:
+        if markup_error is not None:
             return enrich_error(
-                html_error,
-                "arXiv's HTML rendering is temporarily unavailable. Retry, or run "
+                markup_error,
+                f"{markup_label} is temporarily unavailable. Retry, or run "
                 "download_pdf and then convert_paper to convert the PDF instead.",
             )
         return pdf_not_cached_error(identifier)

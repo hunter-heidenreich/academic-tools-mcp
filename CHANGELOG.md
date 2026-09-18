@@ -17,6 +17,11 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`convert_paper` reads bioRxiv/medRxiv papers from bioRxiv's JATS XML**:
+  section-structured markdown in seconds with no PDF, recorded as
+  `conversion_mode: "jats"` and kept across a PDF download. Papers without JATS
+  fall back to the PDF. ([#138])
+
 - **bioRxiv/medRxiv papers report funders and revision history.**
   `get_paper_metadata` adds `funding`, and `get_paper_versions` (parameter now
   `identifier`) accepts bioRxiv/medRxiv DOIs at no extra request. ([#137])
@@ -1901,3 +1906,4 @@ say which.
 [#135]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/135
 [#136]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/136
 [#137]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/137
+[#138]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/138
