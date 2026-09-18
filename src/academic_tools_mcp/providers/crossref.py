@@ -231,6 +231,91 @@ def abstract_text(work: dict[str, Any]) -> str | None:
     return text or None
 
 
+# The update types that make a paper uncitable, as opposed to amended. Crossmark's
+# vocabulary spells that class four ways and a withdrawn or removed paper is no more
+# citable than a retracted one, so keying on `retraction` alone reads a withdrawal as
+# a sound paper — the one answer this data exists to prevent. The amending types
+# (correction, corrigendum, erratum, expression_of_concern, clarification, addendum,
+# new_edition, new_version) are reported in `updates` and left for the caller to weigh.
+RETRACTION_UPDATE_TYPES = frozenset({"retraction", "partial_retraction", "withdrawal", "removal"})
+
+
+def retracts(update_type: str) -> bool:
+    """Whether a notice of this ``type`` withdraws the work rather than amending it.
+
+    Matched case- and separator-insensitively: the vocabulary is underscored, but
+    deposit is by hand and a hyphenated ``partial-retraction`` is one typo away.
+    """
+    return update_type.strip().lower().replace("-", "_") in RETRACTION_UPDATE_TYPES
+
+
+def _dicts(value: Any) -> list[dict[str, Any]]:
+    """The dict elements of ``value``, or ``[]`` when it isn't a list.
+
+    ``app.dict_list`` in miniature: a provider sits below ``app`` and cannot reach it.
+    """
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _str_or_none(value: Any) -> str | None:
+    """``value`` when it is a string, else ``None`` — the shape these fields promise."""
+    return value if isinstance(value, str) else None
+
+
+def updates(work: dict[str, Any]) -> list[dict[str, Any]]:
+    """Retraction and correction notices naming this work, from ``updated-by``.
+
+    Crossref documents only the opposite direction — ``update-to``, on the notice — but
+    deposits the back-reference here too, so this costs nothing beyond the ``get_work``
+    already made. ``source`` separates a publisher's own deposit from the Retraction
+    Watch database; neither corrects the other, so both are kept. ``updated`` stays the
+    raw ``{"date-parts": …}``, the year being ``app.crossref_date``'s, a layer up.
+    """
+    found = []
+    for entry in _dicts(work.get("updated-by")):
+        doi = entry.get("DOI")
+        update_type = entry.get("type")
+        # Both are required upstream, and a notice missing either is unciteable.
+        if not isinstance(doi, str) or not doi or not isinstance(update_type, str):
+            continue
+        updated = entry.get("updated")
+        found.append(
+            {
+                "doi": canonical_doi(doi),
+                "type": update_type,
+                "label": _str_or_none(entry.get("label")),
+                "source": _str_or_none(entry.get("source")),
+                "updated": updated if isinstance(updated, dict) else {},
+            }
+        )
+    return found
+
+
+def relations(work: dict[str, Any]) -> dict[str, list[str]]:
+    """Related DOIs by relation name (``is-preprint-of``, ``has-preprint``, …).
+
+    ``relation`` is a *hashmap* of name to a list of ``{id-type, id, asserted-by}``, not
+    the flat list its neighbours carry — read like ``author``, every relation is lost.
+    Non-DOI ids are dropped, every consumer downstream taking a DOI. Deposit is thin, so
+    an empty result is silence, not a denial that a preprint exists.
+    """
+    raw = work.get("relation")
+    if not isinstance(raw, dict):
+        return {}
+    found: dict[str, list[str]] = {}
+    for name, entries in raw.items():
+        if not isinstance(name, str):
+            continue
+        dois = [
+            canonical_doi(rel_id)
+            for rel in _dicts(entries)
+            if rel.get("id-type") == "doi" and isinstance(rel_id := rel.get("id"), str) and rel_id
+        ]
+        if dois:
+            found[name] = dois
+    return found
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -304,6 +389,82 @@ async def search_works(
     return {"items": items, "total_results": message.get("total-results")}
 
 
+async def get_agency(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """The registration agency for ``doi`` — which registrar minted it, not who hosts it.
+
+    ``{"id": "crossref", "label": "Crossref"}`` for a DOI this provider can answer for;
+    ``datacite`` covers most datasets, software and Zenodo records, which nothing here
+    indexes. Cached under its own entity: the answer changes only on re-registration.
+    """
+    canonical = canonical_doi(doi)
+
+    async def _fetch() -> dict[str, Any]:
+        bare_doi = doinorm.normalize(doi)
+        url = f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}/agency"
+
+        # `/agency` is this path's last segment, so the shortening `addresses_a_record`
+        # tests for has to be looked for in the DOI instead.
+        if not http.addresses_a_record(f"{CROSSREF_BASE_URL}/works/{quote(bare_doi, safe='/')}"):
+            return http.not_found(f"No agency found on Crossref for DOI: {doi}")
+
+        try:
+            response = await _throttled_get(url, params=_build_params())
+
+            if response.status_code == 404:
+                err = http.not_found(f"No agency found on Crossref for DOI: {doi}")
+                cache.put_negative(NAMESPACE, "agency", canonical, err)
+                return err
+
+            response.raise_for_status()
+            data = response.json()
+        except _PARSE_ERRORS:
+            return _parse_error_dict()
+        except http.HTTPX_ERRORS as e:
+            return http.error_dict(LABEL, e)
+
+        message = _message_of(data)
+        agency = message.get("agency") if message is not None else None
+        if not isinstance(agency, dict):
+            return _parse_error_dict()
+        cache.put(NAMESPACE, "agency", canonical, agency)
+        return agency
+
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="agency",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        # Explicit: `get_work` calls this from inside its own slot under the bare DOI,
+        # and a shared key would await the future it is itself leading.
+        sf_key=("agency", canonical),
+    )
+
+
+async def _agency_label(doi: str) -> str | None:
+    """The registrar's display name for ``doi``, or ``None`` if the lookup failed.
+
+    Best-effort by contract: this only ever enriches a message for a DOI Crossref has
+    already refused, so a second failure must degrade to the plain refusal rather than
+    replace a definitive answer with a transient one.
+    """
+    agency = await get_agency(doi)
+    if "error" in agency:
+        return None
+    label = _str_or_none(agency.get("label")) or _str_or_none(agency.get("id"))
+    return None if label and label.strip().lower() == "crossref" else label
+
+
+def _not_found_message(doi: str, agency_label: str | None) -> str:
+    """The refusal for a DOI Crossref has no work for, naming the registrar when known."""
+    base = f"No work found on Crossref for DOI: {doi}"
+    if agency_label is None:
+        return base
+    return f"{base}. It is registered with {agency_label}, which this server does not index"
+
+
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a work by DOI from Crossref, using cache when available.
 
@@ -332,7 +493,9 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
 
             if response.status_code == 404:
                 # Definitive, hence both the negative entry and the flag tools/graph.py forwards.
-                err = http.not_found(not_found_error)
+                # The agency turns "we don't have it" into "nobody here ever will" for a
+                # DataCite DOI, and rides the same entry, so it is paid once per DOI.
+                err = http.not_found(_not_found_message(doi, await _agency_label(doi)))
                 cache.put_negative(NAMESPACE, "works", canonical, err)
                 return err
 

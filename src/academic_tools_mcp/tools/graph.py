@@ -12,11 +12,12 @@ from ..app import (
     enrich_error,
     mcp,
     page_bounds,
-    resolve_pmid_identifier,
+    resolve_doi_identifier,
 )
-from ..net import http
-from ..providers import acl, crossref, openalex, opencitations
-from ..util import doinorm
+from ..providers import crossref, openalex, opencitations
+
+# Every graph call goes through one DOI resolver; this names the tools in its refusal.
+_SUBJECT = "Reference and citation graphs"
 
 # Auto-selection bias: OpenCitations rows are bare DOI links where Crossref's
 # carry metadata, so a row-or-two lead must not flip `auto` to the poorer source.
@@ -34,74 +35,6 @@ _FORWARDED_ERROR_KEYS = (
     "max_concurrency",
     "not_found",
 )
-
-
-def _reject_non_doi(doi: str) -> dict[str, Any] | None:
-    """Error dict when ``doi`` is not DOI-shaped, else ``None``.
-
-    Both graph providers are DOI-only, so without this an arXiv ID buys a 404
-    round-trip and negative-caches it under an identifier that could never have
-    resolved. ``doinorm.looks_like_doi`` is the metadata dispatcher's predicate too.
-    """
-    if doinorm.looks_like_doi(doi):
-        return None
-    return {
-        **http.not_found(f"Not a DOI: {doi!r}. Reference and citation graphs are DOI-only."),
-        "suggestion": (
-            "Pass a DOI (e.g. 10.1038/nature12373), in bare, doi: or "
-            "https://doi.org/ form, or a PMID. For an arXiv paper, call "
-            "get_paper_metadata first and use the doi field, or "
-            "search_crossref_by_title to find one."
-        ),
-    }
-
-
-async def _resolve_doi(doi: str, *, force_refresh: bool) -> tuple[str, dict[str, Any] | None]:
-    """Canonical DOI for a graph call, or the error that ends it.
-
-    The one entry every graph tool takes, so the PMID trade and the DOI-only
-    rejection keep one order across all four. Resolving first is what makes the
-    ``pmid`` these tools hand out on every OpenCitations row one they also take.
-    An Anthology ID trades for the DOI on its record.
-    """
-    doi, pmid_error = await resolve_pmid_identifier(doi, force_refresh=force_refresh)
-    if pmid_error is not None:
-        return doi, pmid_error
-    if not doinorm.looks_like_doi(doi) and acl.is_anthology_id(doi):
-        doi, acl_error = await _anthology_doi(doi, force_refresh=force_refresh)
-        if acl_error is not None:
-            return doi, acl_error
-    if (bad := _reject_non_doi(doi)) is not None:
-        return doi, bad
-    return doinorm.canonical(doi), None
-
-
-async def _anthology_doi(
-    identifier: str, *, force_refresh: bool
-) -> tuple[str, dict[str, Any] | None]:
-    """An Anthology ID's DOI, or the error that ends the call (forwarded whole)."""
-    record = await acl.get_paper(identifier, force_refresh=force_refresh)
-    if "error" in record:
-        hint = (
-            "Check the Anthology ID on aclanthology.org, or pass the paper's DOI directly."
-            if record.get("not_found")
-            else "Retry, or pass the paper's DOI directly if you have it."
-        )
-        return identifier, enrich_error(record, hint)
-    doi = record.get("doi")
-    if not isinstance(doi, str) or not doi:
-        anthology_id = acl.canonical_key(identifier)
-        return anthology_id, {
-            **http.not_found(
-                f"ACL Anthology paper {anthology_id} has no DOI. "
-                "Reference and citation graphs are DOI-only."
-            ),
-            "suggestion": (
-                "Read the paper's own reference list instead: "
-                "download_pdf → convert_paper → get_paper_sections."
-            ),
-        }
-    return doi, None
 
 
 def _source_error(result: dict[str, Any]) -> dict[str, Any]:
@@ -176,7 +109,7 @@ async def get_paper_references_count(
     locally, without a request, as ``{error, not_found: true, suggestion}`` — the
     graph tools are DOI-only.
     """
-    doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
+    doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
         return bad
 
@@ -307,7 +240,7 @@ async def get_paper_references(
     ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion``, and the
     top-level ``retryable`` is the disjunction of the two.
     """
-    doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
+    doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
         return bad
 
@@ -405,7 +338,7 @@ async def get_paper_citations_count(
     A PMID resolves to its DOI first; any other non-DOI identifier is rejected
     locally, without a request, as ``{error, not_found: true, suggestion}``.
     """
-    doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
+    doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
         return bad
 
@@ -459,7 +392,7 @@ async def get_paper_citations(
     ``not_found: true`` on a definitive miss, including the local non-DOI
     rejection, which costs no request.
     """
-    doi, bad = await _resolve_doi(doi, force_refresh=force_refresh)
+    doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
         return bad
 

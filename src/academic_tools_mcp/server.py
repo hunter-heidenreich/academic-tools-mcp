@@ -39,6 +39,7 @@ from .tools.paper import (
     get_paper_authors,
     get_paper_bibtex,
     get_paper_metadata,
+    get_paper_updates,
     get_paper_versions,
     get_papers_metadata,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "get_paper_references_count",
     "get_paper_section",
     "get_paper_sections",
+    "get_paper_updates",
     "get_paper_versions",
     "get_papers_metadata",
     "get_pwc_task",

@@ -65,6 +65,9 @@ mcp = FastMCP(
         "unless "
         "force_refresh=True. find_in_paper returns section + char_offset per "
         "hit, to chain into get_paper_section.\n\n"
+        "get_paper_updates checks a DOI for retraction and correction notices "
+        "before you cite it; a false there means Crossref lists none, not that "
+        "the paper stands.\n\n"
         "References/citations: call the `_count` tool first, then paginate. "
         "Search tools return slim triage hits — chain to get_paper_metadata. "
         "search_openalex is the broad topic search and its hits are free to "
@@ -258,6 +261,76 @@ async def resolve_pmid_identifier(
         }
 
     await _repair_import(manual.refile_pmid_stems, identifier, doi)
+    return doi, None
+
+
+def reject_non_doi(doi: str, *, subject: str) -> dict[str, Any] | None:
+    """Error dict when ``doi`` is not DOI-shaped, else ``None``.
+
+    Without this an arXiv ID buys a 404 round-trip and negative-caches it under an
+    identifier that could never have resolved. ``subject`` names the refusing tool,
+    which are DOI-only for different reasons. ``doinorm.looks_like_doi`` is the
+    metadata dispatcher's predicate too.
+    """
+    if doinorm.looks_like_doi(doi):
+        return None
+    return {
+        **http.not_found(f"Not a DOI: {doi!r}. {subject} are DOI-only."),
+        "suggestion": (
+            "Pass a DOI (e.g. 10.1038/nature12373), in bare, doi: or "
+            "https://doi.org/ form, or a PMID. For an arXiv paper, call "
+            "get_paper_metadata first and use the doi field, or "
+            "search_crossref_by_title to find one."
+        ),
+    }
+
+
+async def resolve_doi_identifier(
+    doi: str, *, subject: str, force_refresh: bool = False
+) -> tuple[str, dict[str, Any] | None]:
+    """Canonical DOI for a DOI-only tool, or the error that ends the call.
+
+    The one entry every such tool takes, so the PMID trade and the rejection keep one
+    order across all of them — resolving first is what makes the ``pmid`` the graph
+    tools hand out on every OpenCitations row one they also take. An Anthology ID
+    trades for the DOI on its record.
+    """
+    doi, pmid_error = await resolve_pmid_identifier(doi, force_refresh=force_refresh)
+    if pmid_error is not None:
+        return doi, pmid_error
+    if not doinorm.looks_like_doi(doi) and acl.is_anthology_id(doi):
+        doi, acl_error = await _anthology_doi(doi, subject=subject, force_refresh=force_refresh)
+        if acl_error is not None:
+            return doi, acl_error
+    if (bad := reject_non_doi(doi, subject=subject)) is not None:
+        return doi, bad
+    return doinorm.canonical(doi), None
+
+
+async def _anthology_doi(
+    identifier: str, *, subject: str, force_refresh: bool
+) -> tuple[str, dict[str, Any] | None]:
+    """An Anthology ID's DOI, or the error that ends the call (forwarded whole)."""
+    record = await acl.get_paper(identifier, force_refresh=force_refresh)
+    if "error" in record:
+        hint = (
+            "Check the Anthology ID on aclanthology.org, or pass the paper's DOI directly."
+            if record.get("not_found")
+            else "Retry, or pass the paper's DOI directly if you have it."
+        )
+        return identifier, enrich_error(record, hint)
+    doi = record.get("doi")
+    if not isinstance(doi, str) or not doi:
+        anthology_id = acl.canonical_key(identifier)
+        return anthology_id, {
+            **http.not_found(
+                f"ACL Anthology paper {anthology_id} has no DOI. {subject} are DOI-only."
+            ),
+            "suggestion": (
+                "Read the paper's own reference list instead: "
+                "download_pdf → convert_paper → get_paper_sections."
+            ),
+        }
     return doi, None
 
 

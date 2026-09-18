@@ -205,6 +205,19 @@ reaches `_build_headers` / `_build_params` live, but `clients.get_client` bakes
 headers in at construction and ignores later kwargs. Restart, same as
 `ENABLE_DEBUG_TOOLS`.
 
+**`retracted` is the withdrawing class, not the word `retraction`.**
+`RETRACTION_UPDATE_TYPES` is the membership and `retracts()` the test; Crossmark
+spells that class several ways and all of them appear in live `updated-by` data, so
+keying on the one word reads a withdrawn paper as sound. The amending types reach
+the agent through `updates` without setting the flag. Editing the set is a judgement
+about what leaves a paper citable, not a vocabulary refresh — an unknown type must
+not set it.
+
+**A getter this module calls from inside another's fetch needs its own `sf_key`.**
+`get_work` leaves it defaulted to the bare DOI, so a second getter sharing that key
+awaits the future it is itself leading — a hang, not an error. `get_agency`, called
+from the 404 branch, is the standing instance.
+
 **The year filter is deliberately year-only.** Crossref does not document how it
 pads a partial date, and CrossRef/rest-api-doc#7 reports the fully-specified form
 dropping works whose deposited date is itself year-only — so spelling out
