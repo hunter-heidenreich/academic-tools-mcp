@@ -19,8 +19,8 @@ internet.
 
 The config scrub has a second half a fixture cannot do: `conftest` clears the
 roster and pins `ACADEMIC_TOOLS_ENV_FILE` at **module scope, above its own
-package imports**, because `server._DEBUG_TOOLS_ENABLED`, `cache.CACHE_ROOT` and
-crossref's pacing constants are captured at import.
+package imports**, because `server._DEBUG_TOOLS_ENABLED` and `cache.CACHE_ROOT` are
+captured at import.
 
 **Add a setting, add it to `_CONFIG_ENV_VARS`.** `test_conftest_guards`
 AST-scans the whole package for `config.get` / `flag` / `number` keys —

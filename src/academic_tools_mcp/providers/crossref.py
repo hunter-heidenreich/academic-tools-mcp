@@ -231,8 +231,22 @@ def abstract_text(work: dict[str, Any]) -> str | None:
     return text or None
 
 
-# The update type that makes a paper uncitable, as opposed to amended.
-RETRACTION_UPDATE_TYPE = "retraction"
+# The update types that make a paper uncitable, as opposed to amended. Crossmark's
+# vocabulary spells that class four ways and a withdrawn or removed paper is no more
+# citable than a retracted one, so keying on `retraction` alone reads a withdrawal as
+# a sound paper — the one answer this data exists to prevent. The amending types
+# (correction, corrigendum, erratum, expression_of_concern, clarification, addendum,
+# new_edition, new_version) are reported in `updates` and left for the caller to weigh.
+RETRACTION_UPDATE_TYPES = frozenset({"retraction", "partial_retraction", "withdrawal", "removal"})
+
+
+def retracts(update_type: str) -> bool:
+    """Whether a notice of this ``type`` withdraws the work rather than amending it.
+
+    Matched case- and separator-insensitively: the vocabulary is underscored, but
+    deposit is by hand and a hyphenated ``partial-retraction`` is one typo away.
+    """
+    return update_type.strip().lower().replace("-", "_") in RETRACTION_UPDATE_TYPES
 
 
 def _dicts(value: Any) -> list[dict[str, Any]]:

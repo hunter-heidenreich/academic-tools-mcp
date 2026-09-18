@@ -1058,12 +1058,18 @@ async def get_paper_updates(doi: DOI, force_refresh: FORCE_REFRESH = False) -> d
     Returns ``{doi, retracted, updates, relations}``, the echoed ``doi`` canonical
     rather than the spelling you passed. ``updates`` is
     [{doi, type, label, source, year, date}] — ``type`` is Crossref's (``retraction``,
-    ``correction``, ``expression_of_concern``), ``source`` is ``publisher`` or
-    ``retraction-watch``, and ``doi`` is the notice, which get_paper_metadata reads
-    like any other paper. ``relations`` maps Crossref's relation names to DOIs
-    (``is-preprint-of``, ``has-preprint``, ``is-version-of``).
+    ``withdrawal``, ``correction``, ``erratum``, ``expression_of_concern``, …),
+    ``source`` is ``publisher`` or ``retraction-watch``, and ``doi`` is the notice,
+    which get_paper_metadata reads like any other paper. ``relations`` maps Crossref's
+    relation names to DOIs (``is-preprint-of``, ``has-preprint``, ``is-version-of``).
 
-    **``retracted: false`` means Crossref lists no retraction, not that the paper
+    ``retracted`` covers the whole withdrawing class — ``retraction``,
+    ``partial_retraction``, ``withdrawal``, ``removal`` — since none of those leave a
+    paper citable; read ``type`` for which, and note that an amending notice (a
+    correction, an expression of concern) is reported in ``updates`` without setting
+    the flag, so scan the list rather than the boolean alone.
+
+    **``retracted: false`` means Crossref lists no such notice, not that the paper
     stands** — it answers an undeposited DOI and a sound paper identically, so it
     clears a citation rather than certifying one. ``relations`` is ``{}`` for most
     papers, publisher deposit being thin, so an absent ``is-preprint-of`` is no claim
@@ -1098,7 +1104,7 @@ async def get_paper_updates(doi: DOI, force_refresh: FORCE_REFRESH = False) -> d
 
     return {
         "doi": doi,
-        "retracted": any(u["type"] == crossref.RETRACTION_UPDATE_TYPE for u in updates),
+        "retracted": any(crossref.retracts(u["type"]) for u in updates),
         "updates": updates,
         "relations": crossref.relations(work),
     }

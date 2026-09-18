@@ -849,6 +849,47 @@ _RETRACTED = {
 }
 
 
+class TestRetracts:
+    """Which Crossmark update types leave a paper uncitable. Sampled live, 200
+    ``is-update:true`` works carry correction, retraction, erratum, new_version,
+    new_edition, corrigendum, clarification, expression_of_concern and withdrawal —
+    so the withdrawing class is not hypothetical, and reading only ``retraction``
+    clears a withdrawn paper.
+    """
+
+    @pytest.mark.parametrize(
+        "update_type", ["retraction", "partial_retraction", "withdrawal", "removal"]
+    )
+    def test_the_withdrawing_class(self, update_type):
+        assert crossref.retracts(update_type) is True
+
+    @pytest.mark.parametrize(
+        "update_type",
+        [
+            "correction",
+            "corrigendum",
+            "erratum",
+            "expression_of_concern",
+            "clarification",
+            "addendum",
+            "new_edition",
+            "new_version",
+        ],
+    )
+    def test_the_amending_class(self, update_type):
+        assert crossref.retracts(update_type) is False
+
+    @pytest.mark.parametrize("spelling", ["Retraction", " retraction ", "partial-retraction"])
+    def test_deposit_spelling_does_not_decide_it(self, spelling):
+        """Deposited by hand, so case and a hyphen for the underscore both occur."""
+        assert crossref.retracts(spelling) is True
+
+    def test_an_unknown_type_does_not_set_the_flag(self):
+        """A vocabulary Crossref grows later reaches the agent through `updates`;
+        inventing a verdict for it would be the wrong direction to guess in."""
+        assert crossref.retracts("something_new") is False
+
+
 class TestUpdates:
     def test_reads_every_notice(self):
         found = crossref.updates(_RETRACTED)

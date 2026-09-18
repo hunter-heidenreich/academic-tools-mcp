@@ -1977,6 +1977,35 @@ class TestGetPaperUpdates:
         assert len(result["updates"]) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "update_type", ["retraction", "partial_retraction", "withdrawal", "removal"]
+    )
+    async def test_every_withdrawing_type_sets_the_flag(self, monkeypatch, update_type):
+        """Crossmark spells the class four ways and all four are in live data. Keying
+        on `retraction` alone answered `retracted: false` for a withdrawn paper — a
+        clean bill of health for the one thing this tool exists to catch.
+        """
+        _stub_work(monkeypatch, {"updated-by": [{"DOI": "10.1234/n", "type": update_type}]})
+
+        assert (await server.get_paper_updates("10.1234/x"))["retracted"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "update_type",
+        ["correction", "corrigendum", "erratum", "expression_of_concern", "new_version"],
+    )
+    async def test_an_amending_type_is_reported_without_the_flag(self, monkeypatch, update_type):
+        """The other half of the split: an erratum is not a withdrawal, and an agent
+        that read the flag as "any notice" would discard a corrected paper.
+        """
+        _stub_work(monkeypatch, {"updated-by": [{"DOI": "10.1234/n", "type": update_type}]})
+
+        result = await server.get_paper_updates("10.1234/x")
+
+        assert result["retracted"] is False
+        assert [u["type"] for u in result["updates"]] == [update_type]
+
+    @pytest.mark.asyncio
     async def test_a_clean_paper_emits_the_empty_shapes(self, monkeypatch):
         """Symmetric keys: a paginating agent never feature-detects."""
         _stub_work(monkeypatch, {"DOI": "10.1234/x"})

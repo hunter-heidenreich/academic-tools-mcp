@@ -20,10 +20,11 @@ grouped by milestone rather than per commit.
 - **`get_paper_updates` checks a DOI for retraction and correction notices.** From
   Crossref's `updated-by`, which carries both publisher-registered notices and the
   Retraction Watch database Crossref has owned since 2023, so it costs no request on
-  a paper already cached. Returns `retracted` plus each notice's DOI, type, source
-  and date, and any preprint/published DOIs the publisher deposited under
-  `relation`. A `retracted: false` means Crossref lists no notice, not that the
-  paper stands. ([#142])
+  a paper already cached. Returns `retracted` — the whole withdrawing class, not just
+  `retraction`, so a withdrawn or removed paper does not read as sound — plus each
+  notice's DOI, type, source and date, and any preprint/published DOIs the publisher
+  deposited under `relation`. A `retracted: false` means Crossref lists no such
+  notice, not that the paper stands. ([#142])
 
 - **A Crossref DOI that isn't Crossref's says so.** A miss now names the registering
   agency, so a DataCite identifier — a dataset, a Zenodo record, software — reads as
