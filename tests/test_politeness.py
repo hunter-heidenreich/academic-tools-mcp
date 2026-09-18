@@ -167,6 +167,19 @@ class TestCrossrefPoolSelection:
         monkeypatch.setenv("CROSSREF_MAILTO", "me@example.org")
         assert crossref.in_polite_pool() is True
 
+    @pytest.mark.parametrize("junk", ["()", "mailto:", "(mailto:)"])
+    def test_a_mailto_that_scrubs_to_nothing_does_not_buy_the_polite_tier(self, monkeypatch, junk):
+        """``config.get``'s strip catches whitespace, but ``normalize_mailto`` also
+        drops parens and a bare scheme prefix. Reading the raw value here left those
+        truthy, so we claimed the polite tier while the User-Agent carried no contact
+        — the same failure the blank case below pins, one scrub deeper.
+        """
+        monkeypatch.setenv("CROSSREF_MAILTO", junk)
+        assert crossref.in_polite_pool() is False
+        assert crossref._resolve_policy() == (1, pytest.approx(0.2), pytest.approx(1.0))
+        assert "mailto:" not in crossref._build_headers()["User-Agent"]
+        assert crossref._build_params() == {}
+
     @pytest.mark.parametrize("blank", ["   ", "\t", "\n"])
     def test_a_blank_mailto_does_not_buy_the_polite_tier(self, monkeypatch, blank):
         """The pool and the header must agree on what "configured" means.
@@ -180,6 +193,18 @@ class TestCrossrefPoolSelection:
         assert crossref.in_polite_pool() is False
         assert crossref._resolve_policy() == (1, pytest.approx(0.2), pytest.approx(1.0))
         assert "mailto:" not in crossref._build_headers()["User-Agent"]
+
+    def test_the_throttle_starts_public_whatever_the_config_says(self):
+        """``_resolve_policy`` names the ceiling, not the starting point.
+
+        A configured mailto makes the polite tier *reachable*; only an ``x-api-pool``
+        stamp on a real response promotes us to it. Constructing at the polite tier
+        would take the rate on a guess, and a Semaphore cannot shed permits to take
+        it back.
+        """
+        assert crossref._throttle.max_concurrent == crossref._PUBLIC_MAX_CONCURRENT
+        assert crossref._throttle.min_gap_seconds == pytest.approx(crossref._PUBLIC_REQUEST_GAP)
+        assert crossref._search_gap.min_gap_seconds == pytest.approx(crossref._PUBLIC_SEARCH_GAP)
 
     def test_search_is_paced_separately_from_singles(self):
         # Search used to share the singles throttle entirely, so its tighter

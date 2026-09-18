@@ -180,23 +180,29 @@ costs a request, never a false not-found.
 
 ## crossref.py
 
-**The tier is chosen from config, not assumed.** `_resolve_policy()` picks the
-rate constants at import from `in_polite_pool()`, so `_MAX_CONCURRENT` /
-`_MIN_REQUEST_GAP` / `_SEARCH_REQUEST_GAP` are its *output* — don't read any one
-of them as a fixed number. Limits per Crossref's REST API docs:
+**The tier is confirmed, not assumed.** Limits per Crossref's REST API docs:
 
 |        | singles    | search    | concurrent |
 |--------|------------|-----------|------------|
 | polite | 10 req/sec | 3 req/sec | 3          |
 | public | 5 req/sec  | 1 req/sec | 1          |
 
-**The rate we take must follow the identity we send.** Hardcoding the polite tier
-while the mailto stays unconfigured makes the documented default (an empty
-`.env`) request at the polite rate anonymously.
+**Gating runs one way: build public, widen on proof.** `_throttle` and
+`_search_gap` take the public constants whatever the config says; `_observe_pool`
+widens them on a confirming response. Starting polite on a config guess is
+unrecoverable — a `Semaphore` gains permits but cannot shed them — so
+`_resolve_policy()` is a ceiling, not a rate in force, and
+`in_confirmed_polite_pool()` is what reports the latter.
 
-**`_resolve_policy()` runs at import but `_build_headers()` reads config per
-request**, so changing `CROSSREF_MAILTO` in a live process moves the identity
-without moving the rate — a tier mismatch, not a no-op. Restart, same as
+**The address goes out both ways, and is one decision.** Either spelling admits
+us to the pool, but Crossref meters it *by address*, so the User-Agent alone
+leaves us anonymous in its accounting. Every site routes through
+`useragent.normalize_mailto`, so a claim to the tier cannot outrun the contact
+actually sent.
+
+**Config is read per request, the tier is fixed at import.** `CROSSREF_MAILTO`
+reaches `_build_headers` / `_build_params` live, but `clients.get_client` bakes
+headers in at construction and ignores later kwargs. Restart, same as
 `ENABLE_DEBUG_TOOLS`.
 
 **The year filter is deliberately year-only.** Crossref does not document how it

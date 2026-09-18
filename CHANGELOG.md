@@ -90,6 +90,16 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Crossref's rate tier is confirmed before it is taken.** The client picked its
+  limits from whether `CROSSREF_MAILTO` was set, so an address Crossref never
+  received — one that scrubs to nothing, like `()`, or one it declined — still drew
+  the polite pool's 10 req/sec and 3 concurrent against a pool serving 5 and 1,
+  earning a sustained 429. It now starts at the public rate whatever the config says
+  and speeds up only once a response carries `x-api-pool: polite`. The contact also
+  goes out as a `mailto` query parameter alongside the `User-Agent`, since Crossref
+  meters the polite pool by address, and requests are pinned to the API's `/v1`
+  route. ([#141])
+
 - **bioRxiv/medRxiv DOIs answer from OpenAlex while bioRxiv is down.** A transient
   bioRxiv failure falls back to OpenAlex in all four paper tools and
   `get_papers_metadata`, flagged `biorxiv_unavailable: true`. PDF downloads from
@@ -1911,3 +1921,4 @@ say which.
 [#137]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/137
 [#138]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/138
 [#139]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/139
+[#141]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/141

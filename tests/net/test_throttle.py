@@ -691,3 +691,65 @@ class TestSubGap:
 
         assert gap._last_start is None
         assert gap._lock is not stale_lock
+
+
+class TestWiden:
+    """A provider that learns upstream granted it a faster tier can take it, but
+    only in that direction: the semaphore is built once and can gain permits,
+    never shed them, so a policy taken on a guess would be unrecoverable.
+    """
+
+    def test_raises_the_concurrency_cap(self):
+        t = _make(max_concurrent=1)
+        t.widen(max_concurrent=3, min_gap_seconds=0.0)
+        assert t.max_concurrent == 3
+
+    def test_adds_the_matching_permits(self):
+        t = _make(max_concurrent=1)
+        t.widen(max_concurrent=3, min_gap_seconds=0.0)
+        assert t._sem._value == 3
+
+    def test_lowers_the_gap(self):
+        t = _make(min_gap_seconds=0.2)
+        t.widen(max_concurrent=1, min_gap_seconds=0.1)
+        assert t.min_gap_seconds == pytest.approx(0.1)
+
+    def test_a_narrower_policy_is_a_no_op(self):
+        t = _make(max_concurrent=3, min_gap_seconds=0.1)
+        t.widen(max_concurrent=1, min_gap_seconds=0.2)
+        assert t.max_concurrent == 3
+        assert t.min_gap_seconds == pytest.approx(0.1)
+
+    def test_repeating_it_does_not_keep_adding_permits(self):
+        t = _make(max_concurrent=1)
+        for _ in range(4):
+            t.widen(max_concurrent=3, min_gap_seconds=0.0)
+        assert t.max_concurrent == 3
+        assert t._sem._value == 3
+
+    def test_the_concurrency_floor_still_holds(self):
+        t = _make(max_concurrent=1)
+        t.widen(max_concurrent=0, min_gap_seconds=0.0)
+        assert t.max_concurrent == 1
+
+    def test_the_gap_floor_still_holds(self):
+        t = _make(min_gap_seconds=0.2)
+        t.widen(max_concurrent=1, min_gap_seconds=-5.0)
+        assert t.min_gap_seconds == 0.0
+
+    @pytest.mark.asyncio
+    async def test_the_added_permits_are_usable(self):
+        t = _make(max_concurrent=1, min_gap_seconds=0.0)
+        t.widen(max_concurrent=3, min_gap_seconds=0.0)
+        held = asyncio.Event()
+
+        async def hold():
+            async with t.slot("http://example.com"):
+                held.set()
+                await asyncio.sleep(0.05)
+
+        first = asyncio.create_task(hold())
+        await held.wait()
+        async with t.slot("http://example.com"):
+            pass  # would deadlock against a single permit
+        await first
