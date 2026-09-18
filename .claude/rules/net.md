@@ -89,12 +89,19 @@ and `max_pending` *before* it sleeps, so a queued search is refused, not stacked
   no header, no deadline and an elapsed deadline all read as *proceed* — refusing
   on ignorance would strand every provider that publishes nothing.
 - **A header is an advertisement, a 429 is the observation, and `blocked_for`
-  needs both.** Without `Quota.refused`, an advertised-empty budget locks out the
-  classes a provider still serves free — OpenAlex meters *credits*, and its
-  singletons spend none. Without `remaining`, a 429 from a momentary rate burst
-  locks it out until the *budget* refills, hours later. The advertised `remaining`
-  is recorded either way and still reaches `snapshot()`; it just no longer gates
-  on its own.
+  needs both.** Without `Quota.refused`, an advertised-empty budget locks out a
+  provider that is still answering. Without `remaining`, a 429 from a momentary rate
+  burst locks it out until the *budget* refills, hours later. The advertised
+  `remaining` is recorded either way and still reaches `snapshot()`; it just no
+  longer gates on its own.
+- **The quota answers *whether* a budget is spent; `admit(metered=)` answers *who
+  that stops*.** A provider whose call classes are priced apart passes
+  `metered=False` on the free ones, and they skip the quota gate (never the burst or
+  concurrency caps). OpenAlex meters *credits*: its singletons and `/autocomplete`
+  cost none, so a lockout earned by a `search=` would otherwise strand
+  `get_paper_metadata` for the whole window — and the gate blocks the very requests
+  whose response would clear it, so nothing lifts it early. `metered` defaults to
+  `True`: a new call site is gated until someone measures it free.
 - **A 429 with a usable `Retry-After` is an observation too.** Without
   `X-RateLimit-*` headers (which win), `http.record_quota` records the budget as
   spent until then, and `Throttle.slot` refuses every later caller for that

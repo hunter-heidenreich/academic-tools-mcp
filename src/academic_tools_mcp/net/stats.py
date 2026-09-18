@@ -42,9 +42,14 @@ class Quota:
         """Seconds until refill when refused *and* spent, else None. No deadline never blocks.
 
         Both conjuncts earn their place: without ``refused``, an advertised-empty budget
-        locks out the classes a provider still serves free (openalex meters credits, and
-        its singletons spend none); without ``remaining``, a 429 from a momentary rate
-        burst locks it out until the budget refills, hours later.
+        locks out a provider that is still answering; without ``remaining``, a 429 from a
+        momentary rate burst locks it out until the budget refills, hours later.
+
+        This says *whether a budget is spent*, not *who that should stop*. A provider
+        that prices its call classes apart — openalex meters credits, and its singletons
+        spend none — exempts the free ones at the gate instead, via
+        ``throttle.Throttle.admit(metered=False)``; a refusal earned by a paid call would
+        otherwise strand them for the whole window.
         """
         if not self.refused or self.deadline is None:
             return None

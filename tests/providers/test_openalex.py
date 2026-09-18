@@ -1589,6 +1589,63 @@ class TestSearchGate:
         await openalex.autocomplete("attention")
 
 
+class TestCreditGateByCallClass:
+    """A spent credit budget stops the calls that cost credits, and only those."""
+
+    @staticmethod
+    def _spend_the_budget():
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=25000.0, refused=True)
+
+    @pytest.mark.asyncio
+    async def test_a_singleton_still_resolves_on_a_spent_budget(self, monkeypatch):
+        """Regression: one 429 earned by a search refused `get_paper_metadata` for hours.
+
+        The `refused` conjunct alone did not reach this — it only delayed the lockout
+        until the first paid call, which is exactly how a budget gets spent.
+        """
+        requests = _stub_json_responses(monkeypatch, _work_response("10.1234/x"))
+        self._spend_the_budget()
+
+        result = await openalex.get_work("10.1234/x")
+
+        assert result["doi"] == "https://doi.org/10.1234/x"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_autocomplete_still_resolves_on_a_spent_budget(self, monkeypatch):
+        requests = _stub_json_responses(
+            monkeypatch, {"meta": {"count": 1}, "results": [{"id": "W1"}]}
+        )
+        self._spend_the_budget()
+
+        result = await openalex.autocomplete("attention")
+
+        assert result["items"] == [{"id": "W1"}]
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_search_is_refused_on_a_spent_budget(self, monkeypatch):
+        """The metered class is what the budget is about; it costs no request to refuse."""
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+        self._spend_the_budget()
+
+        result = await openalex.search_works("attention")
+
+        assert "error" in result
+        assert requests == []
+
+    @pytest.mark.asyncio
+    async def test_the_batch_filter_list_is_refused_on_a_spent_budget(self, monkeypatch):
+        """A `filter=` list costs 1 credit, not 0 — it is metered like the search."""
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+        self._spend_the_budget()
+
+        result = await openalex.get_works_batch(["10.1234/a", "10.1234/b"])
+
+        assert all("error" in entry for entry in result.values())
+        assert requests == []
+
+
 class TestNormalizeInstitutionId:
     @pytest.mark.parametrize(
         "raw",
@@ -1611,6 +1668,10 @@ class TestNormalizeInstitutionId:
             "ROR:00jmfr291",
             "https://ror.org/00jmfr291",
             "ror.org/00jmfr291",
+            # A copied URL carries the trailing slash as often as not, and
+            # `_OPENALEX_URL_RE` already tolerates one on the other spelling.
+            "https://ror.org/00jmfr291/",
+            "ror:https://ror.org/00jmfr291/",
         ],
     )
     def test_ror_spellings_fold_to_the_bare_ror(self, raw):

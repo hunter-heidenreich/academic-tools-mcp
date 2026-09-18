@@ -571,6 +571,43 @@ class TestQuotaGate:
         assert excinfo.value.limit == 1000
 
     @pytest.mark.asyncio
+    async def test_an_unmetered_caller_passes_a_spent_budget(self):
+        """A spent budget is a claim about credits, and a free class spends none.
+
+        Regression: the lockout was namespace-wide, so one 429 earned by a paid call
+        refused openalex's zero-credit singletons and autocomplete for the whole
+        window — and the gate then blocked the very requests whose response would
+        have cleared it.
+        """
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
+        admitted = False
+
+        async with self._throttle().slot("https://api.openalex.org/works/W1", metered=False):
+            admitted = True
+
+        assert admitted
+
+    @pytest.mark.asyncio
+    async def test_an_unmetered_caller_still_answers_the_burst_cap(self):
+        """Only the quota gate is skipped; the local caps are not a budget claim."""
+        throttle = self._throttle()
+        throttle.pending = throttle.max_pending
+
+        with pytest.raises(http.LocalBackpressureError):
+            throttle.admit(metered=False)
+
+    @pytest.mark.asyncio
+    async def test_a_metered_caller_is_still_refused_alongside_a_free_one(self):
+        """The two classes part company at the gate, in the same window."""
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
+        throttle = self._throttle()
+
+        throttle.admit(metered=False)
+
+        with pytest.raises(http.QuotaExhaustedError):
+            throttle.admit()
+
+    @pytest.mark.asyncio
     async def test_remaining_budget_admits_the_caller(self):
         stats.record_quota("openalex", limit=1000, remaining=1, reset_seconds=100.0)
 

@@ -114,9 +114,14 @@ _throttle = Throttle(
 )
 
 
-async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
-    """GET at OpenAlex's rate. Url-only: it builds the pooled client itself."""
-    return await _throttle.get(_get_client(), url, **kwargs)
+async def _throttled_get(url: str, *, metered: bool = True, **kwargs: Any) -> httpx.Response:
+    """GET at OpenAlex's rate. Url-only: it builds the pooled client itself.
+
+    ``metered=False`` for the call classes the credit budget does not price — the
+    singletons and ``/autocomplete`` — so a spent budget cannot refuse them locally.
+    Default ``True``, so a new call site is gated until someone measures it free.
+    """
+    return await _throttle.get(_get_client(), url, metered=metered, **kwargs)
 
 
 _search_gap = SubGap(_throttle, min_gap_seconds=_SEARCH_REQUEST_GAP)
@@ -168,8 +173,9 @@ def _author_path_id(author_id: str) -> str:
     return quote(bare, safe="")
 
 
-# A ROR is `0` then eight crockford-base32 characters. The alphabet excludes
-# `i`/`l`/`o`/`u`, which is what keeps this from matching a bare OpenAlex ID.
+# A ROR is `0`, then six crockford-base32 characters, then two check digits. The
+# alphabet excludes `i`/`l`/`o`/`u`, which is what keeps this from matching a bare
+# OpenAlex ID.
 _ROR_RE = re.compile(r"^0[0-9a-hj-km-np-tv-z]{6}\d{2}$", re.IGNORECASE)
 _ROR_URL_RE = re.compile(r"^(?:https?://)?(?:www\.)?ror\.org/", re.IGNORECASE)
 
@@ -193,7 +199,9 @@ def _normalize_institution_id(institution_id: str) -> str:
     # In a loop, as `normalize_pmid` does: doubled prefixes occur in pasted citations.
     while institution_id[:4].lower() == "ror:":
         institution_id = institution_id[4:].strip()
-    return _ROR_URL_RE.sub("", institution_id).strip()
+    # The trailing slash too: `_OPENALEX_URL_RE` tolerates one, and a copied ror.org URL
+    # carries it just as often. Left on, it fails the `/` guard as a bad identifier.
+    return _ROR_URL_RE.sub("", institution_id).strip().rstrip("/")
 
 
 def _institution_path_id(institution_id: str) -> str:
@@ -340,7 +348,8 @@ async def _fetch_singleton(
         return http.not_found(not_found_error)
 
     try:
-        response = await _throttled_get(url, params=_build_params())
+        # Free: a singleton spends no credits, so a spent budget must not refuse it.
+        response = await _throttled_get(url, params=_build_params(), metered=False)
 
         if response.status_code == 404:
             err = http.not_found(not_found_error)
@@ -599,7 +608,8 @@ async def autocomplete(query: str, *, entity_type: AutocompleteEntity = "works")
     try:
         # `safe=""`: a collection name has no path structure, so a stray slash is an escape.
         url = f"{OPENALEX_BASE_URL}/autocomplete/{quote(entity_type, safe='')}"
-        response = await _throttled_get(url, params=params)
+        # Free, as the singletons are: priced at zero credits, so ungated by the budget.
+        response = await _throttled_get(url, params=params, metered=False)
         response.raise_for_status()
         data = response.json()
     except _PARSE_ERRORS:
