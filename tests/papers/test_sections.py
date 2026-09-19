@@ -10,11 +10,10 @@ from academic_tools_mcp import papers
 from academic_tools_mcp.papers import (
     first_section_heading,
     get_section_content,
-    has_detected_sections,
     parse_sections,
     section_at_offset,
-    section_boundaries,
 )
+from academic_tools_mcp.papers.sections import has_detected_sections, section_boundaries
 from tests.helpers.section_fixtures import (
     _H1_MARKDOWN,
     _H2_MARKDOWN,

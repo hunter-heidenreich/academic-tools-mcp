@@ -835,7 +835,7 @@ class TestConvertPdfFastMode:
             raise AssertionError("must not spawn when markdown is cached")
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
-        result = await papers.convert._convert_fast(real_pdf, ns, canonical, 0.1)
+        result = await papers.convert._convert_fast(real_pdf, ns, canonical, md_path, 0.1)
         assert result["cached"] is True
         assert result["conversion_mode"] == "full"
         # And the recorded mode in the sections cache stays "full".

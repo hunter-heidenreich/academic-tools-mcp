@@ -210,7 +210,7 @@ def test_detection_and_the_index_are_one_scan(markdown: str) -> None:
     """``parse_sections_and_detect`` is the two separate calls, in one pass."""
     sections, detected = papers.parse_sections_and_detect(markdown)
     assert sections == papers.parse_sections(markdown)
-    assert detected == papers.has_detected_sections(markdown)
+    assert detected == papers.sections.has_detected_sections(markdown)
 
 
 @given(markdown_documents)
@@ -221,7 +221,7 @@ def test_detection_agrees_with_the_title_extractor(markdown: str) -> None:
     the reader indexes it with the section scan; a heading one sees and the
     other doesn't is a hit that names a section the index has no entry for.
     """
-    assert papers.has_detected_sections(markdown) == (
+    assert papers.sections.has_detected_sections(markdown) == (
         papers.first_section_heading(markdown) is not None
     )
 
@@ -231,7 +231,7 @@ def test_section_at_offset_is_total(markdown: str, offset: int) -> None:
     """Any non-negative offset into a document with sections resolves to an
     index the reader accepts — including offsets on a heading line, inside a
     section dropped as empty, and past the end of the document."""
-    spans = papers.section_boundaries(markdown)
+    spans = papers.sections.section_boundaries(markdown)
     assume(spans)
     found = papers.section_at_offset(markdown, offset)
     assert found is not None

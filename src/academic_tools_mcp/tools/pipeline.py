@@ -306,7 +306,7 @@ async def get_paper_sections(
     if sections_data is None:
         return not_converted_error(identifier)
 
-    # Subscripted: _reparse_sections_locked re-parses an entry missing either key.
+    # Subscripted: reparse_sections_locked re-parses an entry missing either key.
     # Only `conversion_mode` may be null; only per-row keys are defaulted.
     sections_list = sections_data["sections"]
     detected = sections_data["sections_detected"]

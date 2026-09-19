@@ -1,52 +1,9 @@
 ---
 paths:
-  - "src/academic_tools_mcp/papers/*.py"
   - "src/academic_tools_mcp/manual.py"
 ---
 
-# PDF + content pipeline
-
-## papers/
-
-**Two candidate passes, one ordering.** `_shallowest_first` governs both — two
-passes with two orderings is the bug this shape prevents, since a plain path sort
-inverts the depth rule depending on how the subdirectory happens to be named.
-
-**`_run_command` is the one subprocess driver, but what a mode says about an
-outcome stays with that mode.** Don't push the error dicts into the driver to
-"finish" the DRY; that is where the two genuinely disagree.
-
-**The full-conversion write path holds only the global lock, not `sections_lock`** —
-it is the one markdown writer outside the per-paper lock discipline, which is why
-`store_markdown_and_index` may not re-read the file to checksum it.
-
-**`drop_derived()` is the only markdown unlinker, and every caller holds
-`sections_lock`.** It drops markdown and section index *together*: dropping one
-leaves a reader matching a checksum against bytes that no longer exist. **Don't
-unlink markdown anywhere else.**
-
-### Sections and in-paper search
-
-- **`_scan()` is the only heading scan**, and its readers span modules —
-  `section_boundaries`, `has_detected_sections`, `parse_sections`,
-  `parse_sections_and_detect`, `find_in_markdown`, `get_section_content` and
-  `corpus.search`. A private copy that drops the empty-section filter names a
-  section the reader's index doesn't have; one returning a title instead of an
-  index dead-ends on "Ambiguous section title".
-- **`Section.body(lines)` is the one body recipe**, which is what makes a hit's
-  `char_offset` an offset into the text the reader returns. Two hand-spelled
-  `"\n".join(lines[s:e]).strip()` cannot be relied on to stay equal.
-- **Title lookup folds diacritics only as a fallback.** Folding can widen a miss
-  into a hit (`"Resume"` → `"Résumé"`) but can never turn a query that already
-  resolves into an "Ambiguous section title" error. **Fold both passes
-  unconditionally and a paper carrying both spellings stops resolving either.**
-- **`_section_locks` holds its locks weakly, and must never be bounded by count
-  instead.** `release()` clears `locked()` before the waiter it woke has resumed, so
-  any eviction pass reads a lock that is about to be entered as free — drop it and
-  the waiter holds an orphan while the next caller builds a second `Lock` for the
-  same paper.
-
-## manual.py
+# Paper identity and manual imports
 
 - **`resolve_target` and `resolve_metadata_source` route on three predicates they
   do not own** (`arxiv.is_arxiv_id`, `biorxiv.is_biorxiv_doi`, `acl.is_anthology_id`),
