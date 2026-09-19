@@ -10,37 +10,25 @@ buffered in RAM. An error body is bounded the same way.
 """
 
 import contextlib
-import copy
 import os
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from ..net import http, stats
-from ..store import cache, singleflight
 from ..util import config
+from . import artifact
 
 # Clears an image-heavy preprint; catches a 10 GB non-PDF.
 _DEFAULT_MAX_PDF_BYTES = 200_000_000
 
 # Also bounds how far past the cap a run-away response is *read*.
 _CHUNK_SIZE = 64 * 1024
-
-_PDF_MAGIC = b"%PDF-"
-
-# Readers scan a prefix, not byte 0; a BOM or stray leading bytes is still a PDF.
-_PDF_HEADER_SEARCH_BYTES = 1024
-
 # One decoded read, sliced: enough of an error body to name the failure.
 _ERROR_SNIPPET_BYTES = 200
-
-
-def has_pdf_magic(head: bytes) -> bool:
-    """Whether ``head`` opens a PDF, within the slack a real reader allows."""
-    return _PDF_MAGIC in head[:_PDF_HEADER_SEARCH_BYTES]
 
 
 async def _error_snippet(response: httpx.Response) -> str:
@@ -52,50 +40,6 @@ async def _error_snippet(response: httpx.Response) -> str:
     async for chunk in response.aiter_bytes():
         return chunk[:_ERROR_SNIPPET_BYTES].decode("utf-8", "replace")
     return ""
-
-
-def is_usable_pdf(path: Path) -> bool:
-    """Whether a cached PDF should be trusted as a hit.
-
-    Gate every cached-PDF check on this, never ``Path.exists()``: it rejects
-    what an interrupted or degenerate download leaves behind — a missing or
-    unreadable path, a 0-byte file, an HTML landing page saved under a .pdf
-    name. Not a validity proof: a file truncated after the header passes, and
-    that is recoverable (the converter fails) where silently serving an empty
-    file is not.
-    """
-    try:
-        if path.stat().st_size == 0:
-            return False
-        with path.open("rb") as f:
-            return has_pdf_magic(f.read(_PDF_HEADER_SEARCH_BYTES))
-    except OSError:
-        return False
-
-
-def cached_hit(dest: Path) -> dict[str, Any] | None:
-    """Return the ``{path, size_bytes, cached}`` hit for ``dest``, or None to re-download.
-
-    Owns the ``stat``, so a file unlinked between the usability check and the
-    size read is a miss rather than an ``OSError`` out of the caller.
-    """
-    try:
-        if not is_usable_pdf(dest):
-            return None
-        return {"path": str(dest), "size_bytes": dest.stat().st_size, "cached": True}
-    except OSError:
-        return None
-
-
-def is_definitive_failure(result: dict[str, Any]) -> bool:
-    """Whether a failure is paper-intrinsic, and so worth negative-caching.
-
-    An allowlist: an ``error`` dict explicitly marked ``retryable: False``,
-    ``max_bytes`` aborts excepted. "Not marked retryable" would negative-cache
-    every unclassified 4xx, and a paywalled 403 is not known to be permanent; a
-    cap bump fixes ``max_bytes``, which says nothing about the paper.
-    """
-    return "error" in result and result.get("retryable") is False and "max_bytes" not in result
 
 
 def resolve_max_pdf_bytes() -> int | None:
@@ -197,7 +141,7 @@ async def stream_to_file(
                 async for chunk in response.aiter_bytes(_CHUNK_SIZE):
                     if not checked_pdf:
                         # First chunk suffices: ByteChunker shortens only the last.
-                        if not has_pdf_magic(chunk):
+                        if not artifact.has_pdf_magic(chunk):
                             return {
                                 "error": (
                                     f"{provider_label}: {url} did not "
@@ -245,76 +189,3 @@ async def stream_to_file(
         if tmp_path is not None:
             with contextlib.suppress(OSError):
                 tmp_path.unlink(missing_ok=True)
-
-
-async def cached_download(
-    *,
-    single_flight: singleflight.SingleFlight,
-    namespace: str,
-    entity: str,
-    canonical: str,
-    dest: Path,
-    fetch: Callable[[], Awaitable[dict[str, Any]]],
-    neg_ttl: float,
-    force_refresh: bool = False,
-    sf_key: Any = None,
-    extra_fields: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Run the shared cached-download protocol around a provider's ``fetch``.
-
-    The file-on-disk sibling of :func:`cache.cached_lookup`: force_refresh →
-    check → single-flight → in-slot re-check → ``fetch``, in one place so the
-    four ``download_pdf`` implementations can't drift.
-
-    ``fetch`` resolves the URL and streams it, returning a plain result dict.
-    Provider quirks (arXiv/bioRxiv awaiting their own ``get_paper``, OpenAlex
-    resolution for the OA path) live in that closure, and it never touches
-    ``cache`` — this function decides what is worth negative-caching.
-
-    ``neg_ttl`` is required because only the negative half is a cache record:
-    the PDF *is* the positive entry, with ``is_usable_pdf`` as its freshness
-    rule. Pass ``sf_key`` when ``fetch`` awaits another getter sharing this
-    ``SingleFlight``, or it will await its own slot and deadlock.
-
-    ``force_refresh`` re-fetches and drops the negative entry but never the
-    PDF, so a failed refresh leaves the caller the copy they had.
-    ``extra_fields`` decorates every *successful* payload, cached and fresh
-    alike, so the two branches can't disagree; errors stay undecorated. Each
-    caller gets an independent deep copy, safe to mutate.
-    """
-
-    def _decorate(result: dict[str, Any]) -> dict[str, Any]:
-        if extra_fields and "error" not in result:
-            return {**extra_fields, **result}
-        return result
-
-    def _short_circuit() -> dict[str, Any] | None:
-        # Artifact before negative entry: a force_refresh that 404s leaves a
-        # good PDF on disk beside a fresh negative, and the next plain call
-        # must serve the PDF.
-        hit = cached_hit(dest)
-        if hit is not None:
-            return _decorate(hit)
-        return cache.get_negative(namespace, entity, canonical)
-
-    if force_refresh:
-        cache.invalidate(namespace, entity, canonical)
-    else:
-        early = _short_circuit()
-        if early is not None:
-            return copy.deepcopy(early)
-
-    async def _runner() -> dict[str, Any]:
-        # A leader may have landed the file or a definitive failure while we
-        # waited. Skipped under force_refresh: the caller asked for fresh bytes.
-        if not force_refresh:
-            early = _short_circuit()
-            if early is not None:
-                return early
-        result = await fetch()
-        if is_definitive_failure(result):
-            cache.put_negative(namespace, entity, canonical, result, ttl_seconds=neg_ttl)
-        return _decorate(result)
-
-    result = await single_flight.do(sf_key if sf_key is not None else canonical, _runner)
-    return copy.deepcopy(result)

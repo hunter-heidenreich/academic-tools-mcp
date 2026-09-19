@@ -1301,10 +1301,10 @@ class TestDownloadPdfMetadataBranches:
     async def test_a_paper_with_no_pdf_link_is_a_definitive_failure(self, tmp_path, monkeypatch):
         """How a withdrawn paper presents: an Atom entry carrying no pdf link.
 
-        ``retryable: False`` is load-bearing — ``streaming.is_definitive_failure``
+        ``retryable: False`` is load-bearing — ``protocol.is_definitive_failure``
         reads exactly that key to decide whether to negative-cache.
         """
-        from academic_tools_mcp.download import streaming
+        from academic_tools_mcp.download import protocol
         from academic_tools_mcp.store import cache
 
         _reset_throttle(monkeypatch, tmp_path)
@@ -1318,7 +1318,7 @@ class TestDownloadPdfMetadataBranches:
 
         assert result["retryable"] is False
         assert "2301.00001" in result["error"]
-        assert streaming.is_definitive_failure(result)
+        assert protocol.is_definitive_failure(result)
 
         canonical = arxiv.canonical_arxiv_id("2301.00001")
         assert cache.get_negative(arxiv.NAMESPACE, "downloads", canonical) is not None

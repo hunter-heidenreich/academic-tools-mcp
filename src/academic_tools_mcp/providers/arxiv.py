@@ -11,7 +11,7 @@ import httpx
 from defusedxml.common import DefusedXmlException
 from defusedxml.ElementTree import fromstring as _safe_fromstring
 
-from ..download import streaming
+from ..download import protocol, streaming
 from ..net import clients, http, stats
 from ..net.throttle import Throttle
 from ..store import cache, singleflight, stems
@@ -833,7 +833,7 @@ async def download_pdf(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
         )
 
     # Tuple-keyed to stay distinct from get_paper's slot, which _fetch awaits.
-    return await streaming.cached_download(
+    return await protocol.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,

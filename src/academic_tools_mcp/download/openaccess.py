@@ -22,7 +22,7 @@ from ..net.throttle import Throttle
 from ..providers import openalex
 from ..store import singleflight
 from ..util import useragent
-from . import streaming
+from . import protocol, streaming
 
 NAMESPACE = "oa_download"
 
@@ -119,7 +119,7 @@ async def _resolve_and_download(
         not_found_message=(f"Open-access PDF not found at {url} for {identifier}"),
     )
     # Same hatch for a 404 or a non-PDF; the predicate excludes a cap abort and a 0-byte blip.
-    if streaming.is_definitive_failure(result):
+    if protocol.is_definitive_failure(result):
         return {**result, "suggestion": manual.IMPORT_SUGGESTION}
     return result
 
@@ -140,7 +140,7 @@ async def download_pdf(identifier: str, *, force_refresh: bool = False) -> dict[
         return await _resolve_and_download(identifier, dest, force_refresh=force_refresh)
 
     # force_refresh does two jobs: _fetch re-resolves OpenAlex, cached_download re-streams.
-    return await streaming.cached_download(
+    return await protocol.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,
