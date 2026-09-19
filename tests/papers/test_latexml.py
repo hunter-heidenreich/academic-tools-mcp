@@ -196,6 +196,15 @@ class TestFiguresTablesListsNotes:
             "| (C) |  | 32 |\n"
         )
 
+    def test_a_nested_tabular_renders_once_inside_its_cell(self):
+        """``_descendants`` stops at a match, so the inner rows stay in their cell."""
+        html = _page(
+            '<table class="ltx_tabular"><tr><td>outer</td></tr>'
+            '<tr><td><table class="ltx_tabular"><tr><td>inner</td></tr></table></td></tr></table>'
+        )
+
+        assert latexml.to_markdown(html) == "| outer |\n| --- |\n| inner |\n"
+
     def test_a_code_line_opening_with_a_hash_is_not_a_heading(self):
         """Regression: a listing's ``# comment`` line opened a fake section."""
         html = _page(

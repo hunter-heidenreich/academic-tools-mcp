@@ -199,6 +199,27 @@ class TestGetSectionContent:
         assert "error" in result
         assert "Ambiguous" in result["error"]
 
+    def test_exact_title_wins_over_a_longer_one_containing_it(self):
+        """Substring alone errors here, and the title came off the section index."""
+        md = "## Introduction\n\nA.\n\n## Introduction and Related Work\n\nB.\n"
+        result = get_section_content(md, "Introduction")
+        assert result["title"] == "Introduction"
+        assert result["content"] == "A."
+
+    def test_exact_title_tier_is_case_insensitive(self):
+        md = "## Results\n\nA.\n\n## Results and Discussion\n\nB.\n"
+        assert get_section_content(md, "RESULTS")["title"] == "Results"
+
+    def test_two_identical_titles_are_still_ambiguous(self):
+        """The exact tier narrows; it does not invent a winner among equals."""
+        md = "## Results\n\nA.\n\n## Methods\n\nB.\n\n## Results\n\nC.\n"
+        assert "Ambiguous" in get_section_content(md, "Results")["error"]
+
+    def test_a_short_query_no_longer_collides_with_the_preamble(self):
+        """``Preamble`` contains an "a"; an appendix titled "A" must still resolve."""
+        md = "lead-in text\n\n## A\n\nbody.\n"
+        assert get_section_content(md, "A")["title"] == "A"
+
     def test_ascii_query_finds_accented_title(self):
         """An agent typing the ASCII spelling of an accented heading still
         lands on it — the exact pass misses, the diacritic-folded pass hits."""

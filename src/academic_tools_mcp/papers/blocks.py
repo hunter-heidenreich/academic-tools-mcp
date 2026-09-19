@@ -3,16 +3,16 @@
 import re
 from collections.abc import Iterable
 
-# A body line starting with ``#`` (a code comment) would parse as a heading.
-_LEADING_HASH_RE = re.compile(r"^#", re.MULTILINE)
+# Zero-width, and ``#`` then whitespace: exactly what ``sections._HEADING_RE`` reads.
+_LEADING_HASH_RE = re.compile(r"^(?=#{1,6}\s)", re.MULTILINE)
 
 # Caps a malformed span so one cell can't inflate the table.
 MAX_SPAN = 100
 
 
 def escape_headings(text: str) -> str:
-    """Escape every line-leading ``#``, so body text never opens a section."""
-    return _LEADING_HASH_RE.sub(r"\\#", text)
+    """Escape every line-leading heading marker, so body text never opens a section."""
+    return _LEADING_HASH_RE.sub("\\\\", text)
 
 
 def span(value: str | None) -> int:

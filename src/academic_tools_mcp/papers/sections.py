@@ -249,19 +249,41 @@ def find_in_markdown(
     return hits, False
 
 
-def _match_section_title(section: str, spans: list[Section]) -> list[tuple[int, Section]]:
-    """Sections whose title contains ``section``, case- and diacritic-insensitively.
+def _resolve_titles(
+    query: str, titles: list[str], spans: list[Section]
+) -> list[tuple[int, Section]]:
+    """Exact title matches, else substring ones, over already-normalised titles.
 
+    Exact before substring, because a title an agent copied out of the section index
+    verbatim must resolve: "Introduction" beside "Introduction and Related Work" is
+    the common shape, and substring alone dead-ends it on "Ambiguous section title".
+    """
+    exact = [
+        (i, sp) for i, (sp, title) in enumerate(zip(spans, titles, strict=True)) if title == query
+    ]
+    if exact:
+        return exact
+    return [
+        (i, sp) for i, (sp, title) in enumerate(zip(spans, titles, strict=True)) if query in title
+    ]
+
+
+def _match_section_title(section: str, spans: list[Section]) -> list[tuple[int, Section]]:
+    """Sections matching ``section``, case- and diacritic-insensitively.
+
+    Two passes, each trying exact then substring: lowercased, then diacritic-folded.
     The folded pass runs only when the lowercased one finds nothing, so folding can
     widen a miss into a hit ("Resume" → "Résumé") but never turns a resolving
-    query into an ambiguity error.
+    query into an ambiguity error — which is also why the exact tier compares
+    lowercased-but-unfolded: fold it and a paper carrying both spellings stops
+    resolving either.
     """
-    query = section.lower()
-    matches = [(i, sp) for i, sp in enumerate(spans) if query in sp.title.lower()]
+    titles = [sp.title.lower() for sp in spans]
+    matches = _resolve_titles(section.lower(), titles, spans)
     if matches:
         return matches
-    folded = textnorm.fold(section).lower()
-    return [(i, sp) for i, sp in enumerate(spans) if folded in textnorm.fold(sp.title).lower()]
+    folded = [textnorm.fold(title).lower() for title in titles]
+    return _resolve_titles(textnorm.fold(section).lower(), folded, spans)
 
 
 def get_section_content(
@@ -274,8 +296,9 @@ def get_section_content(
 
     Args:
         markdown: Full markdown text.
-        section: Integer index, or a title matched as a case-insensitive substring,
-            falling back to a diacritic-folded comparison when nothing matches.
+        section: Integer index, or a title — matched case-insensitively, preferring an
+            exact title over a substring of a longer one, and falling back to a
+            diacritic-folded comparison when neither matches.
         offset: Starting character offset within the section; pass ``next_offset``
             from a previous call to page through.
         max_chars: Slice size in characters (~4 per token). Must be positive.

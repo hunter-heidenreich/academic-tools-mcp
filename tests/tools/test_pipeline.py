@@ -601,12 +601,31 @@ class TestGetPaperSectionTool:
         ident = "ambig"
         target = manual.resolve_target(ident)
         _seed_markdown(
-            target["namespace"], target["canonical"], "## Results\n\na\n\n## Results II\n\nb\n"
+            target["namespace"], target["canonical"], "## Results\n\na\n\n## Results\n\nb\n"
         )
 
         result = await server.get_paper_section(ident, "Results")
 
         assert "Ambiguous" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_an_exact_title_beats_a_longer_one_containing_it(self, isolated_cache):
+        """A title read straight off ``get_paper_sections`` has to resolve.
+
+        Substring matching alone dead-ends the advertised
+        ``get_paper_section(identifier, index_or_title)`` chain on the commonest
+        heading pair there is.
+        """
+        ident = "exact"
+        target = manual.resolve_target(ident)
+        _seed_markdown(
+            target["namespace"], target["canonical"], "## Results\n\na\n\n## Results II\n\nb\n"
+        )
+
+        result = await server.get_paper_section(ident, "Results")
+
+        assert result["title"] == "Results"
+        assert result["content"] == "a"
 
 
 # ---------------------------------------------------------------------------

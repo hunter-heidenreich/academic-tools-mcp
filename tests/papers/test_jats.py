@@ -184,6 +184,21 @@ class TestMathTablesLists:
             "|  | 15.8 |\n"
         )
 
+    def test_a_nested_table_renders_once_inside_its_cell(self):
+        """Regression: row collection descended into a nested table.
+
+        The inner rows landed in the outer pipe table *and* again as a table of
+        their own, so one cell's content reached the agent three times.
+        """
+        table = (
+            "<table-wrap><label>Table 1.</label>"
+            "<table><tr><td>outer</td></tr>"
+            "<tr><td><table><tr><td>inner</td></tr></table></td></tr></table></table-wrap>"
+        )
+        assert jats.to_markdown(_article(body=table)) == (
+            "Table 1.\n\n| outer |\n| --- |\n| inner |\n"
+        )
+
     def test_a_list_is_bulleted(self):
         items = '<list list-type="bullet"><list-item><p>One</p></list-item><list-item><p>Two</p></list-item></list>'
         assert jats.to_markdown(_article(body=items)) == "- One\n\n- Two\n"

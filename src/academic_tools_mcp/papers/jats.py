@@ -107,6 +107,22 @@ def _inline(element: Element) -> str:
     return f" {text} " if name in ("p", "title", "label", "td", "th", "list-item") else text
 
 
+def _descendants(element: Element, name: str) -> list[Element]:
+    """Every ``name`` element under ``element``, not descending into a match.
+
+    Not ``element.iter()``: that pulls a nested table's rows up into the enclosing
+    one, so the inner content renders inside the outer pipe table *and* again on
+    its own.
+    """
+    found: list[Element] = []
+    for child in element:
+        if _local(child) == name:
+            found.append(child)
+        else:
+            found.extend(_descendants(child, name))
+    return found
+
+
 def _table(element: Element) -> str:
     """A ``table`` as a pipe table (``blocks.pipe_table``)."""
     return pipe_table(
@@ -115,8 +131,7 @@ def _table(element: Element) -> str:
             for cell in row
             if _local(cell) in ("td", "th")
         ]
-        for row in element.iter()
-        if _local(row) == "tr"
+        for row in _descendants(element, "tr")
     )
 
 
@@ -139,8 +154,8 @@ class _Renderer:
         caption = _child(element, "caption")
         head = " ".join(_collapse(_inline(e)) for e in (label, caption) if e is not None)
         self.paragraph(head)
-        for node in element.iter():
-            if _local(node) == "table" and (table := _table(node)):
+        for node in _descendants(element, "table"):
+            if table := _table(node):
                 self.blocks.append(table)
 
     def references(self, element: Element) -> None:
