@@ -52,8 +52,10 @@ _ARXIV_RAW_NS = "http://arxiv.org/OAI/arXivRaw/"
 
 # concurrency=1 is arXiv's documented "single connection" rule; _MAX_PENDING x
 # _MIN_REQUEST_GAP bounds how long a queued caller blocks before backpressure.
+# The gap is above the documented rate: sampled, a request close behind a rejection draws
+# another, and it is also the floor `Throttle.get` gives `get_with_retry`'s backoff.
 _MAX_CONCURRENT = 1
-_MIN_REQUEST_GAP = 3.0
+_MIN_REQUEST_GAP = 5.0
 _MAX_PENDING = 5
 
 _single_flight = singleflight.SingleFlight()
@@ -256,6 +258,28 @@ def _rejection_root(response: httpx.Response) -> ET.Element | None:
     return _error_entry_root(response) if response.status_code == 400 else None
 
 
+# Not ``not_found``: this covers an id that does not exist and one the edge merely
+# refused, and only a retry separates them.
+_EDGE_REJECTION_STATUS = 406
+
+
+def _is_edge_rejection(response: httpx.Response) -> bool:
+    """Whether arXiv's edge refused this request outright, rather than answering it."""
+    return response.status_code == _EDGE_REJECTION_STATUS
+
+
+def _edge_rejection_dict() -> dict[str, Any]:
+    """Fresh transient error for an arXiv edge rejection, whose body explains nothing."""
+    return {
+        "error": (
+            f"{LABEL} refused the request (HTTP {_EDGE_REJECTION_STATUS}, empty body). "
+            "Either the identifier or query is one arXiv will not resolve, or the request "
+            "followed an earlier rejection too closely. Transient — wait and retry."
+        ),
+        "retryable": True,
+    }
+
+
 def _error_entry_root(response: httpx.Response) -> ET.Element | None:
     """The parsed feed if the body carries arXiv's ``api/errors`` entry, else ``None``."""
     try:
@@ -364,6 +388,9 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
             if response.status_code == 404:
                 return _not_found()
 
+            if _is_edge_rejection(response):
+                return _edge_rejection_dict()
+
             # A rejected id is a 400 whose entry the not-found branch below classifies.
             root = _rejection_root(response)
             if root is None:
@@ -435,6 +462,9 @@ async def search_papers(
                 "sortOrder": sort_order,
             },
         )
+
+        if _is_edge_rejection(response):
+            return _edge_rejection_dict()
 
         # A rejected query is a 400 whose entry the rejection branch below classifies.
         root = _rejection_root(response)
@@ -517,6 +547,11 @@ async def _fetch_batch_chunk_uncoalesced(
         )
         root = _rejection_root(response)
         if root is None:
+            # One refused id fails the whole chunk; a lone id has nothing to isolate.
+            if _is_edge_rejection(response):
+                if len(chunk) > 1:
+                    return await _fetch_singletons(chunk, force_refresh=force_refresh)
+                return {c: _edge_rejection_dict() for c in chunk}
             # Some records always 500 with the error entry; a plain 5xx stays chunk-wide.
             if (
                 len(chunk) > 1
@@ -685,6 +720,8 @@ async def get_versions(arxiv_id: str, *, force_refresh: bool = False) -> dict[st
                     "metadataPrefix": "arXivRaw",
                 },
             )
+            if _is_edge_rejection(response):
+                return _edge_rejection_dict()
             response.raise_for_status()
             root = _safe_fromstring(response.text)
         except _PARSE_ERRORS:
@@ -754,6 +791,9 @@ async def get_html(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, A
                 err = http.not_found(f"No HTML rendering for arXiv ID: {arxiv_id}")
                 cache.put_negative(NAMESPACE, "html", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
                 return err
+            # Uncached: the negative entry above means "no rendering", which this is not.
+            if _is_edge_rejection(response):
+                return _edge_rejection_dict()
             response.raise_for_status()
         except http.HTTPX_ERRORS as e:
             return http.error_dict(LABEL, e)

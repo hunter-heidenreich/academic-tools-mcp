@@ -212,6 +212,21 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **An arXiv PDF download no longer fails because the metadata API refused the lookup.**
+  arXiv's edge answers a request it will not serve with HTTP 406 and a zero-length body —
+  an identifier it cannot resolve, some field-prefixed search queries, or any request too
+  close behind an earlier rejection — where the code still expected the documented 400 or
+  200 carrying an `api/errors` entry. Unclassified, that refusal reached the agent as
+  `arXiv HTTP 406:` with the empty body as its whole explanation and no verdict attached,
+  which `download_pdf` read as "do not try the PDF host" even though the PDF host rides a
+  different edge and was serving normally. The refusal is now classified where it happens,
+  as a transient failure rather than a claim the paper is absent, so `download_pdf` falls
+  back to `arxiv.org/pdf/<id>`, `get_papers_metadata` isolates the one refused identifier
+  instead of failing its whole batch of up to fifty, and `search_arxiv`, `get_paper_versions`
+  and `convert_paper` report something an agent can act on. arXiv's inter-request gap is
+  widened to match the rate its edge actually enforces, which sampling put well above the
+  documented one. ([#158])
+
 - **Two callers can no longer end up on two different locks for one paper.** The
   per-paper section lock map was bounded by count, and its eviction pass treated any
   lock reading `locked() == False` as free — but `release()` clears that flag before
@@ -2126,3 +2141,4 @@ say which.
 [#154]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/154
 [#155]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/155
 [#156]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/156
+[#158]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/158

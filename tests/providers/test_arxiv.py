@@ -541,7 +541,7 @@ def _reset_throttle(monkeypatch, tmp_path):
     The conftest autouse fixture already resets each provider's ``throttle``
     (pending / last-start map / lock / sem) and ``_single_flight`` between
     tests; here we additionally zero the inter-start gap so a multi-request test
-    doesn't wait out arxiv's 3 s pacing.
+    doesn't wait out arxiv's inter-request pacing.
     """
     from academic_tools_mcp.store import cache, singleflight
 
@@ -1292,6 +1292,106 @@ class TestNotFoundShapes:
 
 
 # ---------------------------------------------------------------------------
+# The edge rejection: a fourth shape, and not a definitive one
+# ---------------------------------------------------------------------------
+
+
+class TestEdgeRejection:
+    """Regression: arXiv's edge refuses a request with 406 and an *empty* body.
+
+    Every classifier here keyed on 400-or-200, so the refusal fell through to
+    ``http.error_dict`` as ``"arXiv HTTP 406: "`` — a literally empty explanation
+    carrying no verdict. Nothing retried it, nothing cached it, and
+    ``download_pdf`` read the missing ``retryable`` as "don't try the PDF host",
+    so a healthy PDF host went untouched while the metadata API refused.
+
+    Classified transient, never ``not_found``: the same status covers an id arXiv
+    will not resolve and one the edge merely refused too soon after another.
+    """
+
+    @staticmethod
+    def _stub_406(monkeypatch):
+        return _stub_text_response(monkeypatch, "", status_code=406, raises=_http_status_error(406))
+
+    @pytest.mark.asyncio
+    async def test_a_rejection_is_retryable_and_never_cached(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        calls = self._stub_406(monkeypatch)
+
+        result = await arxiv.get_paper("2301.99999")
+
+        assert result["retryable"] is True
+        assert "not_found" not in result
+        canonical = arxiv.canonical_arxiv_id("2301.99999")
+        assert cache.get_negative(arxiv.NAMESPACE, "papers", canonical) is None
+        # Uncached in both halves, so a caller taking the advice re-requests.
+        assert await arxiv.get_paper("2301.99999") == result
+        assert calls[0] == 2
+
+    @pytest.mark.asyncio
+    async def test_the_message_is_not_the_empty_body(self, tmp_path, monkeypatch):
+        """The whole point: ``response_error_dict`` would report 0 bytes as the reason."""
+        _reset_throttle(monkeypatch, tmp_path)
+        self._stub_406(monkeypatch)
+
+        error = (await arxiv.get_paper("2301.99999"))["error"]
+
+        assert not error.endswith(": ")
+        assert "406" in error
+        assert "retry" in error.lower()
+
+    @pytest.mark.asyncio
+    async def test_it_is_checked_before_raise_for_status(self, tmp_path, monkeypatch):
+        """The status check, not the exception, is what classifies it — as with a 404.
+
+        A stub whose ``raise_for_status`` is a no-op still yields the rejection, which
+        it could not if the branch lived in ``except http.HTTPX_ERRORS``.
+        """
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_text_response(monkeypatch, "", status_code=406, raises=None)
+
+        assert (await arxiv.get_paper("2301.99999"))["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_search_is_retryable_not_unclassified(self, tmp_path, monkeypatch):
+        """Unlike the ``api/errors`` rejection, which blames the query and is final."""
+        _reset_throttle(monkeypatch, tmp_path)
+        self._stub_406(monkeypatch)
+
+        result = await arxiv.search_papers("ti:attention")
+
+        assert result["retryable"] is True
+        assert "406" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_versions_lookup_is_retryable(self, tmp_path, monkeypatch):
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        self._stub_406(monkeypatch)
+
+        result = await arxiv.get_versions("2301.00001")
+
+        assert result["retryable"] is True
+        assert cache.get_negative(arxiv.NAMESPACE, "versions", "2301.00001") is None
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_html_fetch_is_retryable_and_uncached(self, tmp_path, monkeypatch):
+        """``get_html``'s negative entry means "this paper has no rendering"."""
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        self._stub_406(monkeypatch)
+
+        result = await arxiv.get_html("2301.00001")
+
+        assert result["retryable"] is True
+        assert cache.get_negative(arxiv.NAMESPACE, "html", "2301.00001") is None
+
+
+# ---------------------------------------------------------------------------
 # download_pdf: the branches the stubs were hiding
 # ---------------------------------------------------------------------------
 
@@ -1390,9 +1490,9 @@ class TestDownloadPdfWithoutMetadata:
 
     @staticmethod
     def _install(monkeypatch, tmp_path, metadata, *, pdf_status=200, pdf_body=_PDF):
-        """Stub the metadata GET with ``metadata`` (a response text, or an exception
-        to raise) and the PDF host with a real streamed response. Returns the
-        metadata call counter and the list of streamed requests."""
+        """Stub the metadata GET with ``metadata`` and the PDF host with a real streamed
+        response. ``metadata`` is a response text, a bare status code, or an exception to
+        raise. Returns the metadata call counter and the list of streamed requests."""
         from academic_tools_mcp.net import clients
         from tests.helpers.download_fakes import streaming_client
 
@@ -1404,6 +1504,8 @@ class TestDownloadPdfWithoutMetadata:
             metadata_calls[0] += 1
             if isinstance(metadata, BaseException):
                 raise metadata
+            if isinstance(metadata, int):
+                return httpx.Response(metadata, request=httpx.Request("GET", url))
             return httpx.Response(200, text=metadata, request=httpx.Request("GET", url))
 
         monkeypatch.setattr(arxiv, "_throttled_get", fake_throttled_get)
@@ -1432,6 +1534,23 @@ class TestDownloadPdfWithoutMetadata:
         again = await arxiv.download_pdf("2301.00001")
         assert again["cached"] is True
         assert len(pdf_requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_metadata_edge_rejection_falls_back_to_the_pdf_host(
+        self, tmp_path, monkeypatch
+    ):
+        """The live symptom: the export API refuses while the PDF host serves 200.
+
+        The two ride different edges, so a refusal on one says nothing about the other.
+        """
+        metadata_calls, pdf_requests = self._install(monkeypatch, tmp_path, 406)
+
+        result = await arxiv.download_pdf("2301.00001")
+
+        assert "error" not in result, result
+        assert metadata_calls[0] == 1
+        assert [str(r.url) for r in pdf_requests] == ["https://arxiv.org/pdf/2301.00001"]
+        assert arxiv.pdf_path("2301.00001").read_bytes() == self._PDF
 
     @pytest.mark.asyncio
     async def test_a_metadata_timeout_falls_back_to_the_pdf_host(self, tmp_path, monkeypatch):
@@ -1834,6 +1953,47 @@ class TestGetPapersBatch:
         ]
         assert arxiv.id_from_entry(out["2301.00001"]) == "2301.00001v1"
         assert out["2301.00002"]["not_found"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_edge_rejected_chunk_falls_back_to_singletons(self, tmp_path, monkeypatch):
+        """One id the edge won't resolve refuses the whole ``id_list``.
+
+        Without the fallback a single absent id poisoned every other id in the chunk
+        with an unclassified error, up to ``_BATCH_CHUNK_SIZE`` of them at a time.
+        """
+        from academic_tools_mcp.store import cache
+
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(
+            monkeypatch,
+            (406, ""),
+            (200, _feed(_search_entry("2301.00001v1"), total="1")),
+            (406, ""),
+        )
+
+        out = await arxiv.get_papers_batch(["2301.00001", "2301.99999"])
+
+        assert [s.get("id_list") for s in seen] == [
+            "2301.00001,2301.99999",
+            "2301.00001",
+            "2301.99999",
+        ]
+        assert arxiv.id_from_entry(out["2301.00001"]) == "2301.00001v1"
+        # The refused id keeps the transient verdict, so nothing claims it is absent.
+        assert out["2301.99999"]["retryable"] is True
+        assert "not_found" not in out["2301.99999"]
+        assert cache.get_negative(arxiv.NAMESPACE, "papers", "2301.99999") is None
+
+    @pytest.mark.asyncio
+    async def test_a_single_id_edge_rejection_is_not_refetched(self, tmp_path, monkeypatch):
+        """Falling back for a lone id would repeat the request that was just refused."""
+        _reset_throttle(monkeypatch, tmp_path)
+        seen = _stub_scripted_client(monkeypatch, (406, ""))
+
+        out = await arxiv.get_papers_batch(["2301.99999"])
+
+        assert [s.get("id_list") for s in seen] == ["2301.99999"]
+        assert out["2301.99999"]["retryable"] is True
 
     @pytest.mark.asyncio
     async def test_a_500_carrying_the_error_entry_falls_back_to_singletons(
