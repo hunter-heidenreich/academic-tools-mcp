@@ -241,8 +241,11 @@ async def get_paper_references(
     ``auto`` surveys both providers on page 1 and pages from the winner — Crossref
     unless OpenCitations has materially more rows — saving a turn over
     get_paper_references_count; the winner is echoed in ``_source``. An errored
-    provider loses automatically and the response gains ``partial_failure`` naming
-    it, so an empty result isn't mistaken for a confident "no references".
+    provider loses automatically and the response gains ``partial_failure``:
+    ``{source}`` plus that provider's ``error`` and whichever of ``retryable``,
+    ``retry_after_seconds``, ``not_found``, ``backpressure``, ``max_concurrency``,
+    ``suggestion`` it set — so an empty result isn't mistaken for a confident "no
+    references".
 
     Paginating past page 1 must pin ``source`` to the ``_source`` from page 1
     (``auto`` there is an error) — re-surveying could pick a different source
