@@ -1,8 +1,8 @@
 """Paper tools: metadata / authors / abstract / bibtex / versions / updates / profiles."""
 
 import asyncio
-from collections.abc import Callable
-from typing import Annotated, Any
+from collections.abc import Awaitable, Callable
+from typing import Annotated, Any, NamedTuple
 
 from pydantic import Field
 
@@ -245,24 +245,43 @@ def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) ->
     }
 
 
+def _format_openalex_via_preprint(
+    work: dict[str, Any], journal_canonical: str, *, source: str, preprint_key: str, preprint: Any
+) -> dict[str, Any]:
+    """The journal work a ``follow_published`` chain reached, tagged with its preprint.
+
+    The two wrappers below keep the per-source names, since ``_source`` and the
+    preprint key differ together and a caller reads them as a pair.
+    """
+    base = _format_openalex_metadata(work, journal_canonical)
+    base["_source"] = source
+    base[preprint_key] = preprint
+    base["followed_published"] = True  # symmetric with the False on fall-through
+    return base
+
+
 def _format_openalex_via_biorxiv(
     work: dict[str, Any], preprint_doi: str | None, journal_canonical: str
 ) -> dict[str, Any]:
-    base = _format_openalex_metadata(work, journal_canonical)
-    base["_source"] = "openalex_via_biorxiv"
-    base["preprint_doi"] = preprint_doi
-    base["followed_published"] = True  # symmetric with the False on fall-through
-    return base
+    return _format_openalex_via_preprint(
+        work,
+        journal_canonical,
+        source="openalex_via_biorxiv",
+        preprint_key="preprint_doi",
+        preprint=preprint_doi,
+    )
 
 
 def _format_openalex_via_arxiv(
     work: dict[str, Any], preprint_arxiv_id: str, journal_canonical: str
 ) -> dict[str, Any]:
-    base = _format_openalex_metadata(work, journal_canonical)
-    base["_source"] = "openalex_via_arxiv"
-    base["preprint_arxiv_id"] = preprint_arxiv_id
-    base["followed_published"] = True  # symmetric with the False on fall-through
-    return base
+    return _format_openalex_via_preprint(
+        work,
+        journal_canonical,
+        source="openalex_via_arxiv",
+        preprint_key="preprint_arxiv_id",
+        preprint=preprint_arxiv_id,
+    )
 
 
 def _arxiv_published_doi(paper: dict[str, Any]) -> str | None:
@@ -389,6 +408,41 @@ def _provider_error(
     return result
 
 
+def _institution_names(items: Any, key: str) -> list[str]:
+    """The non-empty string values of *key* across untyped institution rows."""
+    return [name for inst in dict_list(items) if isinstance(name := inst.get(key), str) and name]
+
+
+def _authors_page(
+    rows: list[dict[str, Any]],
+    start: int,
+    end: int,
+    *,
+    build: Callable[[dict[str, Any]], tuple[dict[str, Any], list[str]]],
+) -> dict[str, Any]:
+    """One page of authors plus that page's deduped institution roll-up.
+
+    ``build`` turns one provider row into ``(author, institution names)``; the slice,
+    the order-preserving dedupe and the key set are shared, so the Crossref and
+    OpenAlex pages cannot drift into two shapes. ``author_count`` is the **whole**
+    list the page was sliced from, never the page.
+    """
+    page_authors: list[dict[str, Any]] = []
+    page_institutions: list[str] = []
+    for row in rows[start:end]:
+        author, inst_names = build(row)
+        for name in inst_names:
+            if name not in page_institutions:
+                page_institutions.append(name)
+        page_authors.append(author)
+    return {
+        "author_count": len(rows),
+        "authors": page_authors,
+        "page_institution_count": len(page_institutions),
+        "page_institutions": page_institutions,
+    }
+
+
 def _format_crossref_authors(work: dict[str, Any], start: int, end: int) -> dict[str, Any]:
     """One page of Crossref authors, in ``_format_openalex_authors``' shape.
 
@@ -398,33 +452,18 @@ def _format_crossref_authors(work: dict[str, Any], start: int, end: int) -> dict
     never feature-detects. ``author_count`` counts the **filtered** list the page
     was sliced from, never the raw one.
     """
-    all_authors = dict_list(work.get("author"))
-    page_authors: list[dict[str, Any]] = []
-    page_institutions: list[str] = []
-    for a in all_authors[start:end]:
-        inst_names = [
-            name
-            for inst in dict_list(a.get("affiliation"))
-            if isinstance(name := inst.get("name"), str) and name
-        ]
-        for name in inst_names:
-            if name not in page_institutions:
-                page_institutions.append(name)
-        page_authors.append(
-            {
-                "name": crossref.author_name(a),
-                "openalex_id": None,
-                "position": a.get("sequence"),
-                "is_corresponding": None,
-                "institutions": inst_names,
-            }
-        )
-    return {
-        "author_count": len(all_authors),
-        "authors": page_authors,
-        "page_institution_count": len(page_institutions),
-        "page_institutions": page_institutions,
-    }
+
+    def build(a: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        inst_names = _institution_names(a.get("affiliation"), "name")
+        return {
+            "name": crossref.author_name(a),
+            "openalex_id": None,
+            "position": a.get("sequence"),
+            "is_corresponding": None,
+            "institutions": inst_names,
+        }, inst_names
+
+    return _authors_page(dict_list(work.get("author")), start, end, build=build)
 
 
 def _format_metadata_by_source(
@@ -617,6 +656,26 @@ async def _biorxiv_versions(identifier: str, *, force_refresh: bool) -> dict[str
     }
 
 
+class _BatchPlan(NamedTuple):
+    """One provider's batch leg of get_papers_metadata, and the slots waiting on it.
+
+    ``source`` is a dispatch tag, not a formatter: the leg formats through
+    ``_format_metadata_by_source``, the helper the singleton leg and
+    ``get_paper_metadata`` already share, so a field added there cannot reach some
+    paths and miss the batched ones.
+
+    ``fetch`` and ``pending`` are bound per call — the first so a patched provider
+    module is seen and ``force_refresh`` is captured, the second because a list at
+    module scope would carry slots between calls.
+    """
+
+    source: manual.MetadataSource
+    fetch: Callable[[list[str]], Awaitable[dict[str, dict[str, Any]]]]
+    canonical: Callable[[str], str]
+    missing: Callable[[str], str]
+    pending: list[tuple[int, str, str]]  # (slot, routed id, caller's input)
+
+
 @mcp.tool
 async def get_papers_metadata(
     identifiers: Annotated[
@@ -656,13 +715,30 @@ async def get_papers_metadata(
     results: list[dict[str, Any] | None] = [None] * n
 
     singleton_tasks: list[asyncio.Task] = []
-    openalex_indices: list[tuple[int, str, str]] = []  # (slot, routed id, caller's input)
-    arxiv_indices: list[tuple[int, str, str]] = []
+    plans = (
+        _BatchPlan(
+            "openalex",
+            lambda ids: openalex.get_works_batch(ids, force_refresh=force_refresh),
+            openalex.canonical_doi,
+            lambda routed: f"No work found for DOI: {routed}",
+            [],
+        ),
+        _BatchPlan(
+            "arxiv",
+            # One id_list call per chunk: singletons queue behind arXiv's single
+            # connection and a fan-out past its burst cap is refused.
+            lambda ids: arxiv.get_papers_batch(ids, force_refresh=force_refresh),
+            arxiv.canonical_arxiv_id,
+            lambda routed: f"No paper found for arXiv ID: {routed}",
+            [],
+        ),
+    )
+    by_source = {plan.source: plan for plan in plans}
 
     async def _singleton_one(slot: int, routed: str, ident: str) -> None:
         source, canonical, obj = await _fetch_source(routed, force_refresh=force_refresh)
         if source is None:
-            # Unreachable: the loop routes only arXiv/bioRxiv/ACL here. Guards the hint
+            # Unreachable: the loop routes only bioRxiv/ACL here. Guards the hint
             # lookup against a None key regardless.
             results[slot] = {"_input": ident, **obj}
             return
@@ -687,62 +763,35 @@ async def get_papers_metadata(
             results[i] = {"_input": ident, **pmid_error}
             continue
         source = manual.resolve_metadata_source(routed)
-        if source in ("biorxiv", "acl_anthology"):
+        plan = by_source.get(source) if source is not None else None
+        if plan is not None:
+            plan.pending.append((i, routed, ident))
+        elif source in ("biorxiv", "acl_anthology"):
             singleton_tasks.append(asyncio.create_task(_singleton_one(i, routed, ident)))
-        elif source == "arxiv":
-            arxiv_indices.append((i, routed, ident))
-        elif source == "openalex":
-            openalex_indices.append((i, routed, ident))
         else:
             results[i] = {"_input": ident, **_unknown_identifier_error(ident)}
 
-    async def _openalex_batch() -> None:
-        if not openalex_indices:
+    async def _run_batch(plan: _BatchPlan) -> None:
+        if not plan.pending:
             return
-        batch = await openalex.get_works_batch(
-            [d for _, d, _ in openalex_indices], force_refresh=force_refresh
-        )
-        for slot, routed, ident in openalex_indices:
-            canonical = openalex.canonical_doi(routed)
-            work = batch.get(canonical)
-            # get_works_batch is total, so `is None` means a test stub. dict(): batch
-            # entries aren't deep-copied and two spellings of one DOI share the one entry.
-            if work is None or "error" in work:
-                err = work or {"error": f"No work found for DOI: {routed}"}
-                results[slot] = {
-                    "_input": ident,
-                    **enrich_error(dict(err), _OPENALEX_METADATA_HINT),
-                }
-                continue
-            formatted = _format_openalex_metadata(work, canonical)
-            formatted["_input"] = ident
-            results[slot] = formatted
-
-    async def _arxiv_batch() -> None:
-        if not arxiv_indices:
-            return
-        # One id_list call per chunk: singletons queue behind arXiv's single connection
-        # and a fan-out past its burst cap is refused.
-        batch = await arxiv.get_papers_batch(
-            [r for _, r, _ in arxiv_indices], force_refresh=force_refresh
-        )
-        for slot, routed, ident in arxiv_indices:
-            canonical = arxiv.canonical_arxiv_id(routed)
-            paper = batch.get(canonical)
-            # get_papers_batch is total, so `is None` means a test stub. dict(): batch
+        batch = await plan.fetch([routed for _, routed, _ in plan.pending])
+        for slot, routed, ident in plan.pending:
+            canonical = plan.canonical(routed)
+            obj = batch.get(canonical)
+            # The batch getters are total, so `is None` means a test stub. dict(): batch
             # entries aren't deep-copied and two spellings of one id share the one entry.
-            if paper is None or "error" in paper:
-                err = paper or {"error": f"No paper found for arXiv ID: {routed}"}
+            if obj is None or "error" in obj:
+                err = obj or {"error": plan.missing(routed)}
                 results[slot] = {
                     "_input": ident,
-                    **enrich_error(dict(err), _ARXIV_METADATA_HINT),
+                    **enrich_error(dict(err), _METADATA_HINT_BY_SOURCE[plan.source]),
                 }
                 continue
-            formatted = _format_arxiv_metadata(paper, canonical)
+            formatted = _flag_fallback(_format_metadata_by_source(plan.source, obj, canonical), obj)
             formatted["_input"] = ident
             results[slot] = formatted
 
-    await asyncio.gather(*singleton_tasks, _openalex_batch(), _arxiv_batch())
+    await asyncio.gather(*singleton_tasks, *(_run_batch(plan) for plan in plans))
 
     # Defensive: a slot still None is a bug — surface it, don't crash the caller.
     for i, r in enumerate(results):
@@ -761,33 +810,42 @@ def _format_openalex_authors(work: dict[str, Any], start: int, end: int) -> dict
     Returns ``{author_count, authors, page_institutions, page_institution_count}``,
     ``author_count`` being the whole list; the caller adds the shared envelope.
     """
-    all_authorships = dict_list(work.get("authorships"))
-    page_authors: list[dict[str, Any]] = []
-    page_institutions: list[str] = []
-    for a in all_authorships[start:end]:
+
+    def build(a: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         author_info = as_dict(a.get("author"))
-        inst_names = [
-            name
-            for inst in dict_list(a.get("institutions"))
-            if isinstance(name := inst.get("display_name"), str) and name
-        ]
-        for name in inst_names:
-            if name not in page_institutions:
-                page_institutions.append(name)
-        page_authors.append(
-            {
-                "name": author_info.get("display_name"),
-                "openalex_id": author_info.get("id"),
-                "position": a.get("author_position"),
-                "is_corresponding": a.get("is_corresponding"),
-                "institutions": inst_names,
-            }
-        )
+        inst_names = _institution_names(a.get("institutions"), "display_name")
+        return {
+            "name": author_info.get("display_name"),
+            "openalex_id": author_info.get("id"),
+            "position": a.get("author_position"),
+            "is_corresponding": a.get("is_corresponding"),
+            "institutions": inst_names,
+        }, inst_names
+
+    return _authors_page(dict_list(work.get("authorships")), start, end, build=build)
+
+
+def _authors_envelope(
+    source: str,
+    canonical_id: str | None,
+    page: int,
+    page_size: int,
+    end: int,
+    page_slice: dict[str, Any],
+) -> dict[str, Any]:
+    """The shared envelope around one author page.
+
+    One home for the key set and for ``has_more``, which is the page's end against
+    the *whole* list — so the Crossref branch and the provider branch cannot answer
+    the "is there more?" question differently for the same paper.
+    """
     return {
-        "author_count": len(all_authorships),
-        "authors": page_authors,
-        "page_institution_count": len(page_institutions),
-        "page_institutions": page_institutions,
+        "_source": source,
+        "_canonical_id": canonical_id,
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < page_slice["author_count"],
+        **page_slice,
     }
 
 
@@ -843,16 +901,9 @@ async def get_paper_authors(
         source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
     )
     if cr is not None:
-        page_slice = _format_crossref_authors(cr, start, end)
-        total = page_slice["author_count"]
-        return {
-            "_source": "crossref",
-            "_canonical_id": canonical_id,
-            "page": page,
-            "page_size": page_size,
-            "has_more": end < total,
-            **page_slice,
-        }
+        return _authors_envelope(
+            "crossref", canonical_id, page, page_size, end, _format_crossref_authors(cr, start, end)
+        )
 
     if "error" in obj:
         return _provider_error(obj, source, crossref_retryable=cr_retryable)
@@ -870,15 +921,7 @@ async def get_paper_authors(
             "page_institution_count": 0,
         }
 
-    total = page_slice["author_count"]
-    result = {
-        "_source": source,
-        "_canonical_id": canonical_id,
-        "page": page,
-        "page_size": page_size,
-        "has_more": end < total,
-        **page_slice,
-    }
+    result = _authors_envelope(source, canonical_id, page, page_size, end, page_slice)
     if source == "biorxiv":
         result["author_corresponding"] = obj.get("author_corresponding")
         result["author_corresponding_institution"] = obj.get("author_corresponding_institution")

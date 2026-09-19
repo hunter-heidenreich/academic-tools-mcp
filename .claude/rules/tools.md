@@ -23,11 +23,16 @@ the cycle** — a helper two tool modules need moves into `app.py`.
 call providers directly and tests monkeypatch the provider module object, which
 every importer shares.
 
-**A new field on a paper response has more than one formatter to reach.**
-`_format_metadata_by_source` covers `get_paper_metadata` and
-`get_papers_metadata`'s *singleton* closure; the batch closure calls
-`_format_openalex_metadata` directly, so a field added only to the shared helper
-silently misses every batched OpenAlex DOI.
+**Every paper payload is built by `_format_metadata_by_source`, both batch legs
+included**, so a field added to the shared helper cannot reach `get_paper_metadata`
+and the singleton leg while missing every batched OpenAlex DOI.
+
+**`_BatchPlan` carries a `MetadataSource` tag, never a formatter.** A plan field
+holding the formatter type-checks cleanly and puts that hazard straight back.
+
+**`_format_crossref_metadata` is the one hand-mirrored key set**, so a new OpenAlex
+field must be added there too, or `fallback_crossref` answers a narrower shape than
+the tool it stands in for.
 
 ## Cross-tool response contracts
 

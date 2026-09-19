@@ -1409,7 +1409,7 @@ class TestPmidRouting:
 
 
 class TestCitedByCountReachesEveryOpenalexPath:
-    """The batch closure bypasses the dispatcher, so a field can reach one path only."""
+    """Both batch legs route through the dispatcher, so no field can reach one path only."""
 
     WORK: ClassVar[dict] = {"id": "W1", "doi": "https://doi.org/10.1234/x", "cited_by_count": 84352}
 
@@ -1458,7 +1458,7 @@ class TestCitedByCountReachesEveryOpenalexPath:
 
     @pytest.mark.asyncio
     async def test_the_three_paths_agree_on_the_key_set(self, monkeypatch):
-        """The symmetry the batch closure can silently break."""
+        """The symmetry a formatter-per-leg batch would silently break."""
 
         async def fake_work(doi, **kwargs):
             return self.WORK
