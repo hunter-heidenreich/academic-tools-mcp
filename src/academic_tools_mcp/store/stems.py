@@ -6,7 +6,9 @@ belongs to it. Below the conversion pipeline, so a provider can name a PDF witho
 importing a converter.
 """
 
+import contextlib
 import hashlib
+import os
 import re
 from pathlib import Path
 from urllib.parse import quote
@@ -43,9 +45,9 @@ _MIGRATABLE_SUFFIXES = frozenset({".pdf", ".md"})
 def list_dir(path: Path) -> list[Path]:
     """Directory entries, sorted and materialised; ``[]`` for anything unwalkable.
 
-    The listing every startup sweep walks. Materialised because a sweep renames files
-    into the directory it is walking; never raises because the sweeps run inside the
-    startup lifespan, where an unreadable cache directory would otherwise stop the server.
+    Materialised because a sweep files entries into the directory it is walking;
+    never raises because the sweeps run inside the startup lifespan, where an
+    unreadable cache directory would otherwise stop the server.
     """
     try:
         return sorted(path.iterdir())
@@ -58,8 +60,14 @@ def migrate_legacy_stems() -> int:
 
     Most of a cache is already correct — an ordinary arXiv id or DOI stem already
     lands inside ``_MIGRATED_STEM_RE``'s alphabet — so the cheap stem checks gate the
-    stat, not the reverse. Returns the number of files moved; idempotent and
-    best-effort, so a file it can't rename is left for the next run.
+    stat, not the reverse. Returns the number of files moved; best-effort, so a file
+    it can't move is left for the next run, and a run that finishes a move an earlier
+    one left half-done counts that file.
+
+    Link-then-unlink rather than ``rename``: two servers starting against one
+    ``CACHE_DIR`` is ordinary, and ``rename`` overwrites silently, so two legacy
+    stems mapping to one safe stem would lose a file. A filesystem without hard
+    links therefore keeps its legacy filenames — one re-download, never data loss.
 
     The sections index is deliberately not migrated: its cache keys are hashed, so
     there is nothing to rename, and a missing index is re-derived from the markdown
@@ -77,19 +85,32 @@ def migrate_legacy_stems() -> int:
                 if not path.is_file():
                     continue
                 target = path.with_name(safe_stem(path.stem) + path.suffix)
-                if target.exists():
-                    # Already migrated, or a real collision — leave both rather than overwrite.
-                    continue
                 try:
-                    path.rename(target)
-                    moved += 1
+                    os.link(path, target)
+                except FileExistsError:
+                    # Same file: a move an earlier run left half-done, so finish it.
+                    # A different one: a real collision — leave both, overwrite neither.
+                    with contextlib.suppress(OSError):
+                        if path.samefile(target):
+                            path.unlink()
+                            moved += 1
+                    continue
                 except OSError:
                     continue
+                # A failure here strands a duplicate, which the next run collects.
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                moved += 1
     return moved
 
 
 def sections_key(canonical: str) -> str:
-    """Cache key for section index JSON."""
+    """Cache key for section index JSON.
+
+    Deliberately ``safe_stem`` itself rather than a hash of its own: the key has to
+    agree with the markdown filename beside it, so a stem recovered off disk can be
+    traded for the index describing it.
+    """
     return safe_stem(canonical)
 
 
@@ -126,6 +147,8 @@ def checksum_text(markdown: str) -> str:
     """The digest a writer stamps into the sections index.
 
     Must equal the digest of what ``atomic.write_text`` puts on disk for the
-    same string — that writer pins ``newline=""``.
+    same string — that writer pins ``newline=""``. The read path re-runs this
+    over the file it just read and re-parses on a mismatch, which is what makes
+    a losing writer's entry self-heal instead of lying.
     """
     return hashlib.sha256(markdown.encode("utf-8")).hexdigest()

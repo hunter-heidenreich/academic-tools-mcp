@@ -1,6 +1,7 @@
 """The temp-and-rename guarantee, and every way it can be broken."""
 
 import os
+import shutil
 import stat
 import time
 from unittest import mock
@@ -79,7 +80,7 @@ def test_copy_roundtrips_bytes(tmp_path):
 
 
 def test_copy_takes_source_mode_but_its_own_mtime(tmp_path):
-    """copystat carries the source's mode across, but the destination's mtime
+    """copymode carries the source's mode across, but the destination's mtime
     is the *write* time. Copying the source mtime would backdate the in-flight
     temp file, and gc_orphan_tmp_files decides what to sweep by mtime."""
 
@@ -96,11 +97,17 @@ def test_copy_takes_source_mode_but_its_own_mtime(tmp_path):
     assert dst.stat().st_mtime > old + 3600, "mtime must be the write time, not the source's"
 
 
-def test_copy_temp_survives_a_concurrent_orphan_sweep(tmp_path):
+@pytest.mark.parametrize("sweep_at", ["copymode", "replace"])
+def test_copy_temp_survives_a_concurrent_orphan_sweep(tmp_path, sweep_at):
     """Regression: importing a PDF older than the orphan cutoff used to hand
-    gc_orphan_tmp_files a live temp file that looked like an orphan (copystat
-    had backdated it), so a sweep racing the copy unlinked the temp and the
-    rename failed with FileNotFoundError."""
+    gc_orphan_tmp_files a live temp file that looked like an orphan, so a sweep
+    racing the copy unlinked the temp and the rename failed with
+    FileNotFoundError.
+
+    Swept at both points the copy passes through after the bytes land, not just
+    at the rename: the original fix (copystat, then utime back) left the temp
+    backdated *between* those two lines and only the later point was covered.
+    copymode never backdates it, so there is no such interval left."""
 
     src = tmp_path / "ancient.pdf"
     src.write_bytes(b"%PDF-1.4 ancient")
@@ -109,19 +116,50 @@ def test_copy_temp_survives_a_concurrent_orphan_sweep(tmp_path):
 
     dst = cache.cache_dir("manual", "pdfs") / "ancient.pdf"
 
-    real_replace = os.replace
     swept = []
 
-    def replace_after_a_sweep(a, b):
-        # A second server process starting up mid-copy.
-        swept.append(cache.gc_orphan_tmp_files())
-        return real_replace(a, b)
+    def sweep_then(real):
+        def wrapper(*args):
+            # A second server process starting up mid-copy.
+            swept.append(cache.gc_orphan_tmp_files())
+            return real(*args)
 
-    with mock.patch.object(atomic.os, "replace", replace_after_a_sweep):
+        return wrapper
+
+    if sweep_at == "copymode":
+        patch = mock.patch.object(atomic.shutil, "copymode", sweep_then(shutil.copymode))
+    else:
+        patch = mock.patch.object(atomic.os, "replace", sweep_then(os.replace))
+
+    with patch:
         atomic.copy(src, dst)
 
     assert swept == [0], "the live temp file must not look like an orphan"
     assert dst.read_bytes() == b"%PDF-1.4 ancient"
+
+
+def test_copy_does_not_carry_the_sources_flags(tmp_path):
+    """copystat carried st_flags too, so importing a quarantined or ``uchg``
+    PDF stamped those flags onto the temp file. An immutable cache file is one
+    neither gc_orphan_tmp_files nor a forced re-download can remove — and the
+    import failed outright, because utime on an immutable file raises."""
+    if not hasattr(os, "chflags") or not hasattr(stat, "UF_IMMUTABLE"):
+        pytest.skip("no BSD file flags on this platform")
+
+    src = tmp_path / "locked.pdf"
+    src.write_bytes(b"%PDF-1.4 x")
+    dst = tmp_path / "out" / "locked.pdf"
+    try:
+        os.chflags(src, stat.UF_IMMUTABLE)
+    except OSError:
+        pytest.skip("filesystem does not support file flags")
+
+    try:
+        atomic.copy(src, dst)
+        assert not dst.stat().st_flags & stat.UF_IMMUTABLE
+        dst.unlink()  # the point: still removable
+    finally:
+        os.chflags(src, 0)
 
 
 def test_copy_no_torn_file_on_failure(tmp_path, monkeypatch):

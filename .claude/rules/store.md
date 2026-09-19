@@ -50,6 +50,11 @@ the protocol, so it applies to every getter.
   the whole RFC 3986 unreserved set (`~` and `_` included).
 - **A caller holding a *stem* off disk rather than an identifier takes
   `markdown_path_for_stem` / `sections_key_for_stem`.**
+- **Accepted limitation: a cache root without hard links keeps its legacy stem
+  filenames.** `migrate_legacy_stems` links-then-unlinks so a collision is refused
+  by the filesystem rather than by a check decided before the window it guards;
+  falling back to `rename` would restore the silent overwrite on exactly the
+  filesystems that took the fallback.
 
 ### Checksums
 

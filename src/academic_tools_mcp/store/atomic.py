@@ -38,17 +38,17 @@ def write_text(path: Path, payload: str) -> None:
 def copy(src: Path, dst: Path) -> None:
     """Copy ``src`` onto ``dst``, never exposing a half-written file.
 
-    Takes the source's permission bits and flags; the destination's mtime is
-    its own write time.
+    Takes the source's permission bits and nothing else. ``copymode`` rather than
+    ``copystat`` for two reasons: a temp file's mtime must stay its own write time
+    or ``cache.gc_orphan_tmp_files`` reads a live one as an orphan, and copying
+    ``st_flags`` would stamp a quarantined or ``uchg`` import onto a cache file
+    nothing can then unlink.
     """
     fd, tmp_path = _new_temp(dst)
     try:
         with os.fdopen(fd, "wb") as out, src.open("rb") as inp:
             shutil.copyfileobj(inp, out)
-        shutil.copystat(src, tmp_path)
-        # Invariant: a temp file's mtime is its own write time — copystat
-        # backdated it to the source's, which cache.gc_orphan_tmp_files sweeps.
-        os.utime(tmp_path, None)
+        shutil.copymode(src, tmp_path)
         os.replace(tmp_path, dst)
     except BaseException:
         with contextlib.suppress(OSError):

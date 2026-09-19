@@ -5,7 +5,7 @@ import copy
 import hashlib
 import json
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Hashable
 from pathlib import Path
 from typing import Any
 
@@ -109,14 +109,18 @@ def _read_entry(path: Path, *, max_age_seconds: float | None = None) -> dict[str
 def _write_entry(namespace: str, path: Path, entry: dict[str, Any]) -> bool:
     """Serialise ``entry`` to ``path`` atomically; report whether it landed.
 
-    ``indent=2`` trades bytes for a record an operator can read unaided. Only
-    ``OSError`` is absorbed — an unserialisable payload is a programming error.
+    ``indent=2`` trades bytes for a record an operator can read unaided, and
+    ``ensure_ascii=False`` is what keeps it readable — at the cost of the second
+    absorbed error below. A payload that won't serialise at all (a ``TypeError``,
+    a circular reference) is a programming error and still propagates.
     """
     payload = json.dumps(entry, ensure_ascii=False, indent=2)
     try:
         atomic.write_text(path, payload)
-    except OSError:
-        # ENOSPC, EROFS, EACCES, EDQUOT, a name too long...
+    except (OSError, UnicodeEncodeError):
+        # ENOSPC, EROFS, EACCES, EDQUOT, a name too long... and a lone surrogate:
+        # ``json.loads`` builds one from a spec-valid unpaired ``\uD800`` escape,
+        # which UTF-8 then refuses. Not an OSError, so it needs naming here.
         stats.incr(namespace, "cache_write_failures")
         return False
     return True
@@ -136,6 +140,10 @@ def get(
     None; exactly that age still serves. Pass it for data that drifts — citation
     counts, bioRxiv's late ``published_doi``, the OpenCitations graph — and omit it
     for data immutable once written.
+
+    **Eviction is destructive, so a TTL belongs to the ``(namespace, entity)``
+    pair, not to the call site.** A reader passing a shorter one unlinks the entry
+    for everyone, including the reader that would still have served it.
 
     Only a serve moves a counter, and only ``cache_hits``; ``cache_misses`` means
     "went upstream" and is booked on the fetch side. ``count=False`` for a read
@@ -184,6 +192,10 @@ def warm(
 
 # A negative entry records a *definitive* "not found" (404 or equivalent), never
 # a transient failure — those stay retryable.
+#
+# These expire by an ``_expires_at`` stamped into the entry, not by mtime the way
+# positives do: ``put_negative`` takes a per-call TTL, and a reader has no way to
+# recover which one the writer chose.
 
 
 def get_negative(namespace: str, entity: str, identifier: str) -> dict[str, Any] | None:
@@ -239,14 +251,14 @@ def invalidate(namespace: str, entity: str, identifier: str) -> None:
 
 async def cached_lookup(
     *,
-    single_flight: "singleflight.SingleFlight",
+    single_flight: singleflight.SingleFlight,
     namespace: str,
     entity: str,
     canonical: str,
     positive_ttl: float,
     fetch: Callable[[], Awaitable[dict[str, Any]]],
     force_refresh: bool = False,
-    sf_key: Any = None,
+    sf_key: Hashable | None = None,
 ) -> dict[str, Any]:
     """Run the shared cached-getter protocol around a provider's ``fetch``.
 

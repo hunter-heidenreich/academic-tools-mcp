@@ -12,6 +12,7 @@ from weakref import WeakValueDictionary
 import pytest
 
 from academic_tools_mcp import papers
+from academic_tools_mcp.net import stats
 from academic_tools_mcp.store import cache, stems
 from tests.helpers.checksums import markdown_checksum
 
@@ -436,3 +437,63 @@ class TestRekeySections:
 
     def test_no_source_entry_is_not_an_error(self):
         assert not papers.rekey_sections("manual", "20079334", "manual", "10.1234/example")
+
+
+class TestMarkdownWriteFailure:
+    """The markdown write had no handler at all, so a read-only or full cache
+    raised straight out of ``convert_paper`` and ``import_paper`` — past the
+    error vocabulary every other failure on those paths speaks, and out to the
+    agent as a protocol error carrying an internal path.
+    """
+
+    @pytest.fixture
+    def md_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        path = stems.markdown_path("test", "unwritable")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @pytest.fixture
+    def full_disk(self, monkeypatch):
+        def enospc(*a, **kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(papers.index.atomic, "write_text", enospc)
+
+    def test_returns_an_error_dict_instead_of_raising(self, md_path, full_disk):
+        result = papers.store_markdown_and_index("test", "unwritable", md_path, "# A\n", "full")
+
+        assert result["retryable"] is True
+        assert result["conversion_mode"] == "full"
+        assert "error" in result and "markdown_path" not in result
+
+    def test_the_message_carries_no_cache_path(self, md_path, full_disk):
+        """``_strip_internal_paths`` filters key *names*, so a path interpolated
+        into the message would cross the MCP boundary unfiltered."""
+        result = papers.store_markdown_and_index("test", "unwritable", md_path, "# A\n", "full")
+
+        assert str(md_path) not in result["error"]
+        assert str(md_path.parent) not in result["error"]
+
+    def test_the_failure_is_counted_for_the_operator(self, md_path, full_disk):
+        stats.reset()
+        papers.store_markdown_and_index("test", "unwritable", md_path, "# A\n", "full")
+
+        assert stats.snapshot()["providers"]["test"]["cache_write_failures"] == 1
+
+    def test_no_sections_entry_describes_markdown_that_never_landed(self, md_path, full_disk):
+        papers.store_markdown_and_index("test", "unwritable", md_path, "# A\n", "full")
+
+        assert cache.get("test", "sections", stems.sections_key("unwritable")) is None
+
+    def test_a_surrogate_in_the_markdown_is_absorbed_too(self, md_path):
+        """No patch: the real UTF-8 encode has to refuse it. A lone surrogate
+        can reach here from a converter, and it is a ValueError, not an OSError.
+        """
+        result = papers.store_markdown_and_index(
+            "test", "unwritable", md_path, "# A\n\nbad \ud800 surrogate\n", "html"
+        )
+
+        assert result["retryable"] is True
+        assert result["conversion_mode"] == "html"
+        assert not md_path.exists()

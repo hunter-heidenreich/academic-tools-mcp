@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from weakref import WeakValueDictionary
 
+from ..net import stats
 from ..store import atomic, cache
 from ..store.stems import checksum_text, markdown_path, sections_key, sections_key_for_stem
 from .sections import parse_sections_and_detect
@@ -198,8 +199,23 @@ def store_markdown_and_index(
     for a file that never ran through one. Takes the
     markdown verbatim — post-processing is the caller's, since what is right for
     converter output is wrong for a file an operator wrote.
+
+    A write the cache refuses returns an error dict rather than raising: nothing
+    above this catches it, so the alternative reaches the agent as a protocol
+    error instead of the vocabulary every other failure here speaks.
     """
-    atomic.write_text(md_path, markdown)
+    try:
+        atomic.write_text(md_path, markdown)
+    except (OSError, UnicodeEncodeError):
+        # The message names no path: it is the cache's, and only key *names* are
+        # filtered on the way out.
+        stats.incr(namespace, "cache_write_failures")
+        return {
+            "error": "Could not write the converted markdown to the cache. "
+            "The cache directory may be full, read-only, or missing.",
+            "retryable": True,
+            "conversion_mode": mode,
+        }
 
     sections, detected = parse_sections_and_detect(markdown)
     cache.put(
