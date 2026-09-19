@@ -112,20 +112,15 @@ def log_request(provider: str, url: str, wait_seconds: float) -> None:
     )
 
 
-# A string, not an import — and it cannot become one. `throttle` imports `stats`, so
-# even a function-local `from .throttle import ...` registers as a real edge:
-# tests/test_layering.py's AST walk descends into function bodies and its cycle check
-# rejects it. Invariant: this tracks throttle.py's path — stale, `_is_pacer` matches
-# nothing and `pacers()` empties silently, which the discovery tests catch.
+# A string, not an import: `throttle` imports `stats`, and test_no_import_cycles sees
+# function-local imports too. Tracks throttle.py's path; stale, the discovery tests fail.
 _THROTTLE_MODULE = f"{_PACKAGE_PREFIX}net.throttle"
 
 
 def _is_pacer(value: object) -> bool:
     """Whether ``value`` is a ``Throttle`` or a ``SubGap``, without importing either.
 
-    Resolved through ``sys.modules`` rather than an import statement, so sampling a
-    provider still cannot load one — and so this stays real ``isinstance``, subclasses
-    included, rather than a walk matching class names.
+    Through ``sys.modules``, so sampling a provider still cannot load one.
     """
     module = sys.modules.get(_THROTTLE_MODULE)
     if module is None:
@@ -136,13 +131,13 @@ def _is_pacer(value: object) -> bool:
 def pacers() -> Iterator["Throttle | SubGap"]:
     """Yield every ``Throttle`` and ``SubGap`` held by an already-imported package module.
 
-    The single discovery seam for both gate types: the in-flight sample reads it, and so
-    does the per-test reset, so a provider that grows a gap needs no fixture edit. A gate
-    reachable only from a local variable is invisible to it.
+    The single seam for both: the in-flight sample reads it and so does the per-test
+    reset, so a provider that grows a gate needs no fixture edit — though one reachable
+    solely from a local variable is invisible here.
 
     Scanned, never imported: sampling a provider must not load it. Any attribute
-    qualifies, not just ``_throttle``, so a module that grows a second gate is covered;
-    deduped by identity, since one instance may be re-exported.
+    qualifies, not just ``_throttle``; deduped by identity, since one instance may be
+    re-exported.
     """
     seen: set[int] = set()
     for name, module in list(sys.modules.items()):
@@ -168,9 +163,8 @@ def snapshot() -> dict[str, Any]:
     ``quota_refusals``, ``quota_window_ignored``, ``client_config_ignored`` and
     ``cache_write_failures`` are cumulative since process start or the last
     ``reset()``; ``in_flight`` is sampled live and summed over every gate in the
-    namespace — throttles *and* sub-gaps. A caller queued on a gap has no socket
-    open yet, so ``in_flight`` deliberately overstates live requests: it reports
-    the number ``max_pending`` gates on. Rows are copies, so mutating the result
+    namespace, sub-gaps included — so it reports what ``max_pending`` gates on, which
+    can exceed the sockets actually open. Rows are copies, so mutating the result
     cannot corrupt the counters.
 
     ``quota`` appears only where a provider advertises one, as

@@ -16,10 +16,9 @@ Gating order (see ``slot``):
 3. **Concurrency cap** — ``asyncio.Semaphore(max_concurrent)``.
 4. **Inter-start gap** — a lock held only to compute and reserve this caller's
    start, pacing *slot* starts (not durations) by ``min_gap_seconds``; the sleep
-   and the GET happen outside it. Slot starts, not requests: ``http.get_with_retry``
-   may issue several attempts inside one slot and re-stamps nothing, so a retry is
-   spaced only by its own backoff floor — which is this gap, so the retry itself is
-   paced, but a concurrent caller is not paced against it.
+   and the GET happen outside it. Slots, not requests: ``http.get_with_retry`` may
+   issue several attempts inside one slot and re-stamps nothing, so a concurrent
+   caller is not paced against a retry.
 
 A provider with a stricter limit for one class of request (crossref and Papers with
 Code search, openalex's credit-metered ``search=``) puts a ``SubGap`` in front of the
@@ -127,8 +126,7 @@ class Throttle:
     def admit_quota(self, *, metered: bool = True) -> None:
         """Refuse a caller whose provider's advertised budget is spent.
 
-        The half of ``admit`` that is safe to re-run on a caller already counted in
-        ``pending`` — the queue half would refuse the very caller it just admitted.
+        The half of ``admit`` safe to re-run on a caller already counted in ``pending``.
         ``metered=False`` exempts a call class its provider prices at nothing.
         """
         if metered and (refusal := stats.quota_refusal(self.namespace)) is not None:
@@ -156,8 +154,8 @@ class Throttle:
     ) -> None:
         """Refuse a caller locally: a spent quota first, then a full queue.
 
-        The composition is the entry gate, and the one place that order lives — waiting
-        cannot help a spent budget, so it is worth refusing on before a queue slot.
+        The entry gate, and the one place that order lives: waiting cannot help a spent
+        budget, so it is worth refusing on first.
         """
         self.admit_quota(metered=metered)
         self.admit_queue(queued_ahead=queued_ahead, gap_seconds=gap_seconds)
@@ -172,11 +170,9 @@ class Throttle:
         — in-flight plus queued, not queue depth — so a fan-out gets fast feedback
         instead of stacking behind the gap.
 
-        The quota is re-checked once a permit is won, because a sibling can spend the
+        The quota is re-checked once a permit is won, since a sibling can spend the
         budget while this caller waits. Only the quota: ``pending`` already counts us, so
-        re-running the queue gate would refuse the caller it just admitted. A fan-out
-        behind one 429 therefore records one ``quota_refusals`` per woken caller, which
-        is the same number the entry gate would have recorded.
+        re-running the queue gate would refuse the caller it just admitted.
 
         ``count_request`` records one ``http_calls``, right for a streaming download
         (one slot, one request); ``get`` passes ``False`` so ``get_with_retry``
@@ -246,8 +242,7 @@ class SubGap:
     def namespace(self) -> str:
         """The parent throttle's namespace: a gap's traffic is its provider's.
 
-        Present so the discovery scan and the in-flight sample can treat a gap and a
-        throttle alike, rather than the scan carrying a branch per gate type.
+        Present so the discovery scan can treat a gap and a throttle alike.
         """
         return self.throttle.namespace
 

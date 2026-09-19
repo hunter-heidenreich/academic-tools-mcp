@@ -228,6 +228,25 @@ def _response_with_retry_after(value):
     return httpx.Response(429, headers=headers)
 
 
+def test_the_retry_sleep_cap_cannot_undercut_any_documented_rate():
+    """`get_with_retry` caps its sleep, and a cap below some provider's own gap would
+    turn that cap into a rate violation — retrying sooner than we promised to.
+
+    Asserted rather than commented: the cap is one number and the gaps are nine, so
+    the day a slower provider is added is the day this has to be re-checked.
+    """
+    from academic_tools_mcp.net import stats
+
+    gaps = {gate.namespace: gate.min_gap_seconds for gate in stats.pacers()}
+    assert gaps, "no gates discovered — the check would be vacuous"
+
+    widest = max(gaps.items(), key=lambda kv: kv[1])
+    assert widest[1] <= http._MAX_SLOT_SLEEP_SECONDS, (
+        f"{widest[0]} paces at {widest[1]}s, above the {http._MAX_SLOT_SLEEP_SECONDS}s "
+        "sleep cap — a capped retry would fire inside its documented gap"
+    )
+
+
 class TestRetryAfterHttpDate:
     """RFC 9110 permits both a delay-seconds and an HTTP-date ``Retry-After``,
     and Wikimedia/Cloudflare-fronted endpoints emit dates. Only the numeric

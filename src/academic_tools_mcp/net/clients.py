@@ -20,9 +20,7 @@ from . import stats
 # Keyed by each provider module's NAMESPACE constant.
 _POOL: dict[str, httpx.AsyncClient] = {}
 
-# What each pooled client was actually built with, so a later call asking for
-# something else can be counted rather than failing as a mysteriously wrong timeout.
-# A parallel dict, not a richer `_POOL` value: the pool's shape is what tests reach into.
+# What each pooled client was built with, so an ignored reconfiguration is countable.
 _BUILD_CONFIG: dict[str, dict[str, Any]] = {}
 
 
@@ -51,8 +49,7 @@ def get_client(
     Per-call overrides still work through ``client.get(url, timeout=...)``.
 
     Silently, but not invisibly: a second call asking for a *different* configuration
-    counts ``client_config_ignored``, because that case is a bug at the call site and
-    its only other symptom is a timeout that is quietly not the one asked for.
+    counts ``client_config_ignored``, whose only other symptom is a wrong timeout.
     """
     config: dict[str, Any] = {
         "timeout": timeout,

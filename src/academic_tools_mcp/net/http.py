@@ -85,22 +85,16 @@ HTTPX_ERRORS = (
 JSON_PARSE_ERRORS: tuple[type[Exception], ...] = (json.JSONDecodeError,)
 
 
-# Bounds the agent-facing hint alone: honours a real multi-minute cooldown, not a
-# bogus 86400. What we are willing to *wait* is `_MAX_SLOT_SLEEP_SECONDS`, far lower.
+# Bounds the agent-facing hint alone; `_MAX_SLOT_SLEEP_SECONDS` bounds what we wait.
 _MAX_RETRY_AFTER_SECONDS = 600.0  # 10 minutes
 
 
-# How long a retry may hold a throttle slot asleep. A sleeping slot holds a semaphore
-# permit and a `pending` unit, so it refuses that provider's other callers for the
-# whole nap — and an agent handed `retry_after_seconds` waits better than we can.
-# Bounds both sleep sites: a timeout retry holds the same slot as a 503 retry.
-# Invariant: at or above every provider's `min_gap_seconds` (arXiv's 3.0s is the
-# largest), so a capped sleep still cannot undercut a documented rate.
+# How long a retry may hold a throttle slot asleep, refusing that provider's other
+# callers. Must stay at or above every provider's gap; test_politeness asserts it.
 _MAX_SLOT_SLEEP_SECONDS = 30.0
 
 
-# Past this a `Retry-After` or `X-RateLimit-Reset` is not a duration — it is an epoch
-# timestamp, and read as one it would lock the namespace out for decades.
+# Past this, a `Retry-After` or `X-RateLimit-Reset` is an epoch timestamp, not a duration.
 _MAX_QUOTA_WINDOW_SECONDS = 86_400.0  # one day
 
 
@@ -200,10 +194,8 @@ def record_quota(provider: str, response: httpx.Response) -> None:
     """File the budget a response advertised. ``reset`` is a duration.
 
     ``X-RateLimit-*`` headers say *whether* the budget is spent; a 429's ``Retry-After``
-    only ever *dates* it, and only when no reset header did. Not clamped to the sleep
-    ceiling — the lockout never sleeps, so what we are willing to wait must not shorten
-    it — but bounded by ``_MAX_QUOTA_WINDOW_SECONDS``, past which the value is not a
-    duration at all.
+    only *dates* it, and only when no reset header did. Not clamped to the sleep ceiling
+    — the lockout never sleeps — but bounded by ``_MAX_QUOTA_WINDOW_SECONDS``.
 
     **Only a 429 arms the lockout**, whichever branch files it: OpenAlex meters *credits*
     and its singletons spend none, so a budget its headers call empty still serves them.
@@ -212,15 +204,12 @@ def record_quota(provider: str, response: httpx.Response) -> None:
     limit = _header_number(response, "x-ratelimit-limit")
     remaining = _header_number(response, "x-ratelimit-remaining")
     reset_seconds = _header_number(response, "x-ratelimit-reset")
-    # Both signals date the same budget. Without this fallback a 429 carrying
-    # `Remaining: 0` *and* a `Retry-After` armed nothing, while a bare 429 carrying
-    # only the `Retry-After` armed a lockout — more evidence buying less protection.
+    # Without this, a 429 carrying `Remaining: 0` *and* a Retry-After armed nothing
+    # while a bare one armed a lockout — more evidence buying less protection.
     if reset_seconds is None and refused:
         reset_seconds = _retry_after_seconds(response)
     if reset_seconds is not None and reset_seconds > _MAX_QUOTA_WINDOW_SECONDS:
-        # Discarded, not clamped: an unreadable window should fail open, the way an
-        # absent header does, rather than lock the namespace out for the longest
-        # interval we find plausible.
+        # Discarded, not clamped: an unreadable window fails open, like an absent one.
         stats.incr(provider, "quota_window_ignored")
         reset_seconds = None
     if limit is None and remaining is None:
@@ -239,9 +228,8 @@ def record_quota(provider: str, response: httpx.Response) -> None:
 def _quota_dict(exc: QuotaExhaustedError) -> dict[str, Any]:
     """Structured local refusal for a spent budget. ``retry_after_seconds`` is unclamped.
 
-    No ``provider`` argument, unlike ``_backpressure_dict``: a ``QuotaExhaustedError`` is
-    only ever raised by a ``Throttle``, so ``exc.provider`` is always the agent-facing
-    label and there is nothing to fall back to.
+    No ``provider`` fallback, unlike ``_backpressure_dict``: only a ``Throttle`` raises
+    this, so ``exc.provider`` is always the agent-facing label.
     """
     wait = exc.retry_after_seconds
     return {
@@ -307,9 +295,7 @@ def response_error_dict(
         result: dict[str, Any] = {"error": transient, "retryable": True}
         retry_after = _retry_after_seconds(response)
         if retry_after is not None:
-            # A hint, not a wait: bounded generously, because nothing here sleeps on it.
-            # `get_with_retry` hands a cooldown back rather than sleeping past its own,
-            # much lower, ceiling — this is the number it hands back *with*.
+            # A hint, not a wait: bounded generously because nothing here sleeps on it.
             result["retry_after_seconds"] = min(retry_after, _MAX_RETRY_AFTER_SECONDS)
         return result
     if snippet is None:
@@ -370,17 +356,14 @@ async def get_with_retry(
     attempt, for the caller's ``raise_for_status`` or status branch to handle.
 
     The sleep after a failed attempt *n* is ``max(Retry-After, backoff_seconds * 2**(n-1))``,
-    capped at ``_MAX_SLOT_SLEEP_SECONDS``; on the transport-exception path there is no
-    response, so only the backoff term applies. ``backoff_seconds`` is the floor —
-    ``Throttle.get`` passes the provider's gap floored at one second, so a retry cannot
-    undercut the documented rate; the exponential term widens later retries so they straddle
-    a cooldown instead of landing in the same window. ``Retry-After`` is read on any
-    retryable status, in both RFC 9110 forms.
+    capped at ``_MAX_SLOT_SLEEP_SECONDS``; the transport-exception path has no response, so
+    only the backoff term applies. ``backoff_seconds`` is the floor — ``Throttle.get`` passes
+    the provider's gap floored at one second, so a retry cannot undercut the documented rate;
+    the exponential term widens later retries so they straddle a cooldown instead of landing
+    in the same window. ``Retry-After`` is read on any retryable status, in both RFC 9110 forms.
 
-    **A cooldown longer than the cap is handed back, not slept off.** We hold a throttle
-    slot for the whole sleep, so a multi-minute wait would refuse this provider's other
-    callers to save one; the response is returned instead and ``response_error_dict`` passes
-    the real wait to the agent as ``retry_after_seconds``.
+    **A cooldown past the cap is handed back, not slept off**, and ``response_error_dict``
+    carries the real wait to the agent as ``retry_after_seconds``.
 
     The final attempt returns its response or re-raises. ``max_attempts=2`` is 1 original + 1
     retry, set per provider by ``throttle.Throttle``. GET-only: every cached lookup is a GET.
