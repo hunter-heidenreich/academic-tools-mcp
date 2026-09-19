@@ -15,15 +15,25 @@ under `manual` and the same paper caches, downloads and converts twice. That cos
 is what buys the latitude.
 
 **arXiv answers an invalid id or a malformed `search_query` with a synthetic
-`api/errors` entry under HTTP 400 — or 200.** `_rejection_root` lets that 400
-reach the parse and `_is_error_entry` is shared, so `get_paper` and
-`search_papers` classify it identically. A valid-shape id that does not exist is a
-200 with an empty feed.
+`api/errors` entry under HTTP 400 — or 200, or with an empty-bodied 406.**
+`_rejection_root` lets that 400 reach the parse and `_is_error_entry` is shared, so
+`get_paper` and `search_papers` classify it identically; `_is_edge_rejection` takes
+the 406.
+
+**An id that does not exist comes back as an empty feed or as that same 406**, so the
+406 cannot carry `not_found` however much it looks like absence.
+
+**Its `retryable: True` is what lets `download_pdf` reach the PDF host**, which rides a
+different edge and keeps serving while the Atom API refuses.
+
+**Widening the shared retryable-status allowlist to 406 was rejected**: an id arXiv will
+not resolve is the commonest trigger, so a transparent retry would spend every attempt on
+a request that cannot succeed.
 
 Three upstream facts the batch path is built around:
 
 - **One id arXiv rejects fails the whole request**, so a chunk falls back to
-  singleton `get_paper`.
+  singleton `get_paper` — on the 406 as on the `api/errors` entry.
 - **Some records always 500 with the `api/errors` entry** — `hep-th/9901001v1` is
   the standing instance. A plain 5xx stays chunk-wide; a penalty box shouldn't
   multiply requests.
