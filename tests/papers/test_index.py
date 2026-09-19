@@ -5,7 +5,9 @@ describes a document other than the one whose checksum it carries.
 """
 
 import asyncio
-from collections import OrderedDict
+import gc
+import weakref
+from weakref import WeakValueDictionary
 
 import pytest
 
@@ -14,85 +16,72 @@ from academic_tools_mcp.store import cache, stems
 from tests.helpers.checksums import markdown_checksum
 
 
-class TestSectionLocksLRU:
-    """The per-paper section lock dict is bounded so a long-running
-    session that touches thousands of papers doesn't accumulate Locks
-    forever. Eviction is FIFO and skips currently-held locks.
+class TestSectionLockLifetime:
+    """The map holds locks weakly, so it is bounded by its users rather than a cap.
+
+    Bounding it by count is what let two callers end up on two different Locks:
+    between ``release()`` and a queued waiter resuming, ``locked()`` reads False.
     """
 
     @pytest.fixture(autouse=True)
     def _reset_locks(self, monkeypatch):
-
-        monkeypatch.setattr(papers.index, "_section_locks", OrderedDict())
-
-    def test_unbounded_below_cap(self, monkeypatch):
-        monkeypatch.setattr(papers.index, "_SECTION_LOCKS_MAX", 100)
-        for i in range(50):
-            papers.sections_lock("test", f"paper-{i}")
-        assert len(papers.index._section_locks) == 50
-
-    def test_evicts_oldest_when_cap_exceeded(self, monkeypatch):
-        monkeypatch.setattr(papers.index, "_SECTION_LOCKS_MAX", 5)
-        for i in range(10):
-            papers.sections_lock("test", f"paper-{i}")
-        assert len(papers.index._section_locks) == 5
-        # Newest five survive; oldest five evicted.
-        survivors = set(papers.index._section_locks)
-        assert survivors == {("test", f"paper-{i}") for i in range(5, 10)}
-
-    def test_touch_promotes_to_end(self, monkeypatch):
-        monkeypatch.setattr(papers.index, "_SECTION_LOCKS_MAX", 3)
-        papers.sections_lock("test", "a")
-        papers.sections_lock("test", "b")
-        papers.sections_lock("test", "c")
-        # Touch "a" so it moves to the end of the LRU order.
-        papers.sections_lock("test", "a")
-        # Adding "d" should now evict "b" (the new oldest), not "a".
-        papers.sections_lock("test", "d")
-        keys = list(papers.index._section_locks.keys())
-        assert ("test", "b") not in keys
-        assert ("test", "a") in keys
-
-    @pytest.mark.asyncio
-    async def test_held_lock_is_not_evicted(self, monkeypatch):
-        # If the oldest lock is held when we try to evict, we skip it
-        # and evict the next free one instead — dropping a held lock
-        # would let a racing caller bypass mutual exclusion.
-        monkeypatch.setattr(papers.index, "_SECTION_LOCKS_MAX", 2)
-        held = papers.sections_lock("test", "held")
-        await held.acquire()
-        try:
-            papers.sections_lock("test", "free-1")
-            papers.sections_lock("test", "free-2")
-            keys = set(papers.index._section_locks.keys())
-            # "held" must still be present; one of the free ones got evicted.
-            assert ("test", "held") in keys
-        finally:
-            held.release()
-
-    @pytest.mark.asyncio
-    async def test_all_locks_held_bails_over_cap(self, monkeypatch):
-        # When every lock is held, eviction must bail (go over cap) rather
-        # than spin — and must do so without dropping a held lock.
-        monkeypatch.setattr(papers.index, "_SECTION_LOCKS_MAX", 2)
-        a = papers.sections_lock("test", "a")
-        b = papers.sections_lock("test", "b")
-        await a.acquire()
-        await b.acquire()
-        try:
-            papers.sections_lock("test", "c")  # over cap, but a/b are held
-            keys = set(papers.index._section_locks.keys())
-            assert ("test", "a") in keys
-            assert ("test", "b") in keys
-            assert ("test", "c") in keys  # added; nothing evictable
-        finally:
-            a.release()
-            b.release()
+        monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
 
     def test_returns_same_lock_for_same_key(self):
         lock1 = papers.sections_lock("test", "same")
         lock2 = papers.sections_lock("test", "same")
         assert lock1 is lock2
+
+    def test_distinct_papers_get_distinct_locks(self):
+        assert papers.sections_lock("test", "a") is not papers.sections_lock("test", "b")
+
+    def test_an_unheld_lock_leaves_no_entry_behind(self):
+        ref = weakref.ref(papers.sections_lock("test", "transient"))
+        gc.collect()
+        assert ref() is None
+        assert len(papers.index._section_locks) == 0
+
+    def test_a_held_lock_keeps_its_entry(self):
+        held = papers.sections_lock("test", "held")
+        for i in range(100):
+            papers.sections_lock("test", f"other-{i}")
+        assert papers.sections_lock("test", "held") is held
+
+    @pytest.mark.asyncio
+    async def test_a_queued_waiter_keeps_the_entry_alive(self):
+        """Regression: an eviction pass read a lock about to be entered as free.
+
+        ``release()`` clears ``locked()`` before the waiter it woke has resumed. A
+        count-bounded map could drop the entry in that window; the waiter then held
+        an orphan while the next caller built a second Lock for the same paper. Here
+        every strong reference outside the waiter is dropped, and the entry survives
+        on the waiter's alone.
+        """
+        used = []
+
+        async def waiter():
+            lock = papers.sections_lock("test", "raced")
+            async with lock:
+                used.append(lock)
+
+        first = papers.sections_lock("test", "raced")
+        ref = weakref.ref(first)  # identity without id() reuse hazards
+        await first.acquire()
+        task = asyncio.create_task(waiter())
+        await asyncio.sleep(0)  # let the waiter queue inside acquire()
+
+        first.release()
+        del first  # the waiter's frame is now the only strong reference
+        gc.collect()
+
+        entry = papers.index._section_locks.get(("test", "raced"))
+        assert entry is not None, "the entry vanished while a waiter was queued"
+        assert entry is ref()
+        # The window the old eviction guard misjudged: released, woken, not resumed.
+        assert entry.locked() is False
+
+        await task
+        assert used == [entry]
 
 
 class TestSectionsLockRacingConstructor:
@@ -101,10 +90,10 @@ class TestSectionsLockRacingConstructor:
     """
 
     def test_the_losing_constructor_returns_the_winners_lock(self, monkeypatch):
-
+        # Strongly referenced for the test's duration: the map holds values weakly.
         winner = asyncio.Lock()
 
-        class RacedMap(OrderedDict):
+        class RacedMap(WeakValueDictionary):
             def setdefault(self, key, default):
                 # Stand in for a constructor that lost: the entry is already
                 # there by the time this call lands.
@@ -330,7 +319,7 @@ class TestReparseGates:
         three parses of the same document.
         """
         self._converted(tmp_path, monkeypatch)
-        monkeypatch.setattr(papers.index, "_section_locks", OrderedDict())
+        monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
 
         calls = 0
         real = papers.index.parse_sections_and_detect

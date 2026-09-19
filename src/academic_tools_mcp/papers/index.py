@@ -15,9 +15,9 @@ a successful read for the rest of its call.
 
 import asyncio
 import contextlib
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any
+from weakref import WeakValueDictionary
 
 from ..store import atomic, cache
 from ..store.stems import checksum_text, markdown_path, sections_key, sections_key_for_stem
@@ -84,42 +84,26 @@ def rekey_sections(
     return True
 
 
-# Per-paper locks, LRU-capped so a long session can't grow this map unbounded.
-_SECTION_LOCKS_MAX: int = 1024
-_section_locks: "OrderedDict[tuple[str, str], asyncio.Lock]" = OrderedDict()
+# Weakly held: an entry lives exactly as long as someone holds the lock.
+_section_locks: "WeakValueDictionary[tuple[str, str], asyncio.Lock]" = WeakValueDictionary()
 
 
 def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
     """Return the async lock guarding one paper's markdown/section-index pair.
 
-    **Invariant: this map is the only owner of a lock across an await.** Write
-    ``async with sections_lock(...)`` as one expression — acquiring an
-    uncontended lock never yields, which is what stops eviction racing a
-    caller. Bind it, await, then enter, and the key can be evicted and
-    recreated, handing two callers two different Locks.
+    **Invariant: one live lock per paper, for as long as anyone holds it.** A
+    caller's ``async with`` holds a reference, and so does a waiter parked inside
+    ``acquire()`` — so the entry cannot be dropped and recreated underneath
+    either, and two callers can never end up on two different Locks. Bounding
+    this map by count instead is what breaks that: between ``release()`` and a
+    queued waiter resuming, ``locked()`` reads False, so an eviction pass sees a
+    lock that is about to be entered as free.
     """
     key = (namespace, canonical)
     lock = _section_locks.get(key)
     if lock is None:
-        lock = asyncio.Lock()
-        existing = _section_locks.setdefault(key, lock)
-        if existing is lock:
-            # Held locks rotate to the back, never evicted: mutual exclusion
-            # can't be dropped under a writer. Over cap beats spinning forever.
-            held_skips = 0
-            while len(_section_locks) > _SECTION_LOCKS_MAX:
-                if held_skips >= len(_section_locks):
-                    break
-                evict_key, evict_lock = next(iter(_section_locks.items()))
-                if evict_key == key or evict_lock.locked():
-                    _section_locks.move_to_end(evict_key)
-                    held_skips += 1
-                    continue
-                _section_locks.pop(evict_key, None)
-                held_skips = 0
-        else:
-            lock = existing
-    _section_locks.move_to_end(key)
+        # setdefault: two Locks for one paper is mutual exclusion silently dropped.
+        lock = _section_locks.setdefault(key, asyncio.Lock())
     return lock
 
 

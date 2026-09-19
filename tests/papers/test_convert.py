@@ -7,6 +7,7 @@ what the driver does with an outcome, never that a real converter works.
 import asyncio
 import shlex
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 import pytest
 
@@ -178,9 +179,7 @@ class TestConvertPdfCachePaths:
 
         # Reset the lock dict so this test starts from a clean slate
         # regardless of test ordering.
-        from collections import OrderedDict
-
-        monkeypatch.setattr(papers.index, "_section_locks", OrderedDict())
+        monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
 
         parse_calls = 0
         real_parse = papers.index.parse_sections_and_detect
@@ -217,9 +216,7 @@ class TestConvertPdfCachePaths:
         ns, canonical = "test", "toctou-1"
         md_path = self._seed_markdown(ns, canonical, "## A\n\nbody\n")
 
-        from collections import OrderedDict
-
-        monkeypatch.setattr(papers.index, "_section_locks", OrderedDict())
+        monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
 
         # Hold the paper's lock so the convert_pdf task blocks after its outer
         # exists() check (which sees the file) and before its read.

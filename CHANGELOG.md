@@ -207,6 +207,15 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Two callers can no longer end up on two different locks for one paper.** The
+  per-paper section lock map was bounded by count, and its eviction pass treated any
+  lock reading `locked() == False` as free — but `release()` clears that flag before
+  the waiter it woke has resumed, so a lock about to be entered looked evictable. Past
+  the cap, the waiter was left holding an orphan while the next caller built a second
+  lock, putting both inside one paper's critical section. The map now holds its locks
+  weakly, so an entry lives exactly as long as someone references it and the race is
+  unrepresentable rather than merely unlikely. ([#155])
+
 - **A section title read straight off the index now resolves instead of erroring.**
   Title lookup was substring-only, so `get_paper_section(id, "Introduction")` answered
   "Ambiguous section title" whenever `Introduction and Related Work` also existed — a
@@ -2110,3 +2119,4 @@ say which.
 [#150]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/150
 [#153]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/153
 [#154]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/154
+[#155]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/155

@@ -17,8 +17,8 @@ markdown/section state is seeded straight into the cache.
 
 import asyncio
 import contextlib
-from collections import OrderedDict
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 import pytest
 
@@ -39,7 +39,7 @@ def _reset_section_locks(monkeypatch):
     # Start every test from a clean per-paper lock dict so a lock acquired
     # in one test can't leak into another (and so a held lock is the one the
     # tool re-derives by key).
-    monkeypatch.setattr(papers.index, "_section_locks", OrderedDict())
+    monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
 
 
 def _seed_markdown(namespace, canonical, body):
