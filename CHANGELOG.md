@@ -13,7 +13,7 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
-## [Unreleased]
+## [2026.09.19] — 2026-09-19
 
 ### Added
 
@@ -2102,6 +2102,7 @@ say which.
 - Configurable external PDF converter, env-based API configuration
   (mailto / keys), MIT license, and a public-facing README.
 
+[2026.09.19]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.10...v2026.09.19
 [2026.09.10]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.08...v2026.09.10
 [2026.09.08]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.04...v2026.09.08
 [2026.09.04]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.06.04...v2026.09.04
