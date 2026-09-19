@@ -217,6 +217,23 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Six tool docstrings described a response the tool does not return.** A `@mcp.tool`
+  docstring *is* the agent-facing API, and these had drifted from the code with nothing
+  checking them. `get_paper_authors`, `get_paper_abstract` and `get_paper_bibtex` all emit
+  `biorxiv_unavailable: true` when bioRxiv fails transiently and OpenAlex stands in — the
+  one key that explains why a `10.1101` DOI came back tagged `_source: "openalex"` — and
+  none of the three named it; the authors page silently drops `author_corresponding` in
+  that case too. `get_paper_sections` listed every `conversion_mode` but `"jats"`, which is
+  what every bioRxiv paper converted from JATS XML reports. `get_papers_metadata` omitted
+  `openalex_fallback_retryable` from its failure entry. `search_openalex` promised that
+  chaining any hit into `get_paper_metadata` costs no request: true only for hits carrying
+  a DOI — a `doi: null` hit is not in that cache and is not fetchable by these DOI-keyed
+  tools at all, so the advice pointed at a call that always fails. `get_paper_references`
+  named `partial_failure` without ever giving its shape. Also: `get_paper_versions` now
+  says it takes its identifier literally, since alone among the tools typed for one it
+  runs no PMID or work-ID trade, and two module docstrings had stopped listing half their
+  tools. ([#163])
+
 - **A cache the disk refuses no longer ends the tool call.** Three write paths could raise
   past the `{error, suggestion}` contract and reach the agent as a raw protocol error.
   `cache.put` absorbed only `OSError`, but a lone surrogate — which `json.loads` builds from
@@ -2201,3 +2218,4 @@ say which.
 [#159]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/159
 [#160]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/160
 [#162]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/162
+[#163]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/163

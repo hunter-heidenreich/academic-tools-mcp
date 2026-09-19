@@ -1,4 +1,4 @@
-"""Paper metadata tools: metadata / authors / abstract / bibtex / author lookup."""
+"""Paper tools: metadata / authors / abstract / bibtex / versions / updates / profiles."""
 
 import asyncio
 from collections.abc import Callable
@@ -562,6 +562,11 @@ async def get_paper_versions(
     license (``…/licenses/nonexclusive-distrib/1.0/``) and bioRxiv's ``cc_no`` do not
     permit redistribution; a Creative Commons license may.
 
+    **This tool takes the preprint identifier literally**: alone among the tools
+    typed for one, it runs no PMID or OpenAlex-work-ID trade, so either is refused
+    on shape. Call get_paper_metadata on it first and re-enter with the arXiv ID or
+    ``10.1101`` DOI it reports.
+
     Errors: ``{error, suggestion}`` plus ``not_found: true`` (a paper the provider
     lacks, or another identifier, refused without a request), ``retryable: true``
     (transport or parse failure) or ``retryable: false`` (any other provider error).
@@ -573,7 +578,8 @@ async def get_paper_versions(
         return {
             **http.not_found(f"Not an arXiv ID or bioRxiv/medRxiv DOI: {identifier!r}."),
             "suggestion": "Pass the preprint's arXiv ID or 10.1101 DOI; find it with "
-            "get_paper_metadata or search_arxiv.",
+            "get_paper_metadata or search_arxiv. A PMID or OpenAlex work ID is not "
+            "traded here — resolve it with get_paper_metadata first.",
         }
 
     record = await arxiv.get_versions(identifier, force_refresh=force_refresh)
@@ -641,8 +647,10 @@ async def get_papers_metadata(
 
     Returns ``{count, papers}``: each entry is get_paper_metadata's payload plus
     ``_input``, the original string, so an agent can correlate input to output.
-    Order matches the input list; failures appear as ``{_input, error, suggestion?}``
-    and don't affect others. OpenAlex fallback answers carry ``biorxiv_unavailable: true``.
+    Order matches the input list; failures appear as ``{_input, error, suggestion?}``,
+    plus ``openalex_fallback_retryable: true`` when a bioRxiv entry's OpenAlex
+    stand-in also failed transiently, and don't affect others. OpenAlex fallback
+    answers carry ``biorxiv_unavailable: true``.
     """
     n = len(identifiers)
     results: list[dict[str, Any] | None] = [None] * n
@@ -815,6 +823,11 @@ async def get_paper_authors(
         Crossref's ``sequence`` ("first" / "additional"). institutions come from
         its per-author affiliation, which most publishers omit — usually empty.
 
+    A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
+    ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, so the page carries
+    the openalex author shape and **not** author_corresponding /
+    author_corresponding_institution.
+
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
     if the fallback's own Crossref call failed transiently, or
@@ -886,6 +899,10 @@ async def get_paper_abstract(
     (``fallback_crossref`` after an OpenAlex 404) is JATS rendered to plain text,
     section titles included; many Crossref records carry none at all.
 
+    A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
+    ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, so the abstract is
+    OpenAlex's inverted-index reconstruction rather than bioRxiv's own text.
+
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
     if the fallback's own Crossref call failed transiently, or
@@ -946,6 +963,10 @@ async def get_paper_bibtex(
       - crossref (``fallback_crossref`` after an OpenAlex 404): inferred from
         Crossref's own, different type vocabulary (@article for journal-article,
         @inproceedings for proceedings-article, @misc for posted-content, etc.).
+
+    A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
+    ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, so the entry type is
+    inferred from the work type rather than from published_doi.
 
     Errors: an unresolvable identifier returns ``{error}``; a provider failure
     returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``

@@ -1,4 +1,4 @@
-"""Search tools: arXiv / Crossref / in-paper / cached corpus / Wikipedia (search + summary)."""
+"""Search tools: arXiv / Crossref / OpenAlex / in-paper / cached corpus / Wikipedia."""
 
 import asyncio
 import sqlite3
@@ -285,8 +285,10 @@ async def search_openalex(
     parse failure.
 
     Chain get_paper_metadata(doi) for the full record: unlike a
-    search_crossref_by_title hit, every hit here is already in the cache it
-    reads, so the follow-up costs no request.
+    search_crossref_by_title hit, a hit **with a doi** is already in the cache it
+    reads, so the follow-up costs no request. A ``doi: null`` hit is not fetchable
+    at all — these tools are DOI-keyed, so get_paper_metadata(openalex_id) refuses
+    it too; fetch the PDF yourself and label it with import_paper.
     """
     response = await openalex.search_works(query, year=year, rows=max_results)
     if "error" in response:

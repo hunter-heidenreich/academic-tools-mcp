@@ -134,7 +134,7 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 | Tool | Description |
 |------|-------------|
 | `search_arxiv` | Search arXiv with field prefixes (`ti:`, `au:`, `abs:`, `cat:`), boolean operators and `submittedDate:[… TO …]` ranges; pages with `page`, sorts by relevance, submission or update date. arXiv serves only a query's first 10,000 results, so narrow the query rather than paging past them. |
-| `search_openalex` | Free-text search across all of OpenAlex, matched on title, abstract and fulltext. The broadest discovery tool here — use it when you have a topic rather than a title. Each hit warms the cache `get_paper_metadata` reads, so the follow-up is free. The one OpenAlex call that spends real credit budget — use `autocomplete_openalex` when you have a name rather than a topic |
+| `search_openalex` | Free-text search across all of OpenAlex, matched on title, abstract and fulltext. The broadest discovery tool here — use it when you have a topic rather than a title. Each hit *with a DOI* warms the cache `get_paper_metadata` reads, so the follow-up is free; a `doi: null` hit is not fetchable by these DOI-keyed tools at all, and needs `import_paper`. The one OpenAlex call that spends real credit budget — use `autocomplete_openalex` when you have a name rather than a topic |
 | `autocomplete_openalex` | Match a name or title prefix to an OpenAlex ID, across works, authors, institutions or sources. Costs no credit budget, so reach for it when you know what something is called. Hits are *not* cached, so chaining one costs a request |
 
 ### Authors

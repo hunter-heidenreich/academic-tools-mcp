@@ -284,9 +284,9 @@ async def get_paper_sections(
     Returns ``{total_sections, total_approx_tokens, sections_detected,
     conversion_mode, sections}``, each section entry ``{index, title, h3s,
     approx_tokens}`` with ``h3s`` its sub-headings. ``conversion_mode`` is
-    provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's rendering),
-    ``"imported"`` (a file handed to import_paper), or null (converted before the
-    field existed).
+    provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's rendering), ``"jats"``
+    (bioRxiv's JATS XML), ``"imported"`` (a file handed to import_paper), or null
+    (converted before the field existed).
 
     ``sections_detected: false`` means the markdown had **no headings at all**,
     so the single section returned is synthetic and its title meaningless — not
