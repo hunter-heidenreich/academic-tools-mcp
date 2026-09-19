@@ -193,6 +193,54 @@ class TestConvertErrorStripsPaths:
         assert "path" not in result
 
 
+class TestAFullDiskReachesTheAgentAsAnErrorDict:
+    """End to end for the markdown write, which had no handler at all.
+
+    It used to raise past the tool layer, so the agent got a protocol error
+    naming an internal path instead of a response it could branch on. Driven
+    through the real tools, since the contract being tested belongs to them.
+    """
+
+    @pytest.fixture
+    def full_disk(self, monkeypatch):
+        def enospc(*a, **kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(papers.index.atomic, "write_text", enospc)
+
+    @pytest.mark.asyncio
+    async def test_import_paper_returns_a_response_not_an_exception(
+        self, isolated_cache, tmp_path, full_disk
+    ):
+        source = tmp_path / "paper.md"
+        source.write_text("## A\n\nbody\n", encoding="utf-8")
+
+        result = await server.import_paper(str(source), "full-disk")
+
+        assert result["retryable"] is True
+        assert "error" in result
+        assert "markdown_path" not in result
+        assert str(isolated_cache) not in result["error"], "no cache path crosses the boundary"
+
+    @pytest.mark.asyncio
+    async def test_convert_paper_adds_the_suggestion_it_owes(
+        self, isolated_cache, monkeypatch, full_disk
+    ):
+        """A conversion that produced markdown it cannot store is still a
+        conversion failure, so it lands in `convert_paper`'s error contract:
+        `retryable` and `conversion_mode` from the writer, `suggestion` from
+        the tool layer."""
+        _serve_html(monkeypatch, {"markup": _RENDERING})
+        _no_pdf_conversion(monkeypatch)
+
+        result = await server.convert_paper("arXiv:2301.00001")
+
+        assert result["retryable"] is True
+        assert result["conversion_mode"] == "html"
+        assert result["suggestion"], "every convert_paper error owes a suggestion"
+        assert "markdown_path" not in result
+
+
 # ---------------------------------------------------------------------------
 # download_pdf — the tool, not the private dispatcher
 # ---------------------------------------------------------------------------

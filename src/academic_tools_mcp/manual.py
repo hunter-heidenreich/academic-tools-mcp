@@ -474,6 +474,8 @@ def import_markdown(
 
     # Verbatim: ``_finalize_markdown``'s rewrites are wrong for a file whose links resolve.
     stored = papers.store_markdown_and_index(namespace, canonical, md_path, markdown, "imported")
+    if "error" in stored:
+        return stored
 
     return {
         "identifier": canonical,

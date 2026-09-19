@@ -49,6 +49,6 @@ those names, and override pacing through `mod._throttle.min_gap_seconds` or
   gating a free class strands it for the whole window rather than until the next
   reply. This is why `admit(metered=)` exempts the zero-priced classes.
 - **A failed disk write is `cache_write_failures`, wherever it happens** —
-  `cache.put` / `put_negative`, `streaming.stream_to_file`, `manual.import_local_pdf`.
-  A PDF is the largest write the server makes; leaving it uncounted hid a full disk
-  from the one counter that exists to show it.
+  `cache.put` / `put_negative`, `streaming.stream_to_file`, `manual.import_local_pdf`,
+  `papers.store_markdown_and_index`. A PDF is the largest write the server makes;
+  leaving it uncounted hid a full disk from the one counter that exists to show it.

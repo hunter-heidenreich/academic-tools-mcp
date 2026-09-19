@@ -5,6 +5,8 @@ file, and the sweep runs unattended at startup over a cache the operator cannot
 easily repair.
 """
 
+import errno
+import os
 import re
 from pathlib import Path
 
@@ -135,6 +137,38 @@ class TestMigrateLegacyStems:
         assert stems.migrate_legacy_stems() == 0, "must not overwrite a real file"
         assert (d / "a b.pdf").exists() and (d / "a%20b.pdf").exists()
 
+    def test_a_collision_is_refused_by_the_filesystem_not_by_a_prior_check(self, tmp_path):
+        """Two sweeps racing must not lose a file.
+
+        ``rename`` overwrites silently, so a ``target.exists()`` check ahead of it
+        is decided before the window it guards. ``os.link`` refuses atomically, so
+        the loser of the race is the one that skips.
+        """
+        d = tmp_path / "manual" / "pdfs"
+        d.mkdir(parents=True)
+        (d / "a b.pdf").write_bytes(b"legacy")
+        (d / "a%20b.pdf").write_bytes(b"already migrated, different paper")
+
+        assert stems.migrate_legacy_stems() == 0
+        assert (d / "a b.pdf").read_bytes() == b"legacy"
+        assert (d / "a%20b.pdf").read_bytes() == b"already migrated, different paper"
+
+    def test_finishes_a_move_an_earlier_run_left_half_done(self, tmp_path):
+        """A crash between the link and the unlink strands a duplicate.
+
+        Both names then point at one inode, so the next sweep can tell the
+        interrupted move from a real collision and drop the legacy name.
+        """
+        d = tmp_path / "manual" / "pdfs"
+        d.mkdir(parents=True)
+        legacy = d / "my paper.pdf"
+        legacy.write_bytes(b"%PDF-1.4 x")
+        os.link(legacy, d / "my%20paper.pdf")
+
+        assert stems.migrate_legacy_stems() == 1
+        assert not legacy.exists()
+        assert (d / "my%20paper.pdf").read_bytes() == b"%PDF-1.4 x"
+
     def test_missing_cache_root_is_not_an_error(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "does-not-exist")
         assert stems.migrate_legacy_stems() == 0
@@ -224,18 +258,39 @@ class TestMigrateLegacyStemsSkips:
         monkeypatch.setattr(Path, "iterdir", refuse)
         assert stems.migrate_legacy_stems() == 1
 
-    def test_a_rename_that_fails_leaves_the_file_for_the_next_run(self, tmp_path, monkeypatch):
+    def test_a_move_that_fails_leaves_the_file_for_the_next_run(self, tmp_path, monkeypatch):
         d = tmp_path / "manual" / "markdown"
         d.mkdir(parents=True)
         legacy = d / "my paper.md"
         legacy.write_text("x")
 
-        def refuse(self, target):
+        def refuse(src, dst):
             raise OSError("read-only filesystem")
 
-        monkeypatch.setattr(Path, "rename", refuse)
+        monkeypatch.setattr(stems.os, "link", refuse)
         assert stems.migrate_legacy_stems() == 0
         assert legacy.exists()
+
+    def test_a_filesystem_without_hard_links_keeps_its_legacy_names(self, tmp_path, monkeypatch):
+        """exFAT and some network mounts refuse ``os.link``.
+
+        The sweep takes the skip rather than falling back to ``rename``, which
+        would reintroduce the silent overwrite on exactly those filesystems. The
+        cost is one re-download, never a lost file.
+        """
+        d = tmp_path / "manual" / "pdfs"
+        d.mkdir(parents=True)
+        legacy = d / "my paper.pdf"
+        legacy.write_bytes(b"%PDF-1.4 x")
+
+        def unsupported(src, dst):
+            raise OSError(errno.EPERM, "hard links are not supported")
+
+        monkeypatch.setattr(stems.os, "link", unsupported)
+
+        assert stems.migrate_legacy_stems() == 0
+        assert legacy.read_bytes() == b"%PDF-1.4 x"
+        assert not (d / "my%20paper.pdf").exists()
 
 
 class TestSectionsKeyForStem:

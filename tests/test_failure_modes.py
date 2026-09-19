@@ -6,6 +6,7 @@ candidate outputs.
 """
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,60 @@ class TestCacheWriteFailureIsAbsorbed:
         monkeypatch.setattr(atomic, "write_text", boom)
         with pytest.raises(ValueError, match="a real bug"):
             cache.put("arxiv", "papers", "x", {"a": 1})
+
+
+class TestSurrogateInAProviderResponse:
+    """A lone surrogate in an upstream body used to end the whole tool call.
+
+    ``json.loads`` builds one from a spec-valid unpaired ``\\uD800`` escape, and
+    ``json.dumps(..., ensure_ascii=False)`` passes it straight through to a UTF-8
+    encode that refuses it. ``UnicodeEncodeError`` is a ``ValueError``, so the
+    write seam's ``except OSError`` did not see it and a paid-for response
+    reached the agent as a protocol error instead.
+
+    Nothing is patched here: the real encode has to run for the test to mean
+    anything.
+    """
+
+    SURROGATE = json.loads(r'{"title": "bad \ud800 surrogate"}')
+
+    def test_put_returns_false_instead_of_raising(self):
+        assert cache.put("arxiv", "papers", "2301.00001", self.SURROGATE) is False
+
+    def test_put_negative_returns_false_instead_of_raising(self):
+        assert cache.put_negative("arxiv", "papers", "missing", self.SURROGATE) is False
+
+    def test_failure_is_counted_for_the_operator(self):
+        stats.reset()
+        cache.put("arxiv", "papers", "2301.00001", self.SURROGATE)
+        assert stats.snapshot()["providers"]["arxiv"]["cache_write_failures"] == 1
+
+    def test_nothing_half_written_is_left_behind(self, tmp_path):
+        # The encode fails with the temp file already open, so the write seam's
+        # cleanup is what keeps gc_orphan_tmp_files from inheriting it.
+        cache.put("arxiv", "papers", "2301.00001", self.SURROGATE)
+
+        assert cache.get("arxiv", "papers", "2301.00001") is None
+        assert list(tmp_path.rglob("*.tmp")) == []
+        assert list(tmp_path.rglob("*.json")) == []
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_still_returns_its_data(self):
+        from academic_tools_mcp.store import singleflight
+
+        async def fetch():
+            cache.put("arxiv", "papers", "2301.00001", self.SURROGATE)
+            return self.SURROGATE
+
+        result = await cache.cached_lookup(
+            single_flight=singleflight.SingleFlight(),
+            namespace="arxiv",
+            entity="papers",
+            canonical="2301.00001",
+            positive_ttl=999.0,
+            fetch=fetch,
+        )
+        assert result == self.SURROGATE
 
 
 class TestEmptyConversion:

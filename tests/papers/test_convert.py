@@ -1545,3 +1545,49 @@ class TestConvertMarkupJats:
 
         assert await papers.convert_markup("biorxiv", "10.1101/x", fetch, mode="jats") is None
         assert not stems.markdown_path("biorxiv", "10.1101/x").exists()
+
+
+class TestAConversionThatCannotStoreItsMarkdown:
+    """The write is the last step, after the converter has already run.
+
+    Failing it is still a conversion failure, so it owes ``convert_pdf``'s error
+    keys — including ``pdf_size_mb``, which the caller has by then and the shared
+    writer does not.
+    """
+
+    @pytest.fixture
+    def full_disk(self, monkeypatch):
+        def enospc(*a, **kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(papers.index.atomic, "write_text", enospc)
+
+    @pytest.mark.asyncio
+    async def test_fast_mode_reports_the_size_it_already_measured(
+        self, isolated_cache, real_pdf, monkeypatch, full_disk
+    ):
+        async def _fake_spawn(*args, **kwargs):
+            return fake_proc(returncode=0, stdout=b"## Intro\n\nbody\n")()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+
+        result = await convert_pdf(real_pdf, "test", "fast-enospc", mode="fast")
+
+        assert result["retryable"] is True
+        assert result["conversion_mode"] == "fast"
+        assert result["pdf_size_mb"] == round(real_pdf.stat().st_size / (1024 * 1024), 1)
+        assert not stems.markdown_path("test", "fast-enospc").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_path_with_no_pdf_to_size_omits_the_key(self, isolated_cache, tmp_path):
+        """``pdf_size_mb`` is not defaulted to 0.0 — the markup and import paths
+        never sized a PDF, and a zero there would read as one."""
+        md_path = stems.markdown_path("test", "no-pdf")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+
+        result = store_markdown_and_index(
+            "test", "no-pdf", md_path, "# A\n\nbad \ud800 surrogate\n", "html"
+        )
+
+        assert "error" in result
+        assert "pdf_size_mb" not in result

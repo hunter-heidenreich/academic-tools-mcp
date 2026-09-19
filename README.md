@@ -311,7 +311,9 @@ API responses and downloaded files are cached under `.cache/`:
   __search_index__/        # SQLite FTS5 index behind search_cached_papers
 ```
 
-Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp file + `os.replace`) so a crash mid-write can't leave a corrupt entry; corrupt entries from earlier versions self-heal on read.
+Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp file + `os.replace`) so a crash mid-write can't leave a corrupt entry; corrupt entries from earlier versions self-heal on read. A write the filesystem refuses — a full disk, a read-only `CACHE_DIR` — is reported as an error rather than raised, and counted as `cache_write_failures` in `get_server_stats`.
+
+`CACHE_DIR` is best pointed at a POSIX filesystem. On one without hard links (exFAT, some network mounts) the startup sweep that renames artifacts written under older filename rules is skipped rather than run unsafely, so those files keep their old names and are re-downloaded once if they're ever asked for.
 
 **Positive entries expire per provider**, so a long session doesn't serve stale data:
 

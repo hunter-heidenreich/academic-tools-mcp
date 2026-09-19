@@ -321,19 +321,27 @@ def _finalize_markdown(
     md_path: Path,
     raw_markdown: str,
     mode: str,
+    pdf_size_mb: float | None = None,
 ) -> dict[str, Any]:
     """Post-process converter output, then store it via the shared writer.
 
     The shared tail of both modes. Post-processing lives here, not in
     :func:`store_markdown_and_index`, because an imported markdown file is the operator's
     own text and rewriting its image links would be data loss.
+
+    ``pdf_size_mb`` is carried only so a write the cache refuses still satisfies
+    :func:`convert_pdf`'s error invariant; the markup and import paths have no PDF
+    to size and pass nothing.
     """
     markdown = "\n".join(line.rstrip() for line in raw_markdown.split("\n"))
 
     # Image paths point into the extraction dir, deleted on return; the caption is kept.
     markdown = _IMAGE_LINK_RE.sub(r"![\1]()", markdown)
 
-    return store_markdown_and_index(namespace, canonical, md_path, markdown, mode)
+    stored = store_markdown_and_index(namespace, canonical, md_path, markdown, mode)
+    if "error" in stored and pdf_size_mb is not None:
+        stored["pdf_size_mb"] = round(pdf_size_mb, 1)
+    return stored
 
 
 async def _clear_cached(namespace: str, canonical: str) -> None:
@@ -502,7 +510,7 @@ async def _convert_fast(
             }
 
         return await asyncio.to_thread(
-            _finalize_markdown, namespace, canonical, md_path, markdown, "fast"
+            _finalize_markdown, namespace, canonical, md_path, markdown, "fast", pdf_size_mb
         )
 
 
@@ -630,7 +638,7 @@ async def convert_pdf(
             # megabytes of regex and hashing, and the loop is serving other calls.
             def _read_and_finalize() -> dict[str, Any]:
                 raw = source_md.read_text(encoding="utf-8")
-                return _finalize_markdown(namespace, canonical, md_path, raw, "full")
+                return _finalize_markdown(namespace, canonical, md_path, raw, "full", pdf_size_mb)
 
             return await asyncio.to_thread(_read_and_finalize)
         finally:
