@@ -26,7 +26,7 @@ from academic_tools_mcp.providers import crossref, openalex, opencitations, pape
 def _discover_clients():
     """Every module holding a pooled outbound client, found by import scan.
 
-    Deliberately not a hand-maintained list, for the reason ``stats.throttles``
+    Deliberately not a hand-maintained list, for the reason ``stats.pacers``
     is not one: a new provider is covered the moment it exists, with no second
     roster to keep in sync. A module qualifies by holding both a ``_get_client``
     and a ``throttle`` -- the pair every outbound client has.

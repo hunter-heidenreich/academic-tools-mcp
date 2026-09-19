@@ -74,11 +74,6 @@ _CONTENT_REQUEST_GAP = 3.0
 _content_gap = SubGap(_throttle, min_gap_seconds=_CONTENT_REQUEST_GAP)
 
 
-def reset_content_pacing() -> None:
-    """Reset the content-host gap (test seam, called by conftest)."""
-    _content_gap.reset()
-
-
 def _request_slot(url: str) -> AbstractAsyncContextManager[None]:
     """bioRxiv's rate-limit slot (``Throttle.slot``). Module-level: it is a test seam."""
     return _throttle.slot(url)

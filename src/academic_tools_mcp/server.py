@@ -126,9 +126,11 @@ if _DEBUG_TOOLS_ENABLED:
         namespace (``openalex``, ``arxiv``, ``acl_anthology``, ``oa_download``,
         ...) to the counters it has moved — ``cache_hits``, ``cache_misses``,
         ``negative_hits``, ``http_calls``, ``http_retries``,
-        ``backpressure_refusals``, ``cache_write_failures`` since process start,
-        plus live ``in_flight``. An absent counter means zero. ``env_file`` is
-        the ``.env`` that won at import, or null.
+        ``backpressure_refusals``, ``quota_refusals``, ``quota_window_ignored``,
+        ``client_config_ignored``, ``cache_write_failures`` since process start,
+        plus live ``in_flight`` (in-flight requests *and* callers queued on a
+        pacing gap). An absent counter means zero. ``env_file`` is the ``.env``
+        that won at import, or null.
 
         Use this when something feels slow or rate-limit-pressured, to see
         which namespace is hitting the network vs. serving from cache.

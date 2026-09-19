@@ -126,11 +126,6 @@ async def _throttled_get(url: str, *, metered: bool = True, **kwargs: Any) -> ht
 _search_gap = SubGap(_throttle, min_gap_seconds=_SEARCH_REQUEST_GAP)
 
 
-def reset_search_pacing() -> None:
-    """Reset the search gap (test seam, called by conftest)."""
-    _search_gap.reset()
-
-
 async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
     """GET at OpenAlex's tighter *search* rate, then through the ordinary slot.
 

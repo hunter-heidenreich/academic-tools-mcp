@@ -556,8 +556,16 @@ class TestQuotaGate:
     """The refusal that costs no request: a spent budget fails before the caps."""
 
     @staticmethod
-    def _throttle() -> Throttle:
-        return Throttle(namespace="openalex", label="OpenAlex", max_concurrent=4, min_gap_seconds=0)
+    def _throttle(**overrides) -> Throttle:
+        return Throttle(
+            **{
+                "namespace": "openalex",
+                "label": "OpenAlex",
+                "max_concurrent": 4,
+                "min_gap_seconds": 0,
+                **overrides,
+            }
+        )
 
     @pytest.mark.asyncio
     async def test_a_spent_budget_refuses_before_any_request(self):
@@ -654,6 +662,82 @@ class TestQuotaGate:
         with pytest.raises(http.QuotaExhaustedError):
             async with throttle.slot("https://api.openalex.org/works"):
                 pass
+
+    @pytest.mark.asyncio
+    async def test_a_budget_spent_while_queued_refuses_the_waiting_caller(self):
+        """The quota is re-checked once a permit is won, not only on arrival.
+
+        A caller can sit on the semaphore for as long as the holder's retries take,
+        and sending it upstream on a budget a sibling already spent is the request
+        the lockout exists to prevent.
+        """
+        throttle = self._throttle(max_concurrent=1, max_pending=3)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def hold():
+            async with throttle.slot("https://api.openalex.org/works"):
+                entered.set()
+                await release.wait()
+
+        async def queued():
+            async with throttle.slot("https://api.openalex.org/works"):
+                pytest.fail("ran on a spent budget")
+
+        in_flight = asyncio.create_task(hold())
+        await entered.wait()
+        waiting = asyncio.create_task(queued())
+        await _until(lambda: throttle.pending == 2)
+
+        stats.record_quota("openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True)
+        release.set()
+
+        with pytest.raises(http.QuotaExhaustedError):
+            await waiting
+        await in_flight
+        assert throttle.pending == 0
+
+    @pytest.mark.asyncio
+    async def test_a_caller_already_inside_the_slot_is_not_interrupted(self):
+        """The re-check sits before the yield, so an in-flight request completes."""
+        throttle = self._throttle()
+        ran = False
+
+        async with throttle.slot("https://api.openalex.org/works"):
+            stats.record_quota(
+                "openalex", limit=1000, remaining=0, reset_seconds=100.0, refused=True
+            )
+            ran = True
+
+        assert ran
+
+    @pytest.mark.asyncio
+    async def test_a_caller_at_the_burst_cap_is_admitted_once_it_holds_a_permit(self):
+        """The re-check is the quota half only, and this is the shape that proves it.
+
+        `pending` already counts the caller, so re-running the burst cap after the
+        semaphore refuses at exactly the occupancy the entry gate just admitted.
+        It bites when a permit is free at entry — `max_concurrent >= max_pending` —
+        because then nothing has exited to decrement `pending` first.
+        """
+        throttle = self._throttle(max_concurrent=2, max_pending=2)
+        release = asyncio.Event()
+        admitted = 0
+
+        async def worker():
+            nonlocal admitted
+            async with throttle.slot("https://api.openalex.org/works"):
+                admitted += 1
+                await release.wait()
+
+        first = asyncio.create_task(worker())
+        await _until(lambda: admitted == 1)
+        second = asyncio.create_task(worker())
+        await _until(lambda: admitted == 2)
+
+        assert throttle.pending == throttle.max_pending
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=1.0)
+        assert throttle.pending == 0
 
 
 class TestSubGap:

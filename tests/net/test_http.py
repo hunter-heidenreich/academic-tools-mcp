@@ -460,30 +460,45 @@ class TestGetWithRetry:
         assert self.slept == [3.0]
 
     @pytest.mark.asyncio
-    async def test_retry_after_long_cooldown_respected(self):
-        # A genuine multi-minute Retry-After is honoured (it sits below the
-        # 10-minute absolute ceiling). This used to clamp to 30s.
-        client = _FakeClient(
-            [
-                _response(429, headers={"Retry-After": "300"}),
-                _response(200),
-            ]
-        )
-        await http.get_with_retry(client, "u")
-        assert self.slept == [300.0]
+    async def test_a_long_cooldown_is_handed_back_rather_than_slept_off(self):
+        # We hold a throttle slot for the whole sleep, so waiting out a
+        # multi-minute cooldown would refuse this provider's other callers to
+        # serve one. The 429 is returned instead and `response_error_dict`
+        # passes the real wait on as `retry_after_seconds`.
+        client = _FakeClient([_response(429, headers={"Retry-After": "300"})])
+        resp = await http.get_with_retry(client, "u")
+        assert resp.status_code == 429
+        assert len(client.calls) == 1
+        assert self.slept == []
 
     @pytest.mark.asyncio
-    async def test_retry_after_capped_to_avoid_indefinite_pin(self):
-        # A misconfigured server returning a huge Retry-After must not
-        # pin our throttle for hours; the absolute ceiling is 600s (10 min).
+    async def test_a_misconfigured_retry_after_cannot_pin_the_slot(self):
+        client = _FakeClient([_response(503, headers={"Retry-After": "999999"})])
+        resp = await http.get_with_retry(client, "u", backoff_seconds=1.0)
+        assert resp.status_code == 503
+        assert self.slept == []
+
+    @pytest.mark.asyncio
+    async def test_a_cooldown_exactly_at_the_cap_is_still_slept_off(self):
+        # The boundary: `sleep_for > cap` hands off, so exactly at the cap retries.
         client = _FakeClient(
             [
-                _response(503, headers={"Retry-After": "999999"}),
+                _response(429, headers={"Retry-After": str(http._MAX_SLOT_SLEEP_SECONDS)}),
                 _response(200),
             ]
         )
-        await http.get_with_retry(client, "u", backoff_seconds=1.0)
-        assert self.slept == [600.0]
+        resp = await http.get_with_retry(client, "u")
+        assert resp.status_code == 200
+        assert self.slept == [http._MAX_SLOT_SLEEP_SECONDS]
+
+    @pytest.mark.asyncio
+    async def test_a_cooldown_one_tick_past_the_cap_is_handed_back(self):
+        client = _FakeClient(
+            [_response(429, headers={"Retry-After": str(http._MAX_SLOT_SLEEP_SECONDS + 0.1)})]
+        )
+        resp = await http.get_with_retry(client, "u")
+        assert resp.status_code == 429
+        assert self.slept == []
 
     @pytest.mark.asyncio
     async def test_unparseable_retry_after_falls_back_to_backoff(self):
@@ -503,8 +518,9 @@ class TestGetWithRetry:
     async def test_future_http_date_retry_after_extends_the_sleep(self):
         # The HTTP-date form is the other RFC 9110 spelling and reaches the
         # sleep, not just _retry_after_seconds: a Cloudflare-fronted 429 that
-        # asks for two minutes must not be served by a 1.0s backoff.
-        when = datetime.now(UTC) + timedelta(seconds=120)
+        # asks for twenty seconds must not be served by a 1.0s backoff. Kept
+        # under the slot cap, or the date form would never reach a sleep at all.
+        when = datetime.now(UTC) + timedelta(seconds=20)
         client = _FakeClient(
             [
                 _response(429, headers={"Retry-After": format_datetime(when, usegmt=True)}),
@@ -513,7 +529,18 @@ class TestGetWithRetry:
         )
         await http.get_with_retry(client, "u", backoff_seconds=1.0)
         assert len(self.slept) == 1
-        assert 110 < self.slept[0] <= 121
+        assert 10 < self.slept[0] <= 21
+
+    @pytest.mark.asyncio
+    async def test_a_long_http_date_cooldown_is_handed_back_too(self):
+        # The cap reads the parsed value, not the header's spelling.
+        when = datetime.now(UTC) + timedelta(seconds=600)
+        client = _FakeClient(
+            [_response(429, headers={"Retry-After": format_datetime(when, usegmt=True)})]
+        )
+        resp = await http.get_with_retry(client, "u", backoff_seconds=1.0)
+        assert resp.status_code == 429
+        assert self.slept == []
 
     @pytest.mark.asyncio
     async def test_multiple_attempts_back_off_exponentially(self):
@@ -527,13 +554,15 @@ class TestGetWithRetry:
         assert self.slept == [3.0, 6.0]
 
     @pytest.mark.asyncio
-    async def test_exponential_backoff_respects_ceiling(self):
-        # The per-attempt exponential growth is still clamped to the 10-minute
-        # ceiling so a high max_attempts can't produce an absurd sleep.
+    async def test_exponential_backoff_respects_the_slot_ceiling(self):
+        # The per-attempt growth is clamped too, so a caller-supplied backoff
+        # cannot hold the slot past the cap the way a Retry-After cannot.
+        # Unlike a long Retry-After this does not hand off: there is no server
+        # instruction being overridden, just our own widening gap.
         client = _FakeClient([_response(503), _response(503), _response(503), _response(200)])
         await http.get_with_retry(client, "u", max_attempts=4, backoff_seconds=400.0)
-        # 400, then min(800, 600), then min(1600, 600).
-        assert self.slept == [400.0, 600.0, 600.0]
+        cap = http._MAX_SLOT_SLEEP_SECONDS
+        assert self.slept == [cap, cap, cap]
 
     @pytest.mark.asyncio
     async def test_exponential_backoff_applies_to_network_errors(self):
@@ -623,6 +652,18 @@ class TestRetryStats:
         counters = stats.snapshot()["providers"]["probe"]
         assert counters["http_calls"] == 3
         assert counters["http_retries"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_cooldown_handed_back_is_not_counted_as_a_retry(self):
+        """The counter is the politeness-audit number, so it must count attempts
+        actually made — a cooldown past the slot cap ends the run instead."""
+        client = _FakeClient([_response(429, headers={"Retry-After": "300"})])
+
+        await http.get_with_retry(client, "u", provider="openalex")
+
+        row = stats.snapshot()["providers"]["openalex"]
+        assert row["http_calls"] == 1
+        assert "http_retries" not in row
 
     @pytest.mark.asyncio
     async def test_no_provider_records_nothing(self):
@@ -779,6 +820,55 @@ class TestRateLimitResponseAsQuota:
         http.record_quota("arxiv", _response(429, headers))
 
         assert stats.quota_refusal("arxiv") is None
+
+    def test_an_empty_header_budget_dates_its_lockout_from_retry_after(self):
+        """The two signals describe one budget, and the richer 429 used to arm less.
+
+        Regression: `Remaining: 0` with a `Retry-After` and no `x-ratelimit-reset`
+        took the header branch, found no deadline and armed nothing — while a bare
+        429 carrying only the `Retry-After` armed a lockout.
+        """
+        http.record_quota(
+            "openalex", _response(429, {"x-ratelimit-remaining": "0", "retry-after": "30"})
+        )
+
+        refusal = stats.quota_refusal("openalex")
+
+        assert refusal is not None
+        assert 29 < refusal[0] <= 30
+
+    def test_a_reset_header_still_wins_over_retry_after(self):
+        """The fallback is a fallback: it fills a gap, it does not override."""
+        http.record_quota(
+            "openalex",
+            _response(
+                429,
+                {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "90", "retry-after": "30"},
+            ),
+        )
+
+        wait, _ = stats.quota_refusal("openalex")
+
+        assert 89 < wait <= 90
+
+    def test_a_window_past_a_day_is_not_treated_as_a_duration(self):
+        """An epoch timestamp read as seconds-until-refill locks a namespace out for
+        decades. Discarded rather than clamped, so it fails open like an absent header."""
+        epoch_ish = str(int(http._MAX_QUOTA_WINDOW_SECONDS * 20_000))
+        http.record_quota("openalex", _response(429, {"x-ratelimit-reset": epoch_ish}))
+
+        assert stats.quota_refusal("openalex") is None
+        assert stats.snapshot()["providers"]["openalex"]["quota_window_ignored"] == 1
+
+    def test_a_window_exactly_at_a_day_is_kept(self):
+        http.record_quota(
+            "paperswithcode",
+            _response(429, {"retry-after": str(http._MAX_QUOTA_WINDOW_SECONDS)}),
+        )
+
+        wait, _ = stats.quota_refusal("paperswithcode")
+
+        assert wait > http._MAX_QUOTA_WINDOW_SECONDS - 1
 
     def test_a_non_429_retry_after_records_nothing(self):
         http.record_quota("biorxiv", _response(503, {"retry-after": "30"}))
