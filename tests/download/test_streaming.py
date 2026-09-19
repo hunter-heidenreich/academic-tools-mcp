@@ -7,6 +7,7 @@ for 404 / transport / partial-write paths.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import errno
 import tempfile
@@ -891,3 +892,177 @@ class TestCachedDownload:
         assert a is not b
         a["cascaded_invalidated"] = ["markdown"]
         assert "cascaded_invalidated" not in b
+
+
+class TestNonSuccessStatus:
+    """The failure path is bounded, and a 3xx is not mistaken for a body."""
+
+    @staticmethod
+    def _client(status: int, body: bytes, *, headers: dict[str, str] | None = None):
+        """A streaming client that records how much of the body was consumed."""
+        consumed: list[int] = []
+
+        class CountingStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                for start in range(0, len(body), 8192):
+                    chunk = body[start : start + 8192]
+                    consumed.append(len(chunk))
+                    yield chunk
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status,
+                headers={"content-type": "text/html", **(headers or {})},
+                stream=CountingStream(),
+            )
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler)), consumed
+
+    async def _run(self, client, tmp_path: Path, url: str = "https://pub.example/p.pdf"):
+        try:
+            return await streaming.stream_to_file(
+                client,
+                url,
+                tmp_path / "out.pdf",
+                slot_factory=_passthrough_slot,
+                namespace="oa_download",
+                provider_label="OA download",
+                require_pdf=True,
+                timeout=_TIMEOUT,
+            )
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_a_large_error_body_is_not_buffered_whole(self, tmp_path: Path):
+        """Regression: `aread()` buffered the entire body to use 200 bytes of it."""
+        client, consumed = self._client(502, b"x" * 5_000_000)
+
+        result = await self._run(client, tmp_path)
+
+        assert "502" in result["error"]
+        assert result["retryable"] is True, "502 is in _RETRYABLE_STATUSES"
+        assert sum(consumed) < 100_000, f"read {sum(consumed)} bytes of a 5 MB error body"
+        assert not (tmp_path / "out.pdf").exists()
+
+    @pytest.mark.asyncio
+    async def test_an_unclassified_4xx_stays_unflagged(self, tmp_path: Path):
+        """`is_definitive_failure` is an allowlist, so a 403 must carry no verdict."""
+        client, _ = self._client(403, b"<html>Forbidden</html>")
+
+        result = await self._run(client, tmp_path)
+
+        assert result["error"] == "OA download HTTP 403: <html>Forbidden</html>"
+        assert "retryable" not in result
+        assert not streaming.is_definitive_failure(result)
+
+    @pytest.mark.asyncio
+    async def test_retry_after_survives_the_streaming_path(self, tmp_path: Path):
+        client, _ = self._client(503, b"busy", headers={"retry-after": "30"})
+
+        result = await self._run(client, tmp_path)
+
+        assert result["retryable"] is True
+        assert result["retry_after_seconds"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_a_location_less_redirect_is_an_error_not_a_landing_page(self, tmp_path: Path):
+        """httpx follows only a 3xx carrying a Location, so this one reaches us.
+
+        A `>= 400` gate would sniff the body for `%PDF-`, call it a paywall and
+        negative-cache that verdict against the paper.
+        """
+        client, _ = self._client(300, b"<html>Multiple Choices</html>")
+
+        result = await self._run(client, tmp_path)
+
+        assert "HTTP 300" in result["error"]
+        assert "retryable" not in result
+        assert not streaming.is_definitive_failure(result), "a redirect is not a paper verdict"
+        assert not (tmp_path / "out.pdf").exists()
+
+
+class TestPdfHeaderScan:
+    """`%PDF-` is looked for in a prefix, not demanded at byte 0."""
+
+    _LEADING = b"\xef\xbb\xbf\n  %PDF-1.7\nbody"
+
+    @pytest.mark.asyncio
+    async def test_a_leading_bom_is_still_a_pdf(self, tmp_path: Path):
+        dest = tmp_path / "bom.pdf"
+        client = MagicMock()
+        client.stream = MagicMock(return_value=_mock_stream_response(chunks=[self._LEADING])())
+
+        result = await streaming.stream_to_file(
+            client,
+            "https://pub.example/bom.pdf",
+            dest,
+            slot_factory=_passthrough_slot,
+            namespace="oa_download",
+            provider_label="OA download",
+            require_pdf=True,
+            timeout=_TIMEOUT,
+        )
+
+        assert "error" not in result, result.get("error")
+        assert dest.read_bytes() == self._LEADING
+
+    def test_is_usable_pdf_agrees(self, tmp_path):
+        p = tmp_path / "bom.pdf"
+        p.write_bytes(self._LEADING)
+        assert streaming.is_usable_pdf(p)
+
+    def test_a_landing_page_is_still_rejected(self, tmp_path):
+        p = tmp_path / "landing.pdf"
+        p.write_bytes(b"<html><head><title>Paywall</title></head></html>")
+        assert not streaming.is_usable_pdf(p)
+
+    def test_the_scan_does_not_run_past_its_window(self, tmp_path):
+        p = tmp_path / "late.pdf"
+        p.write_bytes(b"x" * 4096 + b"%PDF-1.7")
+        assert not streaming.is_usable_pdf(p)
+
+
+class TestCancellationCleansUp:
+    """The `finally` exists for cancellation; the exception path alone never proved it."""
+
+    @pytest.mark.asyncio
+    async def test_cancelling_mid_stream_leaves_no_temp_file(self, tmp_path: Path):
+        dest = tmp_path / "slow.pdf"
+        started = asyncio.Event()
+
+        async def aiter_bytes(_chunk_size=None):
+            yield b"%PDF-1.4 first"
+            started.set()
+            await asyncio.sleep(3600)
+
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "application/pdf"}
+        response.aiter_bytes = aiter_bytes
+
+        @contextlib.asynccontextmanager
+        async def stream_cm():
+            yield response
+
+        client = MagicMock()
+        client.stream = MagicMock(return_value=stream_cm())
+
+        task = asyncio.create_task(
+            streaming.stream_to_file(
+                client,
+                "https://example.org/slow.pdf",
+                dest,
+                slot_factory=_passthrough_slot,
+                namespace="arxiv",
+                provider_label="arXiv",
+                timeout=_TIMEOUT,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert not dest.exists()
+        assert not list(tmp_path.glob("*.tmp")), "a temp file survived cancellation"

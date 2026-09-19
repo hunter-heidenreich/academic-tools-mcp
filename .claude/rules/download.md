@@ -32,12 +32,12 @@ re-fetched on every call**, the price of `is_definitive_failure` being an allowl
 ## openaccess.py
 
 **Don't widen the trust boundary.** Do not add a parameter that accepts a URL, do
-not widen resolution to a search or a redirect chase, and keep `require_pdf=True` —
-this is the only caller that passes it, because it is the only path whose URL can
-be a publisher landing page.
+not widen *resolution* to a search, and keep `require_pdf=True` — this is the only
+caller that passes it, because it is the only path whose URL can be a publisher
+landing page.
 
-**`_IMPORT_SUGGESTION` attaches to known-definitive failures only**, at both
-attachment sites — a denylist would catch a `MAX_PDF_BYTES` abort and a 0-byte 200
+**`manual.IMPORT_SUGGESTION` attaches to known-definitive failures only**, at every
+attachment site — a denylist would catch a `MAX_PDF_BYTES` abort and a 0-byte 200
 as well.
 
 **The negative half lives in this module's own namespace while the artifact lands in

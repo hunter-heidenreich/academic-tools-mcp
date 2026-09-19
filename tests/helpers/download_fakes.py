@@ -52,7 +52,8 @@ def mock_stream_response(
     """
     chunks = [b"%PDF-1.4 fresh bytes"] if chunks is None else chunks
 
-    async def aiter_bytes(_chunk_size):
+    # Defaulted: the error path reads a prefix with `aiter_bytes()`, no size.
+    async def aiter_bytes(_chunk_size=None):
         for c in chunks:
             yield c
 
@@ -103,20 +104,28 @@ def streaming_client(
     content_type: str = "text/html",
     *,
     requests: list[httpx.Request] | None = None,
+    redirect_from: str | None = None,
+    follow_redirects: bool = False,
 ) -> httpx.AsyncClient:
     """A real AsyncClient over MockTransport, streaming ``body``.
 
     Pass ``requests`` to capture what actually went out — the seam for
     asserting on headers, timeouts and URLs a MagicMock stub would swallow.
+    ``redirect_from`` answers that URL with a 302 to the body instead, so a
+    redirect chase can be pinned; it needs ``follow_redirects``.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
         if requests is not None:
             requests.append(request)
+        if redirect_from is not None and str(request.url) == redirect_from:
+            return httpx.Response(302, headers={"location": "https://cdn.example/final.pdf"})
         return httpx.Response(
             status_code,
             headers={"content-type": content_type},
             stream=UnreadStream(body),
         )
 
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), follow_redirects=follow_redirects
+    )

@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from pathlib import Path
+from unittest import mock
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -183,7 +185,8 @@ class TestOaDownload:
         # — that flag is what marks the miss definitive.
         _stub_get_work(monkeypatch, {"error": f"No work found for DOI: {_DOI}", "not_found": True})
         result = await openaccess.download_pdf(_DOI)
-        assert result["error"] == f"No work found for DOI: {_DOI}"
+        # Prefixed: the agent called download_pdf, not OpenAlex.
+        assert result["error"] == f"{openaccess.LABEL}: No work found for DOI: {_DOI}"
         # A definitive (non-retryable) OpenAlex miss keeps the import escape hatch.
         assert "import_paper" in result["suggestion"]
         assert not _oa_dest().exists()
@@ -194,7 +197,7 @@ class TestOaDownload:
         # agent should retry, NOT be told to go fetch the PDF by hand.
         _stub_get_work(monkeypatch, {"error": "upstream timeout", "retryable": True})
         result = await openaccess.download_pdf(_DOI)
-        assert result["error"] == "upstream timeout"
+        assert result["error"] == f"{openaccess.LABEL}: upstream timeout"
         assert result["retryable"] is True
         assert "suggestion" not in result
         assert not _oa_dest().exists()
@@ -378,7 +381,7 @@ class TestOaDownload:
         monkeypatch.setattr(openalex, "get_work", counting_get_work)
 
         result = await openaccess.download_pdf(_DOI)
-        assert result["error"].startswith("OpenAlex HTTP 403")
+        assert result["error"] == f"{openaccess.LABEL}: OpenAlex HTTP 403: <html>Forbidden</html>"
         assert "suggestion" not in result, "an unknown verdict is not a dead end"
 
         # And it is not negative-cached, so the next call really re-resolves.
@@ -809,3 +812,51 @@ class TestServerDispatch:
 
         result = await pipeline._download_pdf_by_provider(identifier, allow_oa_url=True)
         assert result["cached"] is True
+
+
+class TestRedirectChase:
+    """The OA URL is OpenAlex's, but the host that serves the bytes need not be."""
+
+    _START = "https://publisher.example/landing.pdf"
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_to_another_host_is_followed(self, tmp_path):
+        sent: list = []
+        client = _streaming_client(
+            200,
+            b"%PDF-1.7 real bytes",
+            content_type="application/pdf",
+            requests=sent,
+            redirect_from=self._START,
+            follow_redirects=True,
+        )
+        try:
+            result = await streaming.stream_to_file(
+                client,
+                self._START,
+                tmp_path / "out.pdf",
+                slot_factory=_passthrough_slot,
+                namespace="oa_download",
+                provider_label="OA download",
+                require_pdf=True,
+                timeout=_TIMEOUT,
+            )
+        finally:
+            await client.aclose()
+
+        assert "error" not in result, result.get("error")
+        assert [str(r.url) for r in sent] == [self._START, "https://cdn.example/final.pdf"]
+
+    @pytest.mark.asyncio
+    async def test_the_oa_client_follows_redirects(self):
+        """A real OA link almost always 302s, so the pooled client must chase."""
+        captured: list[dict] = []
+
+        def spy(name, **kwargs):
+            captured.append(kwargs)
+            return MagicMock()
+
+        with mock.patch.object(clients, "get_client", spy):
+            openaccess._get_client()
+
+        assert captured[0]["follow_redirects"] is True

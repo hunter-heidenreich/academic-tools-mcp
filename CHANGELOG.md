@@ -135,6 +135,14 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **A failed download names the download tool, and always offers the same escape
+  hatch.** An open-access download that OpenAlex refused used to surface OpenAlex's
+  own error verbatim, so an agent that called `download_pdf` read "OpenAlex ..." and
+  had to guess which tool had failed. The two divergent copies of the
+  `import_paper` advice are now one, so the open-access path no longer wins with the
+  shorter wording that omitted `import_paper`'s support for pre-converted
+  `.md`/`.markdown`. ([#150])
+
 - **`search_wikipedia` searches article text, not just titles.** It ran on
   `action=opensearch`, a title-prefix suggester: measured, it answered `[]` to
   *"Vaswani attention"*, to *"neural network architecture for machine translation"*
@@ -182,6 +190,20 @@ grouped by milestone rather than per commit.
   ([#127])
 
 ### Fixed
+
+- **A PDF that doesn't start at byte 0 is no longer cached as a paywall page.**
+  Publishers ship PDFs behind a byte-order mark or stray leading whitespace, and
+  both the download guard and the cached-file check demanded `%PDF-` at offset
+  zero — so a perfectly good paper was rejected as "likely a landing or paywall
+  page", and because that verdict is definitive it was negative-cached for a day.
+  Both now scan the head of the file, the way a real PDF reader does. ([#150])
+- **A large HTTP error is no longer buffered whole.** The streaming download path
+  read an entire error response into memory to quote the first 200 bytes of it,
+  uncapped by `MAX_PDF_BYTES`, which undid the point of streaming on exactly the
+  responses least worth keeping. It now reads a bounded prefix. ([#150])
+- **A redirect without a `Location` header is reported as one.** Such a response
+  reaches the client unfollowed; the download path could have mistaken its body for
+  a landing page and cached that verdict against the paper. ([#150])
 
 - **A spent OpenAlex credit budget no longer refuses the calls that cost nothing.**
   `X-RateLimit-Remaining` counts *credits*, and OpenAlex charges none for singleton
@@ -2038,3 +2060,4 @@ say which.
 [#145]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/145
 [#146]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/146
 [#147]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/147
+[#150]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/150

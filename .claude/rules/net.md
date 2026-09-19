@@ -16,8 +16,9 @@ the other failure — they sum the bound and pin the lifespan.
 
 - **The error vocabulary has three states**: `retryable: True` (transient),
   `not_found: True` (definitive), and an unclassified 4xx carrying neither.
-  `error_dict` never emits a fourth — an explicit `retryable: False` is a
-  deliberate definitive verdict a caller writes, and `tools/search` branches on it.
+  Neither `error_dict` nor `response_error_dict` emits a fourth — an explicit
+  `retryable: False` is a deliberate definitive verdict a caller writes, and
+  `tools/search` branches on it.
   **`retryable is True` is the only test meaning "a retry might work"**; inverting
   `not_found` collapses three states into two.
 - **Every downstream classifier reads these flags** — `tools/graph._FORWARDED_ERROR_KEYS`,
