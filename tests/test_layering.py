@@ -36,7 +36,10 @@ _LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     # while `openaccess` decides *which* URL may be fetched and so consumes
     # `openalex` and `manual`. Listed per module rather than pretending the
     # directory is one rank.
-    ("download", frozenset({"download", "download.streaming"})),
+    (
+        "download",
+        frozenset({"download", "download.artifact", "download.protocol", "download.streaming"}),
+    ),
     ("providers", frozenset({"providers"})),
     (
         "content",

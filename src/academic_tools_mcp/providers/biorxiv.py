@@ -8,7 +8,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from ..download import streaming
+from ..download import protocol, streaming
 from ..net import clients, http
 from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight, stems
@@ -568,7 +568,7 @@ async def download_pdf(doi: str, *, force_refresh: bool = False) -> dict[str, An
 
     # Tuple-keyed to stay distinct from get_paper's slot, which _fetch awaits — one key
     # for both deadlocks.
-    return await streaming.cached_download(
+    return await protocol.cached_download(
         single_flight=_single_flight,
         namespace=NAMESPACE,
         entity=_NEG_ENTITY,

@@ -26,7 +26,7 @@ from ..app import (
     read_markdown,
     resolve_paper_identifier,
 )
-from ..download import openaccess, streaming
+from ..download import artifact, openaccess
 from ..providers import acl, arxiv, biorxiv
 
 _INTERNAL_PATH_KEYS = ("path", "markdown_path")
@@ -250,7 +250,7 @@ async def convert_paper(
         markup_error = converted
 
     # Not merely absent: a 0-byte or non-%PDF- leftover is a miss too.
-    if not streaming.is_usable_pdf(pdf):
+    if not artifact.is_usable_pdf(pdf):
         if markup_error is not None:
             return enrich_error(
                 markup_error,

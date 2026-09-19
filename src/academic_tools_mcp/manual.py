@@ -13,7 +13,7 @@ from typing import Any, Literal, NamedTuple, TypedDict
 from urllib.parse import unquote
 
 from . import papers
-from .download import streaming
+from .download import artifact
 from .net import stats
 from .providers import acl, arxiv, biorxiv, openalex
 from .store import atomic, cache, stems
@@ -380,7 +380,7 @@ def import_local_pdf(
     if err := _source_error(source, file_path):
         return err
 
-    # Not streaming.is_usable_pdf: an unopenable source earns its own error.
+    # Not artifact.is_usable_pdf: an unopenable source earns its own error.
     try:
         with source.open("rb") as f:
             header = f.read(5)
@@ -404,7 +404,7 @@ def import_local_pdf(
     existed = dest.exists()
     if not force_refresh:
         # cached_hit owns the stat, and the race it absorbs (download.md).
-        hit = streaming.cached_hit(dest)
+        hit = artifact.cached_hit(dest)
         if hit is not None:
             return {"identifier": canonical, "namespace": namespace, **hit}
 

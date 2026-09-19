@@ -65,7 +65,7 @@ force_refresh→check→single-flight→re-check dance, or a DOI regex.
 | Artifact naming, checksums | `store/stems.py` |
 | Atomic writes | `store/atomic.py` |
 | Single-flight | `store/singleflight.py` |
-| Cached-download protocol | `streaming.cached_download` |
+| Cached-download protocol | `protocol.cached_download` |
 | Throttling | `throttle.Throttle` |
 | Retry | `http.get_with_retry` |
 | Agent-facing error vocabulary | `http.error_dict` / `response_error_dict` / `parse_error_dict` / `not_found` |
