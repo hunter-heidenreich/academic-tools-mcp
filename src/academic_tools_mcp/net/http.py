@@ -1,4 +1,4 @@
-"""Shared HTTP error normalization for API clients.
+"""Shared HTTP error normalization, transparent retry and quota accounting.
 
 Every client wraps its request block in ``try/except HTTPX_ERRORS`` and returns
 ``error_dict(provider, exc)``, so a transient failure (``_RETRYABLE_STATUSES``, timeout,
@@ -85,9 +85,17 @@ HTTPX_ERRORS = (
 JSON_PARSE_ERRORS: tuple[type[Exception], ...] = (json.JSONDecodeError,)
 
 
-# Bounds the sleep, the backoff's growth and the agent-facing hint: honours a real
-# multi-minute cooldown, not a bogus 86400.
+# Bounds the agent-facing hint alone; `_MAX_SLOT_SLEEP_SECONDS` bounds what we wait.
 _MAX_RETRY_AFTER_SECONDS = 600.0  # 10 minutes
+
+
+# How long a retry may hold a throttle slot asleep, refusing that provider's other
+# callers. Must stay at or above every provider's gap; test_politeness asserts it.
+_MAX_SLOT_SLEEP_SECONDS = 30.0
+
+
+# Past this, a `Retry-After` or `X-RateLimit-Reset` is an epoch timestamp, not a duration.
+_MAX_QUOTA_WINDOW_SECONDS = 86_400.0  # one day
 
 
 # The single definition of "transient status": `error_dict` and `get_with_retry` both read it.
@@ -185,10 +193,9 @@ def _header_number(response: httpx.Response, name: str) -> float | None:
 def record_quota(provider: str, response: httpx.Response) -> None:
     """File the budget a response advertised. ``reset`` is a duration.
 
-    ``X-RateLimit-*`` headers win. Without them, a 429 with a usable ``Retry-After``
-    records the budget as spent until then, so later calls are refused locally rather
-    than sent into the same cooldown. Unclamped, like ``_quota_dict``: the lockout never
-    sleeps, so the sleep ceiling must not shorten it.
+    ``X-RateLimit-*`` headers say *whether* the budget is spent; a 429's ``Retry-After``
+    only *dates* it, and only when no reset header did. Not clamped to the sleep ceiling
+    — the lockout never sleeps — but bounded by ``_MAX_QUOTA_WINDOW_SECONDS``.
 
     **Only a 429 arms the lockout**, whichever branch files it: OpenAlex meters *credits*
     and its singletons spend none, so a budget its headers call empty still serves them.
@@ -196,24 +203,34 @@ def record_quota(provider: str, response: httpx.Response) -> None:
     refused = response.status_code == 429
     limit = _header_number(response, "x-ratelimit-limit")
     remaining = _header_number(response, "x-ratelimit-remaining")
-    if limit is None and remaining is None and refused:
-        retry_after = _retry_after_seconds(response)
-        if retry_after is not None:
-            stats.record_quota(
-                provider, limit=None, remaining=0, reset_seconds=retry_after, refused=True
-            )
-        return
+    reset_seconds = _header_number(response, "x-ratelimit-reset")
+    # Without this, a 429 carrying `Remaining: 0` *and* a Retry-After armed nothing
+    # while a bare one armed a lockout — more evidence buying less protection.
+    if reset_seconds is None and refused:
+        reset_seconds = _retry_after_seconds(response)
+    if reset_seconds is not None and reset_seconds > _MAX_QUOTA_WINDOW_SECONDS:
+        # Discarded, not clamped: an unreadable window fails open, like an absent one.
+        stats.incr(provider, "quota_window_ignored")
+        reset_seconds = None
+    if limit is None and remaining is None:
+        if not refused or reset_seconds is None:
+            return
+        remaining = 0.0  # advertised nothing, but the 429 itself is the observation
     stats.record_quota(
         provider,
         limit=None if limit is None else int(limit),
         remaining=None if remaining is None else int(remaining),
-        reset_seconds=_header_number(response, "x-ratelimit-reset"),
+        reset_seconds=reset_seconds,
         refused=refused,
     )
 
 
-def _quota_dict(provider: str, exc: QuotaExhaustedError) -> dict[str, Any]:
-    """Structured local refusal for a spent budget. ``retry_after_seconds`` is unclamped."""
+def _quota_dict(exc: QuotaExhaustedError) -> dict[str, Any]:
+    """Structured local refusal for a spent budget. ``retry_after_seconds`` is unclamped.
+
+    No ``provider`` fallback, unlike ``_backpressure_dict``: only a ``Throttle`` raises
+    this, so ``exc.provider`` is always the agent-facing label.
+    """
     wait = exc.retry_after_seconds
     return {
         "error": (
@@ -278,7 +295,7 @@ def response_error_dict(
         result: dict[str, Any] = {"error": transient, "retryable": True}
         retry_after = _retry_after_seconds(response)
         if retry_after is not None:
-            # Same ceiling as the internal retry path. Change one, change both.
+            # A hint, not a wait: bounded generously because nothing here sleeps on it.
             result["retry_after_seconds"] = min(retry_after, _MAX_RETRY_AFTER_SECONDS)
         return result
     if snippet is None:
@@ -303,7 +320,7 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     Status classification is ``response_error_dict``'s.
     """
     if isinstance(exc, QuotaExhaustedError):
-        return _quota_dict(provider, exc)
+        return _quota_dict(exc)
     if isinstance(exc, LocalBackpressureError):
         return _backpressure_dict(provider, exc)
     if isinstance(exc, httpx.HTTPStatusError):
@@ -338,13 +355,15 @@ async def get_with_retry(
     ``_RETRYABLE_STATUSES``. Everything else is returned as-is on the first
     attempt, for the caller's ``raise_for_status`` or status branch to handle.
 
-    The sleep after a failed attempt *n* is ``min(max(Retry-After, backoff_seconds * 2**(n-1)),
-    _MAX_RETRY_AFTER_SECONDS)``; on the transport-exception path there is no response, so only
-    the backoff term applies. ``backoff_seconds`` is the floor — ``Throttle.get`` passes the
-    provider's gap floored at one second, so a retry cannot undercut the documented rate; the
-    exponential term widens later retries so they straddle a cooldown instead of landing in the
-    same window; the ceiling stops a misconfigured ``Retry-After`` pinning the throttle.
-    ``Retry-After`` is read on any retryable status, in both RFC 9110 forms.
+    The sleep after a failed attempt *n* is ``max(Retry-After, backoff_seconds * 2**(n-1))``,
+    capped at ``_MAX_SLOT_SLEEP_SECONDS``; the transport-exception path has no response, so
+    only the backoff term applies. ``backoff_seconds`` is the floor — ``Throttle.get`` passes
+    the provider's gap floored at one second, so a retry cannot undercut the documented rate;
+    the exponential term widens later retries so they straddle a cooldown instead of landing
+    in the same window. ``Retry-After`` is read on any retryable status, in both RFC 9110 forms.
+
+    **A cooldown past the cap is handed back, not slept off**, and ``response_error_dict``
+    carries the real wait to the agent as ``retry_after_seconds``.
 
     The final attempt returns its response or re-raises. ``max_attempts=2`` is 1 original + 1
     retry, set per provider by ``throttle.Throttle``. GET-only: every cached lookup is a GET.
@@ -354,7 +373,7 @@ async def get_with_retry(
     max_attempts = max(1, max_attempts)
     for attempt in range(1, max_attempts + 1):
         # Factor 1 on attempt 1, so the first retry waits exactly backoff_seconds.
-        effective_backoff = min(backoff_seconds * (2 ** (attempt - 1)), _MAX_RETRY_AFTER_SECONDS)
+        effective_backoff = min(backoff_seconds * (2 ** (attempt - 1)), _MAX_SLOT_SLEEP_SECONDS)
         if provider is not None:
             # Per outbound request, not per throttle slot: one slot issues up
             # to max_attempts of them, and this is the politeness-audit number.
@@ -378,10 +397,13 @@ async def get_with_retry(
         if response.status_code not in _RETRYABLE_STATUSES:
             return response
 
+        retry_after = _retry_after_seconds(response) or 0.0
+        sleep_for = max(retry_after, effective_backoff)
+        if sleep_for > _MAX_SLOT_SLEEP_SECONDS:
+            # Too long to hold the slot. Counted as no retry, because none is made.
+            return response
         if provider is not None:
             stats.incr(provider, "http_retries")
-        retry_after = _retry_after_seconds(response) or 0.0
-        sleep_for = min(max(retry_after, effective_backoff), _MAX_RETRY_AFTER_SECONDS)
         await asyncio.sleep(sleep_for)
 
     # Unreachable: the loop always returns or raises before falling out.

@@ -15,8 +15,13 @@ from typing import Any
 
 import httpx
 
+from . import stats
+
 # Keyed by each provider module's NAMESPACE constant.
 _POOL: dict[str, httpx.AsyncClient] = {}
+
+# What each pooled client was built with, so an ignored reconfiguration is countable.
+_BUILD_CONFIG: dict[str, dict[str, Any]] = {}
 
 
 # Per-client connection pool, so these caps are per-provider: slow OpenAlex can't starve arXiv.
@@ -42,18 +47,24 @@ def get_client(
     ``name`` returns the existing client and **silently ignores its kwargs**, so
     a provider configures its client in exactly one place.
     Per-call overrides still work through ``client.get(url, timeout=...)``.
+
+    Silently, but not invisibly: a second call asking for a *different* configuration
+    counts ``client_config_ignored``, whose only other symptom is a wrong timeout.
     """
+    config: dict[str, Any] = {
+        "timeout": timeout,
+        "headers": headers or {},
+        "follow_redirects": follow_redirects,
+        **kwargs,
+    }
     existing = _POOL.get(name)
     if existing is not None:
+        if _BUILD_CONFIG.get(name) != config:
+            stats.incr(name, "client_config_ignored")
         return existing
-    client = httpx.AsyncClient(
-        timeout=timeout,
-        limits=_DEFAULT_LIMITS,
-        headers=headers or {},
-        follow_redirects=follow_redirects,
-        **kwargs,
-    )
+    client = httpx.AsyncClient(limits=_DEFAULT_LIMITS, **config)
     _POOL[name] = client
+    _BUILD_CONFIG[name] = config
     return client
 
 
@@ -75,6 +86,7 @@ async def aclose_all() -> None:
     """
     clients = list(_POOL.values())
     _POOL.clear()
+    _BUILD_CONFIG.clear()
     if not clients:
         return
 

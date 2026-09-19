@@ -89,11 +89,6 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 _search_gap = SubGap(_throttle, min_gap_seconds=_SEARCH_REQUEST_GAP)
 
 
-def reset_search_pacing() -> None:
-    """Reset the list-and-search gap (test seam, called by conftest)."""
-    _search_gap.reset()
-
-
 async def _throttled_search_get(url: str, **kwargs: Any) -> httpx.Response:
     """GET at the list-and-search rate, then through the catalog slot.
 

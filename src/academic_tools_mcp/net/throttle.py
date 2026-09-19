@@ -15,8 +15,10 @@ Gating order (see ``slot``):
    silently queueing.
 3. **Concurrency cap** — ``asyncio.Semaphore(max_concurrent)``.
 4. **Inter-start gap** — a lock held only to compute and reserve this caller's
-   start, pacing *starts* (not durations) by ``min_gap_seconds``; the sleep and
-   the GET happen outside it.
+   start, pacing *slot* starts (not durations) by ``min_gap_seconds``; the sleep
+   and the GET happen outside it. Slots, not requests: ``http.get_with_retry`` may
+   issue several attempts inside one slot and re-stamps nothing, so a concurrent
+   caller is not paced against a retry.
 
 A provider with a stricter limit for one class of request (crossref and Papers with
 Code search, openalex's credit-metered ``search=``) puts a ``SubGap`` in front of the
@@ -121,19 +123,22 @@ class Throttle:
             self.max_concurrent = max_concurrent
         self.min_gap_seconds = min(self.min_gap_seconds, max(0.0, min_gap_seconds))
 
-    def admit(
-        self, *, queued_ahead: int = 0, gap_seconds: float | None = None, metered: bool = True
-    ) -> None:
-        """Refuse a caller locally: a spent quota first, then a full queue.
+    def admit_quota(self, *, metered: bool = True) -> None:
+        """Refuse a caller whose provider's advertised budget is spent.
 
-        ``queued_ahead`` counts callers waiting in front of this throttle (a ``SubGap``'s
-        queue), so they share its ``max_pending``; ``gap_seconds`` is the gap they wait on.
-        ``metered=False`` exempts a call class its provider prices at nothing from the
-        quota gate alone; the queue still refuses it.
+        The half of ``admit`` safe to re-run on a caller already counted in ``pending``.
+        ``metered=False`` exempts a call class its provider prices at nothing.
         """
         if metered and (refusal := stats.quota_refusal(self.namespace)) is not None:
             stats.incr(self.namespace, "quota_refusals")
             raise http.QuotaExhaustedError(self.label, *refusal)
+
+    def admit_queue(self, *, queued_ahead: int = 0, gap_seconds: float | None = None) -> None:
+        """Refuse a caller whose queue is already full.
+
+        ``queued_ahead`` counts callers waiting in front of this throttle (a ``SubGap``'s
+        queue), so they share its ``max_pending``; ``gap_seconds`` is the gap they wait on.
+        """
         pending = self.pending + queued_ahead
         if pending >= self.max_pending:
             stats.incr(self.namespace, "backpressure_refusals")
@@ -143,6 +148,17 @@ class Throttle:
                 self.max_pending,
                 self.min_gap_seconds if gap_seconds is None else gap_seconds,
             )
+
+    def admit(
+        self, *, queued_ahead: int = 0, gap_seconds: float | None = None, metered: bool = True
+    ) -> None:
+        """Refuse a caller locally: a spent quota first, then a full queue.
+
+        The entry gate, and the one place that order lives: waiting cannot help a spent
+        budget, so it is worth refusing on first.
+        """
+        self.admit_quota(metered=metered)
+        self.admit_queue(queued_ahead=queued_ahead, gap_seconds=gap_seconds)
 
     @contextlib.asynccontextmanager
     async def slot(
@@ -154,14 +170,19 @@ class Throttle:
         — in-flight plus queued, not queue depth — so a fan-out gets fast feedback
         instead of stacking behind the gap.
 
+        The quota is re-checked once a permit is won, since a sibling can spend the
+        budget while this caller waits. Only the quota: ``pending`` already counts us, so
+        re-running the queue gate would refuse the caller it just admitted.
+
         ``count_request`` records one ``http_calls``, right for a streaming download
         (one slot, one request); ``get`` passes ``False`` so ``get_with_retry``
-        counts the attempts it makes. ``metered`` reaches ``admit``.
+        counts the attempts it makes. ``metered`` reaches both quota checks.
         """
         self.admit(metered=metered)
         self.pending += 1
         try:
             async with self._sem:
+                self.admit_quota(metered=metered)
                 key = self._key(url)
                 async with self._lock:
                     now = time.monotonic()
@@ -216,6 +237,14 @@ class SubGap:
         self.throttle = throttle
         self.min_gap_seconds = max(0.0, min_gap_seconds)
         self.reset()
+
+    @property
+    def namespace(self) -> str:
+        """The parent throttle's namespace: a gap's traffic is its provider's.
+
+        Present so the discovery scan can treat a gap and a throttle alike.
+        """
+        return self.throttle.namespace
 
     def reset(self) -> None:
         """Zero the queue and last start, and rebuild the loop-bound lock (as ``Throttle.reset``)."""

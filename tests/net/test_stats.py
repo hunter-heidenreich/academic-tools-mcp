@@ -34,6 +34,22 @@ def _all_package_modules():
     return modules
 
 
+def _module_gaps() -> dict[str, Any]:
+    """``{module name: its SubGap}`` across the whole package, by attribute scan.
+
+    Reads every attribute rather than a fixed name, so a provider that calls its
+    gap something other than ``_search_gap`` is still held to the same rule.
+    """
+    from academic_tools_mcp.net.throttle import SubGap
+
+    found = {}
+    for module in _all_package_modules():
+        for name, value in vars(module).items():
+            if isinstance(value, SubGap):
+                found[f"{module.__name__}.{name}"] = value
+    return found
+
+
 def _module_throttles() -> dict[str, Any]:
     """``{module name: its shared Throttle}`` across the whole package."""
     found = {}
@@ -252,9 +268,9 @@ class TestSnapshot:
         assert "wikipedia" not in providers
 
 
-class TestThrottleDiscovery:
-    """``snapshot()`` and the conftest reset fixture both find throttles by
-    scanning imported modules. A provider missed by that scan silently reports
+class TestPacerDiscovery:
+    """``snapshot()`` and the conftest reset fixture both find pacing gates by
+    scanning imported modules. A gate missed by that scan silently reports
     no in-flight and, worse, leaks pending state between tests.
     """
 
@@ -262,9 +278,9 @@ class TestThrottleDiscovery:
         expected = _module_throttles()
         assert expected, "no throttled modules found — the scan is broken"
 
-        found = {t.namespace for t in stats.throttles()}
+        found = {t.namespace for t in stats.pacers()}
         for module_name, throttle in expected.items():
-            assert throttle.namespace in found, f"{module_name} is not sampled by stats.throttles()"
+            assert throttle.namespace in found, f"{module_name} is not sampled by stats.pacers()"
 
     def test_throttle_namespace_matches_the_modules_cache_namespace(self):
         """The invariant the snapshot's keying rests on: a throttle filed under
@@ -309,7 +325,7 @@ class TestThrottleDiscovery:
         )
         monkeypatch.setattr(wikipedia, "_search_throttle", second, raising=False)
 
-        assert any(t is second for t in stats.throttles())
+        assert any(t is second for t in stats.pacers())
 
     def test_in_flight_sums_every_throttle_in_the_namespace(self, monkeypatch):
         """Two throttles, one row: assigning instead of summing would report
@@ -332,8 +348,38 @@ class TestThrottleDiscovery:
     def test_yields_each_instance_once(self):
         """Deduped by identity: a throttle re-exported into a second module
         would otherwise be reset twice and counted twice."""
-        namespaces = [id(t) for t in stats.throttles()]
+        namespaces = [id(t) for t in stats.pacers()]
         assert len(namespaces) == len(set(namespaces))
+
+    def test_every_module_sub_gap_is_discovered(self):
+        """The half the scan used to miss.
+
+        A ``SubGap`` answers to its throttle's ``max_pending`` but held its own
+        loop-bound lock, and before it joined this scan each provider needed a
+        hand-written reset wrapper that only crossref's was ever exercised.
+        """
+        expected = _module_gaps()
+        assert expected, "no sub-gaps found — the scan is broken"
+
+        found = {id(gate) for gate in stats.pacers()}
+        for name, gap in expected.items():
+            assert id(gap) in found, f"{name} is not sampled by stats.pacers()"
+
+    def test_a_sub_gap_reports_its_throttles_namespace(self):
+        """What lets one row hold both gates rather than inventing a second."""
+        for name, gap in _module_gaps().items():
+            assert gap.namespace == gap.throttle.namespace, name
+
+    def test_in_flight_counts_a_caller_queued_on_a_sub_gap(self, monkeypatch):
+        """The number `max_pending` gates on is `throttle.pending + gap.pending`,
+        so reporting only the first understated exactly the pressure an operator
+        opens this tool to diagnose."""
+        from academic_tools_mcp.providers import openalex
+
+        monkeypatch.setattr(openalex._throttle, "pending", 1)
+        monkeypatch.setattr(openalex._search_gap, "pending", 2)
+
+        assert stats.snapshot()["providers"][openalex.NAMESPACE]["in_flight"] == 3
 
     def test_a_module_level_mock_is_not_mistaken_for_a_throttle(self, monkeypatch):
         """The scan reads arbitrary module attributes, and a MagicMock answers

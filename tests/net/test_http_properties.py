@@ -8,9 +8,11 @@ prose in the module docstrings today:
    outcome (missing, malformed, a past date, ``inf``, ``-5``) collapses to
    ``None`` so the caller's own backoff applies.
 2. Every value ``get_with_retry`` sleeps for sits in
-   ``[backoff_seconds, _MAX_RETRY_AFTER_SECONDS]`` — the provider's own
-   throttle gap is a floor no server can talk us under, and the ceiling is
-   what stops a misconfigured ``Retry-After: 86400`` pinning the throttle.
+   ``[min(backoff_seconds, cap), cap]`` for ``cap = _MAX_SLOT_SLEEP_SECONDS`` —
+   the provider's own throttle gap is a floor no server can talk us under, and
+   the cap is what stops a misconfigured ``Retry-After: 86400`` pinning the
+   slot. A cooldown past the cap ends the run instead of being slept off, so
+   the attempt count is a bound, not an equality.
 
 Async paths run via ``asyncio.run`` inside a sync ``@given`` rather than
 ``@pytest.mark.asyncio``: hypothesis re-runs the body many times, and a
@@ -120,8 +122,10 @@ def test_every_sleep_sits_between_the_backoff_floor_and_the_ceiling(
 
     Floor: ``Throttle.get`` passes the provider's own gap as ``backoff_seconds``
     so a retry can never undercut the documented rate, whatever the server
-    asks for. Ceiling: ``_MAX_RETRY_AFTER_SECONDS``, so a bad header cannot
-    hold the throttle slot open for hours.
+    asks for. Ceiling: ``_MAX_SLOT_SLEEP_SECONDS``, so a bad header cannot
+    hold the throttle slot open for hours — reached either by capping the
+    sleep or, for a cooldown the server asked to exceed it, by handing the
+    response back unslept.
     """
     slept: list[float] = []
 
@@ -135,13 +139,18 @@ def test_every_sleep_sits_between_the_backoff_floor_and_the_ceiling(
         http.get_with_retry(client, "u", max_attempts=max_attempts, backoff_seconds=backoff)
     )
 
-    # One sleep per failed-but-not-final attempt; the last failure is returned.
-    assert client.calls == max_attempts
-    assert len(slept) == max_attempts - 1
+    cap = http._MAX_SLOT_SLEEP_SECONDS
+    # One sleep per failed-but-not-final attempt, unless a cooldown past the cap
+    # ended the run early — in which case the last attempt slept nothing.
+    assert client.calls <= max_attempts
+    assert len(slept) == client.calls - 1
+    if client.calls < max_attempts:
+        assert retry_after is not None
+        assert http._retry_after_seconds(_response_with(retry_after)) > cap
     for value in slept:
         assert math.isfinite(value)
-        assert value <= http._MAX_RETRY_AFTER_SECONDS
-        assert value >= min(backoff, http._MAX_RETRY_AFTER_SECONDS)
+        assert value <= cap
+        assert value >= min(backoff, cap)
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture], max_examples=25)
@@ -156,7 +165,7 @@ def test_backoff_is_non_decreasing_across_attempts(monkeypatch, backoff, max_att
     cooldown instead of all landing inside the same throttled window; a
     shrinking gap would defeat it.
     """
-    assume(backoff * 2 ** (max_attempts - 2) <= http._MAX_RETRY_AFTER_SECONDS)
+    assume(backoff * 2 ** (max_attempts - 2) <= http._MAX_SLOT_SLEEP_SECONDS)
     slept: list[float] = []
 
     async def fake_sleep(seconds):
@@ -171,4 +180,4 @@ def test_backoff_is_non_decreasing_across_attempts(monkeypatch, backoff, max_att
     )
 
     assert slept == sorted(slept)
-    assert slept[0] == pytest.approx(backoff)
+    assert slept[0] == pytest.approx(min(backoff, http._MAX_SLOT_SLEEP_SECONDS))

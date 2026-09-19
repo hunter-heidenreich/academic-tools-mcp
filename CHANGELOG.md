@@ -135,6 +135,22 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **A long rate-limit cooldown is handed back instead of blocked on.** A 503 or 429
+  asking for several minutes used to be slept off inside the throttle slot, so one
+  call could block for up to ten minutes while holding a semaphore permit — pushing
+  that provider's other callers into local backpressure for the whole nap, and, on a
+  503, with no lockout to absorb the cooldown either. A wait past the slot ceiling now
+  returns the response immediately and the real cooldown reaches the agent as
+  `retry_after_seconds`, which is the number it could already act on. The ceiling on
+  that hint is unchanged; what changed is that we no longer sleep on it. ([#153])
+
+- **`in_flight` counts callers queued on a search or content gap.** `get_server_stats`
+  summed only the per-provider throttle, while the burst cap that refuses a caller
+  gates on the throttle *plus* its sub-gap — so the one counter an operator opens to
+  diagnose rate-limit pressure understated exactly the pressure causing it. Crossref,
+  OpenAlex, Papers with Code and bioRxiv are affected. ([#153])
+
+
 - **A failed download names the download tool, and always offers the same escape
   hatch.** An open-access download that OpenAlex refused used to surface OpenAlex's
   own error verbatim, so an agent that called `download_pdf` read "OpenAlex ..." and
@@ -190,6 +206,19 @@ grouped by milestone rather than per commit.
   ([#127])
 
 ### Fixed
+
+- **A 429 that says more no longer protects less.** A rate-limit refusal carrying both
+  `X-RateLimit-Remaining: 0` and `Retry-After` recorded no local lockout at all, while
+  a bare 429 carrying only the `Retry-After` recorded one — the header branch won
+  outright and discarded the one value that dated the budget. `Retry-After` now fills
+  in when no reset header does, so the richer response arms at least as much
+  protection as the barer one. ([#153])
+- **A rate-limit window that isn't a duration no longer strands a provider.**
+  `X-RateLimit-Reset` is an epoch timestamp at many services, and read as
+  seconds-until-refill one such value locked the namespace out for decades with a
+  restart as the only escape. A value past a day is now discarded the way an absent
+  header is — failing open, and counted as `quota_window_ignored` so an operator can
+  see it happened. ([#153])
 
 - **A PDF that doesn't start at byte 0 is no longer cached as a paywall page.**
   Publishers ship PDFs behind a byte-order mark or stray leading whitespace, and
@@ -2061,3 +2090,4 @@ say which.
 [#146]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/146
 [#147]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/147
 [#150]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/150
+[#153]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/153

@@ -35,15 +35,10 @@ the other failure — they sum the bound and pin the lifespan.
   a single-host provider would silently widen its documented rate the day it gained
   a second hostname. **`max_concurrent` stays global in both modes**: it bounds
   *our* egress — sockets, fds, in-flight streams — not any one host's load.
-- **The last-start map's two prune branches are both load-bearing.** Global mode is
-  the degenerate single-key case, which is why the age sweep never fires there; a
-  fan-out that leaves every entry fresh falls back to dropping the oldest, at a cost
-  of one request starting early.
 
 **Test seams:** the thin module-level wrappers exist because tests monkeypatch
 those names, and override pacing through `mod._throttle.min_gap_seconds` or
-`mod._search_gap.min_gap_seconds`. **`reset_search_pacing()` is what clears the
-latter**, and the conftest fixture must call it.
+`mod._search_gap.min_gap_seconds`.
 
 ## stats.py
 

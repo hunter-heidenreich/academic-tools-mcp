@@ -136,11 +136,6 @@ async def _throttled_get(url: str, **kwargs: Any) -> httpx.Response:
 _search_gap = SubGap(_throttle, min_gap_seconds=_PUBLIC_SEARCH_GAP)
 
 
-def reset_search_pacing() -> None:
-    """Reset the search gap (test seam, called by conftest)."""
-    _search_gap.reset()
-
-
 def reset_pool_tier() -> None:
     """Drop back to the public tier (test seam, called by conftest).
 

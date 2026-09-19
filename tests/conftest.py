@@ -123,34 +123,27 @@ def _reset_pooled_state(monkeypatch: pytest.MonkeyPatch) -> None:
     # User-Agent off one) leaks it. Harmless: an unused client has opened no
     # socket. A test that actually connects must close its own clients.
     clients._POOL.clear()
+    # The build-config sidecar has to go with them, or a stale row makes the next
+    # test's first `get_client` look like a caller asking for a different config.
+    clients._BUILD_CONFIG.clear()
 
     # Zero the stats counters so a test that asserts on hit/miss totals
     # isn't contaminated by counts from prior tests.
     stats.reset()
 
-    # Throttle.reset() rebuilds the lock + semaphore because asyncio.Lock /
-    # Semaphore bind to the running event loop on first await — a stale
-    # instance from the previous test's loop fails with a "bound to a different
-    # event loop" error if reused — and zeroes pending / the last-start map so an
-    # error path that raised before the finally block can't leak `pending` into
-    # the next test. Same discovery seam the snapshot samples through, so a new
-    # provider is covered here without an edit.
-    for throttle in stats.throttles():
-        throttle.reset()
+    # reset() rebuilds the lock + semaphore because asyncio.Lock / Semaphore bind to
+    # the running event loop on first await — a stale instance from the previous
+    # test's loop fails with a "bound to a different event loop" error if reused — and
+    # zeroes pending / the last-start map so an error path that raised before the
+    # finally block can't leak `pending` into the next test. Covers sub-gaps as well as
+    # throttles, and it is the same discovery seam the snapshot samples through, so a
+    # provider that grows either one is covered here without an edit.
+    for gate in stats.pacers():
+        gate.reset()
 
-    # Single-flight registries and the search gaps hang off the module, not the
-    # throttle, so they need the wider scan.
+    # Single-flight registries hang off the module, not the gate, so they need the
+    # wider scan.
     for module in _imported_package_modules():
-        # crossref, paperswithcode and openalex pace search separately (a stricter
-        # upstream limit, or a costlier one); a SubGap's lock binds to the running event
-        # loop just as a Throttle's does, so it needs the same per-test rebuild.
-        reset_search_pacing = getattr(module, "reset_search_pacing", None)
-        if reset_search_pacing is not None:
-            reset_search_pacing()
-        # biorxiv paces its content hosts the same way.
-        reset_content_pacing = getattr(module, "reset_content_pacing", None)
-        if reset_content_pacing is not None:
-            reset_content_pacing()
         # crossref widens its own tier on a confirmed polite-pool response, and
         # `Throttle.reset` above restores neither the gap nor the width.
         reset_pool_tier = getattr(module, "reset_pool_tier", None)

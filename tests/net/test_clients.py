@@ -14,7 +14,7 @@ import time
 import httpx
 import pytest
 
-from academic_tools_mcp.net import clients
+from academic_tools_mcp.net import clients, stats
 
 
 @pytest.fixture
@@ -83,6 +83,26 @@ class TestGetClient:
         assert len(spy_client) == 1
         assert spy_client[0]["headers"] == {"User-Agent": "first"}
         assert spy_client[0]["timeout"] == 1.0
+
+    def test_ignoring_a_different_config_is_counted(self, spy_client):
+        """Silently ignored, but not invisibly.
+
+        The contract above makes a mis-configured second call a no-op, whose only
+        other symptom is a timeout that is quietly not the one asked for — so the
+        operator gets a counter rather than a mystery.
+        """
+        clients.get_client("alpha", timeout=1.0)
+        clients.get_client("alpha", timeout=99.0)
+
+        assert stats.snapshot()["providers"]["alpha"]["client_config_ignored"] == 1
+
+    def test_a_repeat_call_asking_for_the_same_config_is_not_counted(self, spy_client):
+        """Every provider's `_get_client` is called once per request with the same
+        arguments, so counting a plain cache hit would bury the real signal."""
+        clients.get_client("alpha", headers={"User-Agent": "same"}, timeout=1.0)
+        clients.get_client("alpha", headers={"User-Agent": "same"}, timeout=1.0)
+
+        assert "alpha" not in stats.snapshot()["providers"]
 
     def test_bakes_in_the_shared_pool_config(self, spy_client):
         clients.get_client("alpha")

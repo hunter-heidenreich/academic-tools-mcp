@@ -7,7 +7,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from academic_tools_mcp.net import clients
+from academic_tools_mcp.net import clients, stats
 from academic_tools_mcp.providers import crossref
 from academic_tools_mcp.store import cache, singleflight
 from academic_tools_mcp.util import doinorm
@@ -1056,7 +1056,7 @@ class TestSearchPacing:
         """A fresh gap has no last start, so nothing to wait out."""
         _reset_crossref(monkeypatch, tmp_path)
         monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", 30.0)
-        crossref.reset_search_pacing()
+        crossref._search_gap.reset()
         _stub_json_responses(monkeypatch, _search_response([]))
 
         started = asyncio.get_running_loop().time()
@@ -1069,7 +1069,7 @@ class TestSearchPacing:
         _reset_crossref(monkeypatch, tmp_path)
         gap = 0.05
         monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", gap)
-        crossref.reset_search_pacing()
+        crossref._search_gap.reset()
         _stub_json_responses(monkeypatch, _search_response([]))
 
         started = asyncio.get_running_loop().time()
@@ -1078,21 +1078,14 @@ class TestSearchPacing:
 
         assert asyncio.get_running_loop().time() - started >= gap
 
-    @pytest.mark.asyncio
-    async def test_reset_search_pacing_clears_the_timestamp(self, tmp_path, monkeypatch):
-        """conftest calls this between tests to rebuild the loop-bound lock;
-        nothing asserted that it works."""
-        _reset_crossref(monkeypatch, tmp_path)
-        _stub_json_responses(monkeypatch, _search_response([]))
+    def test_the_search_gap_is_reachable_from_the_reset_seam(self):
+        """conftest rebuilds the loop-bound lock through the package-wide scan.
 
-        await crossref.search_works("first")
-        assert crossref._search_gap._last_start is not None
-        stale_lock = crossref._search_gap._lock
-
-        crossref.reset_search_pacing()
-
-        assert crossref._search_gap._last_start is None
-        assert crossref._search_gap._lock is not stale_lock
+        The wrapper this gap once exposed for that is gone; what has to hold now is
+        that the scan finds the gap at all. `SubGap.reset` itself is pinned in
+        tests/net/test_throttle.py.
+        """
+        assert any(gate is crossref._search_gap for gate in stats.pacers())
 
 
 # ---------------------------------------------------------------------------
@@ -1256,7 +1249,7 @@ def test_search_works_never_raises_and_always_returns_one_of_two_shapes(monkeypa
     """The tool layer indexes straight into these hits, so anything escaping
     here reaches the agent as a traceback rather than an ``{error}``."""
     _reset_crossref(monkeypatch)
-    crossref.reset_search_pacing()
+    crossref._search_gap.reset()
     crossref._throttle.reset()
     _stub_json_responses(monkeypatch, body)
 

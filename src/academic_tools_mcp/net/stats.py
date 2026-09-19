@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from ..util import config
 
 if TYPE_CHECKING:
-    from .throttle import Throttle
+    from .throttle import SubGap, Throttle
 
 _counters: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
@@ -52,12 +52,12 @@ class Quota:
             return None
         if self.remaining is not None and self.remaining > 0:
             return None
-        return remaining if (remaining := self.deadline - now) > 0 else None
+        return wait if (wait := self.deadline - now) > 0 else None
 
 
 _quotas: dict[str, Quota] = {}
 
-# The package root, not `net.`: `throttles()` scans the whole package, so a
+# The package root, not `net.`: `pacers()` scans the whole package, so a
 # narrower prefix silently samples no provider at all.
 _PACKAGE_PREFIX = f"{__name__.split('.', 1)[0]}."
 
@@ -112,34 +112,39 @@ def log_request(provider: str, url: str, wait_seconds: float) -> None:
     )
 
 
-# A string, not an import: `throttle` imports `stats`. Invariant: it tracks
-# throttle.py's path — stale, `_is_throttle` matches nothing and `throttles()`
-# empties silently, which the discovery tests in tests/net/test_stats.py catch.
+# A string, not an import: `throttle` imports `stats`, and test_no_import_cycles sees
+# function-local imports too. Tracks throttle.py's path; stale, the discovery tests fail.
 _THROTTLE_MODULE = f"{_PACKAGE_PREFIX}net.throttle"
 
 
-def _is_throttle(value: object) -> bool:
-    """Whether ``value`` is a ``Throttle``, without importing the class."""
-    return any(
-        cls.__name__ == "Throttle" and cls.__module__ == _THROTTLE_MODULE
-        for cls in type(value).__mro__
-    )
+def _is_pacer(value: object) -> bool:
+    """Whether ``value`` is a ``Throttle`` or a ``SubGap``, without importing either.
+
+    Through ``sys.modules``, so sampling a provider still cannot load one.
+    """
+    module = sys.modules.get(_THROTTLE_MODULE)
+    if module is None:
+        return False
+    return isinstance(value, (module.Throttle, module.SubGap))
 
 
-def throttles() -> Iterator["Throttle"]:
-    """Yield every ``Throttle`` held by an already-imported package module.
+def pacers() -> Iterator["Throttle | SubGap"]:
+    """Yield every ``Throttle`` and ``SubGap`` held by an already-imported package module.
 
-    Scanned, never imported: sampling a provider must not load it. Any
-    attribute qualifies, not just ``_throttle``, so a module that grows a second
-    throttle stays in the reset seam and the in-flight sample; deduped by
-    identity, since one instance may be re-exported.
+    The single seam for both: the in-flight sample reads it and so does the per-test
+    reset, so a provider that grows a gate needs no fixture edit — though one reachable
+    solely from a local variable is invisible here.
+
+    Scanned, never imported: sampling a provider must not load it. Any attribute
+    qualifies, not just ``_throttle``; deduped by identity, since one instance may be
+    re-exported.
     """
     seen: set[int] = set()
     for name, module in list(sys.modules.items()):
         if not name.startswith(_PACKAGE_PREFIX) or module is None:
             continue
         for value in list(vars(module).values()):
-            if not _is_throttle(value) or id(value) in seen:
+            if not _is_pacer(value) or id(value) in seen:
                 continue
             seen.add(id(value))
             yield value
@@ -154,10 +159,12 @@ def snapshot() -> dict[str, Any]:
     only view of which file their settings came from. ``cache_hits`` and
     ``negative_hits`` count lookups served from disk, ``cache_misses`` those
     booked at the fetch on the way upstream, so no lookup moves two of them;
-    ``http_calls``, ``http_retries``, ``backpressure_refusals`` and
+    ``http_calls``, ``http_retries``, ``backpressure_refusals``,
+    ``quota_refusals``, ``quota_window_ignored``, ``client_config_ignored`` and
     ``cache_write_failures`` are cumulative since process start or the last
-    ``reset()``; ``in_flight`` is sampled live and summed over every
-    ``Throttle`` in the namespace. Rows are copies, so mutating the result
+    ``reset()``; ``in_flight`` is sampled live and summed over every gate in the
+    namespace, sub-gaps included — so it reports what ``max_pending`` gates on, which
+    can exceed the sockets actually open. Rows are copies, so mutating the result
     cannot corrupt the counters.
 
     ``quota`` appears only where a provider advertises one, as
@@ -165,10 +172,10 @@ def snapshot() -> dict[str, Any]:
     """
     out: dict[str, Any] = {provider: dict(metrics) for provider, metrics in list(_counters.items())}
 
-    for throttle in throttles():
-        # Summed, not assigned: a namespace may own more than one throttle.
-        row = out.setdefault(throttle.namespace, {})
-        row["in_flight"] = row.get("in_flight", 0) + throttle.pending
+    for gate in pacers():
+        # Summed, not assigned: a namespace may own a throttle and a gap, or two of either.
+        row = out.setdefault(gate.namespace, {})
+        row["in_flight"] = row.get("in_flight", 0) + gate.pending
 
     now = time.monotonic()
     for provider, quota in list(_quotas.items()):
@@ -187,6 +194,6 @@ def snapshot() -> dict[str, Any]:
 
 
 def reset() -> None:
-    """Drop every counter and quota row; the throttles' ``in_flight`` is untouched."""
+    """Drop every counter and quota row; the gates' ``in_flight`` is untouched."""
     _counters.clear()
     _quotas.clear()

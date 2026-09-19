@@ -26,7 +26,7 @@ from academic_tools_mcp.providers import crossref, openalex, opencitations, pape
 def _discover_clients():
     """Every module holding a pooled outbound client, found by import scan.
 
-    Deliberately not a hand-maintained list, for the reason ``stats.throttles``
+    Deliberately not a hand-maintained list, for the reason ``stats.pacers``
     is not one: a new provider is covered the moment it exists, with no second
     roster to keep in sync. A module qualifies by holding both a ``_get_client``
     and a ``throttle`` -- the pair every outbound client has.
@@ -226,6 +226,25 @@ class TestCrossrefPoolSelection:
 def _response_with_retry_after(value):
     headers = {"retry-after": value} if value is not None else {}
     return httpx.Response(429, headers=headers)
+
+
+def test_the_retry_sleep_cap_cannot_undercut_any_documented_rate():
+    """`get_with_retry` caps its sleep, and a cap below some provider's own gap would
+    turn that cap into a rate violation — retrying sooner than we promised to.
+
+    Asserted rather than commented: the cap is one number and the gaps are nine, so
+    the day a slower provider is added is the day this has to be re-checked.
+    """
+    from academic_tools_mcp.net import stats
+
+    gaps = {gate.namespace: gate.min_gap_seconds for gate in stats.pacers()}
+    assert gaps, "no gates discovered — the check would be vacuous"
+
+    widest = max(gaps.items(), key=lambda kv: kv[1])
+    assert widest[1] <= http._MAX_SLOT_SLEEP_SECONDS, (
+        f"{widest[0]} paces at {widest[1]}s, above the {http._MAX_SLOT_SLEEP_SECONDS}s "
+        "sleep cap — a capped retry would fire inside its documented gap"
+    )
 
 
 class TestRetryAfterHttpDate:
