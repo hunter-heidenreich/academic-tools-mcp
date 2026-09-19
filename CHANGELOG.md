@@ -226,7 +226,7 @@ grouped by milestone rather than per commit.
   read-only `CACHE_DIR` raised straight out of `convert_paper` and `import_paper`; it now
   returns the same error shape every other failure on those paths speaks, carrying
   `retryable`, `conversion_mode` and the `pdf_size_mb` already measured. Both tick
-  `cache_write_failures`, so an operator sees the disk in `get_server_stats`. ([#161])
+  `cache_write_failures`, so an operator sees the disk in `get_server_stats`. ([#162])
 
 - **The startup sweep that renames legacy cache filenames can no longer lose one.** It
   checked that its destination was free and then called `rename`, which overwrites silently,
@@ -235,14 +235,14 @@ grouped by milestone rather than per commit.
   leave alone. The move is now a link-then-unlink, refused atomically by the filesystem, and
   a run finishing a move an earlier one left half-done drops the stranded duplicate. A cache
   root without hard links keeps its legacy filenames rather than migrating them racily.
-  ([#161])
+  ([#162])
 
 - **Importing a PDF no longer copies the source's file flags into the cache.** `copystat`
   carried macOS `st_flags` across, so a quarantined or `uchg` file stamped an immutable copy
   into `.cache/` — which the import then failed on anyway, because setting a timestamp on an
   immutable file raises. `copymode` takes the permission bits and nothing else, which also
   closes the window where an in-flight copy looked old enough for the orphan sweep to delete
-  out from under itself. ([#161])
+  out from under itself. ([#162])
 
 - **A batched arXiv lookup no longer hands two keys one shared record.** A chunk asking for
   both `2301.00001v1` and the bare id is answered by the single entry satisfying both, and
@@ -2200,4 +2200,4 @@ say which.
 [#158]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/158
 [#159]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/159
 [#160]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/160
-[#161]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/161
+[#162]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/162
