@@ -742,7 +742,7 @@ class TestSearchYearBounds:
 
     `ge`/`le` are enforced at the MCP boundary, not in Python, so this
     constrains the test domain to the edges rather than asserting a rejection
-    an in-process caller never sees (`.claude/rules/server.md` § Pagination).
+    an in-process caller never sees.
     The bound exists to turn a pasted identifier or a negative into a schema
     error instead of an upstream 400.
     """

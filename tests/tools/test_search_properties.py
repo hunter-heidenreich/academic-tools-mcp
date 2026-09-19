@@ -18,9 +18,9 @@ file, so every spelling of one paper must come back as one `paper_identifier`.
 The graph tools hold this for `doi` and the paper family for `_canonical_id`.
 
 The **envelope** seam is family-wide but was only ever asserted pairwise.
-`.claude/rules/server.md` requires every search tool to report `result_count`
-and to owe the agent some "more exist" signal; nothing checked all six at once,
-so a tool could ship with none.
+Every search tool owes the agent some "more exist" signal — `result_count`,
+`total_results` or `truncated`; nothing checked all six at once, so a tool
+could ship with none.
 """
 
 from __future__ import annotations

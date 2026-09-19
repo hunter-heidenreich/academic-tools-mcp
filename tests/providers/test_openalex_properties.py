@@ -110,8 +110,7 @@ def test_the_requested_work_path_round_trips_to_the_bare_doi(monkeypatch, doi: s
 def test_the_requested_author_path_round_trips_to_the_normalized_id(
     monkeypatch, author_id: str
 ) -> None:
-    """The path `.claude/rules/providers.md` used to name as the one identifier
-    interpolated without `quote`."""
+    """An author id reaches the URL only through `quote`, whatever it spells."""
     requests = _stub_json_responses(monkeypatch, {"id": "https://openalex.org/A1"})
 
     result = asyncio.run(openalex.get_author(author_id, force_refresh=True))

@@ -2,8 +2,8 @@
 
 ``stems.checksum_text`` is what every writer stamps into the index; this is
 what the bytes on disk actually hash to. Only the suites need both, so the
-oracle lives here — a production path that reaches for it is the bug
-``.claude/rules/pipeline.md`` § Checksums describes.
+oracle lives here: a writer must checksum the string it parsed, never the file
+it just wrote, so a production path that reaches for this is the bug.
 """
 
 import hashlib

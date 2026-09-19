@@ -36,6 +36,9 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=6.0",
     "hypothesis>=6.140",
+    # Declared, not borrowed: `fastmcp` already pulls it in, but `test_rules_layer`
+    # parses rules frontmatter with it and must not break on a fastmcp release.
+    "pyyaml>=6.0",
     "ruff>=0.9.0",
     "mypy>=1.14",
 ]

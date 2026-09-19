@@ -1255,7 +1255,7 @@ def _stub_pmid(monkeypatch, mapping, *, work=None):
     """Route ``resolve_pmid`` through *mapping* and answer ``get_work`` with *work*.
 
     Patches the provider module object, which every importer shares — the seam
-    ``.claude/rules/server.md`` names, not a wrapper in ``app``.
+    itself, not a passthrough wrapper in ``app`` that exists only to be patched.
     """
     calls: list[str] = []
 

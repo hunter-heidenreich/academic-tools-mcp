@@ -31,25 +31,14 @@ version `2026.5.29`), and tag the commit `vYYYY.MM.DD`.
 
 ## Where the detail lives
 
-**Design detail lives in `.claude/rules/*.md`, each auto-loading from its own
-`paths:` frontmatter when you touch a matching file.** Those files state only
-what a docstring beside the code cannot: cross-module contracts, upstream API
-facts, accepted limitations, and prohibitions.
-
-| File | Loads for |
-|---|---|
-| `python-design.md` | every `.py` under `src/` — layering, naming, single-homed infrastructure |
-| `testing.md` | `tests/**` |
-| `net.md` · `store.md` · `download.md` | `net/` · `store/` · `download/` |
-| `providers.md` | `providers/*` |
-| `pipeline.md` | `papers/*`, `manual.py`, `fast_extract.py` |
-| `server.md` · `bibtex.md` · `corpus.md` · `util.md` | `server.py` + `app.py` + `tools/*` · `bibtex.py` · `corpus.py` · `util/*` |
+**Design detail lives in `.claude/rules/`, each file auto-loading from its own
+`paths:` frontmatter when you read a matching file.** You never need to go looking
+for one: open the code and its rules arrive with it.
 
 **Where a new file goes, and what to call it, is machine-checked.**
-`tests/test_layering.py` owns the layer order in its `_LAYERS` table and asserts
-it by AST — a back-edge up the stack, a provider reaching the conversion
-pipeline, `httpx` outside the HTTP layer, or a module nobody classified all fail
-CI rather than review.
+`tests/test_layering.py` owns the layer order in its `_LAYERS` table and asserts it
+by AST; `tests/test_rules_layer.py` does the same for the rules layer's own
+structure. Both fail CI rather than review.
 
 Adding a new API provider or a new OpenAlex entity: use the `add-provider` skill.
 
@@ -67,14 +56,10 @@ Adding a new API provider or a new OpenAlex entity: use the `add-provider` skill
 
 ## Upstream metadata caveats
 
-**These are properties of the upstream providers, not defects in this tool —
-don't "fix" them in code.** Operators correct them by hand, under a "published
-version is authoritative" rule. `README.md` § Known upstream limitations
-enumerates them (mangled author diacritics, present-vs-paper-time affiliation,
-arXiv's missing affiliations, an empty OpenCitations result that is not a claim of
-absence, diverging preprint/published author sets, a Wikipedia summary being a
-lead extract rather than a source); read it before treating any
-of them as a bug.
+**The entries in `README.md` § Known upstream limitations are properties of the
+upstream providers, not defects in this tool — don't "fix" them in code.**
+Operators correct them by hand, under a "published version is authoritative" rule.
+Read that section before treating any of them as a bug.
 
 ## APIs NOT to Use
 
