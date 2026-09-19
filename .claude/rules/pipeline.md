@@ -40,10 +40,11 @@ unlink markdown anywhere else.**
   into a hit (`"Resume"` → `"Résumé"`) but can never turn a query that already
   resolves into an "Ambiguous section title" error. **Fold both passes
   unconditionally and a paper carrying both spellings stops resolving either.**
-- **Invariant: the `_section_locks` map is the sole owner of a lock across an
-  await.** Bind the lock to a variable, await something, *then* enter it, and the
-  key can be evicted and recreated — handing two callers two different `Lock`
-  objects.
+- **`_section_locks` holds its locks weakly, and must never be bounded by count
+  instead.** `release()` clears `locked()` before the waiter it woke has resumed, so
+  any eviction pass reads a lock that is about to be entered as free — drop it and
+  the waiter holds an orphan while the next caller builds a second `Lock` for the
+  same paper.
 
 ## manual.py
 
