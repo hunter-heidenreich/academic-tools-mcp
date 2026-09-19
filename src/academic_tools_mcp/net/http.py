@@ -255,6 +255,43 @@ def _backpressure_dict(provider: str, exc: LocalBackpressureError) -> dict[str, 
     return result
 
 
+def response_error_dict(
+    provider: str,
+    response: httpx.Response,
+    *,
+    snippet: str | None = None,
+) -> dict[str, Any]:
+    """Classify a failed response — ``error_dict``'s status branch without the exception.
+
+    Same vocabulary and ``retry_after_seconds`` ceiling, read off ``status_code`` and
+    ``headers``. Pass ``snippet`` for a streamed body: the fallback reads
+    ``response.content``, which a partially-read response refuses.
+    """
+    status = response.status_code
+    transient: str | None = None
+    if status == 429:
+        transient = f"{provider} rate limit (HTTP 429). Transient — wait and retry."
+    elif status in _RETRYABLE_STATUSES:
+        kind = "server error" if status >= 500 else "temporary rejection"
+        transient = f"{provider} {kind} (HTTP {status}). Transient — retry."
+    if transient is not None:
+        result: dict[str, Any] = {"error": transient, "retryable": True}
+        retry_after = _retry_after_seconds(response)
+        if retry_after is not None:
+            # Same ceiling as the internal retry path. Change one, change both.
+            result["retry_after_seconds"] = min(retry_after, _MAX_RETRY_AFTER_SECONDS)
+        return result
+    if snippet is None:
+        # ResponseNotRead is a RuntimeError, so HTTPX_ERRORS misses it upstream.
+        try:
+            snippet = response.content[:200].decode("utf-8", "replace")
+        except httpx.ResponseNotRead:
+            snippet = "<streaming response body not read>"
+    return {
+        "error": f"{provider} HTTP {status}: {snippet}",
+    }
+
+
 def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     """Convert an ``HTTPX_ERRORS`` exception into a structured, provider-aware error dict.
 
@@ -262,34 +299,15 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
     retry." prose, is what a caller branches on; other 4xx are left unflagged rather than
     ``retryable: False``. ``retry_after_seconds`` rides along on any transient status the
     server advertises one for, clamped to ``_MAX_RETRY_AFTER_SECONDS``.
+
+    Status classification is ``response_error_dict``'s.
     """
     if isinstance(exc, QuotaExhaustedError):
         return _quota_dict(provider, exc)
     if isinstance(exc, LocalBackpressureError):
         return _backpressure_dict(provider, exc)
     if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code
-        transient: str | None = None
-        if status == 429:
-            transient = f"{provider} rate limit (HTTP 429). Transient — wait and retry."
-        elif status in _RETRYABLE_STATUSES:
-            kind = "server error" if status >= 500 else "temporary rejection"
-            transient = f"{provider} {kind} (HTTP {status}). Transient — retry."
-        if transient is not None:
-            result = {"error": transient, "retryable": True}
-            retry_after = _retry_after_seconds(exc.response)
-            if retry_after is not None:
-                # Same ceiling as the internal retry path. Change one, change both.
-                result["retry_after_seconds"] = min(retry_after, _MAX_RETRY_AFTER_SECONDS)
-            return result
-        # ResponseNotRead is a RuntimeError, so HTTPX_ERRORS misses it upstream.
-        try:
-            snippet = exc.response.content[:200].decode("utf-8", "replace")
-        except httpx.ResponseNotRead:
-            snippet = "<streaming response body not read>"
-        return {
-            "error": f"{provider} HTTP {status}: {snippet}",
-        }
+        return response_error_dict(provider, exc.response)
     # Order is load-bearing: TimeoutException subclasses RequestError, so the narrower
     # check must come first or every timeout reads "network error".
     if isinstance(exc, httpx.TimeoutException):

@@ -68,7 +68,7 @@ force_refresh→check→single-flight→re-check dance, or a DOI regex.
 | Cached-download protocol | `streaming.cached_download` |
 | Throttling | `throttle.Throttle` |
 | Retry | `http.get_with_retry` |
-| Agent-facing error vocabulary | `http.error_dict` / `parse_error_dict` / `not_found` |
+| Agent-facing error vocabulary | `http.error_dict` / `response_error_dict` / `parse_error_dict` / `not_found` |
 | Counters | `net/stats.py` |
 | Config | `util/config.py` |
 | DOI / ORCID normalization | `doinorm` / `orcidnorm` `normalize` · `canonical` · `looks_like_*` |

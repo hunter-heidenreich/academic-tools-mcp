@@ -59,14 +59,6 @@ def _markup_source(
 
 _MARKDOWN_EXTS = {".md", ".markdown"}
 
-# Single-homed: three failure paths offer the same escape hatch.
-_IMPORT_FALLBACK = (
-    "Fetch the PDF yourself, then call import_paper(file_path, identifier) with "
-    "the SAME identifier — it is cached in the right namespace, so convert_paper "
-    "→ get_paper_sections → get_paper_section find it. import_paper also takes "
-    "pre-converted .md/.markdown, which skips convert_paper."
-)
-
 
 def _strip_internal_paths(result: dict[str, Any]) -> dict[str, Any]:
     """Drop cache paths: agents drive this pipeline by identifier, not by file."""
@@ -111,7 +103,7 @@ async def _download_pdf_by_provider(
             ),
             "suggestion": (
                 "For a generic publisher DOI, retry with allow_oa_url=True to "
-                f"fetch the open-access PDF URL OpenAlex reports (if any). {_IMPORT_FALLBACK}"
+                f"fetch the open-access PDF URL OpenAlex reports (if any). {manual.IMPORT_SUGGESTION}"
             ),
         }
 
@@ -121,7 +113,7 @@ async def _download_pdf_by_provider(
             result,
             "Wait and retry — the provider is temporarily unavailable."
             if result.get("retryable") is True
-            else _IMPORT_FALLBACK,
+            else manual.IMPORT_SUGGESTION,
         )
 
     if result.get("cached") is False:
@@ -193,7 +185,7 @@ def _convert_suggestion(result: dict[str, Any], mode: str) -> str:
         )
     return (
         "Read the error above — it names what failed. A missing or misconfigured "
-        f"converter is an operator fix, not a retry. {_IMPORT_FALLBACK}"
+        f"converter is an operator fix, not a retry. {manual.IMPORT_SUGGESTION}"
     )
 
 

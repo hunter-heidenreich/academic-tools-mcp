@@ -1,9 +1,13 @@
 """Open-access PDF download path for generic publisher DOIs.
 
 arxiv/biorxiv/acl derive a PDF URL from the identifier; a generic publisher DOI
-has none, but OpenAlex often surfaces one. This module fetches *only* that
-OpenAlex-surfaced URL, never a caller-supplied one — a metadata-gated fetcher,
-not a general scraper.
+has none, but OpenAlex often surfaces one. The gate is on *resolution*: the only
+URL this module will fetch is the one OpenAlex reports, never a caller-supplied
+one — a metadata-gated fetcher, not a general scraper.
+
+The gate does not reach the host that serves the bytes: redirects are followed,
+so a fetch can end somewhere ``best_pdf_url`` never saw, and there is no scheme
+or private-host allowlist behind it.
 """
 
 from contextlib import AbstractAsyncContextManager
@@ -22,18 +26,8 @@ from . import streaming
 
 NAMESPACE = "oa_download"
 
-# Agent-facing provider name; every site that names us reads it.
+# Agent-facing provider name; it prefixes every error this module returns.
 LABEL = "OA download"
-
-
-def _get_client() -> httpx.AsyncClient:
-    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``.
-
-    Download-only, so ``_PDF_TIMEOUT_SECONDS`` is what gets baked in; arxiv/biorxiv
-    bake in a metadata timeout and widen it per PDF call.
-    """
-    return clients.get_client(NAMESPACE, headers=useragent.headers(), timeout=_PDF_TIMEOUT_SECONDS)
-
 
 # The slot is held for the whole stream, so this caps concurrent downloads, not requests.
 _MAX_CONCURRENT = 2
@@ -50,11 +44,20 @@ _NEG_ENTITY = "downloads"
 # Long enough to stop a retrying agent's churn, short against how often OA status flips.
 _NEG_TTL_SECONDS = 24 * 60 * 60
 
-_IMPORT_SUGGESTION = (
-    "Fetch the PDF yourself (publisher site, institutional access, browser, "
-    "curl) and call import_paper(file_path, identifier) with the same "
-    "identifier."
-)
+
+def _get_client() -> httpx.AsyncClient:
+    """The pooled AsyncClient. Configured here or nowhere — see ``clients.get_client``.
+
+    Download-only, so ``_PDF_TIMEOUT_SECONDS`` is what gets baked in; arxiv/biorxiv
+    bake in a metadata timeout and widen it per PDF call. ``follow_redirects`` is the
+    default anyway, stated because this path's URL comes from upstream data.
+    """
+    return clients.get_client(
+        NAMESPACE,
+        headers=useragent.headers(),
+        timeout=_PDF_TIMEOUT_SECONDS,
+        follow_redirects=True,
+    )
 
 
 _throttle = Throttle(
@@ -81,10 +84,12 @@ async def _resolve_and_download(
     """
     work = await openalex.get_work(identifier, force_refresh=force_refresh)
     if "error" in work:
+        # Prefixed, flags untouched: the agent called download_pdf, not OpenAlex.
+        relabelled = {**work, "error": f"{LABEL}: {work['error']}"}
         # Allowlist: a non-retryable 4xx arrives unflagged, so unknown != definitive.
         if work.get("not_found") is True or work.get("retryable") is False:
-            return {**work, "suggestion": _IMPORT_SUGGESTION}
-        return work
+            return {**relabelled, "suggestion": manual.IMPORT_SUGGESTION}
+        return relabelled
 
     url = openalex.best_pdf_url(work)
     if not url:
@@ -96,7 +101,7 @@ async def _resolve_and_download(
                 "closed-access, or OpenAlex only knows a landing page."
             ),
             "retryable": False,
-            "suggestion": _IMPORT_SUGGESTION,
+            "suggestion": manual.IMPORT_SUGGESTION,
         }
 
     client = _get_client()
@@ -104,6 +109,8 @@ async def _resolve_and_download(
         client,
         url,
         dest,
+        # Keyed pre-redirect: the slot predates the response, so a chase is paced
+        # under the first host's netloc.
         slot_factory=lambda: _request_slot(url),
         namespace=NAMESPACE,
         provider_label=LABEL,
@@ -113,7 +120,7 @@ async def _resolve_and_download(
     )
     # Same hatch for a 404 or a non-PDF; the predicate excludes a cap abort and a 0-byte blip.
     if streaming.is_definitive_failure(result):
-        return {**result, "suggestion": _IMPORT_SUGGESTION}
+        return {**result, "suggestion": manual.IMPORT_SUGGESTION}
     return result
 
 

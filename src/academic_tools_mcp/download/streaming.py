@@ -6,7 +6,7 @@ while streaming, size-capping, PDF sniffing and atomic rename are identical.
 
 Streaming is load-bearing: peak memory is one chunk rather than 2× the PDF, and
 the size cap fires partway through rather than after the whole response is
-buffered in RAM.
+buffered in RAM. An error body is bounded the same way.
 """
 
 import contextlib
@@ -26,8 +26,32 @@ from ..util import config
 # Clears an image-heavy preprint; catches a 10 GB non-PDF.
 _DEFAULT_MAX_PDF_BYTES = 200_000_000
 
-# Also bounds cap overshoot: a run-away response aborts within one chunk.
+# Also bounds how far past the cap a run-away response is *read*.
 _CHUNK_SIZE = 64 * 1024
+
+_PDF_MAGIC = b"%PDF-"
+
+# Readers scan a prefix, not byte 0; a BOM or stray leading bytes is still a PDF.
+_PDF_HEADER_SEARCH_BYTES = 1024
+
+# One decoded read, sliced: enough of an error body to name the failure.
+_ERROR_SNIPPET_BYTES = 200
+
+
+def has_pdf_magic(head: bytes) -> bool:
+    """Whether ``head`` opens a PDF, within the slack a real reader allows."""
+    return _PDF_MAGIC in head[:_PDF_HEADER_SEARCH_BYTES]
+
+
+async def _error_snippet(response: httpx.Response) -> str:
+    """The head of an error body, without buffering the rest.
+
+    No chunk_size: a size makes httpx materialise every slice first. No
+    `aclosing` either — `client.stream`'s own `finally` closes the response.
+    """
+    async for chunk in response.aiter_bytes():
+        return chunk[:_ERROR_SNIPPET_BYTES].decode("utf-8", "replace")
+    return ""
 
 
 def is_usable_pdf(path: Path) -> bool:
@@ -44,7 +68,7 @@ def is_usable_pdf(path: Path) -> bool:
         if path.stat().st_size == 0:
             return False
         with path.open("rb") as f:
-            return f.read(5) == b"%PDF-"
+            return has_pdf_magic(f.read(_PDF_HEADER_SEARCH_BYTES))
     except OSError:
         return False
 
@@ -124,8 +148,10 @@ async def stream_to_file(
     Returns ``{path, size_bytes, cached: False}``, or an error dict: a 404 or a
     not-a-PDF rejection → ``retryable: False``; over the cap adds ``max_bytes``;
     an empty body or a disk failure → ``retryable: True``, never a raised
-    ``OSError``. Any other HTTP or transport failure is ``http.error_dict``'s
-    verdict, which leaves an unclassified 4xx unflagged.
+    ``OSError``. Any other non-2xx is ``http.response_error_dict``'s verdict on a
+    bounded body prefix, which leaves an unclassified 4xx unflagged; a transport
+    failure is ``http.error_dict``'s. A prefix read costs the connection — httpcore
+    drops one left unread — which beats an unbounded buffer.
     """
     max_bytes = resolve_max_pdf_bytes()
     tmp_path: Path | None = None
@@ -138,10 +164,12 @@ async def stream_to_file(
                     "error": (not_found_message or f"{provider_label}: PDF not found at {url}"),
                     "retryable": False,
                 }
-            if response.status_code >= 400:
-                # Read inside the stream, or error_dict's 4xx snippet is a placeholder.
-                await response.aread()
-            response.raise_for_status()
+            # Not `>= 400`: a Location-less 3xx lands here, and sniffing one for
+            # `%PDF-` would negative-cache a redirect as a landing page.
+            if not 200 <= response.status_code < 300:
+                return http.response_error_dict(
+                    provider_label, response, snippet=await _error_snippet(response)
+                )
             if require_pdf:
                 content_type = response.headers.get("content-type", "")
                 if content_type.lower().lstrip().startswith(("text/html", "text/plain")):
@@ -169,7 +197,7 @@ async def stream_to_file(
                 async for chunk in response.aiter_bytes(_CHUNK_SIZE):
                     if not checked_pdf:
                         # First chunk suffices: ByteChunker shortens only the last.
-                        if not chunk.startswith(b"%PDF-"):
+                        if not has_pdf_magic(chunk):
                             return {
                                 "error": (
                                     f"{provider_label}: {url} did not "

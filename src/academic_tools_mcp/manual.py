@@ -21,6 +21,16 @@ from .util import doinorm
 
 NAMESPACE = "manual"
 
+# The one wording for the escape hatch out of every failed download: `enrich_error`
+# only fills a *missing* `suggestion`, so a second copy silently outranks this one.
+IMPORT_SUGGESTION = (
+    "Fetch the PDF yourself (publisher site, institutional access, browser, curl), "
+    "then call import_paper(file_path, identifier) with the SAME identifier — it is "
+    "cached in the right namespace, so convert_paper → get_paper_sections → "
+    "get_paper_section find it. import_paper also takes pre-converted .md/.markdown, "
+    "which skips convert_paper."
+)
+
 MetadataSource = Literal["arxiv", "biorxiv", "acl_anthology", "openalex"]
 RefileOutcome = Literal["moved", "linked"]
 
