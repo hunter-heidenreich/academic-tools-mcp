@@ -924,6 +924,137 @@ class TestPathTraversalIsRefused:
         assert manual.resolve_target("10.1101/x/..")["namespace"] == biorxiv.NAMESPACE
 
 
+class TestPdfUrlIsBuiltFromAnUntrustedBody:
+    """The record's `doi` is upstream's string, not the caller's argument.
+
+    `_get_details` percent-encodes and re-checks the DOI it puts in the API path,
+    but `pdf_url` was interpolated raw from the response — and that URL is handed
+    straight to `stream_to_file`, so a `..` segment or a space in a field upstream
+    controls reached the content host verbatim.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_gap(self, monkeypatch):
+        _reset_biorxiv(monkeypatch)
+
+    @pytest.mark.parametrize(
+        "doi",
+        [
+            "10.1101/../../evil",
+            "10.1101/x/../y",
+            "10.1101//x",
+        ],
+        ids=["dot-dot-segments", "interior-dot-dot", "empty-segment"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_url_that_would_not_name_this_paper_is_not_built(self, monkeypatch, doi):
+        """A `.`/`..` or empty segment resolves the path somewhere else entirely."""
+        _stub_json_responses(monkeypatch, _collection(doi=doi))
+
+        paper = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert paper["pdf_url"] is None
+
+    @pytest.mark.parametrize(
+        ("doi", "expected_path"),
+        [
+            ("10.1101/2024.01.01.5738?38", "10.1101/2024.01.01.5738%3F38v1.full.pdf"),
+            ("10.1101/2024.01.01.5738#38", "10.1101/2024.01.01.5738%2338v1.full.pdf"),
+            ("10.1101/2024.01.01 573838", "10.1101/2024.01.01%20573838v1.full.pdf"),
+        ],
+        ids=["question-mark", "fragment", "space"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_reserved_character_is_encoded_not_left_to_truncate_the_path(
+        self, monkeypatch, doi, expected_path
+    ):
+        """The DOI's own slash stays structure; a bare `?` would cut the path short."""
+        _stub_json_responses(monkeypatch, _collection(doi=doi))
+
+        paper = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert paper["pdf_url"] == f"https://www.biorxiv.org/content/{expected_path}"
+
+    @pytest.mark.parametrize("doi", ["", "   ", None])
+    @pytest.mark.asyncio
+    async def test_a_missing_doi_falls_back_to_the_one_asked_for(self, monkeypatch, doi):
+        """The caller's DOI already passed `_get_details`' checks, so it is the safe default."""
+        _stub_json_responses(monkeypatch, _collection(doi=doi))
+
+        paper = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert paper["pdf_url"] == (
+            "https://www.biorxiv.org/content/10.1101/2024.01.01.573838v1.full.pdf"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_url_is_a_definitive_download_failure(self, monkeypatch):
+        """`download_pdf` already words this case; it must reach that branch, not a crash."""
+        _stub_json_responses(monkeypatch, _collection(doi="10.1101/../../evil"))
+
+        result = await biorxiv.download_pdf("10.1101/2024.01.01.573838")
+
+        assert result["retryable"] is False
+        assert "No PDF URL found" in result["error"]
+
+
+class TestDetailsFieldsAreShapeGuarded:
+    """Every field `_parse_paper` reads comes from untyped JSON.
+
+    `authors` reached `.split` directly, so a list there raised `AttributeError` —
+    in neither `_PARSE_ERRORS` nor `HTTPX_ERRORS`, so it escaped the provider
+    instead of surfacing as `{error, retryable}`.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_gap(self, monkeypatch):
+        _reset_biorxiv(monkeypatch)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"authors": ["Fujii, S.", "Ito, K."]},
+            {"authors": 42},
+            {"authors": None},
+            {"title": {"text": "A Great Discovery"}},
+            {"abstract": 7},
+            {"version": ["1"]},
+            {"server": 3},
+            {"published": 0},
+        ],
+        ids=[
+            "authors-list",
+            "authors-int",
+            "authors-null",
+            "title-dict",
+            "abstract-int",
+            "version-list",
+            "server-int",
+            "published-int",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_wrong_typed_field_degrades_instead_of_raising(self, monkeypatch, overrides):
+        _stub_json_responses(monkeypatch, _collection(**overrides))
+
+        paper = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert "error" not in paper, paper
+        assert isinstance(paper["authors"], list)
+        assert isinstance(paper["title"], str)
+        assert isinstance(paper["abstract"], str)
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_typed_version_still_names_a_revision(self, monkeypatch):
+        """The version reaches the PDF path, so it falls back rather than vanishing."""
+        _stub_json_responses(monkeypatch, _collection(version=["2"]))
+
+        paper = await biorxiv.get_paper("10.1101/2024.01.01.573838")
+
+        assert paper["version"] == "1"
+        assert paper["pdf_url"].endswith("573838v1.full.pdf")
+
+
 class TestGetPaperCaching:
     @pytest.fixture(autouse=True)
     def _no_gap(self, monkeypatch):

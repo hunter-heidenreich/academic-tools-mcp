@@ -974,6 +974,38 @@ class TestBatchNegativeCaching:
         assert all(v["retryable"] is True for v in out.values())
         assert cache.get_negative("openalex", "works", "10.1234/a") is None
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"meta": {"count": 0}},
+            {"results": {}},
+            {"results": ""},
+            {"results": 0},
+            {"results": False},
+        ],
+        ids=["empty-body", "no-results-key", "empty-dict", "empty-string", "zero", "false"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_falsy_wrong_shape_is_a_parse_error_not_an_empty_page(self, monkeypatch, body):
+        """Regression: an ``or []`` ran *ahead* of the shape guard.
+
+        A falsy wrong-typed ``results`` — and a body with no ``results`` at all —
+        became an empty list, which then accounted for itself perfectly: nothing
+        unattributed, no ``meta.count`` to exceed it. So every DOI in the chunk was
+        filed as definitively not-found and negative-cached for the full negative TTL,
+        on a body that said nothing about any of them. The sibling test above passed
+        throughout, because a *truthy* wrong shape never reached the ``or``.
+        """
+        _stub_json_responses(monkeypatch, body)
+
+        out = await openalex.get_works_batch(["10.1234/a", "10.1234/b"])
+
+        assert all(v["retryable"] is True for v in out.values()), out
+        assert all("not_found" not in v for v in out.values()), out
+        assert cache.get_negative("openalex", "works", "10.1234/a") is None
+        assert cache.get_negative("openalex", "works", "10.1234/b") is None
+
     @pytest.mark.asyncio
     async def test_a_non_dict_meta_does_not_crash_the_truncation_check(self, monkeypatch):
         _stub_json_responses(

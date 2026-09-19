@@ -212,6 +212,25 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A garbled OpenAlex batch response no longer files every DOI in it as absent.** The
+  `/works?filter=doi:…` reader folded a missing or wrong-typed `results` to an empty list
+  *before* checking its shape, so a truncated body — `{}` is enough — arrived as a page that
+  accounted for itself perfectly: nothing unattributed, no `meta.count` to exceed it. Every
+  DOI in the chunk was then negative-cached as definitively not-found for the full negative
+  TTL, poisoning up to fifty live papers on a body that said nothing about any of them. The
+  shape guard now runs first, as it always did on the search path. Crossref's title search
+  had the same idiom and reported a wrong-shaped `items` as "no papers match", which ends an
+  agent's search; it is fixed the same way. ([#159])
+
+- **bioRxiv no longer builds a PDF URL out of an unchecked upstream string.** `pdf_url` was
+  interpolated straight from the response's own `doi` field, where the API path built from
+  the same value is percent-encoded and re-checked — so a `..` segment or a reserved
+  character reached the content host verbatim, and that URL goes directly to the downloader.
+  It is now encoded and validated like the API path, degrading to the "no PDF URL" refusal
+  `download_pdf` already words. Separately, a wrong-typed `authors` raised `AttributeError`
+  straight out of the provider, past the uniform error contract; every field
+  `_parse_paper` reads is now shape-guarded. ([#159])
+
 - **An arXiv PDF download no longer fails because the metadata API refused the lookup.**
   arXiv's edge answers a request it will not serve with HTTP 406 and a zero-length body —
   an identifier it cannot resolve, some field-prefixed search queries, or any request too
@@ -2142,3 +2161,4 @@ say which.
 [#155]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/155
 [#156]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/156
 [#158]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/158
+[#159]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/159

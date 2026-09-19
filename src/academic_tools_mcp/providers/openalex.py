@@ -759,7 +759,10 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
     if not isinstance(data, dict):
         return {c: _parse_error_dict() for c in chunk}
 
-    results = data.get("results") or []
+    # No ``or []`` ahead of the guard: it turns a falsy wrong shape — and a body with no
+    # ``results`` at all — into an empty page, which the accounting below then reads as
+    # every DOI in the chunk being definitively absent.
+    results = data.get("results")
     if not isinstance(results, list):
         return {c: _parse_error_dict() for c in chunk}
 

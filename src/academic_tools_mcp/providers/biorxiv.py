@@ -150,10 +150,15 @@ def is_biorxiv_doi(doi: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _parse_authors(author_str: str) -> list[dict[str, str]]:
-    """Parse bioRxiv's ``"Last, First; Last, First; ..."`` into structured dicts."""
+def _parse_authors(author_str: Any) -> list[dict[str, str]]:
+    """Parse bioRxiv's ``"Last, First; Last, First; ..."`` into structured dicts.
+
+    ``Any``, not ``str``: the value arrives from untyped JSON, where a list reaches
+    ``.split`` as an ``AttributeError`` that is in neither ``_PARSE_ERRORS`` nor
+    ``HTTPX_ERRORS`` — so it would escape the provider instead of surfacing as an error.
+    """
     authors: list[dict[str, str]] = []
-    if not author_str:
+    if not isinstance(author_str, str) or not author_str:
         return authors
 
     for raw_part in author_str.split(";"):
@@ -243,6 +248,20 @@ def _parse_funding(raw: dict[str, Any]) -> list[dict[str, str | None]]:
     return funders
 
 
+def _pdf_url(server: str, doi: str, version: str) -> str | None:
+    """The content host's PDF URL for one revision, or ``None`` when it wouldn't name one.
+
+    The identifier here is an upstream *body* field, not the caller's argument, and this
+    URL goes straight to ``stream_to_file`` — so it is encoded and re-checked exactly as
+    ``_get_details`` does for the API path, rather than interpolated raw.
+    """
+    if not doi or "" in doi.split("/"):
+        return None
+    path = f"{quote(doi, safe='/')}v{quote(version, safe='')}.full.pdf"
+    url = f"https://www.{server}.org/content/{path}"
+    return url if http.addresses_a_record(url) else None
+
+
 def _parse_versions(collection: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Every revision in a details collection, oldest first, as ``{version, date, license}``."""
     return [
@@ -263,24 +282,25 @@ def _pick_latest_version(collection: list[dict[str, Any]]) -> dict[str, Any]:
 def _parse_paper(raw: dict[str, Any], requested_doi: str = "") -> dict[str, Any]:
     """Convert a raw bioRxiv API entry into a normalized paper dict.
 
-    A key present as JSON ``null`` defeats ``.get(k, default)``, so every field the PDF
-    URL is built from uses ``or``.
+    A key present as JSON ``null`` defeats ``.get(k, default)``, so every field read here
+    goes through ``_text_or_none``: it folds ``null``, a blank and a wrong type alike, and
+    the fields the PDF URL is built from must be strings before they reach it.
     """
-    server = "medrxiv" if "medrxiv" in (raw.get("server") or "").lower() else "biorxiv"
-    version = raw.get("version") or "1"
-    doi = raw.get("doi") or requested_doi
+    server = "medrxiv" if "medrxiv" in (_text_or_none(raw, "server") or "").lower() else "biorxiv"
+    version = _text_or_none(raw, "version") or "1"
+    doi = _text_or_none(raw, "doi") or requested_doi
 
     # bioRxiv writes the literal "NA" for an unpublished preprint, and sometimes "" —
     # both, and a missing key, mean "no journal DOI yet", never a published_doi of "".
-    published = (raw.get("published") or "").strip()
+    published = _text_or_none(raw, "published") or ""
 
     return {
         "doi": doi,
-        "title": raw.get("title", ""),
-        "authors": _parse_authors(raw.get("authors", "")),
+        "title": _text_or_none(raw, "title") or "",
+        "authors": _parse_authors(raw.get("authors")),
         "author_corresponding": raw.get("author_corresponding"),
         "author_corresponding_institution": raw.get("author_corresponding_institution"),
-        "abstract": raw.get("abstract", ""),
+        "abstract": _text_or_none(raw, "abstract") or "",
         "date": raw.get("date"),
         "version": version,
         "type": raw.get("type"),
@@ -290,7 +310,7 @@ def _parse_paper(raw: dict[str, Any], requested_doi: str = "") -> dict[str, Any]
         "published_doi": published if published and published != "NA" else None,
         "jatsxml": raw.get("jatsxml"),
         "funding": _parse_funding(raw),
-        "pdf_url": f"https://www.{server}.org/content/{doi}v{version}.full.pdf" if doi else None,
+        "pdf_url": _pdf_url(server, doi, version),
     }
 
 
