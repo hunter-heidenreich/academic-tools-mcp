@@ -364,7 +364,9 @@ async def search_works(
     if message is None:
         return _parse_error_dict()
 
-    items = message.get("items") or []
+    # No ``or []`` ahead of the guard: it turns a falsy wrong shape — and a ``message``
+    # with no ``items`` at all — into "no papers match", which ends the agent's search.
+    items = message.get("items")
     if not isinstance(items, list):
         return _parse_error_dict()
     items = [item for item in items if isinstance(item, dict)]

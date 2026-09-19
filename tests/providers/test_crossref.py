@@ -252,7 +252,21 @@ class TestSearchWorksShapeGuards:
         assert "error" in result
         assert result["retryable"] is True
 
-    @pytest.mark.parametrize("items", ["abc", 5, {"DOI": "10.1/a"}, True])
+    @pytest.mark.parametrize(
+        "items",
+        [
+            "abc",
+            5,
+            {"DOI": "10.1/a"},
+            True,
+            # Falsy, and so hidden behind an `or []` until it was removed: each of these
+            # answered "no papers match" on a body that never carried a result set.
+            "",
+            0,
+            {},
+            False,
+        ],
+    )
     @pytest.mark.asyncio
     async def test_non_list_items_is_a_parse_error(self, monkeypatch, tmp_path, items):
         _reset_crossref(monkeypatch, tmp_path)
@@ -262,6 +276,27 @@ class TestSearchWorksShapeGuards:
 
         assert "error" in result
         assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_message_without_items_is_a_parse_error(self, monkeypatch, tmp_path):
+        """Crossref always sends the key; a response without it is not an empty page."""
+        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, {"message": {"total-results": 0}})
+
+        result = await crossref.search_works("some title")
+
+        assert "error" in result
+        assert result["retryable"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_empty_item_list_is_still_a_real_answer(self, monkeypatch, tmp_path):
+        """The line the guard must not cross: a query that genuinely matched nothing."""
+        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, _search_response([], total=0))
+
+        result = await crossref.search_works("nothing matches this")
+
+        assert result == {"items": [], "total_results": 0}
 
     @pytest.mark.asyncio
     async def test_missing_message_key_is_a_parse_error(self, monkeypatch, tmp_path):
