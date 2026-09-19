@@ -1,5 +1,6 @@
 """arXiv client: Atom metadata, search and PDF download, keyed by a version-preserving ID."""
 
+import copy
 import re
 import xml.etree.ElementTree as ET
 from contextlib import AbstractAsyncContextManager
@@ -577,7 +578,7 @@ async def _fetch_batch_chunk_uncoalesced(
     out: dict[str, dict[str, Any]] = {}
     # A bare request is "whatever is current": the newest version returned, which is
     # not the only one when the same chunk also asks for an older revision.
-    newest: dict[str, tuple[int, dict[str, Any]]] = {}
+    newest: dict[str, tuple[int, str, dict[str, Any]]] = {}
     unattributed = 0
     for entry in entries:
         paper = _parse_entry(entry)
@@ -591,9 +592,13 @@ async def _fetch_batch_chunk_uncoalesced(
         if bare in chunk_set:
             version = _version_number(returned)
             if bare not in newest or version > newest[bare][0]:
-                newest[bare] = (version, paper)
-    for bare, (_, paper) in newest.items():
-        out[bare] = paper
+                newest[bare] = (version, returned, paper)
+    for bare, (_, returned, paper) in newest.items():
+        # Two keys, two records. One chunk can ask for both ``2301.00001v2`` and the bare
+        # id and be answered by the same entry, and nothing here deep-copies on read — so
+        # one object under both keys would let a caller mutating what it got back corrupt
+        # the other key's copy.
+        out[bare] = copy.deepcopy(paper) if returned != bare and returned in out else paper
     for canonical, paper in out.items():
         cache.put(NAMESPACE, "papers", canonical, paper)
 

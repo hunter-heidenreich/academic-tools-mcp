@@ -11,6 +11,11 @@ every client. Per-provider quirks are in the sibling file named for the module.
 **Mirror `providers/biorxiv.py`, not `crossref.py`** — the build checklist and the
 reasons are the `add-provider` skill's.
 
+**Each search bound is named for the upstream parameter it caps**, not for a spelling
+shared across the package: `MAX_SEARCH_RESULTS` over `max_results`, `MAX_SEARCH_ROWS`
+over `rows`, `MAX_SEARCH_LIMIT` over `srlimit`, `MAX_PAGE_SIZE` over `page_size`.
+Renaming them alike would cost the one thing each name carries.
+
 ## Parsing and encoding
 
 - **A wrong-shaped 200 is transient, never an empty result set.** Reported as "no
