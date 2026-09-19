@@ -5,10 +5,6 @@ paths:
 
 # Python design contracts
 
-Style — formatting, import order, line length, typing hygiene — is `ruff` and
-`mypy`'s job, configured in `pyproject.toml` and applied on edit. **Don't restate
-style rules here or hand-format code.**
-
 ## Module names and where a file lives
 
 Machine-checked by `tests/test_layering.py`, so these fail CI rather than review:
@@ -90,7 +86,6 @@ converter and its subprocess machinery.
   internally via `manual.resolve_metadata_source()`. Don't branch on provider
   *inside* a tool, and don't add a fifth `get_<provider>_metadata` — extend the
   dispatcher.
-- **A new API provider mirrors an existing one.** Use the `add-provider` skill.
 - **Keep a trust boundary in its own small module**, as `download/openaccess.py`
   does. **Widen a boundary by adding a module, never by adding a parameter.**
 - **Server tools return slices, not whole objects.** An agent never receives a raw
@@ -98,27 +93,12 @@ converter and its subprocess machinery.
 
 ## No mode flags that fork behaviour
 
-Prefer a new function over a boolean that makes one function do two unrelated
-things. `force_refresh` and `normalize` are fine: each toggles one orthogonal axis
-and the response shape is unchanged. `follow_published` is the standing exception,
-not a precedent — it swaps the whole key set on success, which is why
-`get_papers_metadata` refuses it. **A parameter that returns a *different shape*
-depending on its value belongs in its own tool.**
+**A parameter that returns a *different shape* depending on its value belongs in
+its own tool.** `follow_published` is the standing exception, not a precedent — it
+swaps the whole key set on success, which is why `get_papers_metadata` refuses it.
 
-## Comments — outer context, not narration
+## Comments
 
-Keep comments **brief** and reserve them for what the code cannot say about
-itself: why an ordering is load-bearing, which upstream quirk forces a branch,
-what an unusual constant protects against, which invariant a block holds.
-
-- **Prefer one line to a paragraph.** A comment needing several sentences is
-  usually a design decision — those belong in the matching `.claude/rules/` file.
-  **Don't cite that file from the source**: it auto-loads whenever the module is
-  touched, so a pointer to it tells the reader nothing.
-- **Docstrings are the exception to brevity.** A `@mcp.tool` docstring *is* the
-  agent-facing API description, so it carries the tool's job, its response keys,
-  its error shapes and the next step, in full. **Every response key a tool returns
-  is named there** — a key the docstring omits is a key no agent will look for.
-- **A docstring does not restate its own parameters.** The `Annotated` `Field`
-  descriptions ship to the agent beside it; parameter semantics live in the
-  `app.py` alias.
+**A design decision belongs in the matching rules file, not in a comment — and
+don't cite that file from the source.** It auto-loads whenever the module is
+touched, so the pointer tells a reader nothing it doesn't already have.

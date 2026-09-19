@@ -39,11 +39,10 @@ the other failure — they sum the bound and pin the lifespan.
   fan-out that leaves every entry fresh falls back to dropping the oldest, at a cost
   of one request starting early.
 
-**Test seams:** each provider keeps thin module-level wrappers (`_throttled_get`,
-`_request_slot`) because tests monkeypatch those names and override pacing via
-`mod._throttle.min_gap_seconds`. crossref, paperswithcode and openalex add a
-`SubGap` for search, paced via `mod._search_gap.min_gap_seconds` and reset through
-`reset_search_pacing()`, which the conftest fixture must also call.
+**Test seams:** the thin module-level wrappers exist because tests monkeypatch
+those names, and override pacing through `mod._throttle.min_gap_seconds` or
+`mod._search_gap.min_gap_seconds`. **`reset_search_pacing()` is what clears the
+latter**, and the conftest fixture must call it.
 
 ## stats.py
 

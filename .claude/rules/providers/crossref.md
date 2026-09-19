@@ -11,10 +11,9 @@ paths:
 reports the latter — and that starting polite on a config guess is unrecoverable,
 since a `Semaphore` gains permits but cannot shed them.
 
-**Config is read per request, the tier is fixed at import.** `CROSSREF_MAILTO`
-reaches `_build_headers` / `_build_params` live, but `clients.get_client` bakes
-headers in at construction and ignores later kwargs. Restart, same as
-`ENABLE_DEBUG_TOOLS`.
+**`CROSSREF_MAILTO` reaches `_build_headers` / `_build_params` live, but the
+headers `clients.get_client` baked in at construction ignore it** — changing the
+contact mid-process moves the params and not the headers.
 
 **Editing `RETRACTION_UPDATE_TYPES` is a judgement about what leaves a paper
 citable, not a vocabulary refresh.** An unknown type must not set the flag.

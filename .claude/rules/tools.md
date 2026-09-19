@@ -7,15 +7,17 @@ paths:
 
 # app, tools and the server entry
 
-Per-tool parameters and response keys live in the `@mcp.tool` docstrings, which
-are what agents receive as the tool description. This file holds the invariants
-that span tools.
+A `@mcp.tool` docstring *is* the agent-facing API description, so it carries the
+tool's job, its response keys, its error shapes and the next step, in full.
+**Every response key a tool returns is named there** — a key the docstring omits
+is a key no agent will look for. **It does not restate its own parameters**: the
+`Annotated` `Field` descriptions ship to the agent beside it, and parameter
+semantics live in the `app.py` alias. This file holds what spans tools instead.
 
 ## Layout
 
-**`app.py` never imports `tools`, and no `tools/*` module imports another**, so a
-helper two tool modules need moves into `app.py`. `tools/paper.py` importing from
-`tools/search.py` is the violation to catch, not the cycle.
+**`tools/paper.py` importing from `tools/search.py` is the violation to catch, not
+the cycle** — a helper two tool modules need moves into `app.py`.
 
 **Don't add a passthrough wrapper in `app` to create a patch point.** Tool modules
 call providers directly and tests monkeypatch the provider module object, which
@@ -53,9 +55,8 @@ These hold across several tools, so changing one tool alone breaks the set.
   layer is where a download failure learns that `import_paper` exists.
   `enrich_error` fills a gap and never overwrites.
 - **Verdicts read `net/http`'s three-state vocabulary, never the absence of another
-  key.** `retryable is True` is the only test meaning "a retry might work";
-  inverting `not_found` collapses three states into two and sends an agent back at
-  a call that cannot succeed.
+  key.** `retryable is True` is the only test meaning "a retry might work"; never
+  invert `not_found`.
 - **Search parameters bind to the provider's own constant, never a transcribed
   number.** The provider's `MAX_*` is the `le=` of its `Field`.
 
@@ -107,15 +108,12 @@ goes there, not into a caller.
 
 ## Pagination
 
-**`app.page_bounds` is the one home for the page arithmetic**, so `tools/graph._page`
-and `get_paper_authors` cannot drift on where a page begins or on
-`has_more = end < total`. Only the arithmetic is shared; each tool keeps its own
-envelope keys and its own `le=` bound. `get_paper_section` pages by character
-offset and shares none of this.
+**`tools/graph._page` and `get_paper_authors` share only the arithmetic**; each
+keeps its own envelope keys and its own `le=` bound, and `get_paper_section` pages
+by character offset and shares none of it.
 
 **Bounds are enforced at the MCP boundary**, not in Python — an in-process caller
-can pass `page=0`. Don't add defensive clamping for inputs an agent cannot send;
-constrain the test domain instead.
+can pass `page=0`, so constrain the test domain rather than clamping.
 
 ## Search tools
 
@@ -123,16 +121,15 @@ constrain the test domain instead.
   `manual.resolve_metadata_source()` sends every plain DOI to **OpenAlex**, so a
   `search_crossref_by_title` hit is free only for the reference tools and the
   `fallback_crossref` path — never for `get_paper_metadata`. `openalex.search_works`
-  is the one that lands where the dispatcher looks, which is why it must never send
-  `select=`. **This file is the authority**; a docstring, `README.md` or
-  `app.py`'s `instructions=` string that says otherwise is the one to fix.
+  is the one that lands where the dispatcher looks. **This file is the authority**;
+  a docstring, `README.md` or `app.py`'s `instructions=` string that says otherwise
+  is the one to fix.
 - **Date extraction is single-homed** in `app.crossref_date` / `_CROSSREF_DATE_KEYS`.
   Don't add a second walker.
 - **Nothing below a Crossref item is typed, so every read of one is shape-guarded**
   — `app.as_dict` / `app.dict_list` are the shared guards, in `app.py` because both
-  the OpenAlex tree and the Crossref hits need them. **OpenAlex nulls are
-  load-bearing**: it emits `"author": null` rather than dropping the key, so no
-  `.get(k, default)` alone is trusted. **`author_count` counts the filtered list**,
+  the OpenAlex tree and the Crossref hits need them. **`.get(k, default)` alone is
+  never trusted on an OpenAlex object.** **`author_count` counts the filtered list**,
   the one `_crossref_first_author` chose from.
 - **`total_results` is an `int` on every tool that reports it**, defaulted to `0`
   where the provider omits its total — a key meaning two things across the set is a

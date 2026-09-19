@@ -8,10 +8,6 @@ paths:
 
 ## papers/
 
-**Patch the owning submodule, never the `papers` facade.** It re-exports by value,
-so `monkeypatch.setattr(papers, "_section_locks", ...)` rebinds an alias nothing
-reads.
-
 **Two candidate passes, one ordering.** `_shallowest_first` governs both — two
 passes with two orderings is the bug this shape prevents, since a plain path sort
 inverts the depth rule depending on how the subdirectory happens to be named.
@@ -69,8 +65,6 @@ unlink markdown anywhere else.**
 - **Both import functions stay synchronous; the async boundary is the tool layer.**
   `tools/pipeline.import_paper` wraps each in `asyncio.to_thread` and holds
   `papers.sections_lock` across **both** branches.
-- **Atomic writes only** — never `shutil.copy2` or `write_text` straight to the
-  destination.
 - **This module deliberately does not download arbitrary URLs.** Agents fetch
   non-native PDFs themselves and hand the local file to `import_paper`.
 - **Manual imports intentionally have no BibTeX generation** — there is no

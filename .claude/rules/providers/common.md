@@ -8,9 +8,8 @@ paths:
 Each module's docstrings carry its own mechanics. This file holds only what binds
 every client. Per-provider quirks are in the sibling file named for the module.
 
-**Mirror `providers/biorxiv.py`**, the fullest instance of the shape; read
-`crossref.py` as a counter-example, not a template. The build checklist is the
-`add-provider` skill's.
+**Mirror `providers/biorxiv.py`, not `crossref.py`** — the build checklist and the
+reasons are the `add-provider` skill's.
 
 ## Parsing and encoding
 
@@ -33,8 +32,8 @@ every client. Per-provider quirks are in the sibling file named for the module.
 - **Every negative-cached error carries `not_found: True`, built by
   `http.not_found`** — never a hand-spelled dict. A definitive "not mine" that
   arrives unflagged reads to every classifier as "unknown".
-- **Send `useragent.headers` always.** `python-httpx/x.y` is the generic agent
-  several upstreams throttle hardest, and it leaves an operator no way to reach us.
+- **Send `useragent.headers` always** — `tests/test_politeness.py` fails a
+  respelled header dict, but only once the module exists.
 
 ## Don't generalize the `_fetch` bodies
 
@@ -45,10 +44,9 @@ The skeleton they share is about five lines and already lives in `http` and
 three not-found shapes) and `biorxiv` (two servers) cannot use it at all.
 Revisit only if a *fifth* JSON-singleton provider lands.
 
-More generally: **don't abstract across providers that merely look similar.** The
-shared mechanism is single-homed; per-provider policy (arxiv's single-connection
-`_MAX_CONCURRENT`, biorxiv's late `published_doi`) passes in as constructor args
-or `fetch` closures and stays in its own module.
+The shared mechanism is single-homed; per-provider policy (arxiv's single-connection
+`_MAX_CONCURRENT`, biorxiv's late `published_doi`) passes in as constructor args or
+`fetch` closures and stays in its own module.
 
 ## Politeness: two limits that are real and deliberately unfixed
 

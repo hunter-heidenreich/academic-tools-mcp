@@ -13,8 +13,7 @@ paths:
   patterns (`arxiv.OLD_ARCHIVE_PATTERN`, `biorxiv.DOI_PREFIX`); spell either out
   again and they drift.
 - **`search` must keep taking its section from `papers.section_at_offset` and its
-  title from `papers.first_section_heading`.** A local heading scan drops the
-  empty-section filter and names a section the reader's own index does not have.
+  title from `papers.first_section_heading`** — never a local heading scan.
 - **`unindexable` records carry `canonical_id`**, inverted by the same
   `_filename_to_canonical` a hit uses, so both readers of the `files` table name a
   paper identically and the "use `find_in_paper` on them" advice is actionable.
