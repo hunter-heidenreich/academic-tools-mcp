@@ -346,8 +346,12 @@ def _summary_of(data: Any) -> dict[str, Any] | None:
 async def get_summary(title: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a page summary from the Wikipedia REST API.
 
-    Returns ``{title, description, extract, url, type, pageid}``. A 404 is a
-    negative-cached ``not_found``; transport and wrong-shape failures are retryable.
+    Returns ``{title, canonical_title, description, extract, url, permalink, revision,
+    timestamp, type, pageid, wikibase_item}`` — ``canonical_title`` is what a redirect
+    resolved to, ``permalink`` the ``oldid`` URL a note can cite, and ``wikibase_item``
+    the Wikidata QID that joins an article to the ORCID and ROR the other entity tools
+    take. A 404 is a negative-cached ``not_found``; transport and wrong-shape failures
+    are retryable.
     """
     canonical = canonical_title(title)
     not_found_error = f"Wikipedia page not found: {title}"

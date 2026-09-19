@@ -135,6 +135,11 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **`get_wikipedia_summary`'s documented return shape now matches what it returns.** Five of
+  the eleven keys were missing from the docstring, `wikibase_item` — the Wikidata QID that
+  joins an article to the ORCID and ROR the author and institution tools take — among them.
+  ([#160])
+
 - **`papers` no longer re-exports `has_detected_sections` or `section_boundaries`.**
   Neither had a caller outside the package — `parse_sections_and_detect` supersedes
   the first and the second is internal to offset lookup — so the facade advertised
@@ -211,6 +216,11 @@ grouped by milestone rather than per commit.
   ([#127])
 
 ### Fixed
+
+- **A batched arXiv lookup no longer hands two keys one shared record.** A chunk asking for
+  both `2301.00001v1` and the bare id is answered by the single entry satisfying both, and
+  nothing on this path deep-copies on read, so a caller mutating what it got back under one
+  key saw the change under the other. Each key now gets its own record. ([#160])
 
 - **A garbled OpenAlex batch response no longer files every DOI in it as absent.** The
   `/works?filter=doi:…` reader folded a missing or wrong-typed `results` to an empty list
@@ -2162,3 +2172,4 @@ say which.
 [#156]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/156
 [#158]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/158
 [#159]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/159
+[#160]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/160

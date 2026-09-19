@@ -159,12 +159,15 @@ def _normalize_author_id(author_id: str) -> str:
     return author_id
 
 
-def _author_path_id(author_id: str) -> str:
-    """The encoded path segment OpenAlex resolves; a bare ORCID 404s, so it takes ``orcid:``."""
-    bare = _normalize_author_id(author_id)
-    if orcidnorm.looks_like_orcid(bare):
-        return f"orcid:{quote(bare, safe='')}"
-    return quote(bare, safe="")
+def _author_path_id(bare_id: str) -> str:
+    """The encoded path segment OpenAlex resolves; a bare ORCID 404s, so it takes ``orcid:``.
+
+    Takes the already-normalized id rather than re-deriving it, so the value its caller
+    shape-checks is the value that reaches the URL.
+    """
+    if orcidnorm.looks_like_orcid(bare_id):
+        return f"orcid:{quote(bare_id, safe='')}"
+    return quote(bare_id, safe="")
 
 
 # A ROR is `0`, six crockford-base32 characters, then two check digits. The alphabet
@@ -196,12 +199,14 @@ def _normalize_institution_id(institution_id: str) -> str:
     return _ROR_URL_RE.sub("", institution_id).strip().rstrip("/")
 
 
-def _institution_path_id(institution_id: str) -> str:
-    """The encoded path segment OpenAlex resolves; a bare ROR takes ``ror:``, as an ORCID does."""
-    bare = _normalize_institution_id(institution_id)
-    if _looks_like_ror(bare):
-        return f"ror:{quote(bare, safe='')}"
-    return quote(bare, safe="")
+def _institution_path_id(bare_id: str) -> str:
+    """The encoded path segment OpenAlex resolves; a bare ROR takes ``ror:``, as an ORCID does.
+
+    Takes the already-normalized id, as ``_author_path_id`` does.
+    """
+    if _looks_like_ror(bare_id):
+        return f"ror:{quote(bare_id, safe='')}"
+    return quote(bare_id, safe="")
 
 
 def canonical_institution_id(institution_id: str) -> str:
@@ -224,6 +229,10 @@ _PUBMED_URL_RE = re.compile(
 
 # The whole live PMID range fits in 8 digits; ``is_pmid`` owns the bare-run floor.
 _PMID_RE = re.compile(r"^\d{1,8}$")
+
+# Live PMIDs are 7-8 digits, and a shorter bare run is likelier a hand-written label than
+# one of the oldest records. Sampled, not documented, as ``_BARE_WORK_ID_FLOOR`` is.
+_BARE_PMID_FLOOR = 7
 
 # The entity letter ``_OPENALEX_URL_RE`` deliberately does not check.
 # ``is_work_id`` owns the bare-run floor, as with PMIDs.
@@ -256,16 +265,16 @@ def is_pmid(identifier: str) -> bool:
     """The shape test the tool layer resolves on, over the normalized form.
 
     **Two tiers, deliberately.** An explicit ``pmid:`` prefix or PubMed URL is
-    unambiguous, so any 1-8 digit id is claimed. A *bare* run is claimed only at
-    7-8 digits — the modern PMID range, and an unlikely hand-written label — so
-    a freeform ``import_paper(file, "1234")`` label keeps routing to ``manual``.
+    unambiguous, so any 1-8 digit id is claimed. A *bare* run is claimed only from
+    ``_BARE_PMID_FLOOR`` up, so a freeform ``import_paper(file, "1234")`` label keeps
+    routing to ``manual``.
     """
     stripped = identifier.strip()
     normalized = normalize_pmid(stripped)
     if not _PMID_RE.match(normalized):
         return False
     # An explicit marker is what ``normalize_pmid`` removed; a bare run is unchanged.
-    return normalized != stripped or len(normalized) >= 7
+    return normalized != stripped or len(normalized) >= _BARE_PMID_FLOOR
 
 
 def normalize_work_id(work_id: str) -> str:
@@ -458,7 +467,7 @@ async def get_author(author_id: str, *, force_refresh: bool = False) -> dict[str
         # Neither shape holds a `/`, which `quote(safe="")` would hide from the URL guard.
         return await _fetch_singleton(
             entity="authors",
-            url=f"{OPENALEX_BASE_URL}/authors/{_author_path_id(author_id)}",
+            url=f"{OPENALEX_BASE_URL}/authors/{_author_path_id(bare_id)}",
             bare="" if "/" in bare_id else bare_id,
             canonical=canonical,
             not_found_error=f"No author found for ID: {author_id}",
@@ -489,7 +498,7 @@ async def get_institution(institution_id: str, *, force_refresh: bool = False) -
         # Neither shape holds a `/`, which `quote(safe="")` would hide from the URL guard.
         return await _fetch_singleton(
             entity="institutions",
-            url=f"{OPENALEX_BASE_URL}/institutions/{_institution_path_id(institution_id)}",
+            url=f"{OPENALEX_BASE_URL}/institutions/{_institution_path_id(bare_id)}",
             bare="" if "/" in bare_id else bare_id,
             canonical=canonical,
             not_found_error=f"No institution found for ID: {institution_id}",
@@ -823,7 +832,8 @@ async def get_works_batch(
     a free hit. ``force_refresh=True`` drops cached entries first.
 
     **Batching buys wall clock, not credits**: a `filter=` list costs 1 where the
-    singletons it replaces cost 0, but at ``_MIN_REQUEST_GAP`` a chunk of 50 takes seconds.
+    singletons it replaces cost 0, but those singletons are paced ``_MIN_REQUEST_GAP``
+    apart, so a full chunk of them takes seconds where the one list call does not.
 
     A transient failure contaminates its whole chunk: one HTTP failure doesn't
     say which DOI the upstream meant to error on.

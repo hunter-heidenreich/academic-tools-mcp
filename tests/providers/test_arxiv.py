@@ -1895,6 +1895,25 @@ class TestGetPapersBatch:
         assert out["1706.03762v1"]["title"] == "v1"
 
     @pytest.mark.asyncio
+    async def test_one_entry_answering_two_keys_yields_two_records(self, tmp_path, monkeypatch):
+        """Nothing here deep-copies on read, so one object under two keys is shared state.
+
+        A chunk can ask for `2301.00001v1` and the bare id and be answered by the single
+        entry that satisfies both; a caller mutating what it got back under one key would
+        otherwise see the change under the other.
+        """
+        _reset_throttle(monkeypatch, tmp_path)
+        _stub_scripted_client(monkeypatch, (200, _feed(_search_entry("2301.00001v1"), total="1")))
+
+        out = await arxiv.get_papers_batch(["2301.00001v1", "2301.00001"])
+
+        assert out["2301.00001v1"] == out["2301.00001"]
+        assert out["2301.00001v1"] is not out["2301.00001"]
+        # Deep, not shallow: the nested lists are where a mutation would land.
+        out["2301.00001"]["authors"].append({"name": "Interloper"})
+        assert out["2301.00001v1"]["authors"] != out["2301.00001"]["authors"]
+
+    @pytest.mark.asyncio
     async def test_an_omitted_id_is_negative_cached_when_the_feed_accounts_for_itself(
         self, tmp_path, monkeypatch
     ):

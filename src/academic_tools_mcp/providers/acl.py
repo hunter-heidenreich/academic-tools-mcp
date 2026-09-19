@@ -296,9 +296,7 @@ def _parse_collection(body: bytes, collection_id: str) -> dict[str, dict[str, An
 # ---------------------------------------------------------------------------
 
 
-async def _fetch_collection(
-    collection_id: str, *, force_refresh: bool
-) -> dict[str, dict[str, Any]] | dict[str, Any]:
+async def _fetch_collection(collection_id: str, *, force_refresh: bool) -> dict[str, Any]:
     """Fetch a collection and cache each paper separately: ``{"records": ...}`` or an error.
 
     Per paper, so a read never deep-copies a whole collection.
@@ -445,14 +443,18 @@ async def _refresh_doi_index() -> dict[str, Any] | None:
         try:
             response = await _throttled_get(_DOI_INDEX_URL)
             response.raise_for_status()
-            shards = await asyncio.to_thread(_parse_doi_index, response.content)
-        except _DUMP_ERRORS:
-            cache.put(NAMESPACE, _INDEX_ENTITY, "last_failure", _parse_error_dict())
-            return None
         except http.HTTPX_ERRORS as e:
             # Local backpressure says nothing about upstream.
             if not isinstance(e, http.LocalBackpressureError):
                 cache.put(NAMESPACE, _INDEX_ENTITY, "last_failure", http.error_dict(LABEL, e))
+            return None
+
+        # Its own block: ``_DUMP_ERRORS`` is broad enough to swallow a transport failure
+        # too, and one filed as a bad dump would record the wrong cause against the index.
+        try:
+            shards = await asyncio.to_thread(_parse_doi_index, response.content)
+        except _DUMP_ERRORS:
+            cache.put(NAMESPACE, _INDEX_ENTITY, "last_failure", _parse_error_dict())
             return None
         if not shards:
             cache.put(NAMESPACE, _INDEX_ENTITY, "last_failure", _parse_error_dict())

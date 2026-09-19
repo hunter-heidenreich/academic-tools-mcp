@@ -471,8 +471,6 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """
     canonical = canonical_doi(doi)
 
-    not_found_error = f"No work found on Crossref for DOI: {doi}"
-
     async def _fetch() -> dict[str, Any]:
         bare_doi = doinorm.normalize(doi)
         # Percent-encoded so a reserved character can't truncate the request to the
@@ -483,7 +481,9 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             # A `.`/`..` segment shortens the path to the /works *collection*, whose 200
             # carries a work-list under a dict `message`: it clears the ladder below and
             # would cache as this DOI's work. Nothing cached — no request was spent.
-            return http.not_found(not_found_error)
+            # No agency lookup: that names a registrar for a DOI Crossref answered about,
+            # and no request was made here.
+            return http.not_found(_not_found_message(doi, None))
 
         try:
             response = await _throttled_get(url, params=_build_params())
