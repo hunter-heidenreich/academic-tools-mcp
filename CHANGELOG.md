@@ -207,6 +207,24 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **A section title read straight off the index now resolves instead of erroring.**
+  Title lookup was substring-only, so `get_paper_section(id, "Introduction")` answered
+  "Ambiguous section title" whenever `Introduction and Related Work` also existed — a
+  title the agent had copied verbatim out of `get_paper_sections`, on the commonest
+  heading pair there is. An exact-title tier now runs ahead of the substring one in
+  both the plain and the diacritic-folded pass, so two genuinely identical headings
+  are still ambiguous while an exact match wins over a longer heading containing it.
+  ([#154])
+- **A table nested inside another JATS table no longer renders three times.** Row
+  collection descended into the inner table, so its content landed in the enclosing
+  pipe table and again as a table of its own. bioRxiv/medRxiv conversions now keep a
+  nested table's content in the cell that holds it, matching what the arXiv renderer
+  has always done. ([#154])
+- **`#`-leading prose is no longer escaped when it was never a heading.** The escape
+  pass matched a bare line-leading `#` while the heading scan requires `#` followed by
+  whitespace, so a listing's `#include` or a paper's "#1 ranked" reached the agent with
+  a stray backslash. Escaping now tracks the heading scan exactly. ([#154])
+
 - **A 429 that says more no longer protects less.** A rate-limit refusal carrying both
   `X-RateLimit-Remaining: 0` and `Retry-After` recorded no local lockout at all, while
   a bare 429 carrying only the `Retry-After` recorded one — the header branch won
@@ -2091,3 +2109,4 @@ say which.
 [#147]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/147
 [#150]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/150
 [#153]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/153
+[#154]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/154

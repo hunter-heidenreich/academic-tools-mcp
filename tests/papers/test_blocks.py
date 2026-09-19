@@ -6,8 +6,21 @@ from academic_tools_mcp.papers import blocks
 
 
 class TestEscapeHeadings:
-    def test_every_line_leading_hash_is_escaped(self):
+    def test_every_line_leading_heading_marker_is_escaped(self):
         assert blocks.escape_headings("# a\nb # c\n## d") == "\\# a\nb # c\n\\## d"
+
+    @pytest.mark.parametrize("line", ["#include <stdio.h>", "#1 result", "#hashtag"])
+    def test_a_hash_with_no_following_space_is_left_alone(self, line):
+        """Escaping tracks ``sections._HEADING_RE``, which wants ``#`` then whitespace.
+
+        A stray backslash through ``#include`` or a "#1 ranked" claim is corruption
+        of agent-visible prose, and neither line could have opened a section.
+        """
+        assert blocks.escape_headings(line) == line
+
+    def test_seven_hashes_are_left_alone(self):
+        """Markdown stops at h6, and so does the heading scan this guards."""
+        assert blocks.escape_headings("####### seven") == "####### seven"
 
 
 class TestSpan:
