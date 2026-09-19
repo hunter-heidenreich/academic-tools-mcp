@@ -58,7 +58,7 @@ def _suggest(result: dict[str, Any], *, not_found: str) -> dict[str, Any]:
     return enrich_error(result, "Papers with Code rejected the request; check the arguments.")
 
 
-async def _paper(arxiv_id: str, force_refresh: bool) -> tuple[str, dict[str, Any]]:
+async def _paper(arxiv_id: str, *, force_refresh: bool) -> tuple[str, dict[str, Any]]:
     """The canonical ID, and the paper's record or an error with a suggestion."""
     canonical = arxiv.base_arxiv_id(arxiv_id)
     paper = await paperswithcode.get_paper(arxiv_id, force_refresh=force_refresh)
@@ -66,7 +66,7 @@ async def _paper(arxiv_id: str, force_refresh: bool) -> tuple[str, dict[str, Any
         suggestion = (
             _NOT_CATALOGUED_SUGGESTION if arxiv.is_arxiv_id(arxiv_id) else _NOT_ARXIV_SUGGESTION
         )
-        _suggest(paper, not_found=suggestion)
+        return canonical, _suggest(paper, not_found=suggestion)
     return canonical, paper
 
 
@@ -111,7 +111,7 @@ async def get_paper_code(
 
     get_paper_catalog reads the same cached record, so calling both costs one request.
     """
-    canonical, paper = await _paper(arxiv_id, force_refresh)
+    canonical, paper = await _paper(arxiv_id, force_refresh=force_refresh)
     if "error" in paper:
         return paper
     repositories = paper["repositories"]
@@ -157,7 +157,7 @@ async def get_paper_catalog(
     Chain: a task ``slug`` → get_pwc_task; a ``benchmark_slug`` →
     get_benchmark_leaderboard.
     """
-    canonical, paper = await _paper(arxiv_id, force_refresh)
+    canonical, paper = await _paper(arxiv_id, force_refresh=force_refresh)
     if "error" in paper:
         return paper
     return {
@@ -218,9 +218,10 @@ async def get_paper_evaluations(
     Errors: as get_paper_code.
 
     Each uncached page costs a rate-limited request; check ``total_results`` before
-    paging far.
+    paging far. ``force_refresh`` reloads the paper record as well as the page, so
+    it costs two.
     """
-    canonical, paper = await _paper(arxiv_id, False)
+    canonical, paper = await _paper(arxiv_id, force_refresh=force_refresh)
     if "error" in paper:
         return paper
     result = await paperswithcode.get_paper_evaluations(

@@ -226,6 +226,8 @@ async def convert_paper(
         at the other mode, whose budget differs.
       - Anything else → non-retryable; the ``error`` string names the cause.
     """
+    # No force_refresh: it means "re-convert", and a PMID's DOI does not go stale
+    # with the markdown. Unlike download_pdf and import_paper, which do thread it.
     identifier, pmid_error = await resolve_paper_identifier(identifier)
     if pmid_error is not None:
         return pmid_error
@@ -252,10 +254,12 @@ async def convert_paper(
     # Not merely absent: a 0-byte or non-%PDF- leftover is a miss too.
     if not artifact.is_usable_pdf(pdf):
         if markup_error is not None:
-            return enrich_error(
-                markup_error,
-                f"{markup_label} is temporarily unavailable. Retry, or run "
-                "download_pdf and then convert_paper to convert the PDF instead.",
+            return _strip_internal_paths(
+                enrich_error(
+                    markup_error,
+                    f"{markup_label} is temporarily unavailable. Retry, or run "
+                    "download_pdf and then convert_paper to convert the PDF instead.",
+                )
             )
         return pdf_not_cached_error(identifier)
 
@@ -295,6 +299,8 @@ async def get_paper_sections(
     Errors: not yet converted → guidance to run convert_paper.
     Next step: get_paper_section(identifier, index_or_title).
     """
+    # No force_refresh: threading it here would put a PMID trade on the network and
+    # break this tool's "no network" promise, which is the whole point of the flag.
     identifier, pmid_error = await resolve_paper_identifier(identifier)
     if pmid_error is not None:
         return pmid_error

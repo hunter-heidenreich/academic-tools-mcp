@@ -208,6 +208,88 @@ class TestPagedTools:
         assert "get_paper_catalog" in result["suggestion"]
 
 
+class TestSuggestionsCoverEveryVerdict:
+    """`_suggest`'s four branches, two of which nothing reached.
+
+    The advice is the branch: a transient failure and a rejected request need
+    opposite actions, so one falling through to the other's wording is a real bug
+    that no assertion on `error` would catch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_without_a_retry_after_says_retry(self, monkeypatch):
+        _patch_paper(monkeypatch, {"error": "503", "retryable": True})
+
+        result = await server.get_paper_code("1706.03762")
+
+        assert "retry shortly" in result["suggestion"]
+        assert "retry_after_seconds" not in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_an_unclassified_refusal_blames_the_arguments(self, monkeypatch):
+        _patch_paper(monkeypatch, {"error": "400 Bad Request"})
+
+        result = await server.get_paper_code("1706.03762")
+
+        assert "rejected the request" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_the_suggestion_survives_the_return_from_paper(self, monkeypatch):
+        """`_paper` used to drop `_suggest`'s return and rely on in-place mutation.
+
+        Every Papers with Code paper tool promises `{error, suggestion}`, so the three
+        are checked together: a pure `enrich_error` would empty all of them at once.
+        """
+        _patch_paper(monkeypatch, {"error": "none", "not_found": True})
+
+        for tool in (server.get_paper_code, server.get_paper_catalog):
+            assert "suggestion" in await tool("1706.03762")
+
+
+class TestCatalogForceRefreshThreading:
+    """`force_refresh` reaches the paper record on every tool that reads one.
+
+    `get_paper_evaluations` used to hardcode `False`, so a caller busting the cache
+    still read `pwc_id` out of a stale record.
+    """
+
+    @staticmethod
+    def _record_flag(monkeypatch, seen):
+        async def fake(arxiv_id, *, force_refresh=False):
+            seen.append(force_refresh)
+            return dict(_RECORD)
+
+        monkeypatch.setattr(paperswithcode, "get_paper", fake)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", [True, False])
+    async def test_paper_tools_thread_the_flag(self, monkeypatch, flag):
+        seen: list[bool] = []
+        self._record_flag(monkeypatch, seen)
+
+        await server.get_paper_code("1706.03762", force_refresh=flag)
+        await server.get_paper_catalog("1706.03762", force_refresh=flag)
+
+        assert seen == [flag, flag]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", [True, False])
+    async def test_evaluations_threads_it_to_both_calls(self, monkeypatch, flag):
+        seen: list[bool] = []
+        self._record_flag(monkeypatch, seen)
+        page_flags: list[bool] = []
+
+        async def fake(paper, *, page, page_size, force_refresh):
+            page_flags.append(force_refresh)
+            return {"total_results": 1, "next_page": None, "evaluations": []}
+
+        monkeypatch.setattr(paperswithcode, "get_paper_evaluations", fake)
+
+        await server.get_paper_evaluations("1706.03762", force_refresh=flag)
+
+        assert seen == [flag] and page_flags == [flag]
+
+
 _TOOLS = (
     catalog.get_paper_code,
     catalog.get_paper_catalog,
