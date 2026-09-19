@@ -33,8 +33,8 @@ from ..store.stems import markdown_path, safe_stem
 from ..util import config
 from . import jats, latexml
 from .index import (
-    _reparse_sections_locked,
     drop_derived,
+    reparse_sections_locked,
     sections_lock,
     store_markdown_and_index,
 )
@@ -300,7 +300,7 @@ _IMAGE_LINK_RE = re.compile(r"!\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\((?:[^()]|\([^()]
 
 
 def _cached_response(md_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
-    """Shape a ``_reparse_sections_locked`` payload as a conversion response.
+    """Shape a ``reparse_sections_locked`` payload as a conversion response.
 
     Invariant: the same keys :func:`store_markdown_and_index` returns, so an agent never
     feature-detects between a cached and a fresh conversion. ``conversion_mode`` is
@@ -336,30 +336,34 @@ def _finalize_markdown(
     return store_markdown_and_index(namespace, canonical, md_path, markdown, mode)
 
 
-async def _cached_or_cleared(
-    namespace: str, canonical: str, *, force_refresh: bool
+async def _clear_cached(namespace: str, canonical: str) -> None:
+    """Drop this paper's markdown and section index so a converter re-runs.
+
+    Both halves under one lock, so a reader can't catch a half-cleared state:
+    markdown gone, sections entry still on the old checksum.
+    """
+    async with sections_lock(namespace, canonical):
+        drop_derived(namespace, canonical)
+
+
+async def _cached_response_or_none(
+    namespace: str, canonical: str, md_path: Path
 ) -> dict[str, Any] | None:
-    """The cached conversion response, or ``None`` to convert — after clearing, if forced.
+    """The cached conversion response, or ``None`` to convert.
 
     Shared by every converter: cached markdown never re-runs one, and a missing or
-    stale sections entry only costs a re-parse.
+    stale sections entry only costs a re-parse. ``None`` also covers the file
+    vanishing under the lock.
     """
-    md_path = markdown_path(namespace, canonical)
+    if not md_path.exists():
+        return None
+    async with sections_lock(namespace, canonical):
+        payload = await reparse_sections_locked(namespace, canonical, md_path)
+    return _cached_response(md_path, payload) if payload is not None else None
 
-    if force_refresh:
-        # Both halves under one lock, so a reader can't catch a half-cleared
-        # state: markdown gone, sections entry still on the old checksum.
-        async with sections_lock(namespace, canonical):
-            drop_derived(namespace, canonical)
 
-    # None means the file vanished under the lock — convert.
-    if md_path.exists():
-        async with sections_lock(namespace, canonical):
-            payload = await _reparse_sections_locked(namespace, canonical, md_path)
-            if payload is not None:
-                return _cached_response(md_path, payload)
-    return None
-
+# A PDF conversion backend, by the provenance it is stored under.
+ConversionMode = Literal["full", "fast"]
 
 # A provider's own markup, by the provenance it is stored under.
 MarkupMode = Literal["html", "jats"]
@@ -387,10 +391,9 @@ async def convert_markup(
     ``force_refresh`` drops the cached markdown only after a successful render, so a
     failed fetch keeps it.
     """
-    if (
-        not force_refresh
-        and (cached := await _cached_or_cleared(namespace, canonical, force_refresh=False))
-        is not None
+    md_path = markdown_path(namespace, canonical)
+    if not force_refresh and (
+        cached := await _cached_response_or_none(namespace, canonical, md_path)
     ):
         return cached
 
@@ -406,12 +409,11 @@ async def convert_markup(
     if not markdown.strip():
         return None
 
-    md_path = markdown_path(namespace, canonical)
     async with sections_lock(namespace, canonical):
         if force_refresh:
             drop_derived(namespace, canonical)
         # A racing caller may have written the markdown since the outer check.
-        elif (payload := await _reparse_sections_locked(namespace, canonical, md_path)) is not None:
+        elif (payload := await reparse_sections_locked(namespace, canonical, md_path)) is not None:
             return _cached_response(md_path, payload)
         return await asyncio.to_thread(
             _finalize_markdown, namespace, canonical, md_path, markdown, mode
@@ -422,6 +424,7 @@ async def _convert_fast(
     pdf_path: Path,
     namespace: str,
     canonical: str,
+    md_path: Path,
     pdf_size_mb: float,
 ) -> dict[str, Any]:
     """Lightweight text extraction, run *outside* the global conversion lock.
@@ -430,12 +433,11 @@ async def _convert_fast(
     can never return ``busy``. Its only serialisation is the per-paper sections
     lock, which keeps two callers on one paper from both spawning.
     """
-    md_path = markdown_path(namespace, canonical)
     async with sections_lock(namespace, canonical):
         # A racing caller may have written the markdown since the outer check. The
         # shared re-parser, not a third entry assembled here, is what keeps
         # ``conversion_mode`` honest; None means the file is gone — extract.
-        cached = await _reparse_sections_locked(namespace, canonical, md_path)
+        cached = await reparse_sections_locked(namespace, canonical, md_path)
         if cached is not None:
             return _cached_response(md_path, cached)
 
@@ -510,7 +512,7 @@ async def convert_pdf(
     canonical: str,
     *,
     force_refresh: bool = False,
-    mode: str = "full",
+    mode: ConversionMode = "full",
 ) -> dict[str, Any]:
     """Convert a PDF to markdown, cache the result, and return section index.
 
@@ -537,9 +539,9 @@ async def convert_pdf(
 
     md_path = markdown_path(namespace, canonical)
 
-    if (
-        cached := await _cached_or_cleared(namespace, canonical, force_refresh=force_refresh)
-    ) is not None:
+    if force_refresh:
+        await _clear_cached(namespace, canonical)
+    elif (cached := await _cached_response_or_none(namespace, canonical, md_path)) is not None:
         return cached
 
     # One stat, no exists(): a concurrent unlink fits through that window and the answer
@@ -554,7 +556,7 @@ async def convert_pdf(
     pdf_size_mb = pdf_size_bytes / (1024 * 1024)
 
     if mode == "fast":
-        return await _convert_fast(pdf_path, namespace, canonical, pdf_size_mb)
+        return await _convert_fast(pdf_path, namespace, canonical, md_path, pdf_size_mb)
 
     # Check-then-acquire is safe: acquiring an uncontended asyncio.Lock returns
     # without yielding, so nothing can slip between these two statements.

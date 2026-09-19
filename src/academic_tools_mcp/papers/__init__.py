@@ -35,11 +35,9 @@ from .sections import (
     find_in_markdown,
     first_section_heading,
     get_section_content,
-    has_detected_sections,
     parse_sections,
     parse_sections_and_detect,
     section_at_offset,
-    section_boundaries,
 )
 
 __all__ = [
@@ -52,13 +50,11 @@ __all__ = [
     "first_section_heading",
     "get_or_parse_sections",
     "get_section_content",
-    "has_detected_sections",
     "parse_sections",
     "parse_sections_and_detect",
     "recorded_conversion_mode",
     "rekey_sections",
     "section_at_offset",
-    "section_boundaries",
     "sections_lock",
     "store_markdown_and_index",
 ]

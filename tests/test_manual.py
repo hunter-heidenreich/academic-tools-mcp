@@ -355,7 +355,7 @@ class TestImportMarkdown:
     def test_cached_sections_carry_every_key_a_conversion_writes(self, tmp_path):
         """An imported entry must be indistinguishable in shape from a converted
         one. It carried only sections + markdown_checksum, and because
-        ``_reparse_sections_locked`` accepts an entry whose checksum matches,
+        ``reparse_sections_locked`` accepts an entry whose checksum matches,
         the missing ``sections_detected`` was never recomputed."""
         md = tmp_path / "paper.md"
         md.write_text("## Intro\n\nHello.", encoding="utf-8")
@@ -766,7 +766,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
     @pytest.mark.asyncio
     async def test_pdf_import_holds_the_sections_lock(self, tmp_path, monkeypatch):
         """The PDF branch cascades through papers.drop_derived, which
-        unlinks the markdown — the same file _reparse_sections_locked reads
+        unlinks the markdown — the same file reparse_sections_locked reads
         under this lock between its exists() check and its read."""
         import asyncio
 

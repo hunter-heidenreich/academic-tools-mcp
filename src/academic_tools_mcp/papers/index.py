@@ -119,7 +119,7 @@ def _read_markdown(md_path: Path) -> str | None:
         return None
 
 
-async def _reparse_sections_locked(
+async def reparse_sections_locked(
     namespace: str,
     canonical: str,
     md_path: Path,
@@ -171,13 +171,13 @@ async def _reparse_sections_locked(
 async def get_or_parse_sections(
     namespace: str, canonical: str, *, force_refresh: bool = False
 ) -> dict[str, Any] | None:
-    """Public sections accessor: :func:`_reparse_sections_locked` under the lock.
+    """Public sections accessor: :func:`reparse_sections_locked` under the lock.
 
     ``None`` when the paper isn't converted.
     """
     md_path = markdown_path(namespace, canonical)
     async with sections_lock(namespace, canonical):
-        return await _reparse_sections_locked(
+        return await reparse_sections_locked(
             namespace, canonical, md_path, force_refresh=force_refresh
         )
 
@@ -192,7 +192,7 @@ def store_markdown_and_index(
     """Write markdown to the cache and store its section index.
 
     The entry writer every other module goes through, so an entry can never be
-    built with a key missing (``_reparse_sections_locked`` is the only other
+    built with a key missing (``reparse_sections_locked`` is the only other
     assembler). ``mode`` is provenance: ``"full"`` / ``"fast"`` for converter
     output, ``"html"`` / ``"jats"`` for a provider's own markup, ``"imported"``
     for a file that never ran through one. Takes the

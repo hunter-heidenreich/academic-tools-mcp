@@ -113,7 +113,7 @@ class TestStoredChecksumDescribesTheStoredText:
     (only the global conversion lock), while ``import_paper`` writes the same
     path *with* that lock. A write landing in the gap left an entry holding
     document X's sections under document Y's checksum — and since
-    ``_reparse_sections_locked`` accepts any entry whose checksum matches disk,
+    ``reparse_sections_locked`` accepts any entry whose checksum matches disk,
     it was never re-parsed.
     """
 
@@ -398,7 +398,7 @@ class TestRekeySections:
     """Carrying an entry onto a re-filed paper's key, and refusing to invent one.
 
     Not a third assembler beside ``store_markdown_and_index`` and
-    ``_reparse_sections_locked``: it copies a complete entry verbatim, only onto
+    ``reparse_sections_locked``: it copies a complete entry verbatim, only onto
     an empty destination, so it can neither mint a key nor clobber a live index.
     """
 

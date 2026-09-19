@@ -135,6 +135,11 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **`papers` no longer re-exports `has_detected_sections` or `section_boundaries`.**
+  Neither had a caller outside the package — `parse_sections_and_detect` supersedes
+  the first and the second is internal to offset lookup — so the facade advertised
+  surface nothing consumed. Both remain public on `papers.sections`. ([#156])
+
 - **A long rate-limit cooldown is handed back instead of blocked on.** A 503 or 429
   asking for several minutes used to be slept off inside the throttle slot, so one
   call could block for up to ten minutes while holding a semaphore permit — pushing
@@ -2120,3 +2125,4 @@ say which.
 [#153]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/153
 [#154]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/154
 [#155]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/155
+[#156]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/156

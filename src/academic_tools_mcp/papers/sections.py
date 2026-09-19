@@ -13,7 +13,7 @@ repeats a heading.
 """
 
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 from ..util import textnorm
 
@@ -29,21 +29,17 @@ _SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
 _SUB_LEVEL: int = 3
 
 
-class Section:
+class Section(NamedTuple):
     r"""One section's span in a markdown document.
 
     ``start``/``end`` are line indices into ``markdown.split("\n")``; the
     heading line itself is excluded, so ``lines[start:end]`` is the body.
     """
 
-    __slots__ = ("end", "h3s", "start", "title")
-
-    def __init__(self, title: str, start: int, end: int, h3s: list[str]) -> None:
-        """Bind the heading title, its body span and any h3 subheadings."""
-        self.title = title
-        self.start = start
-        self.end = end
-        self.h3s = h3s
+    title: str
+    start: int
+    end: int
+    h3s: tuple[str, ...]
 
     def body(self, lines: list[str]) -> str:
         """The section's text, stripped — exactly what a reader receives."""
@@ -72,14 +68,14 @@ def _scan(markdown: str) -> tuple[list[str], list[Section], bool]:
         level = len(m.group(1))
         if level in _SECTION_LEVELS:
             detected = True
-            spans.append(Section(title, start, i, h3s))
+            spans.append(Section(title, start, i, tuple(h3s)))
             title = m.group(2).strip()
             start = i + 1
             h3s = []
         elif level == _SUB_LEVEL:
             h3s.append(m.group(2).strip())
 
-    spans.append(Section(title, start, len(lines), h3s))
+    spans.append(Section(title, start, len(lines), tuple(h3s)))
     # Same as body(lines) == "", without materialising every body to discard it.
     non_empty = [sp for sp in spans if any(ln.strip() for ln in lines[sp.start : sp.end])]
     return lines, non_empty, detected
@@ -163,6 +159,7 @@ def _section_dicts(lines: list[str], spans: list[Section]) -> list[dict[str, Any
         {
             "index": index,
             "title": sp.title,
+            # A list, not the stored tuple: the index is serialised to JSON.
             "h3s": list(sp.h3s),
             # The stripped body, so the index and the reader agree.
             "approx_tokens": max(1, len(sp.body(lines)) // _CHARS_PER_TOKEN),

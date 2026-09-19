@@ -42,7 +42,7 @@ class TestSharedBoundaries:
     """All four former dialects now share one implementation."""
 
     def test_parse_sections_and_reader_agree_on_titles(self):
-        spans = papers.section_boundaries(DUPLICATE_TITLES)
+        spans = papers.sections.section_boundaries(DUPLICATE_TITLES)
         parsed = papers.parse_sections(DUPLICATE_TITLES)
         assert [sp.title for sp in spans] == [p["title"] for p in parsed]
 
@@ -60,7 +60,7 @@ class TestSharedBoundaries:
 
     def test_empty_sections_are_dropped_everywhere(self):
         md = "## Empty\n\n## Real\n\nbody text\n"
-        assert [sp.title for sp in papers.section_boundaries(md)] == ["Real"]
+        assert [sp.title for sp in papers.sections.section_boundaries(md)] == ["Real"]
         assert papers.get_section_content(md, 0)["title"] == "Real"
         assert papers.section_at_offset(md, md.index("body"))[1] == "Real"
 
@@ -134,11 +134,11 @@ class TestHeadinglessDocumentsAreFlagged:
         assert "sections_note" not in result
 
     def test_detection_helper_directly(self):
-        assert papers.has_detected_sections("## A\n\nbody\n") is True
-        assert papers.has_detected_sections("# A\n\nbody\n") is True
+        assert papers.sections.has_detected_sections("## A\n\nbody\n") is True
+        assert papers.sections.has_detected_sections("# A\n\nbody\n") is True
         # H3 alone does not open a section, so it is not detection.
-        assert papers.has_detected_sections("### Sub\n\nbody\n") is False
-        assert papers.has_detected_sections("plain text only\n") is False
+        assert papers.sections.has_detected_sections("### Sub\n\nbody\n") is False
+        assert papers.sections.has_detected_sections("plain text only\n") is False
 
     @pytest.mark.asyncio
     async def test_older_cached_indices_are_recomputed_not_guessed(self, markdown_corpus):
