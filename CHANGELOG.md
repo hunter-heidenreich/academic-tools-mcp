@@ -217,6 +217,23 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`get_paper_evaluations` ignored `force_refresh` for the record it reads the paper's
+  ID out of.** It reloaded the evaluations page and left the cached Papers with Code
+  paper record alone, so a caller busting the cache still resolved `pwc_id` and `title`
+  from stale data — the one Papers with Code paper tool of three not to thread the flag.
+  It now costs two rate-limited requests when set, which the docstring says.
+
+- **Three Papers with Code errors kept their `suggestion` only by luck.** `_paper`
+  computed the per-verdict advice and discarded the result, working solely because
+  `enrich_error` mutates its argument; every other caller in the package uses the return
+  value, so making that function pure would have silently emptied `suggestion` on
+  `get_paper_code`, `get_paper_catalog` and `get_paper_evaluations` at once — a key all
+  three docstrings promise. Its two unexercised branches, a transient failure with no
+  `retry_after_seconds` and an unclassified refusal, are now covered. Also:
+  `convert_paper`'s provider-markup error path was the one exit of that tool not filtered
+  through `_strip_internal_paths`, so a cache path could have reached an agent the moment
+  a markup fetch started reporting one. ([#164])
+
 - **Six tool docstrings described a response the tool does not return.** A `@mcp.tool`
   docstring *is* the agent-facing API, and these had drifted from the code with nothing
   checking them. `get_paper_authors`, `get_paper_abstract` and `get_paper_bibtex` all emit
@@ -2219,3 +2236,4 @@ say which.
 [#160]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/160
 [#162]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/162
 [#163]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/163
+[#164]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/164
