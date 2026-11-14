@@ -344,6 +344,16 @@ class TestSearchHardening:
 
         assert (await wikipedia.search("q"))["total_results"] is None
 
+    @pytest.mark.asyncio
+    async def test_a_boolean_total_is_rejected(self, monkeypatch):
+        """``bool`` subclasses ``int``, so ``isinstance(True, int)`` would report 1 hit."""
+        _stub(
+            monkeypatch,
+            {"query": {"searchinfo": {"totalhits": True}, "search": [{"title": "Only"}]}},
+        )
+
+        assert (await wikipedia.search("q"))["total_results"] is None
+
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -520,6 +530,50 @@ class TestSummaryHardening:
 
         assert result["retryable"] is True
         assert cache.get(wikipedia.NAMESPACE, "summaries", "Some_Title") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"status": "ok"},
+            {"title": "X"},  # missing type
+            {"type": "standard"},  # missing title
+            {"title": "   ", "type": "standard"},
+            {"title": "X", "type": "   "},
+            {"title": None, "type": "standard"},
+            {"title": "X", "type": 42},
+        ],
+    )
+    async def test_a_missing_title_or_type_is_retryable_and_uncached(self, monkeypatch, body):
+        """An empty or error-envelope 200 must not positive-cache a hollow summary
+        for the 30-day TTL."""
+        _stub(monkeypatch, body)
+
+        result = await wikipedia.get_summary("Some Title")
+
+        assert result["retryable"] is True
+        assert cache.get(wikipedia.NAMESPACE, "summaries", "Some_Title") is None
+
+    @pytest.mark.asyncio
+    async def test_null_or_wrong_typed_optional_fields_degrade_cleanly(self, monkeypatch):
+        """Upstream ``null`` or non-scalar values on ``extract``, ``description`` and
+        ``pageid`` degrade to their empty/None defaults rather than leaking wrong types."""
+        _stub(
+            monkeypatch,
+            {
+                **_SUMMARY_PAYLOAD,
+                "extract": None,
+                "description": ["not", "a", "string"],
+                "pageid": True,
+            },
+        )
+
+        result = await wikipedia.get_summary("Cytochrome P450")
+
+        assert result["extract"] == ""
+        assert result["description"] is None
+        assert result["pageid"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

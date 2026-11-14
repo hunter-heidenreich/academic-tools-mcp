@@ -289,6 +289,26 @@ class TestCatalogForceRefreshThreading:
 
         assert seen == [flag] and page_flags == [flag]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("flag", [True, False])
+    async def test_leaderboard_threads_the_flag(self, monkeypatch, flag):
+        seen: list[bool] = []
+
+        async def fake(benchmark, *, page, page_size, is_open, force_refresh):
+            seen.append(force_refresh)
+            return {
+                "benchmark": {"name": "WMT14"},
+                "total_results": 1,
+                "next_page": None,
+                "evaluations": [],
+            }
+
+        monkeypatch.setattr(paperswithcode, "get_leaderboard", fake)
+
+        await server.get_benchmark_leaderboard("wmt14", force_refresh=flag)
+
+        assert seen == [flag]
+
 
 _TOOLS = (
     catalog.get_paper_code,

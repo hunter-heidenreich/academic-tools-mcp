@@ -402,6 +402,24 @@ class TestEvaluations:
 
         assert result["evaluations"] == [] and result["total_results"] == 0
 
+    def test_scalar_metrics_drops_booleans_and_non_finite_floats(self):
+        """``bool`` subclasses ``int``, and non-finite floats cannot serialize cleanly;
+        ``_scalar_metrics`` keeps only ``str``, ``int``, finite ``float`` and ``None``."""
+        metrics = pwc._scalar_metrics(
+            {
+                "BLEU": 28.4,
+                "exact": 42,
+                "label": "41.8",
+                "missing": None,
+                "flag": True,
+                "false_flag": False,
+                "nan": float("nan"),
+                "inf": float("inf"),
+                "nested": {"a": 1},
+            }
+        )
+        assert metrics == {"BLEU": 28.4, "exact": 42, "label": "41.8", "missing": None}
+
 
 class TestTaskAndBenchmark:
     @pytest.mark.asyncio
@@ -457,6 +475,26 @@ class TestTaskAndBenchmark:
         result = await pwc.get_leaderboard("nope")
 
         assert result["not_found"] is True and len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_leaderboard_force_refresh_clears_a_negative_cached_benchmark(self, monkeypatch):
+        """Nothing else reads or writes the ``datasets`` cache entity, so
+        ``get_leaderboard(..., force_refresh=True)`` must forward the flag to
+        ``get_benchmark`` or a negative-cached benchmark miss can never be cleared."""
+        requests = _stub(
+            monkeypatch,
+            (404, {}),
+            {"id": "226", "name": "WMT14"},
+            _EVALUATIONS,
+        )
+
+        first = await pwc.get_leaderboard("wmt14")
+        assert first["not_found"] is True
+        assert len(requests) == 1
+
+        refreshed = await pwc.get_leaderboard("wmt14", force_refresh=True)
+        assert refreshed["benchmark"]["name"] == "WMT14"
+        assert len(requests) == 3
 
 
 class TestSearch:
