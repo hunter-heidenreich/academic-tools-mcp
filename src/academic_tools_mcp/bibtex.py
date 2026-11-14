@@ -163,9 +163,28 @@ def _first_key_word(title: str) -> str:
     return "untitled"
 
 
-def _author_display_name(authorship: dict[str, Any]) -> str:
+def _str(value: Any) -> str:
+    """``value`` when it is a string, else ``""``."""
+    return value if isinstance(value, str) else ""
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    """``value`` when it is a dict, else ``{}``."""
+    return value if isinstance(value, dict) else {}
+
+
+def _biblio_scalar(value: Any) -> str:
+    """A biblio field (volume, issue, page) as a string, dropping non-scalars."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and value:
+        return str(value)
+    return ""
+
+
+def _author_display_name(authorship: Any) -> str:
     """Display name out of an OpenAlex authorship, which nulls keys it lacks."""
-    return ((authorship or {}).get("author") or {}).get("display_name") or ""
+    return _str(_dict(_dict(authorship).get("author")).get("display_name"))
 
 
 def _key_year(value: Any) -> str:
@@ -176,26 +195,32 @@ def _key_year(value: Any) -> str:
 
 def _year_from_date(paper: dict[str, Any], field: str) -> str:
     """Leading year of a flat provider's date field ('2017-06-12T...' -> '2017')."""
-    return _key_year((paper.get(field) or "")[:4])
+    return _key_year(_str(paper.get(field))[:4])
 
 
 def _generate_key(work: dict[str, Any]) -> str:
     """Generate a BibTeX citation key like 'vantilborg2022exposing'."""
-    authorships = work.get("authorships") or []
+    authorships = work.get("authorships")
     last_name = (
-        _extract_last_name(_author_display_name(authorships[0])) if authorships else "unknown"
+        _extract_last_name(_author_display_name(authorships[0]))
+        if isinstance(authorships, list) and authorships
+        else "unknown"
     )
     year = _key_year(work.get("publication_year"))
-    first_word = _first_key_word(work.get("title") or "")
+    first_word = _first_key_word(_str(work.get("title")))
     return f"{last_name}{year}{first_word}"
 
 
 def _flat_key(paper: dict[str, Any], date_field: str) -> str:
     """Citation key for a provider with a flat author list (arXiv, bioRxiv)."""
-    authors = paper.get("authors") or []
-    last_name = _extract_last_name((authors[0] or {}).get("name") or "") if authors else "unknown"
+    authors = paper.get("authors")
+    last_name = (
+        _extract_last_name(_str(_dict(authors[0]).get("name")))
+        if isinstance(authors, list) and authors
+        else "unknown"
+    )
     year = _year_from_date(paper, date_field)
-    first_word = _first_key_word(paper.get("title") or "")
+    first_word = _first_key_word(_str(paper.get("title")))
     return f"{last_name}{year}{first_word}"
 
 
@@ -221,14 +246,18 @@ def _format_names(items: Iterable[Any], name_of: Callable[[Any], str]) -> str:
     return " and ".join(name for name in names if name)
 
 
-def _format_authors_bibtex(authorships: list[dict[str, Any]]) -> str:
+def _format_authors_bibtex(authorships: Any) -> str:
     """Format OpenAlex authorships: 'Last, First and Last, First'."""
+    if not isinstance(authorships, list):
+        return ""
     return _format_names(authorships, _author_display_name)
 
 
-def _format_flat_authors_bibtex(authors: list[dict[str, Any]]) -> str:
+def _format_flat_authors_bibtex(authors: Any) -> str:
     """Format arXiv/bioRxiv authors, stored flat as ``{"name": "First Last"}``."""
-    return _format_names(authors, lambda a: (a or {}).get("name") or "")
+    if not isinstance(authors, list):
+        return ""
+    return _format_names(authors, lambda a: _str(_dict(a).get("name")))
 
 
 # One `str.translate` pass: chained replaces would eat the braces
@@ -303,22 +332,23 @@ def _render_entry(entry_type: str, key: str, fields: list[tuple[str, str]]) -> s
 
 def generate_bibtex(work: dict[str, Any]) -> str:
     """Generate a BibTeX entry from an OpenAlex work object."""
-    work_type = work.get("type") or ""
+    work_type = _str(work.get("type"))
     entry_type = _TYPE_MAP.get(work_type, "misc")
 
     key = _generate_key(work)
-    authorships = work.get("authorships") or []
+    authorships_raw = work.get("authorships")
+    authorships = authorships_raw if isinstance(authorships_raw, list) else []
     year = _key_year(work.get("publication_year"))
     # OpenAlex's DOI is a resolver URL, http or https — a local prefix strip
     # would emit `doi={http://doi.org/...}`.
-    doi = doinorm.normalize(work.get("doi") or "")
+    doi = doinorm.normalize(_str(work.get("doi")))
 
-    biblio = work.get("biblio") or {}
-    source = (work.get("primary_location") or {}).get("source") or {}
-    venue_name = source.get("display_name") or ""
-    publisher = source.get("host_organization_name") or ""
+    biblio = _dict(work.get("biblio"))
+    source = _dict(_dict(work.get("primary_location")).get("source"))
+    venue_name = _str(source.get("display_name"))
+    publisher = _str(source.get("host_organization_name"))
 
-    fields: list[tuple[str, str]] = [_title_field(work.get("title") or "")]
+    fields: list[tuple[str, str]] = [_title_field(_str(work.get("title")))]
     if authors := _format_authors_bibtex(authorships):
         fields.append(("author", f"{{{authors}}}"))
 
@@ -327,13 +357,14 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     elif entry_type in ("inproceedings", "incollection") and venue_name:
         fields.append(("booktitle", f"{{{_escape_bibtex(venue_name)}}}"))
     elif entry_type == "phdthesis":
-        # `or {}` at both levels: OpenAlex's tree carries a null authorship or institution.
+        # Shape-guarded at both levels: OpenAlex's tree carries a null or wrong-shaped element.
         school = next(
             (
                 name
                 for a in authorships
-                for inst in ((a or {}).get("institutions") or [])
-                if (name := (inst or {}).get("display_name"))
+                if isinstance(insts := _dict(a).get("institutions"), list)
+                for inst in insts
+                if (name := _str(_dict(inst).get("display_name")))
             ),
             "",
         )
@@ -343,14 +374,14 @@ def generate_bibtex(work: dict[str, Any]) -> str:
         fields.append(("institution", f"{{{_escape_bibtex(venue_name)}}}"))
 
     # biblio values arrive as freeform strings, occasionally as numbers.
-    if volume := biblio.get("volume"):
-        fields.append(("volume", f"{{{_escape_bibtex(str(volume))}}}"))
-    if issue := biblio.get("issue"):
-        fields.append(("number", f"{{{_escape_bibtex(str(issue))}}}"))
-    if first_page := biblio.get("first_page"):
-        pages = _escape_bibtex(str(first_page))
-        if last_page := biblio.get("last_page"):
-            pages += f"--{_escape_bibtex(str(last_page))}"
+    if volume := _biblio_scalar(biblio.get("volume")):
+        fields.append(("volume", f"{{{_escape_bibtex(volume)}}}"))
+    if issue := _biblio_scalar(biblio.get("issue")):
+        fields.append(("number", f"{{{_escape_bibtex(issue)}}}"))
+    if first_page := _biblio_scalar(biblio.get("first_page")):
+        pages = _escape_bibtex(first_page)
+        if last_page := _biblio_scalar(biblio.get("last_page")):
+            pages += f"--{_escape_bibtex(last_page)}"
         fields.append(("pages", f"{{{pages}}}"))
     if year:
         fields.append(("year", f"{{{year}}}"))
@@ -368,7 +399,7 @@ def generate_bibtex(work: dict[str, Any]) -> str:
             fields.append(("archiveprefix", "{arXiv}"))
         elif doi:
             fields.append(_url_field(f"https://doi.org/{doi}"))
-        elif landing_page := (work.get("ids") or {}).get("openalex"):
+        elif landing_page := _str(_dict(work.get("ids")).get("openalex")):
             fields.append(_url_field(landing_page))
 
     return _render_entry(entry_type, key, fields)
@@ -378,15 +409,15 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     """Generate a BibTeX entry from a parsed arXiv paper dict."""
     key = _flat_key(paper, "published")
     year = _year_from_date(paper, "published")
-    journal_ref = paper.get("journal_ref")
-    doi = doinorm.normalize(paper.get("doi") or "")
+    journal_ref = _str(paper.get("journal_ref"))
+    doi = doinorm.normalize(_str(paper.get("doi")))
 
     entry_type = "article" if journal_ref else "misc"
     # The id may be a URL or already bare; case survives for old-style ids.
     eprint_id = arxiv.strip_version(arxiv.id_from_entry(paper))
 
-    fields: list[tuple[str, str]] = [_title_field(paper.get("title") or "")]
-    if authors := _format_flat_authors_bibtex(paper.get("authors") or []):
+    fields: list[tuple[str, str]] = [_title_field(_str(paper.get("title")))]
+    if authors := _format_flat_authors_bibtex(paper.get("authors")):
         fields.append(("author", f"{{{authors}}}"))
     if journal_ref:
         fields.append(("journal", f"{{{_escape_bibtex(journal_ref)}}}"))
@@ -395,7 +426,7 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     if eprint_id:
         fields.append(("eprint", f"{{{_escape_doi(eprint_id)}}}"))
         fields.append(("archiveprefix", "{arXiv}"))
-    if primary_cat := paper.get("primary_category"):
+    if primary_cat := _str(paper.get("primary_category")):
         fields.append(("primaryclass", f"{{{_escape_doi(primary_cat)}}}"))
     if doi:
         fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
@@ -410,19 +441,19 @@ def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     known. Otherwise ``@misc``, ``publisher`` naming the server and a resolver URL only
     if the preprint has a DOI.
     """
-    doi = doinorm.normalize(paper.get("doi") or "")
-    published_doi = doinorm.normalize(paper.get("published_doi") or "")
-    server = paper.get("server") or "biorxiv"
+    doi = doinorm.normalize(_str(paper.get("doi")))
+    published_doi = doinorm.normalize(_str(paper.get("published_doi")))
+    server = _str(paper.get("server")) or "biorxiv"
 
     entry_type = "article" if published_doi else "misc"
-    date_field = "published_date" if published_doi and paper.get("published_date") else "date"
+    date_field = "published_date" if published_doi and _str(paper.get("published_date")) else "date"
     key = _flat_key(paper, date_field)
     year = _year_from_date(paper, date_field)
 
-    fields: list[tuple[str, str]] = [_title_field(paper.get("title") or "")]
-    if authors := _format_flat_authors_bibtex(paper.get("authors") or []):
+    fields: list[tuple[str, str]] = [_title_field(_str(paper.get("title")))]
+    if authors := _format_flat_authors_bibtex(paper.get("authors")):
         fields.append(("author", f"{{{authors}}}"))
-    if published_doi and (journal := paper.get("published_journal")):
+    if published_doi and (journal := _str(paper.get("published_journal"))):
         fields.append(("journal", f"{{{_escape_bibtex(journal)}}}"))
     if published_doi:
         fields.append(("doi", f"{{{_escape_doi(published_doi)}}}"))
@@ -600,15 +631,17 @@ def generate_acl_bibtex(paper: dict[str, Any]) -> str:
     ``@article`` for a journal volume, else ``@inproceedings``. Front matter keys on
     its editors; a paper without a DOI gets its Anthology ``url``.
     """
-    authors = paper.get("authors") or []
-    editors = paper.get("editors") or []
+    authors_raw = paper.get("authors")
+    authors = authors_raw if isinstance(authors_raw, list) else []
+    editors_raw = paper.get("editors")
+    editors = editors_raw if isinstance(editors_raw, list) else []
     key = _flat_key(paper if authors else {**paper, "authors": editors}, "year")
     year = _year_from_date(paper, "year")
-    doi = doinorm.normalize(paper.get("doi") or "")
-    booktitle = paper.get("booktitle") or ""
+    doi = doinorm.normalize(_str(paper.get("doi")))
+    booktitle = _str(paper.get("booktitle"))
     is_journal = paper.get("volume_type") == "journal"
 
-    fields: list[tuple[str, str]] = [_title_field(paper.get("title") or "")]
+    fields: list[tuple[str, str]] = [_title_field(_str(paper.get("title")))]
     if names := _format_flat_authors_bibtex(authors):
         fields.append(("author", f"{{{names}}}"))
 
@@ -616,10 +649,10 @@ def generate_acl_bibtex(paper: dict[str, Any]) -> str:
         m = _JOURNAL_FROM_BOOKTITLE_RE.match(booktitle)
         if journal := (m.group(1) if m else booktitle):
             fields.append(("journal", f"{{{_escape_bibtex(journal)}}}"))
-        if volume := paper.get("journal_volume"):
-            fields.append(("volume", f"{{{_escape_bibtex(str(volume))}}}"))
-        if issue := paper.get("journal_issue"):
-            fields.append(("number", f"{{{_escape_bibtex(str(issue))}}}"))
+        if volume := _biblio_scalar(paper.get("journal_volume")):
+            fields.append(("volume", f"{{{_escape_bibtex(volume)}}}"))
+        if issue := _biblio_scalar(paper.get("journal_issue")):
+            fields.append(("number", f"{{{_escape_bibtex(issue)}}}"))
     else:
         if names := _format_flat_authors_bibtex(editors):
             fields.append(("editor", f"{{{names}}}"))
@@ -630,15 +663,15 @@ def generate_acl_bibtex(paper: dict[str, Any]) -> str:
         fields.append(month)
     if year:
         fields.append(("year", f"{{{year}}}"))
-    if not is_journal and (address := paper.get("address")):
+    if not is_journal and (address := _str(paper.get("address"))):
         fields.append(("address", f"{{{_escape_bibtex(address)}}}"))
-    if publisher := paper.get("publisher"):
+    if publisher := _str(paper.get("publisher")):
         fields.append(("publisher", f"{{{_escape_bibtex(publisher)}}}"))
     if pages := _pages(paper.get("pages")):
         fields.append(("pages", f"{{{pages}}}"))
     if doi:
         fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
-    elif url := paper.get("url"):
+    elif url := _str(paper.get("url")):
         fields.append(("url", f"{{{_escaped_url(url)}}}"))
 
     entry_type = "article" if is_journal else "inproceedings"

@@ -218,6 +218,27 @@ class TestFindInPaperReadHardening:
         assert "suggestion" in result
         monkeypatch.setattr(Path, "read_text", original)
 
+    @pytest.mark.asyncio
+    async def test_non_utf8_markdown_degrades_cleanly(self, converted):
+        converted.write_bytes(b"# T\n\n\xff\xfebad bytes\n")
+
+        result = await search_tools.find_in_paper("paper-x", "anything")
+
+        assert "error" in result
+        assert "suggestion" in result
+
+    @pytest.mark.asyncio
+    async def test_permission_error_on_read_degrades_cleanly(self, converted, monkeypatch):
+        def denied(self, *a, **kw):
+            raise PermissionError(str(self))
+
+        monkeypatch.setattr(Path, "read_text", denied)
+
+        result = await search_tools.find_in_paper("paper-x", "anything")
+
+        assert "error" in result
+        assert "suggestion" in result
+
 
 class TestUnindexableDocumentsAreReported:
     """A document FTS5 derives no terms from can never match, so it is

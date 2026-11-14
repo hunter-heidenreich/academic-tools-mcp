@@ -845,6 +845,73 @@ class TestNullAndMissingFields:
     def test_biorxiv_null_server_defaults_to_biorxiv(self):
         assert "publisher={bioRxiv}" in generate_biorxiv_bibtex(_biorxiv_paper(server=None))
 
+    @pytest.mark.parametrize(
+        "work",
+        [
+            {},
+            {"type": ["article"], "title": ["List title"], "doi": 42},
+            {"type": "dissertation", "authorships": "not a list", "biblio": ["not a dict"]},
+            {
+                "type": "dissertation",
+                "authorships": [
+                    "bare string",
+                    {"author": "not a dict", "institutions": "not a list"},
+                    {"author": {"display_name": 42}, "institutions": ["bare", {"display_name": 9}]},
+                ],
+                "primary_location": ["not a dict"],
+            },
+            {
+                "type": "preprint",
+                "doi": None,
+                "primary_location": {"source": "not a dict"},
+                "ids": ["not a dict"],
+            },
+            {
+                "type": "preprint",
+                "doi": None,
+                "ids": {"openalex": 12345},
+            },
+        ],
+    )
+    def test_a_wrong_shaped_openalex_record_degrades_instead_of_raising(self, work):
+        """OpenAlex works are cached verbatim as untyped JSON."""
+        entry = generate_bibtex(work)
+        assert entry.startswith("@")
+        assert entry.endswith("}")
+
+    @pytest.mark.parametrize("bad", [True, False, 0, 1.5, ["1"], {"raw": "1"}])
+    def test_non_scalar_biblio_values_are_dropped_rather_than_stringified(self, bad):
+        """``str(bad)`` would print ``True`` or a Python repr into the entry."""
+        entry = generate_bibtex(
+            _work(biblio={"volume": bad, "issue": bad, "first_page": bad, "last_page": bad})
+        )
+        assert "volume=" not in entry
+        assert "number=" not in entry
+        assert "pages=" not in entry
+
+    def test_wrong_shaped_flat_records_degrade_instead_of_raising(self):
+        bad = {
+            "title": ["not a string"],
+            "authors": ["not a dict", {"name": 42}],
+            "editors": "not a list",
+            "published": 2024,
+            "date": 2024,
+            "year": 2024,
+            "doi": 42,
+            "published_doi": 42,
+            "journal_ref": 42,
+            "primary_category": 42,
+            "volume_type": "journal",
+            "journal_volume": {"raw": "1"},
+            "journal_issue": True,
+        }
+        assert generate_arxiv_bibtex(bad).startswith("@misc{")
+        assert generate_biorxiv_bibtex(bad).startswith("@misc{")
+        acl_entry = generate_acl_bibtex(bad)
+        assert acl_entry.startswith("@article{")
+        assert "volume=" not in acl_entry
+        assert "number=" not in acl_entry
+
 
 class TestLiteralFieldHygiene:
     """Every prose-shaped value routes through `_escape_bibtex`."""

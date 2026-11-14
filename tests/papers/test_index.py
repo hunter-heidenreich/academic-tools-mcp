@@ -315,6 +315,25 @@ class TestReparseGates:
         assert await papers.get_or_parse_sections("test", "never-converted") is None
 
     @pytest.mark.asyncio
+    async def test_non_utf8_markdown_degrades_to_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = stems.markdown_path("test", "corrupt")
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_bytes(b"## Heading\n\n\xff\xfebad bytes\n")
+
+        assert await papers.get_or_parse_sections("test", "corrupt") is None
+
+    @pytest.mark.asyncio
+    async def test_unreadable_markdown_degrades_to_none(self, tmp_path, monkeypatch):
+        md_path, _ = self._converted(tmp_path, monkeypatch)
+
+        def denied(self, *a, **kw):
+            raise PermissionError(str(self))
+
+        monkeypatch.setattr(type(md_path), "read_text", denied)
+        assert await papers.get_or_parse_sections("test", "gate") is None
+
+    @pytest.mark.asyncio
     async def test_concurrent_readers_parse_once(self, tmp_path, monkeypatch):
         """The per-paper lock is the only thing between three cold readers and
         three parses of the same document.
