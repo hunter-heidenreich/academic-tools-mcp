@@ -299,7 +299,8 @@ async def get_benchmark_leaderboard(
 
     Errors: as get_pwc_task.
 
-    An uncached call costs two rate-limited requests: the benchmark, then the page.
+    An uncached call or ``force_refresh`` costs two rate-limited requests: the
+    benchmark, then the page.
     """
     result = await paperswithcode.get_leaderboard(
         benchmark,

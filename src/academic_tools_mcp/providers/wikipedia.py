@@ -184,7 +184,9 @@ def _search_of(data: Any) -> dict[str, Any] | None:
     return {
         "results": hits,
         # A missing total is unknown, never zero; the tool layer folds it to an int.
-        "total_results": total if isinstance(total, int) else None,
+        "total_results": (
+            total if isinstance(total, int) and not isinstance(total, bool) else None
+        ),
         # Not "suggestion": ``enrich_error`` owns that key on the error shape, and one
         # name meaning "recovery advice" on one branch and "did you mean" on the other
         # is a fork an agent cannot see.
@@ -312,30 +314,42 @@ def _summary_of(data: Any) -> dict[str, Any] | None:
     """The slice of a REST summary ``get_summary`` returns, or ``None`` for a wrong shape.
 
     ``Any``: a scalar body raises ``AttributeError``, caught by nothing — the call sits
-    outside ``_fetch``'s ``try``. A wrong shape is never an empty page.
+    outside ``_fetch``'s ``try``. ``title`` and ``type`` are required so an empty or
+    error-envelope 200 cannot positive-cache for the 30-day TTL.
     """
     if not isinstance(data, dict):
         return None
-    page_type = data.get("type", "")
+    title = data.get("title")
+    page_type = data.get("type")
+    if (
+        not isinstance(title, str)
+        or not title.strip()
+        or not isinstance(page_type, str)
+        or not page_type.strip()
+    ):
+        return None
     canonical = _canonical_of(data.get("titles"))
     revision = _revision_of(data)
+    description = data.get("description")
+    extract = data.get("extract")
     timestamp = data.get("timestamp")
+    pageid = data.get("pageid")
     wikibase_item = data.get("wikibase_item")
     return {
-        "title": data.get("title", ""),
+        "title": title,
         # What the request resolved *to*: a redirect answers under the target's title.
         "canonical_title": canonical,
-        "description": data.get("description"),
+        "description": description if isinstance(description, str) else None,
         # A disambiguation page's extract is one candidate meaning in prose, and reads
         # exactly like a real summary — "A transformer is a device that transfers
         # electrical energy" for `Transformer`. Cited as the article's, it is wrong.
-        "extract": data.get("extract", "") if page_type == "standard" else "",
+        "extract": extract if page_type == "standard" and isinstance(extract, str) else "",
         "url": _desktop_page_url(data.get("content_urls")),
         "permalink": _permalink(canonical, revision),
         "revision": revision,
         "timestamp": timestamp if isinstance(timestamp, str) else None,
         "type": page_type,
-        "pageid": data.get("pageid"),
+        "pageid": pageid if isinstance(pageid, int) and not isinstance(pageid, bool) else None,
         # The Wikidata QID, and the reason this provider earns a place in a paper
         # server: it is the join from an article to the ORCID and ROR that
         # `get_author` and `get_institution` already take.

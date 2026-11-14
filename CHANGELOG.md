@@ -17,6 +17,17 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`paperswithcode.get_leaderboard` threads `force_refresh` to `get_benchmark`, and
+  `wikipedia.get_summary` requires `title` and `type` before caching.** Nothing else
+  reads or writes the `("paperswithcode", "datasets", ...)` cache entry, so
+  `get_benchmark_leaderboard(..., force_refresh=True)` previously refreshed the page
+  while leaving a stale or negative-cached benchmark entry stranded; it now refreshes
+  both legs, and `paperswithcode._scalar_metrics` drops booleans and non-finite floats.
+  In `wikipedia._summary_of`, a 200 missing a non-empty string `title` or `type` now
+  returns a retryable parse error instead of caching a hollow summary for 30 days, and
+  explicit `null` or wrong-typed `extract`, `description`, `pageid` and `totalhits`
+  values degrade cleanly.
+
 - **The open-access PDF trust boundary rejects non-HTTP and malformed URLs before
   the request, and classifies redirect-time ones as definitive.** `openalex.best_pdf_url`
   now strips and validates `http(s)` scheme, host and port on each candidate so a

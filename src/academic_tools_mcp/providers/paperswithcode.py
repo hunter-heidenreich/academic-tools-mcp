@@ -6,6 +6,7 @@ most one page; nothing paginates on the caller's behalf.
 """
 
 import json
+import math
 import re
 from collections.abc import Callable
 from typing import Any
@@ -162,6 +163,17 @@ def _strs(value: Any) -> list[str]:
     )
 
 
+def _is_scalar_metric(value: Any) -> bool:
+    """Whether ``value`` is a ``number | string | null`` metric value."""
+    if value is None or isinstance(value, str):
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, float) and math.isfinite(value)
+
+
 def _scalar_metrics(value: Any) -> dict[str, Any]:
     """A metrics object as ``{name: number|string|null}``, dropping anything nested."""
     if not isinstance(value, dict):
@@ -169,7 +181,7 @@ def _scalar_metrics(value: Any) -> dict[str, Any]:
     return {
         name: metric
         for name, metric in value.items()
-        if isinstance(name, str) and (metric is None or isinstance(metric, (str, int, float)))
+        if isinstance(name, str) and _is_scalar_metric(metric)
     }
 
 
@@ -624,11 +636,12 @@ async def get_leaderboard(
 ) -> dict[str, Any]:
     """One page of a benchmark's leaderboard, best rank first.
 
-    Returns ``{benchmark, total_results, next_page, evaluations}``. A cold cache costs
-    two requests (benchmark to numeric ID, then the page); ``force_refresh`` refreshes
-    only the page.
+    Returns ``{benchmark, total_results, next_page, evaluations}``. A cold cache or
+    ``force_refresh`` costs two requests (benchmark to numeric ID, then the page) —
+    nothing else touches the ``datasets`` cache entry, so ``force_refresh`` must
+    reload the benchmark record too or a negative-cached miss stays stranded.
     """
-    dataset = await get_benchmark(benchmark)
+    dataset = await get_benchmark(benchmark, force_refresh=force_refresh)
     if "error" in dataset:
         return dataset
     params: dict[str, Any] = {"dataset_id": dataset["benchmark_id"], "ordering": "best_rank"}
