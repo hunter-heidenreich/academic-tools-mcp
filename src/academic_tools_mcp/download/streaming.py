@@ -89,13 +89,14 @@ async def stream_to_file(
     ways); the ``%PDF-`` magic bytes are authoritative, so an
     ``octet-stream`` PDF still passes. Native providers leave it ``False``.
 
-    Returns ``{path, size_bytes, cached: False}``, or an error dict: a 404 or a
-    not-a-PDF rejection → ``retryable: False``; over the cap adds ``max_bytes``;
-    an empty body or a disk failure → ``retryable: True``, never a raised
-    ``OSError``. Any other non-2xx is ``http.response_error_dict``'s verdict on a
-    bounded body prefix, which leaves an unclassified 4xx unflagged; a transport
-    failure is ``http.error_dict``'s. A prefix read costs the connection — httpcore
-    drops one left unread — which beats an unbounded buffer.
+    Returns ``{path, size_bytes, cached: False}``, or an error dict: a 404, a
+    not-a-PDF rejection or an invalid/unsupported URL → ``retryable: False``; over
+    the cap adds ``max_bytes``; an empty body or a disk failure → ``retryable:
+    True``, never a raised ``OSError``. Any other non-2xx is
+    ``http.response_error_dict``'s verdict on a bounded body prefix, which leaves
+    an unclassified 4xx unflagged; a transport failure is ``http.error_dict``'s.
+    A prefix read costs the connection — httpcore drops one left unread — which
+    beats an unbounded buffer.
     """
     max_bytes = resolve_max_pdf_bytes()
     tmp_path: Path | None = None
@@ -176,6 +177,8 @@ async def stream_to_file(
         os.replace(tmp_path, dest)
         tmp_path = None
         return {"path": str(dest), "size_bytes": written, "cached": False}
+    except (httpx.InvalidURL, httpx.UnsupportedProtocol) as e:
+        return {**http.error_dict(provider_label, e), "retryable": False}
     except http.HTTPX_ERRORS as e:
         return http.error_dict(provider_label, e)
     except OSError as e:

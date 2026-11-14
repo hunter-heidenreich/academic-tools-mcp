@@ -111,6 +111,42 @@ class TestBestPdfUrl:
         }
         assert openalex.best_pdf_url(work) is None
 
+    @pytest.mark.parametrize(
+        "unusable",
+        [
+            "   ",
+            "/relative/path.pdf",
+            "example.org/paper.pdf",
+            "ftp://ftp.example.org/paper.pdf",
+            "file:///etc/passwd",
+            "https:///hostless.pdf",
+            "http://:80/empty-host.pdf",
+            "http://[::1/unclosed-ipv6.pdf",
+            "http://example.org:bad/bad-port.pdf",
+        ],
+    )
+    def test_an_unusable_url_falls_through_to_the_next_candidate(self, unusable):
+        """A non-HTTP, hostless or malformed URL in ``best_oa_location`` must not
+        shadow a valid ``https://`` fallback in ``primary_location`` or
+        ``open_access`` — and if all three are unusable, ``None`` is returned."""
+        with_fallback = {
+            "best_oa_location": {"pdf_url": unusable},
+            "primary_location": {"pdf_url": "https://x/primary.pdf"},
+            "open_access": {"oa_url": "https://x/landing"},
+        }
+        assert openalex.best_pdf_url(with_fallback) == "https://x/primary.pdf"
+
+        all_unusable = {
+            "best_oa_location": {"pdf_url": unusable},
+            "primary_location": {"pdf_url": unusable},
+            "open_access": {"oa_url": unusable},
+        }
+        assert openalex.best_pdf_url(all_unusable) is None
+
+    def test_surrounding_whitespace_is_stripped_on_a_valid_url(self):
+        work = {"best_oa_location": {"pdf_url": "  https://x/best.pdf\n"}}
+        assert openalex.best_pdf_url(work) == "https://x/best.pdf"
+
 
 # --- metadata surfaces pdf_url ---------------------------------------------
 
@@ -860,3 +896,37 @@ class TestRedirectChase:
             openaccess._get_client()
 
         assert captured[0]["follow_redirects"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_to_an_unsupported_protocol_is_definitive(self, monkeypatch):
+        """A publisher 302 to ``ftp://`` must not masquerade as a transient
+        network error — it is a definitive failure for this OA link,
+        negative-cached and decorated with the ``import_paper`` hint."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.scheme not in ("http", "https"):
+                raise httpx.UnsupportedProtocol(
+                    f"Request URL has an unsupported protocol '{request.url.scheme}://'.",
+                    request=request,
+                )
+            return httpx.Response(302, headers={"location": "ftp://ftp.example.org/paper.pdf"})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+        _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": self._START}})
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+        try:
+            first = await openaccess.download_pdf(_DOI)
+        finally:
+            await client.aclose()
+
+        assert "invalid URL" in first["error"]
+        assert first["retryable"] is False
+        assert "import_paper" in first["suggestion"]
+
+        def boom(*_a, **_k):  # pragma: no cover - must not be called
+            raise AssertionError("network hit on negative-cache hit")
+
+        monkeypatch.setattr(openalex, "get_work", boom)
+        monkeypatch.setattr(clients, "get_client", boom)
+        assert await openaccess.download_pdf(_DOI) == first
