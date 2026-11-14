@@ -17,6 +17,17 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`bibtex.generate_bibtex` and the flat BibTeX generators guard against untyped JSON
+  shapes, and `papers.index._read_markdown` / `app.read_markdown` degrade on
+  `OSError` and `UnicodeDecodeError`.** `generate_bibtex` (and its key/author helpers)
+  now `isinstance`-checks nested OpenAlex dicts, lists and strings to match
+  `generate_crossref_bibtex`, and `_biblio_scalar` drops booleans, floats, lists and
+  dicts from `volume`, `issue`, `first_page` and `last_page` instead of stringifying
+  their Python repr into the BibTeX entry. In the markdown reader paths, non-UTF-8
+  bytes or non-`FileNotFoundError` filesystem errors on a cached `.md` file now degrade
+  to `not_converted_error` (`None` in `papers.index`) instead of escaping the tool
+  boundary.
+
 - **`paperswithcode.get_leaderboard` threads `force_refresh` to `get_benchmark`, and
   `wikipedia.get_summary` requires `title` and `type` before caching.** Nothing else
   reads or writes the `("paperswithcode", "datasets", ...)` cache entry, so

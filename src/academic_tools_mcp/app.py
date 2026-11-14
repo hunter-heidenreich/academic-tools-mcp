@@ -429,7 +429,8 @@ async def read_markdown(
     Returns ``(target, scan(markdown))``, else :func:`not_converted_error`. One
     home for the two reads outside ``papers.sections_lock`` (``get_paper_section``,
     ``find_in_paper``), so their guards can't drift: off the event loop, explicit
-    UTF-8, ``FileNotFoundError`` degraded — a cascade can unlink mid-read.
+    UTF-8, ``OSError`` and ``UnicodeDecodeError`` degraded — a cascade can unlink
+    mid-read, and a hand-edited file can fail UTF-8 decoding.
     """
     identifier, pmid_error = await resolve_paper_identifier(identifier)
     if pmid_error is not None:
@@ -446,7 +447,7 @@ async def read_markdown(
 
     try:
         return target, await asyncio.to_thread(_read_and_scan)
-    except FileNotFoundError:
+    except (OSError, UnicodeDecodeError):
         return not_converted_error(identifier)
 
 

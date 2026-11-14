@@ -109,14 +109,14 @@ def sections_lock(namespace: str, canonical: str) -> asyncio.Lock:
 
 
 def _read_markdown(md_path: Path) -> str | None:
-    """Read cached markdown as UTF-8, or ``None`` if it isn't there.
+    """Read cached markdown as UTF-8, or ``None`` if it isn't there or is unreadable.
 
     No ``exists()`` ahead of it: a concurrent ``drop_derived`` fits through the
     gap, and the answer is the same either way.
     """
     try:
         return md_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (OSError, UnicodeDecodeError):
         return None
 
 
