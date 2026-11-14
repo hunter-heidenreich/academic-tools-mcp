@@ -2,6 +2,7 @@
 
 import asyncio
 import gzip
+import math
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -413,9 +414,15 @@ def _index_meta() -> dict[str, Any] | None:
     meta = cache.get(NAMESPACE, _INDEX_ENTITY, "meta", count=False)
     if meta is None:
         return None
-    if not isinstance(meta.get("fetched_at"), (int, float)):
+    fetched_at = meta.get("fetched_at")
+    if (
+        not isinstance(fetched_at, (int, float))
+        or isinstance(fetched_at, bool)
+        or not math.isfinite(fetched_at)
+    ):
         return None
-    if not isinstance(meta.get("registrants"), list):
+    registrants = meta.get("registrants")
+    if not isinstance(registrants, list) or not all(isinstance(r, str) for r in registrants):
         return None
     return meta
 

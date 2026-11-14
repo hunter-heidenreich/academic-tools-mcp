@@ -1054,6 +1054,28 @@ class TestDetailsFieldsAreShapeGuarded:
         assert paper["version"] == "1"
         assert paper["pdf_url"].endswith("573838v1.full.pdf")
 
+    @pytest.mark.parametrize("bad", [None, "", "   ", 42, ["x"], True])
+    def test_nullable_string_fields_fold_blank_and_wrong_types_to_none(self, bad):
+        """Every nullable string field in `_parse_paper` goes through `_text_or_none`,
+        matching `_parse_versions` on `date` and `license`."""
+        fields = (
+            "author_corresponding",
+            "author_corresponding_institution",
+            "date",
+            "type",
+            "license",
+            "category",
+            "jatsxml",
+        )
+        raw = {**_SAMPLE_RAW, **dict.fromkeys(fields, bad)}
+        parsed = biorxiv._parse_paper(raw)
+        versions = biorxiv._parse_versions([raw])
+
+        for field in fields:
+            assert parsed[field] is None
+        assert parsed["date"] == versions[0]["date"] is None
+        assert parsed["license"] == versions[0]["license"] is None
+
 
 class TestGetPaperCaching:
     @pytest.fixture(autouse=True)

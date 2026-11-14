@@ -332,6 +332,18 @@ class TestReconstructAbstract:
         # `sorted` comparing int against str is a TypeError nothing catches.
         assert reconstruct_abstract({"a": [0], "b": ["1"], "c": [2]}) == "a c"
 
+    def test_bool_and_negative_positions_are_ignored(self):
+        # `isinstance(True, int)` is True in Python, so unguarded booleans
+        # masquerade as positions 0 and 1, and negative indices sort before 0.
+        index = {
+            "Hello": [0],
+            "bogus_true": [True],
+            "bogus_false": [False],
+            "bogus_neg": [-1],
+            "world": [1],
+        }
+        assert reconstruct_abstract(index) == "Hello world"
+
 
 # ---------------------------------------------------------------------------
 # get_work
@@ -1017,6 +1029,28 @@ class TestBatchNegativeCaching:
         # No count to compare against, and every record was attributed, so the
         # miss stays definitive.
         assert out["10.1234/b"]["not_found"] is True
+
+    @pytest.mark.parametrize("bad_count", [True, False, -1, "many", None])
+    @pytest.mark.asyncio
+    async def test_bool_or_negative_meta_count_is_ignored_in_batch_and_search(
+        self, monkeypatch, bad_count
+    ):
+        # In batch with 0 results, `reported = True` (== 1 > 0) would falsely mark
+        # the page truncated if `bool` were accepted as an `int`.
+        _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": bad_count}, "results": []},
+            {"meta": {"count": bad_count}, "results": [_work_response("10.1234/a")]},
+            {"meta": {"count": bad_count}, "results": [_author_response()]},
+            {"meta": {"count": bad_count}, "results": [{"id": "https://openalex.org/I1"}]},
+        )
+
+        batch_out = await openalex.get_works_batch(["10.1234/missing"])
+        assert batch_out["10.1234/missing"].get("not_found") is True
+
+        assert (await openalex.search_works("q"))["total_results"] is None
+        assert (await openalex.search_authors("q"))["total_results"] is None
+        assert (await openalex.autocomplete("q"))["total_results"] is None
 
 
 class TestBatchErrorDictsAreNotAliased:

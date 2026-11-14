@@ -594,6 +594,17 @@ def _canonical_from_response_doi(work_doi: Any) -> str | None:
 MAX_SEARCH_RESULTS = 50
 
 
+def _non_neg_int(value: Any) -> int | None:
+    """Return ``value`` when it is a non-negative integer (excluding ``bool``), else ``None``."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _meta_count(data: dict[str, Any]) -> int | None:
+    """The non-negative integer ``meta.count`` from a list response, or ``None``."""
+    meta = data.get("meta")
+    return _non_neg_int(meta.get("count")) if isinstance(meta, dict) else None
+
+
 async def search_works(query: str, *, year: int | None = None, rows: int = 10) -> dict[str, Any]:
     """Search OpenAlex works by free text over title, abstract and fulltext.
 
@@ -638,9 +649,7 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
         if canonical := _canonical_from_response_doi(item.get("doi")):
             cache.warm(NAMESPACE, "works", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
 
-    meta = data.get("meta")
-    count = meta.get("count") if isinstance(meta, dict) else None
-    return {"items": items, "total_results": count if isinstance(count, int) else None}
+    return {"items": items, "total_results": _meta_count(data)}
 
 
 async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
@@ -684,9 +693,7 @@ async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
         if isinstance(raw_id, str) and (canonical := canonical_author_id(raw_id)):
             cache.warm(NAMESPACE, "authors", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
 
-    meta = data.get("meta")
-    count = meta.get("count") if isinstance(meta, dict) else None
-    return {"items": items, "total_results": count if isinstance(count, int) else None}
+    return {"items": items, "total_results": _meta_count(data)}
 
 
 # Closed: the value reaches a URL path segment, so an unvalidated one is a request-side hole.
@@ -726,11 +733,9 @@ async def autocomplete(query: str, *, entity_type: AutocompleteEntity = "works")
     if not isinstance(results, list):
         return _parse_error_dict()
 
-    meta = data.get("meta")
-    count = meta.get("count") if isinstance(meta, dict) else None
     return {
         "items": [item for item in results if isinstance(item, dict)],
-        "total_results": count if isinstance(count, int) else None,
+        "total_results": _meta_count(data),
     }
 
 
@@ -816,9 +821,8 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
     # A DOI we asked for and didn't get back is a definitive miss only if the response
     # accounted for itself: after an unattributable record or a truncated page it may well
     # exist, and negative-caching would poison a live DOI for the negative TTL.
-    meta = data.get("meta")
-    reported = meta.get("count") if isinstance(meta, dict) else None
-    truncated = isinstance(reported, int) and reported > len(results)
+    reported = _meta_count(data)
+    truncated = reported is not None and reported > len(results)
     trustworthy = unattributed == 0 and not truncated
 
     for canonical in chunk:
@@ -926,6 +930,8 @@ def reconstruct_abstract(inverted_index: Any) -> str:
     for word, positions in inverted_index.items():
         if not isinstance(word, str) or not isinstance(positions, list):
             continue
-        word_positions.extend((pos, word) for pos in positions if isinstance(pos, int))
+        word_positions.extend(
+            (idx, word) for pos in positions if (idx := _non_neg_int(pos)) is not None
+        )
     word_positions.sort()
     return " ".join(word for _, word in word_positions)
