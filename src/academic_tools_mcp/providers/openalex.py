@@ -4,7 +4,7 @@ import asyncio
 import re
 from collections.abc import Callable
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -58,6 +58,23 @@ def canonical_doi(doi: str) -> str:
     return doinorm.canonical(doi)
 
 
+def _usable_http_url(value: Any) -> str | None:
+    """Return a stripped ``http(s)`` URL with a valid host and port, or None."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        parts = urlsplit(candidate)
+        _ = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    return candidate
+
+
 def best_pdf_url(work: dict[str, Any]) -> str | None:
     """Pick the best open-access *PDF* URL from a raw OpenAlex work, or None.
 
@@ -65,8 +82,10 @@ def best_pdf_url(work: dict[str, Any]) -> str | None:
     (OpenAlex's chosen best OA copy), ``primary_location``'s (the version of
     record, if OA), then ``open_access.oa_url`` — frequently a landing page.
 
-    Type-checked all the way down, not annotation-trusted: this is the OA download
-    trust boundary, and whatever it returns is fetched.
+    Type- and scheme-checked all the way down, not annotation-trusted: this is
+    the OA download trust boundary, and whatever it returns is fetched. A
+    non-HTTP, hostless or whitespace-only entry falls through to the next
+    candidate rather than shadowing a usable fallback.
     """
     for obj_key, url_key in (
         ("best_oa_location", "pdf_url"),
@@ -76,8 +95,8 @@ def best_pdf_url(work: dict[str, Any]) -> str | None:
         obj = work.get(obj_key)
         if not isinstance(obj, dict):
             continue
-        url = obj.get(url_key)
-        if isinstance(url, str) and url:
+        url = _usable_http_url(obj.get(url_key))
+        if url is not None:
             return url
     return None
 

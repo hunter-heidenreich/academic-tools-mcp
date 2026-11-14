@@ -195,6 +195,21 @@ class TestRetryableFlag:
         about."""
         assert "retryable" not in http.error_dict("Test", _build_status_error(status))
 
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            httpx.InvalidURL("No host included in URL."),
+            httpx.UnsupportedProtocol("Request URL has an unsupported protocol 'ftp://'."),
+        ],
+    )
+    def test_invalid_url_and_unsupported_protocol_are_not_flagged_retryable(self, exc):
+        """``UnsupportedProtocol`` subclasses ``RequestError``, so without an
+        earlier branch it reads as a transient network error; ``InvalidURL``
+        subclasses ``Exception`` directly. Neither will fix itself on retry."""
+        result = http.error_dict("Test", exc)
+        assert "invalid URL" in result["error"]
+        assert "retryable" not in result
+
 
 class TestRetryAfterOnAnyTransientStatus:
     def test_503_retry_after_reaches_the_agent(self):
@@ -307,6 +322,12 @@ class TestExceptionTuple:
         # any other transient failure.
         assert http.LocalBackpressureError in http.HTTPX_ERRORS
 
+    def test_includes_invalid_url_and_unsupported_protocol(self):
+        # InvalidURL subclasses Exception directly, not HTTPError, so an except
+        # tuple without it lets a malformed URL or redirect Location escape.
+        assert httpx.InvalidURL in http.HTTPX_ERRORS
+        assert httpx.UnsupportedProtocol in http.HTTPX_ERRORS
+
 
 # ---------------------------------------------------------------------------
 # get_with_retry
@@ -415,6 +436,23 @@ class TestGetWithRetry:
         resp = await http.get_with_retry(client, "u")
         assert resp.status_code == 200
         assert len(client.calls) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            httpx.UnsupportedProtocol("Request URL has an unsupported protocol 'ftp://'."),
+            httpx.InvalidURL("No host included in URL."),
+        ],
+    )
+    async def test_does_not_retry_on_unsupported_protocol_or_invalid_url(self, exc):
+        """An ``ftp://`` or hostless URL will not succeed on a second attempt;
+        ``UnsupportedProtocol`` must not be caught by ``except RequestError``."""
+        client = _FakeClient([exc, _response(200)])
+        with pytest.raises(type(exc)):
+            await http.get_with_retry(client, "u")
+        assert len(client.calls) == 1
+        assert self.slept == []
 
     @pytest.mark.asyncio
     async def test_returns_final_failure_response_after_exhausting_retries(self):

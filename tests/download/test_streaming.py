@@ -290,6 +290,33 @@ class TestStreamToFile:
         assert not list(tmp_path.glob("*.tmp"))
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_url", ["http://:bad/x.pdf", "http://[::1/x.pdf"])
+    async def test_an_invalid_url_returns_a_definitive_error(self, tmp_path: Path, bad_url: str):
+        """``httpx.InvalidURL`` subclasses ``Exception`` directly, not
+        ``HTTPError``; ``stream_to_file`` catches it and marks it
+        ``retryable: False`` so ``is_definitive_failure`` classifies it as
+        permanent rather than crashing the tool call."""
+        dest = tmp_path / "invalid.pdf"
+        client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200)))
+        try:
+            result = await streaming.stream_to_file(
+                client,
+                bad_url,
+                dest,
+                slot_factory=_passthrough_slot,
+                namespace="probe",
+                provider_label="Test",
+                timeout=_TIMEOUT,
+            )
+        finally:
+            await client.aclose()
+
+        assert "invalid URL" in result["error"]
+        assert result["retryable"] is False
+        assert protocol.is_definitive_failure(result)
+        assert not dest.exists()
+
+    @pytest.mark.asyncio
     async def test_disabled_cap_writes_arbitrary_size(self, tmp_path: Path, monkeypatch):
         """MAX_PDF_BYTES=none allows any size."""
         monkeypatch.setenv("MAX_PDF_BYTES", "none")

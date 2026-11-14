@@ -75,7 +75,9 @@ class QuotaExhaustedError(Exception):
 HTTPX_ERRORS = (
     httpx.HTTPStatusError,
     httpx.TimeoutException,  # a RequestError subclass; its own failure mode
+    httpx.UnsupportedProtocol,  # a RequestError subclass; permanent, not retried
     httpx.RequestError,
+    httpx.InvalidURL,  # subclasses Exception directly, not HTTPError
     LocalBackpressureError,  # a local refusal reaches the agent as an upstream one
     QuotaExhaustedError,  # the other local refusal, on a much longer clock
 )
@@ -325,8 +327,11 @@ def error_dict(provider: str, exc: Exception) -> dict[str, Any]:
         return _backpressure_dict(provider, exc)
     if isinstance(exc, httpx.HTTPStatusError):
         return response_error_dict(provider, exc.response)
-    # Order is load-bearing: TimeoutException subclasses RequestError, so the narrower
-    # check must come first or every timeout reads "network error".
+    # Order is load-bearing: TimeoutException and UnsupportedProtocol both subclass
+    # RequestError, so the narrower checks must come first or a timeout reads "network
+    # error" and an unsupported scheme is flagged retryable.
+    if isinstance(exc, (httpx.InvalidURL, httpx.UnsupportedProtocol)):
+        return {"error": f"{provider} invalid URL: {exc!s}"}
     if isinstance(exc, httpx.TimeoutException):
         return {"error": f"{provider} request timed out. Transient — retry.", "retryable": True}
     if isinstance(exc, httpx.RequestError):
@@ -380,6 +385,9 @@ async def get_with_retry(
             stats.incr(provider, "http_calls")
         try:
             response = await client.get(url, **kwargs)
+        except httpx.UnsupportedProtocol:
+            # Subclasses RequestError, but an ftp/file/empty scheme will not fix itself on retry.
+            raise
         except httpx.RequestError:  # includes TimeoutException
             if attempt >= max_attempts:
                 raise

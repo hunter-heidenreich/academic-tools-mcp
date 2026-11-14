@@ -13,6 +13,23 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
+## [Unreleased]
+
+### Fixed
+
+- **The open-access PDF trust boundary rejects non-HTTP and malformed URLs before
+  the request, and classifies redirect-time ones as definitive.** `openalex.best_pdf_url`
+  now strips and validates `http(s)` scheme, host and port on each candidate so a
+  whitespace-only, relative, hostless or `ftp://` entry in `best_oa_location` falls
+  through to `primary_location` and `open_access` instead of shadowing a usable
+  fallback. Across the transport layer, `httpx.InvalidURL` (which subclasses
+  `Exception` directly, not `HTTPError`) joins `http.HTTPX_ERRORS`, `http.get_with_retry`
+  no longer sleeps and retries on `httpx.UnsupportedProtocol`, `http.error_dict` leaves
+  both unflagged rather than misclassifying `UnsupportedProtocol` as a transient
+  network error, and `streaming.stream_to_file` marks both `retryable: False` so a
+  publisher 302 to `ftp://` or a malformed `Location` header negative-caches and
+  carries the `import_paper` suggestion.
+
 ## [2026.09.19] — 2026-09-19
 
 ### Added
