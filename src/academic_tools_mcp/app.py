@@ -469,6 +469,11 @@ def as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def as_int(value: Any) -> int | None:
+    """``value`` when it is an int (and not a bool), else ``None``."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def dict_list(value: Any) -> list[dict[str, Any]]:
     """The dict elements of ``value``, or ``[]`` when it isn't a list."""
     return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
@@ -498,13 +503,12 @@ def crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
     for key in _CROSSREF_DATE_KEYS:
         parts = as_dict(work.get(key)).get("date-parts")
         first = parts[0] if isinstance(parts, list) and parts else []
-        if isinstance(first, list) and first and isinstance(first[0], int):
-            year = first[0]
+        if isinstance(first, list) and first and (year := as_int(first[0])) is not None:
             iso = f"{year:04d}"
-            if len(first) >= 2 and isinstance(first[1], int):
-                iso += f"-{first[1]:02d}"
-                if len(first) >= 3 and isinstance(first[2], int):
-                    iso += f"-{first[2]:02d}"
+            if len(first) >= 2 and (month := as_int(first[1])) is not None:
+                iso += f"-{month:02d}"
+                if len(first) >= 3 and (day := as_int(first[2])) is not None:
+                    iso += f"-{day:02d}"
             return year, iso
     return None, None
 

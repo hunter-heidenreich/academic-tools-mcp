@@ -17,6 +17,16 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`paper._format_crossref_metadata` includes `pmid: None` to match
+  `_format_openalex_metadata`'s key set, and `app.as_int` / `dict_list` guard untyped
+  JSON fields across `app`, `tools/paper` and `tools/graph`.** The `fallback_crossref`
+  metadata payload now carries the full OpenAlex key set so callers never have to
+  feature-detect `pmid`. `app.as_int` rejects booleans (`isinstance(True, int)`) in
+  `app.crossref_date`, `paper._format_crossref_metadata`, `paper.get_author`
+  affiliation `years`, and `graph._openalex_cited_by`; `paper._arxiv_pdf_url` and
+  `paper.get_paper_authors` filter `links` and flat `authors` through `dict_list`; and
+  the bioRxiv `follow_published` gate requires a non-empty string `published_doi`.
+
 - **`bibtex.generate_bibtex` and the flat BibTeX generators guard against untyped JSON
   shapes, and `papers.index._read_markdown` / `app.read_markdown` degrade on
   `OSError` and `UnicodeDecodeError`.** `generate_bibtex` (and its key/author helpers)

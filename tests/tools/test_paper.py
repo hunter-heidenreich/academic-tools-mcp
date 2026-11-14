@@ -2270,3 +2270,57 @@ class TestWorkIdRouting:
 
         assert calls == []
         assert "Cannot resolve paper provider" in result["error"]
+
+
+class TestUntypedPaperFieldGuards:
+    """Nested fields on cached records must be shape-checked before iteration or
+    chaining."""
+
+    def test_arxiv_pdf_url_tolerates_null_or_non_dict_links(self):
+        assert paper._arxiv_pdf_url({"links": None}) is None
+        assert paper._arxiv_pdf_url({"links": ["not a dict", {"title": "pdf", "href": "u"}]}) == "u"
+
+    @pytest.mark.asyncio
+    async def test_authors_tolerates_null_or_non_dict_flat_authors(self, monkeypatch):
+        async def fake_arxiv(arxiv_id, **kwargs):
+            return {"id": "2301.00001v1", "authors": [None, "raw", {"name": "Jane Doe"}]}
+
+        monkeypatch.setattr(arxiv, "get_paper", fake_arxiv)
+
+        result = await server.get_paper_authors("2301.00001")
+        assert result["author_count"] == 1
+        assert result["authors"] == [{"name": "Jane Doe"}]
+
+    @pytest.mark.asyncio
+    async def test_biorxiv_follow_published_ignores_non_string_published_doi(self, monkeypatch):
+        async def fake_biorxiv(doi, **kwargs):
+            return {"doi": "10.1101/2024.01.01.123", "title": "T", "published_doi": 12345}
+
+        async def _no_openalex(doi, **kwargs):
+            raise AssertionError("non-string published_doi must not trigger OpenAlex lookup")
+
+        monkeypatch.setattr(biorxiv, "get_paper", fake_biorxiv)
+        monkeypatch.setattr(openalex, "get_work", _no_openalex)
+
+        result = await server.get_paper_metadata("10.1101/2024.01.01.123", follow_published=True)
+        assert result["_source"] == "biorxiv"
+        assert "followed_published" not in result
+
+    @pytest.mark.asyncio
+    async def test_get_author_drops_booleans_from_affiliation_years(self, monkeypatch):
+        async def fake_author(author_id, **kwargs):
+            return {
+                "id": "https://openalex.org/A1",
+                "display_name": "Jane Doe",
+                "affiliations": [
+                    {
+                        "institution": {"display_name": "MIT", "country_code": "US"},
+                        "years": [2024, True, False, 2022],
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(openalex, "get_author", fake_author)
+
+        result = await server.get_author("A1")
+        assert result["affiliations"][0]["years"] == [2022, 2024]

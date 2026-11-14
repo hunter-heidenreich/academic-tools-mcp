@@ -18,6 +18,7 @@ from ..app import (
     INSTITUTION_ID,
     PAPER_ID,
     as_dict,
+    as_int,
     crossref_date,
     dict_list,
     enrich_error,
@@ -65,7 +66,7 @@ def _unknown_identifier_error(identifier: str) -> dict[str, Any]:
 
 def _arxiv_pdf_url(paper: dict[str, Any]) -> str | None:
     """Extract the PDF link from an arXiv entry's links list."""
-    for link in paper.get("links", []):
+    for link in dict_list(paper.get("links")):
         if link.get("title") == "pdf":
             return link.get("href")
     return None
@@ -317,23 +318,23 @@ async def _follow_published(
 def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
     """Crossref work → the unified metadata shape.
 
-    Mirrors ``_format_openalex_metadata``'s key set, with is_oa / oa_status / oa_url /
-    pdf_url always null.
+    Mirrors ``_format_openalex_metadata``'s key set, with pmid / is_oa / oa_status /
+    oa_url / pdf_url always null.
     """
     year, date = crossref_date(work)
-    # Crossref's own name for the same number; int-guarded, the value is untyped JSON.
-    cited_by = work.get("is-referenced-by-count")
     return {
         "_source": "crossref",
         "_canonical_id": canonical_id,
         "title": unwrap_first(work.get("title")),
         "doi": work.get("DOI"),
+        "pmid": None,
         "publication_year": year,
         "publication_date": date,
         "type": work.get("type"),
         "language": work.get("language"),
         "venue": unwrap_first(work.get("container-title")),
-        "cited_by_count": cited_by if isinstance(cited_by, int) else None,
+        # Crossref's own name for the same number; int-guarded, the value is untyped JSON.
+        "cited_by_count": as_int(work.get("is-referenced-by-count")),
         "is_oa": None,
         "oa_status": None,
         "oa_url": None,
@@ -520,7 +521,7 @@ async def get_paper_metadata(
         journal version): openalex's fields plus preprint_doi / preprint_arxiv_id
         and ``followed_published=True``, ``_canonical_id`` being the journal DOI.
       - crossref (``fallback_crossref`` after an OpenAlex 404): openalex's fields
-        with is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
+        with pmid / is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
         ``cited_by_count`` is Crossref's own tally, which differs from OpenAlex's.
 
     A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
@@ -547,7 +548,8 @@ async def get_paper_metadata(
         follow_published
         and source == "biorxiv"
         and "error" not in obj
-        and (published_doi := obj.get("published_doi"))
+        and isinstance(published_doi := obj.get("published_doi"), str)
+        and published_doi
     ):
         return await _follow_published(
             published_doi,
@@ -913,7 +915,7 @@ async def get_paper_authors(
     else:
         # arXiv/bioRxiv/ACL have no institution records; emit them empty so agents
         # never feature-detect.
-        authors = obj.get("authors", [])
+        authors = dict_list(obj.get("authors"))
         page_slice = {
             "author_count": len(authors),
             "authors": authors[start:end],
@@ -1094,7 +1096,7 @@ async def get_author(
                 "institution": inst.get("display_name"),
                 "country_code": inst.get("country_code"),
                 # Ints or nothing, so a mixed list can't make ``sorted`` raise.
-                "years": sorted(y for y in years if isinstance(y, int)),
+                "years": sorted(y for y in years if as_int(y) is not None),
             }
         )
 

@@ -10,6 +10,7 @@ from ..app import (
     PAGE,
     PAGE_SIZE,
     REF_SOURCE,
+    as_int,
     enrich_error,
     mcp,
     page_bounds,
@@ -165,8 +166,7 @@ async def get_paper_references_count(
 
 def _openalex_cited_by(work: dict[str, Any]) -> int | None:
     """An OpenAlex work's citation tally, int-guarded — the value is untyped JSON."""
-    count = work.get("cited_by_count")
-    return count if isinstance(count, int) else None
+    return as_int(work.get("cited_by_count"))
 
 
 def _page(
