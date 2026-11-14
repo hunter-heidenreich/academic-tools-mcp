@@ -167,10 +167,17 @@ class TestFormatCrossrefMetadata:
 
     def test_oa_fields_always_null(self):
         result = paper._format_crossref_metadata(_CROSSREF_WORK, "10.1/x")
+        assert result["pmid"] is None
         assert result["is_oa"] is None
         assert result["oa_status"] is None
         assert result["oa_url"] is None
         assert result["pdf_url"] is None
+
+    def test_mirrors_openalex_metadata_key_set(self):
+        """The Crossref fallback stands in for OpenAlex, so their key sets must match."""
+        cr_keys = set(paper._format_crossref_metadata(_CROSSREF_WORK, "10.1/x"))
+        oa_keys = set(paper._format_openalex_metadata({}, "10.1/x"))
+        assert cr_keys == oa_keys
 
     def test_empty_title_list_is_none(self):
         work = {"title": [], "container-title": []}
@@ -245,6 +252,9 @@ class TestCrossrefDateHelper:
         assert crossref_date({"issued": {"date-parts": None}}) == (None, None)
         assert crossref_date({"issued": {"date-parts": []}}) == (None, None)
         assert crossref_date({"issued": {"date-parts": [[None]]}}) == (None, None)
+        assert crossref_date({"issued": {"date-parts": [[True, False, True]]}}) == (None, None)
+        assert crossref_date({"issued": {"date-parts": [[2024, True, 3]]}}) == (2024, "2024")
+        assert crossref_date({"issued": {"date-parts": [[2024, 5, False]]}}) == (2024, "2024-05")
         assert crossref_date({}) == (None, None)
 
 
@@ -576,7 +586,7 @@ class TestCrossrefCitedByCount:
     def test_absent_is_none(self):
         assert paper._format_crossref_metadata({"title": ["X"]}, "10.1/x")["cited_by_count"] is None
 
-    @pytest.mark.parametrize("value", ["868", None, {}, [], 8.5])
+    @pytest.mark.parametrize("value", ["868", None, {}, [], 8.5, True, False])
     def test_a_non_int_degrades_to_none(self, value):
         """Nothing below a Crossref item is typed, so the value is guarded, not trusted."""
         work = {"title": ["X"], "is-referenced-by-count": value}

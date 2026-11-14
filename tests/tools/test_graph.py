@@ -1466,3 +1466,17 @@ class TestGraphToolsAcceptWorkIds:
         result = await server.get_paper_citations("W4312223440")
 
         assert result["not_found"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_count", [True, False, "10", 1.5, []])
+    async def test_boolean_or_non_int_openalex_cited_by_degrades_to_none(
+        self, monkeypatch, bad_count
+    ):
+        async def fake_oc(doi, **kwargs):
+            return {"citations": [], "count": 0}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+        _stub_openalex_work(monkeypatch, work={"id": "W1", "cited_by_count": bad_count})
+
+        result = await server.get_paper_citations_count("10.1234/x")
+        assert result["sources"]["openalex"] == {"count": None}
