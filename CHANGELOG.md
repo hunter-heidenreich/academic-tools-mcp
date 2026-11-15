@@ -15,6 +15,19 @@ grouped by milestone rather than per commit.
 
 ## [Unreleased]
 
+### Added
+
+- **`get_paper_metadata` and `get_papers_metadata` surface `arxiv_id` on OpenAlex and
+  Crossref-fallback records.** `paper._format_openalex_metadata` now extracts a bare,
+  versionless `arxiv_id` (preserving old-style archive case like `math.GT/0309136`) from
+  `ids.arxiv`, top-level `doi`, and `primary_location` / `best_oa_location` / `locations`
+  (`landing_page_url`, `pdf_url`, `doi`), and `_format_crossref_metadata` includes
+  `arxiv_id: None` to preserve key-set symmetry. Callers starting from a published
+  journal or conference DOI can now chain directly into `convert_paper(arxiv_id)` (the
+  1-second arXiv HTML path), `get_paper_versions(arxiv_id)`, and the Papers with Code
+  tools (`get_paper_code`, `get_paper_catalog`, `get_paper_evaluations`) without a
+  separate `search_arxiv` lookup. ([#173])
+
 ### Fixed
 
 - **`paper._format_crossref_metadata` includes `pmid: None` to match
