@@ -46,8 +46,8 @@ def _bare(s: str) -> str:
     return _ESCAPE_RE.sub("", s)
 
 
-# `\url{}` takes verbatim catcodes: percent-encoding, not backslash escapes.
-_URL_ARG_RE = re.compile(r"\\url\{([^{}]*)\}")
+# `\url{}` and `url={}` take verbatim catcodes: percent-encoding, not backslash escapes.
+_URL_ARG_RE = re.compile(r"(?:\\url|  url=)\{([^{}]*)\}")
 
 
 def _assert_field_is_safe(rendered: str) -> None:
@@ -122,6 +122,53 @@ def test_escaped_doi_is_recoverable(s: str) -> None:
     assert _DOI_TOKEN_RE.sub(lambda m: _INVERSE[m.group(0)], escaped) == s
 
 
+@given(
+    st.text(
+        alphabet=st.characters(blacklist_categories=("Cs", "Cc", "Zl", "Zp")),
+        max_size=60,
+    )
+)
+def test_escaped_url_has_no_raw_url_specials(s: str) -> None:
+    """``_escaped_url`` leaves no unencoded characters that break ``\\url{}``."""
+    rendered = bibtex._escaped_url(s)
+    assert not set(rendered) & set("#\\{}^_&$~ "), rendered
+    assert "%" not in re.sub(r"%[0-9A-F]{2}", "", rendered), rendered
+
+
+@given(st.one_of(st.none(), st.integers(), text))
+def test_pages_invariants(raw: object) -> None:
+    """``_pages`` returns a BibTeX-safe page string and normalizes single-dash ranges."""
+    rendered = bibtex._pages(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        assert rendered == ""
+    else:
+        _assert_field_is_safe(rendered)
+        assert "\n" not in rendered
+
+
+@given(
+    st.one_of(
+        st.none(),
+        st.integers(),
+        st.sampled_from(list(bibtex._MONTH_MACROS)),
+        text,
+    )
+)
+def test_month_field_emits_macro_or_safe_braced_literal(raw: object) -> None:
+    result = bibtex._month_field(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        assert result is None
+        return
+    assert result is not None
+    name, val = result
+    assert name == "month"
+    if raw.strip().lower() in bibtex._MONTH_MACROS:
+        assert val == bibtex._MONTH_MACROS[raw.strip().lower()]
+    else:
+        assert val.startswith("{") and val.endswith("}")
+        _assert_field_is_safe(val)
+
+
 # ---------------------------------------------------------------------------
 # Whole entries
 # ---------------------------------------------------------------------------
@@ -135,7 +182,7 @@ def _assert_entry_is_well_formed(entry: str) -> None:
     assert _KEY_RE.fullmatch(key[:-1]), head
     assert lines[-1] == "}"
     for line in lines[:-1]:
-        assert re.fullmatch(r"  [a-z]+=\{.*\},?", line), line
+        assert re.fullmatch(r"  [a-z]+=(?:\{.*\}|[a-z]{3}),?", line), line
     _assert_field_is_safe(entry)
 
 
@@ -202,6 +249,98 @@ def test_biorxiv_entry_is_well_formed(
                 "authors": [{"name": name}],
                 "date": date,
                 "server": "biorxiv",
+            }
+        )
+    )
+
+
+@given(
+    given_name=text,
+    family_name=text,
+    title=text,
+    year=years,
+    doi=dois,
+    venue=text,
+    page=st.one_of(st.none(), text),
+    work_type=st.sampled_from([*sorted(bibtex._CROSSREF_TYPE_MAP), "other"]),
+)
+def test_crossref_entry_is_well_formed(
+    given_name: str,
+    family_name: str,
+    title: str,
+    year: object,
+    doi: str | None,
+    venue: str,
+    page: str | None,
+    work_type: str,
+) -> None:
+    _assert_entry_is_well_formed(
+        bibtex.generate_crossref_bibtex(
+            {
+                "type": work_type,
+                "DOI": doi,
+                "title": [title],
+                "author": [{"given": given_name, "family": family_name}],
+                "container-title": [venue],
+                "publisher": venue,
+                "volume": "4",
+                "issue": "2",
+                "page": page,
+            },
+            year=year,
+        )
+    )
+
+
+_urls = st.one_of(
+    st.none(),
+    st.text(
+        alphabet=st.characters(blacklist_categories=("Cs", "Cc", "Zl", "Zp")),
+        max_size=40,
+    ).map(lambda s: f"https://aclanthology.org/{s}"),
+)
+
+
+@given(
+    name=text,
+    title=text,
+    year=years,
+    month=st.one_of(st.none(), st.sampled_from(list(bibtex._MONTH_MACROS)), text),
+    doi=dois,
+    venue=text,
+    url=_urls,
+    pages=st.one_of(st.none(), text),
+    volume_type=st.sampled_from(["proceedings", "journal"]),
+)
+def test_acl_entry_is_well_formed(
+    name: str,
+    title: str,
+    year: object,
+    month: str | None,
+    doi: str | None,
+    venue: str,
+    url: str | None,
+    pages: str | None,
+    volume_type: str,
+) -> None:
+    _assert_entry_is_well_formed(
+        bibtex.generate_acl_bibtex(
+            {
+                "anthology_id": "2024.acl-long.1",
+                "volume_type": volume_type,
+                "title": title,
+                "authors": [{"name": name}],
+                "editors": [{"name": name}],
+                "year": str(year) if year is not None else None,
+                "month": month,
+                "booktitle": venue,
+                "journal_volume": "49",
+                "journal_issue": "1",
+                "publisher": venue,
+                "address": venue,
+                "pages": pages,
+                "doi": doi,
+                "url": url,
             }
         )
     )

@@ -5,12 +5,16 @@ subprocess: every test here is text in, dicts out.
 """
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from academic_tools_mcp import papers
 from academic_tools_mcp.papers import (
+    find_in_markdown,
     first_section_heading,
     get_section_content,
     parse_sections,
+    parse_sections_and_detect,
     section_at_offset,
 )
 from academic_tools_mcp.papers.sections import has_detected_sections, section_boundaries
@@ -490,3 +494,77 @@ class TestOffsetOnASurvivingHeading:
         assert section_at_offset(md, md.index("## Methods")) == (1, "Methods")
         # And the byte before it still belongs to the previous section.
         assert section_at_offset(md, md.index("first")) == (0, "Intro")
+
+
+_heading_title = (
+    st.text(
+        alphabet=st.characters(
+            whitelist_categories=("L", "N", "P", "S"),
+            blacklist_characters="#\r\n",
+        ),
+        min_size=1,
+        max_size=25,
+    )
+    .map(str.strip)
+    .filter(bool)
+)
+
+_body_line = (
+    st.text(
+        alphabet=st.characters(
+            blacklist_categories=("Cs", "Cc"),
+            blacklist_characters="#",
+        ),
+        min_size=1,
+        max_size=40,
+    )
+    .map(str.strip)
+    .filter(bool)
+)
+
+_section_pair = st.tuples(_heading_title, st.lists(_body_line, min_size=1, max_size=4))
+
+
+class TestSectionProperties:
+    @given(
+        preamble=st.lists(_body_line, max_size=2),
+        sec_list=st.lists(_section_pair, min_size=1, max_size=5),
+    )
+    def test_parse_and_get_section_content_agree_on_every_section(
+        self, preamble: list[str], sec_list: list[tuple[str, list[str]]]
+    ) -> None:
+        parts: list[str] = []
+        if preamble:
+            parts.append("\n".join(preamble))
+        for title, lines in sec_list:
+            parts.append(f"## {title}\n\n" + "\n".join(lines))
+        md = "\n\n".join(parts)
+        parsed, detected = parse_sections_and_detect(md)
+        assert detected is True
+        assert len(parsed) == len(sec_list) + (1 if preamble else 0)
+        for idx, entry in enumerate(parsed):
+            assert entry["index"] == idx
+            content = get_section_content(md, idx)
+            assert "error" not in content
+            assert content["title"] == entry["title"]
+            assert content["approx_tokens"] == entry["approx_tokens"]
+            assert content["total_chars"] == len(content["content"])
+
+    @given(
+        prefix=_body_line,
+        needle=st.sampled_from(["attention", "ﬁlter", "café", "İstanbul", "straße", "α-helix"]),
+        suffix=_body_line,
+        normalize=st.booleans(),
+    )
+    def test_find_in_markdown_char_offset_slices_section_content_to_exact_match(
+        self, prefix: str, needle: str, suffix: str, normalize: bool
+    ) -> None:
+        md = f"## Intro\n\n{prefix} {needle} {suffix}\n"
+        hits, truncated = find_in_markdown(md, needle, normalize=normalize)
+        assert truncated is False
+        assert len(hits) >= 1
+        for hit in hits:
+            sec = get_section_content(md, hit["section_index"])
+            start = hit["char_offset"]
+            end = start + len(hit["match"])
+            assert sec["content"][start:end] == hit["match"]

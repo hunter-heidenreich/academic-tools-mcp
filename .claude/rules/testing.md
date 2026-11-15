@@ -60,8 +60,10 @@ negative-cached — are where most of the interesting behaviour lives.
 
 ## Property-based tests
 
-BibTeX escaping is the standing `hypothesis` candidate, currently covered by
-examples only.
+Pure parsers, normalizers, renderers, and structural emitters (`bibtex`,
+`papers.latexml`, `papers.jats`, `papers.blocks`, `papers.sections`, `util`) pair
+example suites with `hypothesis` property tests checking round-trip, structural, and
+offset invariants.
 
 **Test docstrings are exempt from "don't transcribe history"** — a regression test's
 purpose *is* the regression.

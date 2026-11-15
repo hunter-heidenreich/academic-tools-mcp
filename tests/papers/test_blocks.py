@@ -1,8 +1,14 @@
 """Markdown block emitters shared by the markup renderers: ``papers.blocks``."""
 
-import pytest
+import re
 
-from academic_tools_mcp.papers import blocks
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+
+from academic_tools_mcp.papers import blocks, sections
+
+_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 
 
 class TestEscapeHeadings:
@@ -57,3 +63,44 @@ class TestPipeTable:
             )
             == "| a | b |\n| --- | --- |\n| r | 1 |\n|  | 2 |"
         )
+
+
+_cell_text = st.text(
+    alphabet=st.characters(
+        blacklist_categories=("Cs", "Cc", "Zl", "Zp"),
+    ),
+    max_size=25,
+)
+_cell = st.tuples(
+    _cell_text,
+    st.integers(min_value=1, max_value=4),
+    st.integers(min_value=1, max_value=4),
+)
+_table_rows = st.lists(st.lists(_cell, min_size=1, max_size=5), min_size=1, max_size=6)
+
+
+class TestBlockProperties:
+    @given(st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=200))
+    def test_escaped_headings_never_match_section_heading_regex(self, text: str) -> None:
+        escaped = blocks.escape_headings(text)
+        for line in escaped.split("\n"):
+            assert sections._HEADING_RE.match(line) is None, line
+
+    @given(st.one_of(st.none(), st.integers(min_value=-500, max_value=500).map(str), _cell_text))
+    def test_span_is_always_bounded(self, raw: str | None) -> None:
+        val = blocks.span(raw)
+        assert 1 <= val <= blocks.MAX_SPAN
+
+    @given(_table_rows)
+    def test_pipe_table_is_rectangular_with_escaped_pipes(
+        self, rows: list[list[tuple[str, int, int]]]
+    ) -> None:
+        rendered = blocks.pipe_table(rows)
+        if not rendered:
+            return
+        lines = rendered.split("\n")
+        assert len(lines) >= 2
+        pipe_counts = [len(_UNESCAPED_PIPE_RE.findall(line)) for line in lines]
+        assert len(set(pipe_counts)) == 1, rendered
+        assert pipe_counts[0] >= 2
+        assert re.fullmatch(r"\|(?: --- \|)+", lines[1]), lines[1]
