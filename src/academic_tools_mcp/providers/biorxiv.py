@@ -12,7 +12,7 @@ from ..download import protocol, streaming
 from ..net import clients, http
 from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight, stems
-from ..util import doinorm, useragent
+from ..util import doinorm, jsonshape, useragent
 
 NAMESPACE = "biorxiv"
 
@@ -212,8 +212,7 @@ def _collection_of(data: Any) -> list[dict[str, Any]] | None:
 
 def _text_or_none(raw: dict[str, Any], key: str) -> str | None:
     """A stripped string field, ``None`` when missing, blank or not a string."""
-    value = raw.get(key)
-    return value.strip() or None if isinstance(value, str) else None
+    return jsonshape.stripped_str(raw.get(key))
 
 
 def _parse_publication(raw: dict[str, Any]) -> dict[str, Any]:

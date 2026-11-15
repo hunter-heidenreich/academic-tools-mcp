@@ -12,6 +12,7 @@ from ..net import clients, http, stats
 from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
 from ..util import config, doinorm, orcidnorm, useragent
+from ..util.jsonshape import non_neg_int as _non_neg_int
 
 OPENALEX_BASE_URL = "https://api.openalex.org"
 NAMESPACE = "openalex"
@@ -646,11 +647,6 @@ def _canonical_from_response_doi(work_doi: Any) -> str | None:
 
 # Our own ceiling on a triage list, not OpenAlex's (per-page allows 200).
 MAX_SEARCH_RESULTS = 50
-
-
-def _non_neg_int(value: Any) -> int | None:
-    """Return ``value`` when it is a non-negative integer (excluding ``bool``), else ``None``."""
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _meta_count(data: dict[str, Any]) -> int | None:

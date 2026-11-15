@@ -6,6 +6,8 @@ from typing import Any
 
 from .providers import arxiv, crossref
 from .util import doinorm
+from .util.jsonshape import as_dict as _dict
+from .util.jsonshape import as_str as _str
 from .util.textnorm import fold
 
 # OpenAlex's `type` vocabulary (not Crossref's); anything unlisted falls to
@@ -161,16 +163,6 @@ def _first_key_word(title: str) -> str:
             continue
         return token
     return "untitled"
-
-
-def _str(value: Any) -> str:
-    """``value`` when it is a string, else ``""``."""
-    return value if isinstance(value, str) else ""
-
-
-def _dict(value: Any) -> dict[str, Any]:
-    """``value`` when it is a dict, else ``{}``."""
-    return value if isinstance(value, dict) else {}
 
 
 def _biblio_scalar(value: Any) -> str:

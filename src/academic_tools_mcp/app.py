@@ -19,6 +19,18 @@ from .net import clients, http
 from .providers import acl, arxiv, openalex
 from .store import cache, stems
 from .util import doinorm
+from .util.jsonshape import (
+    as_dict as as_dict,
+)
+from .util.jsonshape import (
+    as_int as as_int,
+)
+from .util.jsonshape import (
+    dict_list as dict_list,
+)
+from .util.jsonshape import (
+    unwrap_first as unwrap_first,
+)
 
 _T = TypeVar("_T")
 
@@ -493,32 +505,8 @@ def page_bounds(page: int, page_size: int) -> tuple[int, int]:
     return start, start + page_size
 
 
-# Shape guards: provider trees arrive verbatim, untyped below the top level.
-
-
-def as_dict(value: Any) -> dict[str, Any]:
-    """``value`` when it is a dict, else ``{}``."""
-    return value if isinstance(value, dict) else {}
-
-
-def as_int(value: Any) -> int | None:
-    """``value`` when it is an int (and not a bool), else ``None``."""
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def dict_list(value: Any) -> list[dict[str, Any]]:
-    """The dict elements of ``value``, or ``[]`` when it isn't a list."""
-    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
-
-
-def unwrap_first(value: Any) -> Any:
-    """First element of a list, else the value itself (None for empties).
-
-    Crossref returns title / container-title as single-element lists.
-    """
-    if isinstance(value, list):
-        return value[0] if value else None
-    return value
+# Shape guards (as_dict, as_int, dict_list, unwrap_first) live in util.jsonshape
+# and are re-exported above for tool modules.
 
 
 # Crossref date fallback order: `posted` is the preprint date, so it answers last.
