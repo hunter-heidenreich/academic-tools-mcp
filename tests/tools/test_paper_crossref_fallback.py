@@ -168,6 +168,7 @@ class TestFormatCrossrefMetadata:
     def test_oa_fields_always_null(self):
         result = paper._format_crossref_metadata(_CROSSREF_WORK, "10.1/x")
         assert result["pmid"] is None
+        assert result["arxiv_id"] is None
         assert result["is_oa"] is None
         assert result["oa_status"] is None
         assert result["oa_url"] is None
