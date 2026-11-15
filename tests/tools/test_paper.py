@@ -1408,6 +1408,85 @@ class TestPmidRouting:
         assert authors["_canonical_id"] == abstract["_canonical_id"] == "10.1234/x"
 
 
+class TestOpenalexArxivId:
+    """OpenAlex records a published work's arXiv preprint in ``ids.arxiv`` or in
+    ``locations``; surfacing it as ``arxiv_id`` lets ``get_paper_metadata(doi)``
+    bridge directly to arXiv-keyed tools (Papers with Code, ``convert_paper``'s
+    HTML path, ``get_paper_versions``)."""
+
+    @pytest.mark.asyncio
+    async def test_extracts_bare_versionless_id_from_ids_arxiv(self, monkeypatch):
+        async def fake_get_work(doi, **kwargs):
+            return {
+                "id": "https://openalex.org/W2963403868",
+                "doi": f"https://doi.org/{doi}",
+                "ids": {"arxiv": "https://arxiv.org/abs/1706.03762v2"},
+            }
+
+        monkeypatch.setattr(openalex, "get_work", fake_get_work)
+
+        result = await server.get_paper_metadata("10.5555/3295222.3295349")
+
+        assert result["arxiv_id"] == "1706.03762"
+
+    @pytest.mark.parametrize(
+        "work",
+        [
+            {"doi": "https://doi.org/10.48550/arXiv.1706.03762"},
+            {"primary_location": {"landing_page_url": "https://arxiv.org/abs/1706.03762v5"}},
+            {"best_oa_location": {"pdf_url": "https://arxiv.org/pdf/1706.03762v1.pdf"}},
+            {
+                "locations": [
+                    {"landing_page_url": "https://dl.acm.org/doi/10.5555/3295222.3295349"},
+                    {"landing_page_url": "https://arxiv.org/abs/1706.03762v2"},
+                ]
+            },
+            {"locations": [{"pdf_url": "http://arxiv.org/pdf/1706.03762"}]},
+            {"locations": [{"doi": "https://doi.org/10.48550/arXiv.1706.03762"}]},
+        ],
+    )
+    def test_extracts_from_doi_and_locations(self, work):
+        result = paper._format_openalex_metadata(work, "10.5555/3295222.3295349")
+        assert result["arxiv_id"] == "1706.03762"
+
+    def test_ids_arxiv_takes_precedence_over_locations(self):
+        work = {
+            "ids": {"arxiv": "https://arxiv.org/abs/1706.03762v2"},
+            "locations": [{"landing_page_url": "https://arxiv.org/abs/2301.00001v1"}],
+        }
+        assert paper._format_openalex_metadata(work, "10.1/x")["arxiv_id"] == "1706.03762"
+
+    def test_preserves_old_style_archive_case(self):
+        work = {"ids": {"arxiv": "https://arxiv.org/abs/math.GT/0309136v1"}}
+        assert paper._format_openalex_metadata(work, "10.1/x")["arxiv_id"] == "math.GT/0309136"
+
+    @pytest.mark.parametrize(
+        "work",
+        [
+            {},
+            {"doi": "https://doi.org/10.1038/nature12373"},
+            {"ids": None, "locations": None, "primary_location": None, "best_oa_location": None},
+            {"ids": {"arxiv": 12345}, "doi": ["not-a-str"]},
+            {
+                "primary_location": "not-a-dict",
+                "best_oa_location": 42,
+                "locations": [
+                    None,
+                    "not-a-dict",
+                    {
+                        "landing_page_url": "https://nature.com/articles/nature12373",
+                        "pdf_url": "https://nature.com/articles/nature12373.pdf",
+                        "doi": "https://doi.org/10.1038/nature12373",
+                    },
+                    {"landing_page_url": 99, "pdf_url": False, "doi": {}},
+                ],
+            },
+        ],
+    )
+    def test_non_arxiv_and_malformed_fields_return_none(self, work):
+        assert paper._format_openalex_metadata(work, "10.1038/nature12373")["arxiv_id"] is None
+
+
 class TestCitedByCountReachesEveryOpenalexPath:
     """Both batch legs route through the dispatcher, so no field can reach one path only."""
 

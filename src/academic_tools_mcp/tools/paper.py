@@ -223,6 +223,31 @@ def _openalex_pmid(work: dict[str, Any]) -> str | None:
     return normalized if normalized.isdecimal() else None
 
 
+def _openalex_arxiv_id(work: dict[str, Any]) -> str | None:
+    """The work's versionless arXiv ID, or ``None``.
+
+    OpenAlex records an arXiv preprint in ``ids.arxiv`` when indexed, or in a
+    location's landing page, PDF URL, or DataCite ``10.48550/arXiv.*`` DOI when
+    merged under the published work. Normalized to the bare versionless form
+    (preserving old-style archive case like ``math.GT/0309136``) that every
+    arXiv-keyed tool accepts.
+    """
+    locations = (
+        as_dict(work.get("primary_location")),
+        as_dict(work.get("best_oa_location")),
+        *dict_list(work.get("locations")),
+    )
+    candidates = (
+        as_dict(work.get("ids")).get("arxiv"),
+        work.get("doi"),
+        *(loc.get(key) for loc in locations for key in ("landing_page_url", "pdf_url", "doi")),
+    )
+    for raw in candidates:
+        if isinstance(raw, str) and arxiv.is_arxiv_id(raw):
+            return arxiv.strip_version(arxiv.normalize_arxiv_id(raw))
+    return None
+
+
 def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
     primary_location = as_dict(work.get("primary_location"))
     source_obj = as_dict(primary_location.get("source"))
@@ -233,6 +258,7 @@ def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) ->
         "title": work.get("title"),
         "doi": work.get("doi"),
         "pmid": _openalex_pmid(work),
+        "arxiv_id": _openalex_arxiv_id(work),
         "publication_year": work.get("publication_year"),
         "publication_date": work.get("publication_date"),
         "type": work.get("type"),
@@ -318,8 +344,8 @@ async def _follow_published(
 def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
     """Crossref work → the unified metadata shape.
 
-    Mirrors ``_format_openalex_metadata``'s key set, with pmid / is_oa / oa_status /
-    oa_url / pdf_url always null.
+    Mirrors ``_format_openalex_metadata``'s key set, with pmid / arxiv_id / is_oa /
+    oa_status / oa_url / pdf_url always null.
     """
     year, date = crossref_date(work)
     return {
@@ -328,6 +354,7 @@ def _format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) ->
         "title": unwrap_first(work.get("title")),
         "doi": work.get("DOI"),
         "pmid": None,
+        "arxiv_id": None,
         "publication_year": year,
         "publication_date": date,
         "type": work.get("type"),
@@ -513,16 +540,18 @@ async def get_paper_metadata(
         journal_issue, venues, publisher, address, pages, bibkey, url, pdf_url. No
         citation count; doi is often null, and the journal fields are null outside
         a journal.
-      - openalex: title, doi, pmid, publication_year, publication_date, type,
-        language, venue, cited_by_count, is_oa, oa_status, oa_url, pdf_url.
-        ``pmid`` is bare digits (null when OpenAlex has none) and is itself an
-        accepted identifier; ``cited_by_count`` drifts with time.
+      - openalex: title, doi, pmid, arxiv_id, publication_year, publication_date,
+        type, language, venue, cited_by_count, is_oa, oa_status, oa_url, pdf_url.
+        ``pmid`` (bare digits) and ``arxiv_id`` (bare, versionless) are null when
+        OpenAlex has none and are themselves accepted identifiers;
+        ``cited_by_count`` drifts with time.
       - openalex_via_biorxiv / openalex_via_arxiv (``follow_published`` reached the
         journal version): openalex's fields plus preprint_doi / preprint_arxiv_id
         and ``followed_published=True``, ``_canonical_id`` being the journal DOI.
       - crossref (``fallback_crossref`` after an OpenAlex 404): openalex's fields
-        with pmid / is_oa / oa_status / oa_url / pdf_url null, and no abstract path.
-        ``cited_by_count`` is Crossref's own tally, which differs from OpenAlex's.
+        with pmid / arxiv_id / is_oa / oa_status / oa_url / pdf_url null, and no
+        abstract path. ``cited_by_count`` is Crossref's own tally, which differs
+        from OpenAlex's.
 
     A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
     ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, with no
