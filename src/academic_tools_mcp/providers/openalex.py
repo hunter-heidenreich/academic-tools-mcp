@@ -336,6 +336,31 @@ def canonical_work_id(work_id: str) -> str:
     return normalize_work_id(work_id).lower()
 
 
+def _warm_work_mappings(work: dict[str, Any], *, doi: str | None = None) -> dict[str, Any]:
+    """Cross-warm ``work_ids`` and ``pmids`` mappings from a full OpenAlex work object.
+
+    Every path that receives a full work (``search_works``, ``get_work``,
+    ``get_works_batch``, ``resolve_pmid``, ``resolve_work_id``) warms these view
+    entities so a follow-up resolution by OpenAlex work ID or PMID costs no HTTP
+    request.
+    """
+    canonical_doi_val = doi if doi is not None else _canonical_from_response_doi(work.get("doi"))
+    raw_id = work.get("id")
+    openalex_id = raw_id if isinstance(raw_id, str) else None
+    mapping = {"doi": canonical_doi_val, "openalex_id": openalex_id}
+    if (
+        isinstance(openalex_id, str)
+        and (w_key := canonical_work_id(openalex_id))
+        and _WORK_ID_RE.match(w_key)
+    ):
+        cache.warm(NAMESPACE, "work_ids", w_key, mapping, max_age_seconds=_POSITIVE_TTL_SECONDS)
+    if isinstance(ids := work.get("ids"), dict) and isinstance(raw_pmid := ids.get("pmid"), str):
+        pmid_key = normalize_pmid(raw_pmid)
+        if _PMID_RE.match(pmid_key):
+            cache.warm(NAMESPACE, "pmids", pmid_key, mapping, max_age_seconds=_POSITIVE_TTL_SECONDS)
+    return mapping
+
+
 def _traded_ids(work: dict[str, Any]) -> dict[str, Any]:
     """The id mapping ``pmids`` and ``work_ids`` cache: what a non-DOI id trades for.
 
@@ -347,8 +372,7 @@ def _traded_ids(work: dict[str, Any]) -> dict[str, Any]:
     doi = doinorm.canonical(work_doi) if isinstance(work_doi, str) and work_doi else None
     if doi:
         cache.warm(NAMESPACE, "works", doi, work, max_age_seconds=_POSITIVE_TTL_SECONDS)
-    work_id = work.get("id")
-    return {"doi": doi, "openalex_id": work_id if isinstance(work_id, str) else None}
+    return _warm_work_mappings(work, doi=doi)
 
 
 async def resolve_pmid(pmid: str, *, force_refresh: bool = False) -> dict[str, Any]:
@@ -535,6 +559,12 @@ async def get_institution(institution_id: str, *, force_refresh: bool = False) -
     )
 
 
+def _store_work(work: dict[str, Any]) -> dict[str, Any]:
+    """Cross-warm ``work_ids`` and ``pmids`` when a singleton work is fetched by DOI."""
+    _warm_work_mappings(work)
+    return work
+
+
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
     """Fetch a work by DOI, using cache when available.
 
@@ -555,6 +585,7 @@ async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
             bare=bare_doi,
             canonical=canonical,
             not_found_error=f"No work found for DOI: {doi}",
+            store=_store_work,
         )
 
     return await cache.cached_lookup(
@@ -648,6 +679,7 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
         # this runs outside the ``try`` above.
         if canonical := _canonical_from_response_doi(item.get("doi")):
             cache.warm(NAMESPACE, "works", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        _warm_work_mappings(item, doi=canonical)
 
     return {"items": items, "total_results": _meta_count(data)}
 
@@ -813,8 +845,10 @@ async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]
             unattributed += 1
             if work_canonical is not None:
                 cache.put(NAMESPACE, "works", work_canonical, work)
+                _warm_work_mappings(work, doi=work_canonical)
             continue
         cache.put(NAMESPACE, "works", work_canonical, work)
+        _warm_work_mappings(work, doi=work_canonical)
         out[work_canonical] = work
         seen_in_chunk.add(work_canonical)
 

@@ -737,8 +737,11 @@ async def get_papers_metadata(
     )
     by_source = {plan.source: plan for plan in plans}
 
+    singleton_sem = asyncio.Semaphore(2)
+
     async def _singleton_one(slot: int, routed: str, ident: str) -> None:
-        source, canonical, obj = await _fetch_source(routed, force_refresh=force_refresh)
+        async with singleton_sem:
+            source, canonical, obj = await _fetch_source(routed, force_refresh=force_refresh)
         if source is None:
             # Unreachable: the loop routes only bioRxiv/ACL here. Guards the hint
             # lookup against a None key regardless.
@@ -754,11 +757,15 @@ async def get_papers_metadata(
         formatted["_input"] = ident
         results[slot] = formatted
 
+    resolve_sem = asyncio.Semaphore(4)
+
+    async def _resolve_one(ident: str) -> tuple[str, dict[str, Any] | None]:
+        async with resolve_sem:
+            return await resolve_paper_identifier(ident, force_refresh=force_refresh)
+
     # First and concurrently: routing is by shape, and a PMID has none until it is
     # traded. `_input` stays the caller's spelling.
-    resolved = await asyncio.gather(
-        *(resolve_paper_identifier(ident, force_refresh=force_refresh) for ident in identifiers)
-    )
+    resolved = await asyncio.gather(*(_resolve_one(ident) for ident in identifiers))
 
     for i, (ident, (routed, pmid_error)) in enumerate(zip(identifiers, resolved, strict=True)):
         if pmid_error is not None:
