@@ -1,4 +1,3 @@
-import contextlib
 import errno
 
 import pytest
@@ -6,6 +5,7 @@ import pytest
 from academic_tools_mcp import manual
 from academic_tools_mcp.store import atomic, stems
 from tests.helpers.checksums import markdown_checksum
+from tests.helpers.conversion_fakes import c_ctype_locale as _c_ctype_locale
 
 # ---------------------------------------------------------------------------
 # PDF filename
@@ -448,20 +448,6 @@ class TestImportMarkdown:
 # ---------------------------------------------------------------------------
 # Re-import / force_refresh, atomicity, encoding
 # ---------------------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _c_ctype_locale():
-    """Pin LC_CTYPE to C for the body so an encoding-less open() picks ASCII
-    — the situation in an LC_ALL=C container/cron job. Restored on exit."""
-    import locale
-
-    saved = locale.setlocale(locale.LC_CTYPE)
-    locale.setlocale(locale.LC_CTYPE, "C")
-    try:
-        yield
-    finally:
-        locale.setlocale(locale.LC_CTYPE, saved)
 
 
 class TestImportForceRefresh:
@@ -1055,10 +1041,7 @@ class TestOldStyleArxivRouting:
 
 class TestMigrateMisroutedArxiv:
     @pytest.fixture
-    def misrouted(self, tmp_path, monkeypatch):
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def misrouted(self, tmp_path):
         for entity, suffix in (("pdfs", ".pdf"), ("markdown", ".md")):
             directory = tmp_path / "manual" / entity
             directory.mkdir(parents=True)
@@ -1165,10 +1148,7 @@ class TestMigrateMisroutedArxiv:
         assert manual.migrate_misrouted_arxiv() == 0
         assert (misrouted / "manual" / "pdfs" / "hep-th_9901001v2.pdf").exists()
 
-    def test_empty_cache_is_a_no_op(self, tmp_path, monkeypatch):
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def test_empty_cache_is_a_no_op(self):
         assert manual.migrate_misrouted_arxiv() == 0
 
     @pytest.mark.parametrize(
@@ -1248,10 +1228,7 @@ class TestRefilePmidStems:
     DOI = "10.1234/example"
 
     @pytest.fixture
-    def orphans(self, tmp_path, monkeypatch):
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def orphans(self, tmp_path):
         for entity in ("pdfs", "markdown"):
             (tmp_path / "manual" / entity).mkdir(parents=True)
         return tmp_path
@@ -1460,10 +1437,7 @@ class TestRefileWorkIdStems:
     DOI = "10.1234/example"
 
     @pytest.fixture
-    def orphans(self, tmp_path, monkeypatch):
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def orphans(self, tmp_path):
         for entity in ("pdfs", "markdown"):
             (tmp_path / "manual" / entity).mkdir(parents=True)
         return tmp_path

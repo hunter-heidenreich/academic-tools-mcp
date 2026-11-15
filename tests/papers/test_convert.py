@@ -7,7 +7,6 @@ what the driver does with an outcome, never that a real converter works.
 import asyncio
 import shlex
 from pathlib import Path
-from weakref import WeakValueDictionary
 
 import pytest
 
@@ -25,7 +24,7 @@ from academic_tools_mcp.papers.convert import (
 )
 from academic_tools_mcp.store import cache, stems
 from tests.helpers.checksums import markdown_checksum
-from tests.helpers.conversion_fakes import env, fake_proc, spawning
+from tests.helpers.conversion_fakes import env, fake_proc, seed_markdown, spawning
 
 # ---------------------------------------------------------------------------
 # convert_pdf cache paths (subprocess path is not exercised here)
@@ -45,11 +44,7 @@ class TestConvertPdfCachePaths:
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
 
-    def _seed_markdown(self, namespace, canonical, body):
-        md_path = stems.markdown_path(namespace, canonical)
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text(body)
-        return md_path
+    _seed_markdown = staticmethod(seed_markdown)
 
     @pytest.mark.asyncio
     async def test_serves_cached_markdown_without_the_subprocess(
@@ -177,10 +172,6 @@ class TestConvertPdfCachePaths:
         ns, canonical = "test", "concurrent-1"
         self._seed_markdown(ns, canonical, "## A\n\nx\n\n## B\n\ny\n")
 
-        # Reset the lock dict so this test starts from a clean slate
-        # regardless of test ordering.
-        monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
-
         parse_calls = 0
         real_parse = papers.index.parse_sections_and_detect
 
@@ -215,8 +206,6 @@ class TestConvertPdfCachePaths:
         # treated as a cache miss and fall through cleanly.
         ns, canonical = "test", "toctou-1"
         md_path = self._seed_markdown(ns, canonical, "## A\n\nbody\n")
-
-        monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
 
         # Hold the paper's lock so the convert_pdf task blocks after its outer
         # exists() check (which sees the file) and before its read.
@@ -318,11 +307,6 @@ class TestConvertPdfSubprocessFailures:
         pdf_a.write_bytes(b"%PDF-1.4 stub a")
         pdf_b = isolated_cache / "b.pdf"
         pdf_b.write_bytes(b"%PDF-1.4 stub b")
-
-        # Reset the global lock + state so we don't inherit anything
-        # from another test that ran in this loop.
-        monkeypatch.setattr(papers.convert, "_global_convert_lock", asyncio.Lock())
-        monkeypatch.setattr(papers.convert, "_current_conversion", None)
 
         spawn_count = 0
         spawn_started = asyncio.Event()
@@ -598,54 +582,55 @@ class TestConverterCommandQuoting:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_convert_timeout
+# _resolve_convert_timeout / _resolve_fast_convert_timeout
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("env_var", "resolve", "default"),
+    [
+        ("PDF_CONVERT_TIMEOUT", _resolve_convert_timeout, _DEFAULT_PDF_CONVERT_TIMEOUT),
+        ("PDF_FAST_CONVERT_TIMEOUT", _resolve_fast_convert_timeout, _DEFAULT_FAST_CONVERT_TIMEOUT),
+    ],
+    ids=["full", "fast"],
+)
 class TestResolveConvertTimeout:
-    """PDF_CONVERT_TIMEOUT parsing — bad input must never raise."""
+    """PDF_CONVERT_TIMEOUT and PDF_FAST_CONVERT_TIMEOUT parsing — bad input must never raise."""
 
-    def _env(self, value):
-        return env(PDF_CONVERT_TIMEOUT=value)
+    def test_unset_uses_default(self, env_var, resolve, default):
+        with env(**{env_var: None}):
+            assert resolve() == default
 
-    def test_unset_uses_default(self):
-        with self._env(None):
-            assert _resolve_convert_timeout() == _DEFAULT_PDF_CONVERT_TIMEOUT
+    def test_explicit_seconds(self, env_var, resolve, default):
+        with env(**{env_var: "600"}):
+            assert resolve() == 600.0
 
-    def test_explicit_seconds(self):
-        with self._env("600"):
-            assert _resolve_convert_timeout() == 600.0
+    def test_float_seconds(self, env_var, resolve, default):
+        with env(**{env_var: "90.5"}):
+            assert resolve() == 90.5
 
-    def test_float_seconds(self):
-        with self._env("90.5"):
-            assert _resolve_convert_timeout() == 90.5
+    def test_zero_disables(self, env_var, resolve, default):
+        with env(**{env_var: "0"}):
+            assert resolve() is None
 
-    def test_zero_disables(self):
-        with self._env("0"):
-            assert _resolve_convert_timeout() is None
+    def test_negative_disables(self, env_var, resolve, default):
+        with env(**{env_var: "-1"}):
+            assert resolve() is None
 
-    def test_negative_disables(self):
-        with self._env("-1"):
-            assert _resolve_convert_timeout() is None
-
-    def test_word_disables(self):
+    def test_word_disables(self, env_var, resolve, default):
         for word in ("none", "off", "disabled", "NONE", "Off"):
-            with self._env(word):
-                assert _resolve_convert_timeout() is None, word
+            with env(**{env_var: word}):
+                assert resolve() is None, word
 
-    def test_garbage_falls_back_to_default(self):
-        with self._env("not-a-number"):
-            assert _resolve_convert_timeout() == _DEFAULT_PDF_CONVERT_TIMEOUT
+    def test_garbage_falls_back_to_default(self, env_var, resolve, default):
+        with env(**{env_var: "not-a-number"}):
+            assert resolve() == default
 
-    def test_non_finite_falls_back_to_default(self):
-        """``float("nan")`` is neither ``> 0`` nor ``<= 0``.
-
-        It slipped past both branches and reached ``asyncio.wait_for`` as a
-        deadline no elapsed time can ever satisfy.
-        """
+    def test_non_finite_falls_back_to_default(self, env_var, resolve, default):
+        """``float("nan")`` is neither ``> 0`` nor ``<= 0``."""
         for word in ("nan", "inf", "-inf"):
-            with self._env(word):
-                assert _resolve_convert_timeout() == _DEFAULT_PDF_CONVERT_TIMEOUT, word
+            with env(**{env_var: word}):
+                assert resolve() == default, word
 
 
 # ---------------------------------------------------------------------------
@@ -677,58 +662,6 @@ class TestBuildFastConverterCommand:
         with env(PDF_FAST_CONVERTER=custom):
             cmd = _build_fast_converter_command(Path("/a/b.pdf"))
         assert cmd == "my-extractor --src /a/b.pdf"
-
-
-# ---------------------------------------------------------------------------
-# _resolve_fast_convert_timeout
-# ---------------------------------------------------------------------------
-
-
-class TestResolveFastConvertTimeout:
-    """PDF_FAST_CONVERT_TIMEOUT parsing — same rules as the full timeout."""
-
-    def _env(self, value):
-        return env(PDF_FAST_CONVERT_TIMEOUT=value)
-
-    def test_unset_uses_default(self):
-        with self._env(None):
-            assert _resolve_fast_convert_timeout() == _DEFAULT_FAST_CONVERT_TIMEOUT
-
-    def test_explicit_seconds(self):
-        with self._env("30"):
-            assert _resolve_fast_convert_timeout() == 30.0
-
-    def test_word_disables(self):
-        with self._env("none"):
-            assert _resolve_fast_convert_timeout() is None
-
-    def test_garbage_falls_back_to_default(self):
-        with self._env("nope"):
-            assert _resolve_fast_convert_timeout() == _DEFAULT_FAST_CONVERT_TIMEOUT
-
-
-class TestResolveFastConvertTimeoutBoundaries:
-    """The fast resolver had four of the eight cases its full-mode twin has.
-    Both delegate to ``config.number``, so the gap was provenance, not risk —
-    but the env var an operator actually sets was unpinned at the boundary.
-    """
-
-    def _resolve(self, monkeypatch, value):
-        monkeypatch.setenv("PDF_FAST_CONVERT_TIMEOUT", value)
-        return papers.convert._resolve_fast_convert_timeout()
-
-    def test_zero_disables(self, monkeypatch):
-        assert self._resolve(monkeypatch, "0") is None
-
-    def test_negative_disables(self, monkeypatch):
-        assert self._resolve(monkeypatch, "-1") is None
-
-    def test_float_seconds(self, monkeypatch):
-        assert self._resolve(monkeypatch, "2.5") == 2.5
-
-    def test_non_finite_falls_back_to_default(self, monkeypatch):
-        assert self._resolve(monkeypatch, "nan") == _DEFAULT_FAST_CONVERT_TIMEOUT
-        assert self._resolve(monkeypatch, "inf") == _DEFAULT_FAST_CONVERT_TIMEOUT
 
 
 # ---------------------------------------------------------------------------

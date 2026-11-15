@@ -33,6 +33,10 @@ from academic_tools_mcp.download import openaccess
 from academic_tools_mcp.providers import acl, arxiv, biorxiv
 from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.tools import pipeline
+from tests.helpers.conversion_fakes import (
+    seed_index as _seed_index,
+    seed_markdown as _seed_markdown,
+)
 from tests.test_corpus_properties import identifiers
 from tests.util.test_doinorm_properties import generic_dois
 
@@ -56,30 +60,6 @@ _max_chars = st.integers(min_value=1, max_value=200)
 
 # What the recorded provenance of cached markdown can be.
 _conversion_modes = st.sampled_from(["full", "fast", "imported", None])
-
-
-def _seed_markdown(namespace: str, canonical: str, body: str) -> Path:
-    md_path = stems.markdown_path(namespace, canonical)
-    md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(body, encoding="utf-8")
-    return md_path
-
-
-def _seed_index(namespace: str, canonical: str, markdown: str, mode: str | None) -> Path:
-    md_path = _seed_markdown(namespace, canonical, markdown)
-    sections, detected = papers.parse_sections_and_detect(markdown)
-    cache.put(
-        namespace,
-        "sections",
-        stems.sections_key(canonical),
-        {
-            "sections": sections,
-            "sections_detected": detected,
-            "markdown_checksum": stems.checksum_text(markdown),
-            "conversion_mode": mode,
-        },
-    )
-    return md_path
 
 
 def _serve_download(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> None:

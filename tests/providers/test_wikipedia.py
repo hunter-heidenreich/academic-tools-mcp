@@ -1,58 +1,25 @@
-import json
 from typing import Any
 
 import httpx
 import pytest
 
-from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import wikipedia
 from academic_tools_mcp.store import cache
-
-# ---------------------------------------------------------------------------
-# Transport fakes
-#
-# A real MockTransport, not a mock client: httpx's own URL handling is half of
-# what these assert, and a hand-rolled fake would never reproduce it.
-# ---------------------------------------------------------------------------
-
-_BAD_JSON = object()
+from tests.helpers.json_transport import (
+    BAD_JSON as _BAD_JSON,
+    stub_json_responses,
+    stub_no_network,
+)
 
 
 def _stub(monkeypatch: pytest.MonkeyPatch, *payloads: Any) -> list[httpx.Request]:
-    """Serve ``payloads`` from successive GETs, returning the captured requests.
-
-    A payload may be ``_BAD_JSON``, a ``(status, payload)`` pair, or an
-    exception to raise; the last one repeats once the sequence runs out.
-    """
-    requests: list[httpx.Request] = []
-    seq = list(payloads)
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        payload = seq[len(requests)] if len(requests) < len(seq) else seq[-1]
-        requests.append(request)
-        if isinstance(payload, Exception):
-            raise payload
-        status = 200
-        if isinstance(payload, tuple):
-            status, payload = payload
-        body = b"{ truncated" if payload is _BAD_JSON else json.dumps(payload).encode()
-        return httpx.Response(status, headers={"content-type": "application/json"}, content=body)
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
-    return requests
+    return stub_json_responses(monkeypatch, *payloads)
 
 
 def _stub_no_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Install a transport that fails the test if anything reaches it."""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(wikipedia._throttle, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+    stub_no_network(monkeypatch)
 
 
 _SUMMARY_PAYLOAD = {

@@ -2685,9 +2685,7 @@ class TestBatchBackpressureAndSearchChaining:
         self, monkeypatch, tmp_path
     ):
         from academic_tools_mcp.download import openaccess, streaming
-        from academic_tools_mcp.store import cache
 
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         _stub_work_id(
             monkeypatch,
             {"doi": None, "openalex_id": "https://openalex.org/W4312223440"},

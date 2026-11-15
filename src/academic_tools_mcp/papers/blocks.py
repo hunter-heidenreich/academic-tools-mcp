@@ -8,6 +8,12 @@ _LEADING_HASH_RE = re.compile(r"^(?=#{1,6}\s)", re.MULTILINE)
 
 # Caps a malformed span so one cell can't inflate the table.
 MAX_SPAN = 100
+DEEPEST_LEVEL = 4
+
+
+def collapse(text: str) -> str:
+    """Collapse runs of whitespace to single spaces."""
+    return " ".join(text.split())
 
 
 def escape_headings(text: str) -> str:
