@@ -20,6 +20,7 @@ from ..store import cache, singleflight
 from ..util import textnorm, useragent
 from ..util.jsonshape import (
     as_bool as _bool,
+    as_dict as _dict,
     as_int as _int,
     dict_list as _dicts,
     non_empty_str as _str,
@@ -180,6 +181,14 @@ def _repository(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _named_slugs(value: Any) -> list[dict[str, Any]]:
+    return [
+        {"name": name, "slug": _str(item.get("slug"))}
+        for item in _dicts(value)
+        if (name := _str(item.get("name"))) is not None
+    ]
+
+
 def _paper_of(data: Any) -> dict[str, Any] | None:
     """The normalized record for a paper, or ``None`` for a wrong-shape body.
 
@@ -193,8 +202,7 @@ def _paper_of(data: Any) -> dict[str, Any] | None:
     if pwc_id is None or title is None:
         return None
 
-    hf_summary = data.get("hf_artifact_summary")
-    hf_summary = hf_summary if isinstance(hf_summary, dict) else {}
+    hf_summary = _dict(data.get("hf_artifact_summary"))
 
     return {
         "pwc_id": pwc_id,
@@ -228,11 +236,7 @@ def _paper_of(data: Any) -> dict[str, Any] | None:
             "datasets": _int(hf_summary.get("dataset_count")),
             "spaces": _int(hf_summary.get("space_count")),
         },
-        "tasks": [
-            {"name": name, "slug": _str(task.get("slug"))}
-            for task in _dicts(data.get("tasks"))
-            if (name := _str(task.get("name"))) is not None
-        ],
+        "tasks": _named_slugs(data.get("tasks")),
         "methods": [
             {
                 "name": name,
@@ -252,11 +256,7 @@ def _paper_of(data: Any) -> dict[str, Any] | None:
             for bench in _dicts(data.get("introduced_benchmarks"))
             if (name := _str(bench.get("name"))) is not None
         ],
-        "introduced_frameworks": [
-            {"name": name, "slug": _str(fw.get("slug"))}
-            for fw in _dicts(data.get("introduced_frameworks"))
-            if (name := _str(fw.get("name"))) is not None
-        ],
+        "introduced_frameworks": _named_slugs(data.get("introduced_frameworks")),
         "leaderboard_ranks": [
             {
                 "benchmark": name,
@@ -268,11 +268,7 @@ def _paper_of(data: Any) -> dict[str, Any] | None:
             for rank in _dicts(data.get("leaderboard_ranks"))
             if (name := _str(rank.get("dataset_name"))) is not None
         ],
-        "organizations": [
-            {"name": name, "slug": _str(org.get("slug"))}
-            for org in _dicts(data.get("organizations"))
-            if (name := _str(org.get("name"))) is not None
-        ],
+        "organizations": _named_slugs(data.get("organizations")),
         "predecessors": _related(data.get("predecessor_papers")),
         "successors": _related(data.get("successor_papers")),
     }
@@ -358,8 +354,7 @@ def _dataset_of(data: Any) -> dict[str, Any] | None:
     name = _str(data.get("name"))
     if dataset_id is None or name is None:
         return None
-    introducing = data.get("introducing_paper")
-    introducing = introducing if isinstance(introducing, dict) else {}
+    introducing = _dict(data.get("introducing_paper"))
     return {
         "benchmark_id": dataset_id,
         "name": name,

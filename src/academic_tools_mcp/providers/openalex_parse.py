@@ -5,6 +5,7 @@ HTTP client lifecycle, rate-limiting, single-flight coalescing, and cache I/O.
 """
 
 import re
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -97,6 +98,14 @@ def _looks_like_ror(value: str) -> bool:
     return bool(_ROR_RE.match(value))
 
 
+def _strip_repeated_prefix(value: str, prefix: str) -> str:
+    """Strip one or more case-insensitive ``prefix`` occurrences from the start of ``value``."""
+    n = len(prefix)
+    while value[:n].lower() == prefix:
+        value = value[n:].strip()
+    return value
+
+
 def _normalize_institution_id(institution_id: str) -> str:
     """Normalize an institution identifier to its bare form.
 
@@ -108,9 +117,7 @@ def _normalize_institution_id(institution_id: str) -> str:
     if m := _OPENALEX_URL_RE.match(institution_id):
         return m.group(1)
 
-    # In a loop, as `normalize_pmid` does: doubled prefixes occur in pasted citations.
-    while institution_id[:4].lower() == "ror:":
-        institution_id = institution_id[4:].strip()
+    institution_id = _strip_repeated_prefix(institution_id, "ror:")
     # The trailing slash too, as `_OPENALEX_URL_RE` tolerates on the other spelling.
     return _ROR_URL_RE.sub("", institution_id).strip().rstrip("/")
 
@@ -158,6 +165,21 @@ _WORK_ID_RE = re.compile(r"^W\d{1,12}$", re.IGNORECASE)
 _BARE_WORK_ID_FLOOR = 9
 
 
+def _matches_tiered_id(
+    identifier: str,
+    *,
+    normalize: Callable[[str], str],
+    pattern: re.Pattern[str],
+    bare_floor: int,
+) -> bool:
+    """Two-tier shape test: any valid length when prefixed/URL-wrapped, ``>= bare_floor`` when bare."""
+    stripped = identifier.strip()
+    normalized = normalize(stripped)
+    if not pattern.match(normalized):
+        return False
+    return normalized != stripped or len(normalized) >= bare_floor
+
+
 def normalize_pmid(pmid: str) -> str:
     """Normalize a PubMed identifier to bare digits.
 
@@ -166,12 +188,7 @@ def normalize_pmid(pmid: str) -> str:
     comes back stripped of whitespace and any prefix; ``is_pmid`` decides
     whether that is an error. Idempotent.
     """
-    pmid = pmid.strip()
-
-    # In a loop, as ``arxiv``/``doinorm`` do: doubled prefixes occur in pasted citations.
-    while pmid[:5].lower() == "pmid:":
-        pmid = pmid[5:].strip()
-
+    pmid = _strip_repeated_prefix(pmid.strip(), "pmid:")
     if m := _PUBMED_URL_RE.match(pmid):
         return m.group(1)
     return pmid
@@ -185,12 +202,12 @@ def is_pmid(identifier: str) -> bool:
     ``_BARE_PMID_FLOOR`` up, so a freeform ``import_paper(file, "1234")`` label keeps
     routing to ``manual``.
     """
-    stripped = identifier.strip()
-    normalized = normalize_pmid(stripped)
-    if not _PMID_RE.match(normalized):
-        return False
-    # An explicit marker is what ``normalize_pmid`` removed; a bare run is unchanged.
-    return normalized != stripped or len(normalized) >= _BARE_PMID_FLOOR
+    return _matches_tiered_id(
+        identifier,
+        normalize=normalize_pmid,
+        pattern=_PMID_RE,
+        bare_floor=_BARE_PMID_FLOOR,
+    )
 
 
 def normalize_work_id(work_id: str) -> str:
@@ -201,12 +218,7 @@ def normalize_work_id(work_id: str) -> str:
     unrecognised comes back stripped of whitespace and any prefix; ``is_work_id``
     decides whether that is an error. Idempotent.
     """
-    work_id = work_id.strip()
-
-    # In a loop, as ``normalize_pmid`` does: doubled prefixes occur in pasted citations.
-    while work_id[:9].lower() == "openalex:":
-        work_id = work_id[9:].strip()
-
+    work_id = _strip_repeated_prefix(work_id.strip(), "openalex:")
     if m := _OPENALEX_URL_RE.match(work_id):
         return m.group(1)
     return work_id
@@ -220,12 +232,12 @@ def is_work_id(identifier: str) -> bool:
     claimed only from ``_BARE_WORK_ID_FLOOR`` up, so a freeform
     ``import_paper(file, "W2024")`` label keeps routing to ``manual``.
     """
-    stripped = identifier.strip()
-    normalized = normalize_work_id(stripped)
-    if not _WORK_ID_RE.match(normalized):
-        return False
-    # An explicit marker is what ``normalize_work_id`` removed; a bare id is unchanged.
-    return normalized != stripped or len(normalized) >= _BARE_WORK_ID_FLOOR
+    return _matches_tiered_id(
+        identifier,
+        normalize=normalize_work_id,
+        pattern=_WORK_ID_RE,
+        bare_floor=_BARE_WORK_ID_FLOOR,
+    )
 
 
 def canonical_work_id(work_id: str) -> str:

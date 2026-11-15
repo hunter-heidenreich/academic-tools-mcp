@@ -244,6 +244,28 @@ def _provider_error(
     return result
 
 
+async def _dispatch_paper_tool(
+    identifier: str,
+    *,
+    force_refresh: bool,
+    fallback_crossref: bool,
+    on_crossref: Callable[[dict[str, Any], str | None], dict[str, Any]],
+    on_source: Callable[[manual.MetadataSource, str | None, dict[str, Any]], dict[str, Any]],
+) -> dict[str, Any]:
+    """Shared fetch, Crossref-fallback, and error-enrichment pipeline for paper tools."""
+    source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
+    if source is None:
+        return obj
+    cr, cr_retryable = await _crossref_fallback(
+        source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
+    )
+    if cr is not None:
+        return on_crossref(cr, canonical_id)
+    if "error" in obj:
+        return _provider_error(obj, source, crossref_retryable=cr_retryable)
+    return _flag_fallback(on_source(source, canonical_id, obj), obj)
+
+
 @mcp.tool
 async def get_paper_metadata(
     identifier: PAPER_ID,
@@ -650,41 +672,38 @@ async def get_paper_authors(
     if the fallback's own Crossref call failed transiently, or
     ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
     """
-    source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
-    if source is None:
-        return obj  # unknown-identifier error
-
     start, end = page_bounds(page, page_size)
 
-    cr, cr_retryable = await _crossref_fallback(
-        source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
+    def _on_source(
+        source: manual.MetadataSource, canonical_id: str | None, obj: dict[str, Any]
+    ) -> dict[str, Any]:
+        if source == "openalex":
+            page_slice = _format_openalex_authors(obj, start, end)
+        else:
+            # arXiv/bioRxiv/ACL have no institution records; emit them empty so agents
+            # never feature-detect.
+            authors = dict_list(obj.get("authors"))
+            page_slice = {
+                "author_count": len(authors),
+                "authors": authors[start:end],
+                "page_institutions": [],
+                "page_institution_count": 0,
+            }
+        result = _authors_envelope(source, canonical_id, page, page_size, end, page_slice)
+        if source == "biorxiv":
+            result["author_corresponding"] = obj.get("author_corresponding")
+            result["author_corresponding_institution"] = obj.get("author_corresponding_institution")
+        return result
+
+    return await _dispatch_paper_tool(
+        identifier,
+        force_refresh=force_refresh,
+        fallback_crossref=fallback_crossref,
+        on_crossref=lambda cr, cid: _authors_envelope(
+            "crossref", cid, page, page_size, end, _format_crossref_authors(cr, start, end)
+        ),
+        on_source=_on_source,
     )
-    if cr is not None:
-        return _authors_envelope(
-            "crossref", canonical_id, page, page_size, end, _format_crossref_authors(cr, start, end)
-        )
-
-    if "error" in obj:
-        return _provider_error(obj, source, crossref_retryable=cr_retryable)
-
-    if source == "openalex":
-        page_slice = _format_openalex_authors(obj, start, end)
-    else:
-        # arXiv/bioRxiv/ACL have no institution records; emit them empty so agents
-        # never feature-detect.
-        authors = dict_list(obj.get("authors"))
-        page_slice = {
-            "author_count": len(authors),
-            "authors": authors[start:end],
-            "page_institutions": [],
-            "page_institution_count": 0,
-        }
-
-    result = _authors_envelope(source, canonical_id, page, page_size, end, page_slice)
-    if source == "biorxiv":
-        result["author_corresponding"] = obj.get("author_corresponding")
-        result["author_corresponding_institution"] = obj.get("author_corresponding_institution")
-    return _flag_fallback(result, obj)
 
 
 @mcp.tool
@@ -710,38 +729,35 @@ async def get_paper_abstract(
     if the fallback's own Crossref call failed transiently, or
     ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
     """
-    source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
-    if source is None:
-        return obj  # unknown-identifier error
 
-    cr, cr_retryable = await _crossref_fallback(
-        source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
-    )
-    if cr is not None:
+    def _on_source(
+        source: manual.MetadataSource, canonical_id: str | None, obj: dict[str, Any]
+    ) -> dict[str, Any]:
+        if source == "arxiv":
+            abstract = obj.get("summary")
+        elif source in ("biorxiv", "acl_anthology"):
+            abstract = obj.get("abstract")
+        else:
+            abstract = openalex.reconstruct_abstract(obj.get("abstract_inverted_index")) or None
         return {
-            "_source": "crossref",
+            "_source": source,
             "_canonical_id": canonical_id,
-            "title": unwrap_first(cr.get("title")),
-            "abstract": crossref.abstract_text(cr),
+            "title": obj.get("title"),
+            "abstract": abstract,
         }
 
-    if "error" in obj:
-        return _provider_error(obj, source, crossref_retryable=cr_retryable)
-
-    if source == "arxiv":
-        abstract = obj.get("summary")
-    elif source in ("biorxiv", "acl_anthology"):
-        abstract = obj.get("abstract")
-    else:
-        abstract = openalex.reconstruct_abstract(obj.get("abstract_inverted_index")) or None
-
-    result = {
-        "_source": source,
-        "_canonical_id": canonical_id,
-        "title": obj.get("title"),
-        "abstract": abstract,
-    }
-    return _flag_fallback(result, obj)
+    return await _dispatch_paper_tool(
+        identifier,
+        force_refresh=force_refresh,
+        fallback_crossref=fallback_crossref,
+        on_crossref=lambda cr, cid: {
+            "_source": "crossref",
+            "_canonical_id": cid,
+            "title": unwrap_first(cr.get("title")),
+            "abstract": crossref.abstract_text(cr),
+        },
+        on_source=_on_source,
+    )
 
 
 @mcp.tool
@@ -775,38 +791,27 @@ async def get_paper_bibtex(
     if the fallback's own Crossref call failed transiently, or
     ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
     """
-    source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
-    if source is None:
-        return obj  # unknown-identifier error
-
-    cr, cr_retryable = await _crossref_fallback(
-        source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
-    )
-    if cr is not None:
-        return {
-            "_source": "crossref",
-            "_canonical_id": canonical_id,
-            "bibtex": generate_crossref_bibtex(cr, year=crossref_date(cr)[0]),
-        }
-
-    if "error" in obj:
-        return _provider_error(obj, source, crossref_retryable=cr_retryable)
-
-    if source == "arxiv":
-        bibtex = generate_arxiv_bibtex(obj)
-    elif source == "biorxiv":
-        bibtex = generate_biorxiv_bibtex(obj)
-    elif source == "acl_anthology":
-        bibtex = generate_acl_bibtex(obj)
-    else:
-        bibtex = generate_bibtex(obj)
-
-    result = {
-        "_source": source,
-        "_canonical_id": canonical_id,
-        "bibtex": bibtex,
+    generators: dict[manual.MetadataSource, Callable[[dict[str, Any]], str]] = {
+        "arxiv": generate_arxiv_bibtex,
+        "biorxiv": generate_biorxiv_bibtex,
+        "acl_anthology": generate_acl_bibtex,
+        "openalex": generate_bibtex,
     }
-    return _flag_fallback(result, obj)
+    return await _dispatch_paper_tool(
+        identifier,
+        force_refresh=force_refresh,
+        fallback_crossref=fallback_crossref,
+        on_crossref=lambda cr, cid: {
+            "_source": "crossref",
+            "_canonical_id": cid,
+            "bibtex": generate_crossref_bibtex(cr, year=crossref_date(cr)[0]),
+        },
+        on_source=lambda source, cid, obj: {
+            "_source": source,
+            "_canonical_id": cid,
+            "bibtex": generators[source](obj),
+        },
+    )
 
 
 @mcp.tool
