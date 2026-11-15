@@ -3,16 +3,10 @@
 from academic_tools_mcp.providers import openalex, openalex_parse
 
 
-def test_openalex_reexports_all_parse_helpers() -> None:
+def test_openalex_reexports_public_parse_helpers() -> None:
     for name in (
         "canonical_doi",
-        "_usable_http_url",
         "best_pdf_url",
-        "_normalize_author_id",
-        "_author_path_id",
-        "_looks_like_ror",
-        "_normalize_institution_id",
-        "_institution_path_id",
         "canonical_institution_id",
         "canonical_author_id",
         "normalize_pmid",
@@ -20,10 +14,6 @@ def test_openalex_reexports_all_parse_helpers() -> None:
         "normalize_work_id",
         "is_work_id",
         "canonical_work_id",
-        "_canonical_from_response_doi",
-        "_meta_count",
-        "_extract_batch_pmid",
-        "_extract_batch_work_id",
         "reconstruct_abstract",
     ):
         assert getattr(openalex, name) is getattr(openalex_parse, name)

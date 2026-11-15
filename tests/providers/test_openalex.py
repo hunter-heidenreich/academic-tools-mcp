@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from academic_tools_mcp.net import clients, stats
-from academic_tools_mcp.providers import openalex
+from academic_tools_mcp.providers import openalex, openalex_parse
 from academic_tools_mcp.providers.openalex import (
     _canonical_from_response_doi,
     _normalize_author_id,
@@ -1773,7 +1773,7 @@ class TestNormalizeInstitutionId:
 
     def test_an_openalex_id_is_not_mistaken_for_a_ror(self):
         """The crockford alphabet excludes i/l/o/u, which is what separates the shapes."""
-        assert not openalex._looks_like_ror("I27837315")
+        assert not openalex_parse._looks_like_ror("I27837315")
 
 
 class TestGetInstitution:

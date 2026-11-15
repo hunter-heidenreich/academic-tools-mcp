@@ -113,33 +113,6 @@ class TestContentTokens:
 
 
 # ---------------------------------------------------------------------------
-# Title extraction
-# ---------------------------------------------------------------------------
-
-
-class TestExtractTitle:
-    def test_returns_first_h1(self):
-        md = "# Attention Is All You Need\n\n## Abstract\n\nbody\n"
-        assert corpus._extract_title(md) == "Attention Is All You Need"
-
-    def test_returns_first_h2_when_no_h1(self):
-        # MinerU output often starts at H2 because the converter uses
-        # H1 only for the parent doc; we accept either as the title.
-        md = "## Title here\n\n## Section\n\nbody\n"
-        assert corpus._extract_title(md) == "Title here"
-
-    def test_skips_h3_when_no_h1_or_h2(self):
-        # An H3-only document has no real title; return None rather
-        # than promote a sub-heading that would mislead the agent.
-        md = "### Subsection\n\nbody\n"
-        assert corpus._extract_title(md) is None
-
-    def test_returns_none_for_empty(self):
-        assert corpus._extract_title("") is None
-        assert corpus._extract_title("just some prose\n") is None
-
-
-# ---------------------------------------------------------------------------
 # Section attribution
 # ---------------------------------------------------------------------------
 

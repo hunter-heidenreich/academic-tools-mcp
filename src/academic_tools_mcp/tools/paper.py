@@ -36,19 +36,17 @@ from ..providers import acl, arxiv, biorxiv, crossref, openalex
 from ..util import doinorm
 from ..util.jsonshape import dict_list, unwrap_first
 from .formatting import (
-    arxiv_pdf_url as _arxiv_pdf_url,  # noqa: F401
-    authors_envelope as _authors_envelope,
-    format_arxiv_metadata as _format_arxiv_metadata,
+    authors_envelope,
+    format_arxiv_metadata,
     format_author_profile,
-    format_biorxiv_metadata as _format_biorxiv_metadata,
-    format_crossref_authors as _format_crossref_authors,
-    format_crossref_metadata as _format_crossref_metadata,
+    format_biorxiv_metadata,
+    format_crossref_authors,
+    format_crossref_metadata,
     format_institution_profile,
-    format_metadata_by_source as _format_metadata_by_source,
-    format_openalex_authors as _format_openalex_authors,
-    format_openalex_metadata as _format_openalex_metadata,  # noqa: F401
-    format_openalex_via_arxiv as _format_openalex_via_arxiv,
-    format_openalex_via_biorxiv as _format_openalex_via_biorxiv,
+    format_metadata_by_source,
+    format_openalex_authors,
+    format_openalex_via_arxiv,
+    format_openalex_via_biorxiv,
 )
 
 
@@ -338,8 +336,8 @@ async def get_paper_metadata(
     ):
         return await _follow_published(
             published_doi,
-            journal=lambda work, doi: _format_openalex_via_biorxiv(work, obj.get("doi"), doi),
-            preprint=lambda: _format_biorxiv_metadata(obj, canonical_id, followed_published=False),
+            journal=lambda work, doi: format_openalex_via_biorxiv(work, obj.get("doi"), doi),
+            preprint=lambda: format_biorxiv_metadata(obj, canonical_id, followed_published=False),
             force_refresh=force_refresh,
         )
 
@@ -351,10 +349,10 @@ async def get_paper_metadata(
     ):
         return await _follow_published(
             published_doi,
-            journal=lambda work, doi: _format_openalex_via_arxiv(
+            journal=lambda work, doi: format_openalex_via_arxiv(
                 work, arxiv.id_from_entry(obj), doi
             ),
-            preprint=lambda: _format_arxiv_metadata(obj, canonical_id, followed_published=False),
+            preprint=lambda: format_arxiv_metadata(obj, canonical_id, followed_published=False),
             force_refresh=force_refresh,
         )
 
@@ -362,11 +360,11 @@ async def get_paper_metadata(
         source, canonical_id, obj, fallback_crossref=fallback_crossref, force_refresh=force_refresh
     )
     if cr is not None:
-        return _format_crossref_metadata(cr, canonical_id)
+        return format_crossref_metadata(cr, canonical_id)
 
     if "error" in obj:
         return _provider_error(obj, source, crossref_retryable=cr_retryable)
-    return _flag_fallback(_format_metadata_by_source(source, obj, canonical_id), obj)
+    return _flag_fallback(format_metadata_by_source(source, obj, canonical_id), obj)
 
 
 @mcp.tool
@@ -447,7 +445,7 @@ class _BatchPlan(NamedTuple):
     """One provider's batch leg of get_papers_metadata, and the slots waiting on it.
 
     ``source`` is a dispatch tag, not a formatter: the leg formats through
-    ``_format_metadata_by_source``, the helper the singleton leg and
+    ``format_metadata_by_source``, the helper the singleton leg and
     ``get_paper_metadata`` already share, so a field added there cannot reach some
     paths and miss the batched ones.
 
@@ -539,7 +537,7 @@ async def get_papers_metadata(
                 **enrich_error(obj, _METADATA_HINT_BY_SOURCE[source]),
             }
             return
-        formatted = _flag_fallback(_format_metadata_by_source(source, obj, canonical), obj)
+        formatted = _flag_fallback(format_metadata_by_source(source, obj, canonical), obj)
         formatted["_input"] = ident
         results[slot] = formatted
 
@@ -613,7 +611,7 @@ async def get_papers_metadata(
                     **enrich_error(dict(err), _METADATA_HINT_BY_SOURCE[plan.source]),
                 }
                 continue
-            formatted = _flag_fallback(_format_metadata_by_source(plan.source, obj, canonical), obj)
+            formatted = _flag_fallback(format_metadata_by_source(plan.source, obj, canonical), obj)
             formatted["_input"] = ident
             results[slot] = formatted
 
@@ -678,7 +676,7 @@ async def get_paper_authors(
         source: manual.MetadataSource, canonical_id: str | None, obj: dict[str, Any]
     ) -> dict[str, Any]:
         if source == "openalex":
-            page_slice = _format_openalex_authors(obj, start, end)
+            page_slice = format_openalex_authors(obj, start, end)
         else:
             # arXiv/bioRxiv/ACL have no institution records; emit them empty so agents
             # never feature-detect.
@@ -689,7 +687,7 @@ async def get_paper_authors(
                 "page_institutions": [],
                 "page_institution_count": 0,
             }
-        result = _authors_envelope(source, canonical_id, page, page_size, end, page_slice)
+        result = authors_envelope(source, canonical_id, page, page_size, end, page_slice)
         if source == "biorxiv":
             result["author_corresponding"] = obj.get("author_corresponding")
             result["author_corresponding_institution"] = obj.get("author_corresponding_institution")
@@ -699,8 +697,8 @@ async def get_paper_authors(
         identifier,
         force_refresh=force_refresh,
         fallback_crossref=fallback_crossref,
-        on_crossref=lambda cr, cid: _authors_envelope(
-            "crossref", cid, page, page_size, end, _format_crossref_authors(cr, start, end)
+        on_crossref=lambda cr, cid: authors_envelope(
+            "crossref", cid, page, page_size, end, format_crossref_authors(cr, start, end)
         ),
         on_source=_on_source,
     )

@@ -56,11 +56,6 @@ def _content_tokens(text: str, *, normalize: bool = False) -> set[str]:
     }
 
 
-def _extract_title(markdown: str) -> str | None:
-    """The document's first H1 or H2, or ``None``. Delegated: heading level is ``papers``' policy."""
-    return papers.first_section_heading(markdown)
-
-
 def _extract_snippet(
     markdown: str,
     query_terms: set[str],
@@ -608,7 +603,7 @@ def _hit(row: sqlite3.Row, terms: set[str], *, normalize: bool) -> dict[str, Any
         "canonical_id": row["canonical_id"] or _resolve_canonical_id(row["ns"], row["stem"]),
         # Significant figures, not decimals: a degenerate IDF scales below 1e-7.
         "score": float(f"{score:.6g}"),
-        "title": _extract_title(text),
+        "title": papers.first_section_heading(text),
         "snippet": snippet,
         "section": section,
         # The chainable handle: `section` is a title, and a repeated one is ambiguous.

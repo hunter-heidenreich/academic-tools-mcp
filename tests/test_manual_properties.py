@@ -77,11 +77,11 @@ def test_the_router_and_the_stem_inversion_share_one_grammar(identifier: str) ->
     ``providers.arxiv``'s exported patterns. Forked, one accepts an archive
     class the other doesn't and a hit's ``canonical_id`` goes nowhere.
     """
-    from academic_tools_mcp.providers import arxiv
+    from academic_tools_mcp.providers import arxiv_parse
 
     canonical = manual.resolve_target(identifier)["canonical"]
 
-    assert arxiv._OLD_ID_RE.match(canonical)
+    assert arxiv_parse._OLD_ID_RE.match(canonical)
     assert corpus._ARXIV_OLDSTYLE_STEM_RE.match(stems.safe_stem(canonical))
 
 

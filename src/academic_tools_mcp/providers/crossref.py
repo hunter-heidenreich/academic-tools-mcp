@@ -11,8 +11,6 @@ from ..store import cache, singleflight
 from ..util import config, doinorm, useragent
 from ..util.jsonshape import str_or_none as _str_or_none
 from .crossref_parse import (
-    _JATS_LABEL_RE as _JATS_LABEL_RE,
-    _JATS_TAG_RE as _JATS_TAG_RE,
     RETRACTION_UPDATE_TYPES as RETRACTION_UPDATE_TYPES,
     _message_of,
     _not_found_message,
