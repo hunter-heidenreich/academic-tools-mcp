@@ -337,9 +337,9 @@ Cache keys are SHA-256 hashes of canonical identifiers. Writes are atomic (temp 
 
 **PDF downloads** negative-cache definitive failures too, under a `downloads` entity in each provider's namespace: arxiv / biorxiv 1h (they render PDFs lazily, so a just-announced paper's PDF can 404 for minutes), acl_anthology and the open-access path 24h (static files — a 404 means a wrong ID or a closed-access paper). The PDF itself never expires.
 
-Eviction is mtime-based and self-healing: an over-age entry is unlinked on read. **Negative entries** (definitive 404s) live in a sibling `_neg/` subdirectory so a known-bad identifier doesn't burn rate budget on every retry, while a newly-registered DOI still surfaces within the TTL. `force_refresh=True` drops both halves and re-fetches.
+Eviction is mtime-based and self-healing: an over-age entry is unlinked on read, and a startup sweep prunes any positive entry past the 30-day ceiling alongside expired negative entries and stale `.tmp` files. **Negative entries** (definitive 404s) live in a sibling `_neg/` subdirectory so a known-bad identifier doesn't burn rate budget on every retry, while a newly-registered DOI still surfaces within the TTL. `force_refresh=True` drops both halves and re-fetches.
 
-Downloaded PDFs, converted markdown, and section indices have **no** expiry — they're derived from bytes that don't change. `.cache/` therefore grows without bound; prune it by hand if it gets large.
+Downloaded PDFs, converted markdown, and section indices have **no** expiry — they're derived from bytes that don't change. `.cache/` has no byte-size cap; prune downloaded PDFs/markdown by hand if it gets large.
 
 ## Development
 

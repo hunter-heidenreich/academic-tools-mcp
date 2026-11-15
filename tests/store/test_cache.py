@@ -513,6 +513,56 @@ def test_gc_expired_negatives_removes_expired_and_corrupt_entries(tmp_path, monk
     assert not bool_ttl_path.exists()
 
 
+def test_gc_expired_positives_sweeps_stale_entries_and_skips_unbounded_entities(
+    tmp_path, monkeypatch
+):
+    """Startup GC sweeps positive `.json` entries strictly older than
+    `max_age_seconds` while preserving fresh/exact-boundary entries, negative
+    entries, `__search_index__`, and unbounded JSON entities (`sections`,
+    `doi_index`)."""
+    import os
+
+    now = 1_700_000_000.0
+    max_age = 30 * 86400.0
+    monkeypatch.setattr(cache.time, "time", lambda: now)
+
+    cache.put("openalex", "works", "stale-1", {"id": "W1"})
+    stale_path = cache._entry_path("openalex", "works", "stale-1")
+    os.utime(stale_path, (now - max_age - 1.0, now - max_age - 1.0))
+
+    cache.put("crossref", "works", "edge-1", {"DOI": "10.1/edge"})
+    edge_path = cache._entry_path("crossref", "works", "edge-1")
+    os.utime(edge_path, (now - max_age, now - max_age))
+
+    cache.put("arxiv", "papers", "fresh-1", {"id": "2301.00001"})
+    fresh_path = cache._entry_path("arxiv", "papers", "fresh-1")
+    os.utime(fresh_path, (now - 3600.0, now - 3600.0))
+
+    # Unbounded entities (`sections` and `doi_index`) must never be swept by age.
+    cache.put("arxiv", "sections", "sec-1", {"sections": []})
+    sec_path = cache._entry_path("arxiv", "sections", "sec-1")
+    os.utime(sec_path, (now - max_age * 10, now - max_age * 10))
+
+    cache.put("acl_anthology", "doi_index", "meta", {"fetched_at": 1.0, "registrants": []})
+    idx_path = cache._entry_path("acl_anthology", "doi_index", "meta")
+    os.utime(idx_path, (now - max_age * 10, now - max_age * 10))
+
+    # Any `.json` under `__search_index__` must also be untouched.
+    search_json = tmp_path / "__search_index__" / "sub" / "meta.json"
+    search_json.parent.mkdir(parents=True)
+    search_json.write_text("{}", encoding="utf-8")
+    os.utime(search_json, (now - max_age * 10, now - max_age * 10))
+
+    removed = cache.gc_expired_positives()
+    assert removed == 1
+    assert not stale_path.exists()
+    assert edge_path.exists()
+    assert fresh_path.exists()
+    assert sec_path.exists()
+    assert idx_path.exists()
+    assert search_json.exists()
+
+
 def test_concurrent_writers_dont_corrupt_file(tmp_path, monkeypatch):
     """Stress test: many writers hammering the same key produce a final
     file that is always valid JSON and matches one of the inputs. With

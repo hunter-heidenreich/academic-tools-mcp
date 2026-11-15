@@ -44,6 +44,7 @@ def _run_startup_sweeps() -> None:
     """Run startup cache maintenance and one-time legacy stem migrations."""
     cache.gc_orphan_tmp_files()
     cache.gc_expired_negatives()
+    cache.gc_expired_positives()
     stamp = cache.CACHE_ROOT / _MIGRATION_STAMP
     if stamp.exists():
         return

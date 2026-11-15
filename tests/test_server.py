@@ -42,6 +42,7 @@ class TestLifespanSweeps:
         calls: list[str] = []
         monkeypatch.setattr(cache, "gc_orphan_tmp_files", lambda: (calls.append("gc_tmp"), 0)[1])
         monkeypatch.setattr(cache, "gc_expired_negatives", lambda: (calls.append("gc_neg"), 0)[1])
+        monkeypatch.setattr(cache, "gc_expired_positives", lambda: (calls.append("gc_pos"), 0)[1])
         monkeypatch.setattr(
             stems, "migrate_legacy_stems", lambda: (calls.append("mig_stems"), 0)[1]
         )
@@ -61,6 +62,7 @@ class TestLifespanSweeps:
         assert calls == [
             "gc_tmp",
             "gc_neg",
+            "gc_pos",
             "mig_stems",
             "mig_arxiv",
             "mig_acl",
@@ -74,4 +76,4 @@ class TestLifespanSweeps:
         async with app._lifespan(app.mcp):
             calls.append("yielded")
 
-        assert calls == ["gc_tmp", "gc_neg", "yielded", "aclose_all"]
+        assert calls == ["gc_tmp", "gc_neg", "gc_pos", "yielded", "aclose_all"]

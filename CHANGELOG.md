@@ -17,6 +17,12 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Startup sweep for expired positive cache entries (`cache.gc_expired_positives`).**
+  `app._run_startup_sweeps` now calls `cache.gc_expired_positives()`, which sweeps
+  `.cache/*/*/*.json` by `st_mtime` and unlinks positive entries older than the 30-day
+  provider TTL ceiling (`_DEFAULT_POS_SWEEP_MAX_AGE_SECONDS`) without parsing live JSON
+  files, while skipping unbounded JSON entities (`sections`, `doi_index`). ([#187])
+
 - **Lossless `canonical_id` round-tripping in the sections index and corpus FTS5 table.**
   `papers.store_markdown_and_index` and `papers.reparse_sections_locked` now record
   `"canonical_id": canonical` in each paper's sections index entry, `papers.rekey_sections`
@@ -2415,3 +2421,4 @@ say which.
 [#181]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/181
 [#182]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/182
 [#183]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/183
+[#187]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/187

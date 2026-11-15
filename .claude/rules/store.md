@@ -19,9 +19,11 @@ and PDF downloads are counted nowhere here.
 **Cross-module surface — renames here break callers.** `cache_dir` and `CACHE_ROOT`
 are public because the path builders live elsewhere. Anything reached from another
 module gets a public name; a leading underscore here means genuinely internal.
-`gc_orphan_tmp_files` and `gc_expired_negatives` run on every startup via
-`app._run_startup_sweeps` in a worker thread, while the three legacy stem migrations
-run once per `CACHE_ROOT` and stamp `.migrations_v1`.
+`gc_orphan_tmp_files`, `gc_expired_negatives`, and `gc_expired_positives` run on
+every startup via `app._run_startup_sweeps` in a worker thread, while the three
+legacy stem migrations run once per `CACHE_ROOT` and stamp `.migrations_v1`.
+`gc_expired_positives` sweeps mtime-bounded `.cache/*/*/*.json` files past the
+30-day ceiling and skips `_UNBOUNDED_JSON_ENTITIES` (`sections`, `doi_index`).
 
 Per-provider TTL policy lives with each provider; the operator-facing table is
 `README.md` § Caching.
