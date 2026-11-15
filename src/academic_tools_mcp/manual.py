@@ -110,7 +110,9 @@ def resolve_metadata_source(identifier: str) -> MetadataSource | None:
     if source := _METADATA_SOURCE_BY_NAMESPACE.get(target["namespace"]):
         return source
 
-    return "openalex" if doinorm.looks_like_doi(target["canonical"]) else None
+    if doinorm.looks_like_doi(target["canonical"]) or openalex.is_work_id(identifier):
+        return "openalex"
+    return None
 
 
 def migrate_misrouted_arxiv() -> int:

@@ -37,6 +37,7 @@ from ..bibtex import (
 )
 from ..net import http
 from ..providers import acl, arxiv, biorxiv, crossref, openalex
+from ..util import doinorm
 
 
 def _canonical_for_source(source: manual.MetadataSource | None, identifier: str) -> str | None:
@@ -48,7 +49,11 @@ def _canonical_for_source(source: manual.MetadataSource | None, identifier: str)
     if source == "acl_anthology":
         return acl.canonical_key(identifier)
     if source == "openalex":
-        return openalex.canonical_doi(identifier)
+        return (
+            openalex.canonical_work_id(identifier)
+            if openalex.is_work_id(identifier)
+            else openalex.canonical_doi(identifier)
+        )
     return None
 
 
@@ -106,6 +111,7 @@ async def _fetch_source(
     top is uniform across them, as is the bioRxiv → OpenAlex fallback: a hit returns
     ``source == "openalex"``, its work marked ``biorxiv_unavailable``.
     """
+    was_non_doi = openalex.is_pmid(identifier) or openalex.is_work_id(identifier)
     identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
         return None, None, pmid_error
@@ -124,7 +130,8 @@ async def _fetch_source(
     elif source == "acl_anthology":
         obj = await acl.get_paper(identifier, force_refresh=force_refresh)
     elif source == "openalex":
-        obj = await openalex.get_work(identifier, force_refresh=force_refresh)
+        oa_refresh = force_refresh and not (was_non_doi and openalex.is_work_id(identifier))
+        obj = await openalex.get_work(identifier, force_refresh=oa_refresh)
     else:
         return None, None, _unknown_identifier_error(identifier)
     return source, canonical_id, obj
@@ -387,7 +394,13 @@ async def _crossref_fallback(
     ``not_found`` too, and Crossref indexes ``10.1101`` DOIs. Keyed off
     ``canonical_id``, a PMID having already been traded for its DOI.
     """
-    if not (fallback_crossref and source == "openalex" and canonical_id and obj.get("not_found")):
+    if not (
+        fallback_crossref
+        and source == "openalex"
+        and canonical_id
+        and doinorm.looks_like_doi(canonical_id)
+        and obj.get("not_found")
+    ):
         return None, False
     cr = await crossref.get_work(canonical_id, force_refresh=force_refresh)
     if "error" not in cr:
@@ -770,10 +783,11 @@ async def get_papers_metadata(
 
     async def _singleton_one(slot: int, routed: str, ident: str) -> None:
         async with singleton_sem:
-            source, canonical, obj = await _fetch_source(routed, force_refresh=force_refresh)
+            sub_refresh = force_refresh and not openalex.is_work_id(routed)
+            source, canonical, obj = await _fetch_source(routed, force_refresh=sub_refresh)
         if source is None:
-            # Unreachable: the loop routes only bioRxiv/ACL here. Guards the hint
-            # lookup against a None key regardless.
+            # Unreachable: the loop routes only bioRxiv/ACL/DOI-less OpenAlex here.
+            # Guards the hint lookup against a None key regardless.
             results[slot] = {"_input": ident, **obj}
             return
         if "error" in obj:
@@ -801,10 +815,14 @@ async def get_papers_metadata(
             results[i] = {"_input": ident, **pmid_error}
             continue
         source = manual.resolve_metadata_source(routed)
-        plan = by_source.get(source) if source is not None else None
+        plan = (
+            by_source.get(source)
+            if source is not None and not openalex.is_work_id(routed)
+            else None
+        )
         if plan is not None:
             plan.pending.append((i, routed, ident))
-        elif source in ("biorxiv", "acl_anthology"):
+        elif source in ("biorxiv", "acl_anthology", "openalex"):
             singleton_tasks.append(asyncio.create_task(_singleton_one(i, routed, ident)))
         else:
             results[i] = {"_input": ident, **_unknown_identifier_error(ident)}

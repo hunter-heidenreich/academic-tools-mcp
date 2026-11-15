@@ -1264,7 +1264,8 @@ def _stub_pmid(monkeypatch, mapping, *, work=None):
         return mapping
 
     async def fake_get_work(doi, **kwargs):
-        return dict(work or {}, doi=f"https://doi.org/{doi}")
+        resolved_doi = None if openalex.is_work_id(doi) else f"https://doi.org/{doi}"
+        return dict(work or {}, doi=resolved_doi)
 
     monkeypatch.setattr(openalex, "resolve_pmid", fake_resolve_pmid)
     monkeypatch.setattr(openalex, "get_work", fake_get_work)
@@ -1337,15 +1338,31 @@ class TestPmidRouting:
         assert "suggestion" in result
 
     @pytest.mark.asyncio
+    async def test_pmid_without_a_doi_routes_by_its_openalex_work_id(self, monkeypatch):
+        """A PubMed paper OpenAlex indexes without a DOI still has a live work ID,
+        so all paper tools answer under that canonical work ID."""
+        _stub_pmid(
+            monkeypatch,
+            {"doi": None, "openalex_id": "https://openalex.org/W4312223440"},
+            work={"id": "https://openalex.org/W4312223440", "title": "DOI-less PubMed Work"},
+        )
+
+        result = await server.get_paper_metadata("pmid:20079334")
+
+        assert result["_source"] == "openalex"
+        assert result["_canonical_id"] == "w4312223440"
+        assert result["doi"] is None
+        assert result["title"] == "DOI-less PubMed Work"
+
+    @pytest.mark.asyncio
     async def test_pmid_without_a_doi_is_an_error_not_an_invented_key(self, monkeypatch):
-        """These tools are DOI- or arXiv-keyed. Naming the OpenAlex id beats
-        minting a cache identity the paper would then be stuck with."""
-        _stub_pmid(monkeypatch, {"doi": None, "openalex_id": "https://openalex.org/W9"})
+        """When neither a DOI nor a usable OpenAlex work ID exists, refuse rather
+        than minting a cache identity."""
+        _stub_pmid(monkeypatch, {"doi": None, "openalex_id": None})
 
         result = await server.get_paper_metadata("pmid:20079334")
 
         assert result.get("not_found") is True
-        assert "W9" in result["error"]
         assert "import_paper" in result["suggestion"]
 
     @pytest.mark.asyncio
@@ -2271,7 +2288,8 @@ def _stub_work_id(monkeypatch, mapping, *, work=None):
         return mapping
 
     async def fake_get_work(doi, **kwargs):
-        return dict(work or {}, doi=f"https://doi.org/{doi}")
+        resolved_doi = None if openalex.is_work_id(doi) else f"https://doi.org/{doi}"
+        return dict(work or {}, doi=resolved_doi)
 
     monkeypatch.setattr(openalex, "resolve_work_id", fake_resolve_work_id)
     monkeypatch.setattr(openalex, "get_work", fake_get_work)
@@ -2319,10 +2337,42 @@ class TestWorkIdRouting:
         assert calls == []
 
     @pytest.mark.asyncio
+    async def test_a_doi_less_work_id_answers_across_all_paper_tools(self, monkeypatch):
+        """Conference papers and books OpenAlex indexes without a DOI resolve under
+        their canonical work ID across metadata, authors, abstract, bibtex, and batch."""
+        _stub_work_id(
+            monkeypatch,
+            {"doi": None, "openalex_id": "https://openalex.org/W4312223440"},
+            work={
+                "id": "https://openalex.org/W4312223440",
+                "title": "NeurIPS Workshop Paper",
+                "publication_year": 2023,
+                "type": "conference-paper",
+                "authorships": [{"author": {"display_name": "Ada Lovelace", "id": "A1"}}],
+                "abstract_inverted_index": {"Deep": [0], "learning": [1]},
+            },
+        )
+
+        meta = await server.get_paper_metadata("https://openalex.org/W4312223440")
+        authors = await server.get_paper_authors("W4312223440")
+        abstract = await server.get_paper_abstract("openalex:W4312223440")
+        bibtex = await server.get_paper_bibtex("W4312223440")
+        batch = await server.get_papers_metadata(["https://openalex.org/W4312223440"])
+
+        for out in (meta, authors, abstract, bibtex, batch["papers"][0]):
+            assert out["_source"] == "openalex"
+            assert out["_canonical_id"] == "w4312223440"
+        assert meta["doi"] is None
+        assert meta["title"] == "NeurIPS Workshop Paper"
+        assert authors["authors"][0]["name"] == "Ada Lovelace"
+        assert abstract["abstract"] == "Deep learning"
+        assert "@inproceedings{" in bibtex["bibtex"]
+        assert batch["papers"][0]["_input"] == "https://openalex.org/W4312223440"
+
+    @pytest.mark.asyncio
     async def test_a_record_without_a_doi_is_a_definitive_miss_naming_the_id(self, monkeypatch):
-        """Every tool below is DOI-keyed, so naming the id beats inventing a key
-        the cache would then own."""
-        _stub_work_id(monkeypatch, {"doi": None, "openalex_id": "https://openalex.org/W1"})
+        """When neither a DOI nor a usable work ID is returned, refuse with not_found."""
+        _stub_work_id(monkeypatch, {"doi": None, "openalex_id": None})
 
         result = await server.get_paper_metadata("W4312223440")
 
@@ -2580,3 +2630,87 @@ class TestBatchBackpressureAndSearchChaining:
         assert meta["_canonical_id"] == "10.1234/chained"
         assert meta["title"] == "Chained Paper"
         assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_search_openalex_doi_less_hit_chains_into_get_paper_metadata_in_one_request(
+        self, monkeypatch
+    ):
+        import json
+
+        import httpx
+
+        from academic_tools_mcp.net import clients
+
+        monkeypatch.setattr(openalex._throttle, "min_gap_seconds", 0.0)
+        monkeypatch.setattr(openalex._search_gap, "min_gap_seconds", 0.0)
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            payload = {
+                "meta": {"count": 1},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W4312223440",
+                        "doi": None,
+                        "title": "DOI-less Conference Paper",
+                        "publication_year": 2024,
+                        "cited_by_count": 5,
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=json.dumps(payload).encode(),
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+
+        search_out = await server.search_openalex("doi-less paper")
+        hit = search_out["results"][0]
+        assert hit["doi"] is None
+        meta = await server.get_paper_metadata(hit["openalex_id"])
+
+        assert meta["_source"] == "openalex"
+        assert meta["_canonical_id"] == "w4312223440"
+        assert meta["doi"] is None
+        assert meta["title"] == "DOI-less Conference Paper"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_download_pdf_allow_oa_url_supports_doi_less_openalex_work(
+        self, monkeypatch, tmp_path
+    ):
+        from academic_tools_mcp.download import openaccess, streaming
+        from academic_tools_mcp.store import cache
+
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+        _stub_work_id(
+            monkeypatch,
+            {"doi": None, "openalex_id": "https://openalex.org/W4312223440"},
+            work={
+                "id": "https://openalex.org/W4312223440",
+                "title": "OA DOI-less Work",
+                "best_oa_location": {"pdf_url": "https://example.org/paper.pdf"},
+            },
+        )
+
+        async def fake_stream(client, url, dest, **kwargs):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            payload = b"%PDF-1.4 fake oa pdf bytes"
+            dest.write_bytes(payload)
+            return {"path": str(dest), "size_bytes": len(payload), "cached": False}
+
+        monkeypatch.setattr(streaming, "stream_to_file", fake_stream)
+        monkeypatch.setattr(openaccess, "_get_client", object)
+
+        result = await server.download_pdf("W4312223440", allow_oa_url=True)
+
+        assert result["size_bytes"] == 26
+        assert result["cached"] is False
+        target = manual.resolve_target("W4312223440")
+        assert target["namespace"] == "manual"
+        assert target["canonical"] == "w4312223440"
+        assert target["pdf_path"].exists()

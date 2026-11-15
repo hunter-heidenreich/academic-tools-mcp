@@ -284,11 +284,10 @@ async def search_openalex(
     Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
     parse failure.
 
-    Chain get_paper_metadata(doi) for the full record: unlike a
-    search_crossref_by_title hit, a hit **with a doi** is already in the cache it
-    reads, so the follow-up costs no request. A ``doi: null`` hit is not fetchable
-    at all — these tools are DOI-keyed, so get_paper_metadata(openalex_id) refuses
-    it too; fetch the PDF yourself and label it with import_paper.
+    Chain get_paper_metadata(doi) (or get_paper_metadata(openalex_id) when
+    ``doi`` is null) for the full record: unlike a search_crossref_by_title hit,
+    every hit is already in the cache it reads, so the follow-up costs no
+    request.
     """
     response = await openalex.search_works(query, year=year, rows=max_results)
     if "error" in response:

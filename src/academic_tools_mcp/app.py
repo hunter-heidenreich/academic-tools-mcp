@@ -237,12 +237,11 @@ async def _trade_non_doi(
 ) -> tuple[str, dict[str, Any] | None]:
     """The PMID and OpenAlex-work-ID trades, in one order every caller shares.
 
-    The shapes are disjoint and each passes anything else through, so the order is not
-    load-bearing; sharing it is.
+    The shapes are disjoint: a PMID is traded once (to its DOI or OpenAlex work ID)
+    and never re-traded as a work ID.
     """
-    identifier, pmid_error = await resolve_pmid_identifier(identifier, force_refresh=force_refresh)
-    if pmid_error is not None:
-        return identifier, pmid_error
+    if openalex.is_pmid(identifier):
+        return await resolve_pmid_identifier(identifier, force_refresh=force_refresh)
     return await resolve_work_id_identifier(identifier, force_refresh=force_refresh)
 
 
@@ -280,13 +279,16 @@ async def resolve_pmid_identifier(
 
     doi = resolved.get("doi")
     if not doi:
-        # A real record with no DOI: every tool below is DOI- or arXiv-keyed, so
-        # naming the OpenAlex id beats inventing a key the cache would then own.
+        raw_id = resolved.get("openalex_id")
+        if isinstance(raw_id, str) and openalex.is_work_id(
+            bare_work_id := openalex.normalize_work_id(raw_id)
+        ):
+            await _repair_import(manual.refile_pmid_stems, identifier, bare_work_id)
+            return bare_work_id, None
         return identifier, {
             **http.not_found(
                 f"OpenAlex indexes PMID {openalex.normalize_pmid(identifier)} "
-                f"({resolved.get('openalex_id')}) without a DOI, and these tools "
-                "are DOI-keyed."
+                f"({raw_id}) without a DOI or usable OpenAlex work ID."
             ),
             "suggestion": (
                 "Fetch the PDF yourself and call import_paper with a label of "
@@ -301,7 +303,7 @@ async def resolve_pmid_identifier(
 async def resolve_work_id_identifier(
     identifier: str, *, force_refresh: bool = False
 ) -> tuple[str, dict[str, Any] | None]:
-    """Trade an OpenAlex work ID for its DOI; pass every other identifier through untouched.
+    """Trade an OpenAlex work ID for its DOI (or normalized work ID when DOI-less).
 
     Returns ``(identifier, None)`` or ``(identifier, error)``. Sibling of
     :func:`resolve_pmid_identifier`, kept separate so each trade's error names the
@@ -320,12 +322,16 @@ async def resolve_work_id_identifier(
 
     doi = resolved.get("doi")
     if not doi:
-        # A real record with no DOI: nothing below can key on it, so name it
-        # rather than 404 — this is what a DOI-less graph row resolves to.
+        raw_id = resolved.get("openalex_id")
+        if isinstance(raw_id, str) and openalex.is_work_id(
+            bare_work_id := openalex.normalize_work_id(raw_id)
+        ):
+            await _repair_import(manual.refile_work_id_stems, identifier, bare_work_id)
+            return bare_work_id, None
         return identifier, {
             **http.not_found(
                 f"OpenAlex indexes {openalex.normalize_work_id(identifier)} without a "
-                "DOI, and these tools are DOI-keyed."
+                "DOI or usable OpenAlex work ID."
             ),
             "suggestion": (
                 "Fetch the PDF yourself and call import_paper with a label of "
@@ -371,6 +377,15 @@ async def resolve_doi_identifier(
     doi, trade_error = await _trade_non_doi(doi, force_refresh=force_refresh)
     if trade_error is not None:
         return doi, trade_error
+    if openalex.is_work_id(doi):
+        return doi, {
+            **http.not_found(f"OpenAlex indexes {doi} without a DOI. {subject} are DOI-only."),
+            "suggestion": (
+                "Metadata, author, abstract, BibTeX, and OA-download tools accept "
+                f"{doi} directly; for references, read the paper's full text via "
+                "download_pdf(..., allow_oa_url=True) or import_paper."
+            ),
+        }
     if not doinorm.looks_like_doi(doi) and acl.is_anthology_id(doi):
         doi, acl_error = await _anthology_doi(doi, subject=subject, force_refresh=force_refresh)
         if acl_error is not None:

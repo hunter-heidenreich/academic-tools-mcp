@@ -525,6 +525,22 @@ class TestGetWorkDoiEncoding:
 
         assert _path_of(requests[0]) == "/works/doi:10.1038/nature12373"
 
+    @pytest.mark.asyncio
+    async def test_fetches_and_caches_work_id_without_doi_prefix(self, monkeypatch):
+        requests = _stub_json_responses(
+            monkeypatch,
+            {"id": "https://openalex.org/W4312223440", "doi": None, "title": "DOI-less Work"},
+        )
+
+        first = await openalex.get_work("https://openalex.org/W4312223440")
+        second = await openalex.get_work("W4312223440")
+
+        assert _path_of(requests[0]) == "/works/w4312223440"
+        assert len(requests) == 1
+        assert first["title"] == "DOI-less Work"
+        assert second["title"] == "DOI-less Work"
+        assert cache.get(openalex.NAMESPACE, "works", "w4312223440", max_age_seconds=3600)
+
 
 # ---------------------------------------------------------------------------
 # get_author
@@ -1339,17 +1355,21 @@ class TestSearchWorks:
         assert parse_qs(requests[0].url.query.decode())["per-page"] == ["1"]
 
     @pytest.mark.asyncio
-    async def test_a_hit_without_a_doi_is_returned_but_not_warmed(self, monkeypatch):
-        """OpenAlex indexes works with no DOI. They are real results; there is
-        just no DOI key to file them under."""
+    async def test_a_hit_without_a_doi_warms_under_its_canonical_work_id(self, monkeypatch):
+        """OpenAlex indexes works with no DOI. Warming them under their
+        canonical work ID `w...` lets follow-up tools read the cached record."""
         _stub_json_responses(
             monkeypatch,
-            {"meta": {"count": 1}, "results": [{"id": "https://openalex.org/W9", "doi": None}]},
+            {
+                "meta": {"count": 1},
+                "results": [{"id": "https://openalex.org/W4312223440", "doi": None}],
+            },
         )
 
         result = await openalex.search_works("q")
 
         assert len(result["items"]) == 1
+        assert cache.get(openalex.NAMESPACE, "works", "w4312223440", max_age_seconds=3600)
 
     @pytest.mark.asyncio
     async def test_non_dict_rows_are_dropped_not_passed_on(self, monkeypatch):
