@@ -9,7 +9,7 @@ the provider actually uses stay in the path.
 
 import asyncio
 import json
-from typing import Any, NamedTuple
+from typing import Any, ClassVar, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -2045,3 +2045,94 @@ class TestResolveWorkId:
         )
 
         assert {r.url.path for r in requests} == {"/works/pmid:20079334", "/works/w4312223440"}
+
+
+class TestWorkMappingCrossWarming:
+    """Every full work fetch warms ``work_ids`` and ``pmids`` mappings so follow-up
+    resolutions by OpenAlex work ID or PMID make zero additional HTTP requests."""
+
+    WORK: ClassVar[dict[str, Any]] = {
+        "id": "https://openalex.org/W4312223440",
+        "doi": "https://doi.org/10.1234/x",
+        "title": "A Great Work",
+        "ids": {
+            "openalex": "https://openalex.org/W4312223440",
+            "doi": "https://doi.org/10.1234/x",
+            "pmid": "https://pubmed.ncbi.nlm.nih.gov/20079334",
+        },
+    }
+
+    @pytest.mark.asyncio
+    async def test_search_works_warms_work_ids_and_pmids(self, monkeypatch):
+        requests = _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [self.WORK]},
+        )
+
+        await openalex.search_works("attention")
+        assert len(requests) == 1
+
+        by_work_id = await openalex.resolve_work_id("W4312223440")
+        by_pmid = await openalex.resolve_pmid("20079334")
+        by_doi = await openalex.get_work("10.1234/x")
+
+        expected = {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W4312223440"}
+        assert by_work_id == expected
+        assert by_pmid == expected
+        assert by_doi["id"] == "https://openalex.org/W4312223440"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_work_warms_work_ids_and_pmids(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, self.WORK)
+
+        await openalex.get_work("10.1234/x")
+        assert len(requests) == 1
+
+        by_work_id = await openalex.resolve_work_id("W4312223440")
+        by_pmid = await openalex.resolve_pmid("pmid:20079334")
+
+        expected = {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W4312223440"}
+        assert by_work_id == expected
+        assert by_pmid == expected
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_works_batch_warms_work_ids_and_pmids(self, monkeypatch):
+        requests = _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [self.WORK]},
+        )
+
+        await openalex.get_works_batch(["10.1234/x"])
+        assert len(requests) == 1
+
+        by_work_id = await openalex.resolve_work_id("W4312223440")
+        by_pmid = await openalex.resolve_pmid("20079334")
+
+        expected = {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W4312223440"}
+        assert by_work_id == expected
+        assert by_pmid == expected
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_pmid_warms_work_ids(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, self.WORK)
+
+        await openalex.resolve_pmid("20079334")
+        assert len(requests) == 1
+
+        by_work_id = await openalex.resolve_work_id("W4312223440")
+        assert by_work_id == {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W4312223440"}
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_work_id_warms_pmids(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, self.WORK)
+
+        await openalex.resolve_work_id("W4312223440")
+        assert len(requests) == 1
+
+        by_pmid = await openalex.resolve_pmid("20079334")
+        assert by_pmid == {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W4312223440"}
+        assert len(requests) == 1

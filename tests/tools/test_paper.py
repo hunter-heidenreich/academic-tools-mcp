@@ -2403,3 +2403,180 @@ class TestUntypedPaperFieldGuards:
 
         result = await server.get_author("A1")
         assert result["affiliations"][0]["years"] == [2022, 2024]
+
+
+class TestBatchBackpressureAndSearchChaining:
+    """Large non-DOI and singleton fan-outs in ``get_papers_metadata`` must stay
+    within provider throttle concurrency/burst caps, and chaining
+    ``search_openalex`` -> ``get_paper_metadata(hit["openalex_id"])`` must hit
+    the cross-warmed cache with zero additional HTTP requests."""
+
+    @pytest.mark.asyncio
+    async def test_twenty_cold_pmids_complete_without_backpressure(self, monkeypatch):
+        import asyncio
+        import json
+
+        import httpx
+
+        from academic_tools_mcp.net import clients
+
+        monkeypatch.setattr(openalex._throttle, "min_gap_seconds", 0.0)
+        requests: list[str] = []
+
+        async def respond(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(0)
+            requests.append(request.url.path)
+            pmid = request.url.path.removeprefix("/works/pmid:")
+            payload = {
+                "id": f"https://openalex.org/W{pmid}",
+                "doi": f"https://doi.org/10.1234/p{pmid}",
+                "title": f"Paper {pmid}",
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=json.dumps(payload).encode(),
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+
+        pmids = [f"pmid:{20000000 + i}" for i in range(20)]
+        result = await server.get_papers_metadata(identifiers=pmids)
+
+        assert result["count"] == 20
+        assert all("error" not in p and p["_source"] == "openalex" for p in result["papers"])
+        assert [p["_input"] for p in result["papers"]] == pmids
+        # Each PMID resolution warmed `works`, so the batch step made 0 extra calls.
+        assert len(requests) == 20
+
+    @pytest.mark.asyncio
+    async def test_twenty_cold_work_ids_complete_without_backpressure(self, monkeypatch):
+        import asyncio
+        import json
+
+        import httpx
+
+        from academic_tools_mcp.net import clients
+
+        monkeypatch.setattr(openalex._throttle, "min_gap_seconds", 0.0)
+        requests: list[str] = []
+
+        async def respond(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(0)
+            requests.append(request.url.path)
+            wid = request.url.path.removeprefix("/works/").upper()
+            payload = {
+                "id": f"https://openalex.org/{wid}",
+                "doi": f"https://doi.org/10.1234/{wid.lower()}",
+                "title": f"Work {wid}",
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=json.dumps(payload).encode(),
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+
+        work_ids = [f"W{4300000000 + i}" for i in range(20)]
+        result = await server.get_papers_metadata(identifiers=work_ids)
+
+        assert result["count"] == 20
+        assert all("error" not in p and p["_source"] == "openalex" for p in result["papers"])
+        assert [p["_input"] for p in result["papers"]] == work_ids
+        assert len(requests) == 20
+
+    @pytest.mark.asyncio
+    async def test_twenty_cold_biorxiv_dois_complete_without_backpressure(self, monkeypatch):
+        import asyncio
+        import json
+
+        import httpx
+
+        from academic_tools_mcp.net import clients
+
+        monkeypatch.setattr(biorxiv._throttle, "min_gap_seconds", 0.0)
+        requests: list[str] = []
+
+        async def respond(request: httpx.Request) -> httpx.Response:
+            await asyncio.sleep(0)
+            requests.append(request.url.path)
+            # /details/biorxiv/10.1101/.../na/json
+            parts = request.url.path.split("/")
+            doi = f"{parts[3]}/{parts[4]}"
+            payload = {
+                "messages": [{"status": "ok"}],
+                "collection": [
+                    {
+                        "doi": doi,
+                        "title": f"Preprint {doi}",
+                        "date": "2024-01-01",
+                        "version": "1",
+                        "server": "biorxiv",
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=json.dumps(payload).encode(),
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+
+        dois = [f"10.1101/2024.01.01.{100000 + i}" for i in range(20)]
+        result = await server.get_papers_metadata(identifiers=dois)
+
+        assert result["count"] == 20
+        assert all("error" not in p and p["_source"] == "biorxiv" for p in result["papers"])
+        assert [p["_input"] for p in result["papers"]] == dois
+        assert len(requests) == 20
+
+    @pytest.mark.asyncio
+    async def test_search_openalex_chained_to_get_paper_metadata_by_openalex_id_is_one_request(
+        self, monkeypatch
+    ):
+        import json
+
+        import httpx
+
+        from academic_tools_mcp.net import clients
+
+        monkeypatch.setattr(openalex._throttle, "min_gap_seconds", 0.0)
+        monkeypatch.setattr(openalex._search_gap, "min_gap_seconds", 0.0)
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            payload = {
+                "meta": {"count": 1},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W4312223440",
+                        "doi": "https://doi.org/10.1234/chained",
+                        "title": "Chained Paper",
+                        "publication_year": 2024,
+                        "cited_by_count": 12,
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                content=json.dumps(payload).encode(),
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+
+        search_out = await server.search_openalex("chained paper")
+        hit = search_out["results"][0]
+        meta = await server.get_paper_metadata(hit["openalex_id"])
+
+        assert meta["_source"] == "openalex"
+        assert meta["_canonical_id"] == "10.1234/chained"
+        assert meta["title"] == "Chained Paper"
+        assert len(requests) == 1
