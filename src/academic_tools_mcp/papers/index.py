@@ -60,6 +60,20 @@ def recorded_conversion_mode(namespace: str, canonical: str) -> str | None:
     return mode if isinstance(mode, str) else None
 
 
+def recorded_canonical_id(namespace: str, stem: str) -> str | None:
+    """Return the exact ``canonical_id`` recorded in a paper's sections index, or ``None``.
+
+    Looked up by *stem* (via :func:`sections_key_for_stem`) so callers that only
+    have an on-disk filename can recover the pre-sanitized identifier without
+    ambiguity when a DOI or manual label contains both ``/`` and ``_``.
+    """
+    entry = cache.get(namespace, "sections", sections_key_for_stem(stem), count=False)
+    if entry is None:
+        return None
+    cid = entry.get("canonical_id")
+    return cid if isinstance(cid, str) and cid else None
+
+
 def rekey_sections(
     src_namespace: str, src_stem: str, dst_namespace: str, dst_canonical: str
 ) -> bool:
@@ -81,7 +95,10 @@ def rekey_sections(
     if cache.get(dst_namespace, "sections", dst_key, count=False) is not None:
         return False
 
-    cache.put(dst_namespace, "sections", dst_key, dict(entry))
+    updated = dict(entry)
+    if "canonical_id" in updated:
+        updated["canonical_id"] = dst_canonical
+    cache.put(dst_namespace, "sections", dst_key, updated)
     return True
 
 
@@ -164,6 +181,7 @@ async def reparse_sections_locked(
         "sections_detected": detected,
         "markdown_checksum": current_checksum,
         "conversion_mode": recorded_mode,
+        "canonical_id": canonical,
     }
     cache.put(namespace, "sections", sections_key(canonical), payload)
     return payload
@@ -227,6 +245,7 @@ def store_markdown_and_index(
             "sections_detected": detected,
             "markdown_checksum": checksum_text(markdown),
             "conversion_mode": mode,
+            "canonical_id": canonical,
         },
     )
     return {

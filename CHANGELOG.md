@@ -17,6 +17,16 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Lossless `canonical_id` round-tripping in the sections index and corpus FTS5 table.**
+  `papers.store_markdown_and_index` and `papers.reparse_sections_locked` now record
+  `"canonical_id": canonical` in each paper's sections index entry, `papers.rekey_sections`
+  updates `"canonical_id"` to `dst_canonical` when re-filing a paper, and
+  `papers.recorded_canonical_id(namespace, stem)` exposes the exact identifier by stem.
+  `corpus._reindex_file` stores `canonical_id` in the `files` table (`_SCHEMA_VERSION = 4`),
+  preferring `papers.recorded_canonical_id` over `_filename_to_canonical` so DOIs with
+  multiple slashes (`10.1000/sub/part_1`) round-trip losslessly through `corpus.search`
+  and `corpus.unindexable`. ([#183])
+
 - **`get_paper_code`, `get_paper_catalog`, and `get_paper_evaluations` auto-resolve DOIs,
   PMIDs, and OpenAlex `W...` work IDs to their arXiv ID via OpenAlex.** When handed a
   published journal or conference DOI, a PMID, or an OpenAlex work ID instead of an
@@ -2404,3 +2414,4 @@ say which.
 [#180]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/180
 [#181]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/181
 [#182]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/182
+[#183]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/183

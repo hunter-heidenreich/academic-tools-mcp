@@ -374,7 +374,9 @@ class TestImportMarkdown:
             "sections_detected",
             "markdown_checksum",
             "conversion_mode",
+            "canonical_id",
         }
+        assert cached["canonical_id"] == canonical
         # "imported" rather than None: this markdown never ran through a
         # converter, which is a different fact from "converted before the field
         # existed".

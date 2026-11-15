@@ -24,6 +24,11 @@ it is the one markdown writer outside the per-paper lock discipline, which is wh
 leaves a reader matching a checksum against bytes that no longer exist. **Don't
 unlink markdown anywhere else.**
 
+**`store_markdown_and_index` and `reparse_sections_locked` record `"canonical_id": canonical`
+on every sections index entry, and `rekey_sections` updates it to `dst_canonical`.**
+`recorded_canonical_id(namespace, stem)` lets callers that only have an on-disk
+filename recover the pre-sanitized identifier without guessing which `_` came from `/`.
+
 ### Sections and in-paper search
 
 - **`_scan()` is the only heading scan**, and its readers span modules —
