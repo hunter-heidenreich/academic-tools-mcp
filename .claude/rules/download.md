@@ -15,6 +15,10 @@ paths:
 
 - **Every new terminal branch in `stream_to_file` must carry an explicit `retryable`
   verdict**, or `is_definitive_failure` silently treats it as transient.
+- **`stream_to_file` gates both the initial URL and every redirect hop on
+  `http.is_public_http_url` via `require_public_url`.** Any non-HTTP(S) or
+  non-public target raises `UnsupportedProtocol` / `InvalidURL` before the transport
+  is called, landing on the `retryable: False` branch.
 - **`stream_to_file`'s `except OSError` is what makes a local write failure
   `{error, retryable: True}`** — a disk operation added outside it is not covered.
 

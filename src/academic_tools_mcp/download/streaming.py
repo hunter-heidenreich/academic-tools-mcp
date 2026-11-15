@@ -42,6 +42,22 @@ async def _error_snippet(response: httpx.Response) -> str:
     return ""
 
 
+async def require_public_url(request: httpx.Request) -> None:
+    """Refuse non-HTTP(S) schemes and non-public hosts before sending ``request``.
+
+    Installed as an ``httpx`` request event hook so every redirect hop is checked
+    before the transport opens a connection to the redirect target.
+    """
+    if request.url.scheme not in ("http", "https"):
+        raise httpx.UnsupportedProtocol(
+            f"Request URL has an unsupported protocol '{request.url.scheme}://'.",
+            request=request,
+        )
+    url = str(request.url)
+    if not http.is_public_http_url(url):
+        raise httpx.InvalidURL(f"Disallowed non-public host in URL: {url}")
+
+
 def resolve_max_pdf_bytes() -> int | None:
     """Resolve the ``MAX_PDF_BYTES`` env var.
 
@@ -103,6 +119,12 @@ async def stream_to_file(
     written = 0
 
     try:
+        if not http.is_public_http_url(url):
+            raise httpx.InvalidURL(f"Disallowed non-public host in URL: {url}")
+        if isinstance(client, httpx.AsyncClient):
+            req_hooks = client.event_hooks.setdefault("request", [])
+            if require_public_url not in req_hooks:
+                req_hooks.append(require_public_url)
         async with slot_factory(), client.stream("GET", url, timeout=timeout) as response:
             if response.status_code == 404:
                 return {

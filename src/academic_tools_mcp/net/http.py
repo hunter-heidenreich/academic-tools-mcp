@@ -23,8 +23,10 @@ Usage. The client is the provider's pooled singleton and the GET goes through it
 """
 
 import asyncio
+import ipaddress
 import json
 import math
+import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -119,6 +121,61 @@ def addresses_a_record(url: str) -> bool:
         return False
     # Read on the *encoded* path, so an escaped `%2E` is a normal segment, not a dot segment.
     return not any(segment in (".", "..") for segment in path.split("/"))
+
+
+_LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal")
+_NUMERIC_LABEL_RE = re.compile(r"^(?:[0-9]+|0x[0-9a-f]+)$")
+
+
+def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Whether ``ip`` is a publicly routable unicast address."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return (
+        ip.is_global
+        and not ip.is_private
+        and not ip.is_loopback
+        and not ip.is_link_local
+        and not ip.is_multicast
+        and not ip.is_unspecified
+        and not ip.is_reserved
+    )
+
+
+def is_public_http_url(url: str) -> bool:
+    """Whether ``url`` is an ``http(s)`` URL with a valid port and a public host.
+
+    Rejects non-HTTP(S) schemes, embedded credentials, whitespace, ``localhost`` /
+    ``.local`` / ``.internal`` names, non-global IP literals (loopback, RFC 1918
+    private, link-local / cloud-metadata ``169.254.0.0/16``, multicast,
+    unspecified, reserved, IPv4-mapped IPv6), and ``inet_aton`` numeric/hex/octal
+    IPv4 shorthands.
+    """
+    if not isinstance(url, str):
+        return False
+    candidate = url.strip()
+    if not candidate or candidate != url or any(c.isspace() for c in candidate):
+        return False
+    try:
+        parts = urlsplit(candidate)
+        _ = parts.port
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    host = parts.hostname.rstrip(".").lower()
+    if not host or host == "localhost" or host.endswith(_LOCAL_HOST_SUFFIXES):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        if ":" in host:
+            return False
+        last_label = host.rsplit(".", 1)[-1]
+        return not _NUMERIC_LABEL_RE.match(last_label)
+    return _is_public_ip(ip)
 
 
 def not_found(message: str) -> dict[str, Any]:

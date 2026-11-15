@@ -1,5 +1,6 @@
 """Tests for the shared HTTP error normalization helper."""
 
+import ipaddress
 import json
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -7,6 +8,8 @@ from urllib.parse import urlsplit
 
 import httpx
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from academic_tools_mcp.net import http, stats
 
@@ -954,3 +957,79 @@ class TestQuotaExhaustedErrorDict:
 
     def test_it_is_in_the_except_tuple(self):
         assert http.QuotaExhaustedError in http.HTTPX_ERRORS
+
+
+class TestIsPublicHttpUrl:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://arxiv.org/pdf/1706.03762.pdf",
+            "http://publisher.example/paper.pdf",
+            "https://93.184.216.34/paper.pdf",
+            "https://[2606:2800:220:1:248:1893:25c8:1946]/paper.pdf",
+        ],
+    )
+    def test_public_http_urls_pass(self, url: str) -> None:
+        assert http.is_public_http_url(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "",
+            "   ",
+            " https://example.org/p.pdf",
+            "https://example.org/p.pdf\n",
+            "https://example.org/a b.pdf",
+            "ftp://example.org/p.pdf",
+            "file:///etc/passwd",
+            "http:///no-host.pdf",
+            "http://user:pass@example.org/p.pdf",
+            "http://example.org:badport/p.pdf",
+            "http://localhost/p.pdf",
+            "http://LOCALHOST./p.pdf",
+            "http://sub.localhost/p.pdf",
+            "http://intranet.local/p.pdf",
+            "http://metadata.google.internal/computeMetadata/v1/",
+            "http://127.0.0.1/p.pdf",
+            "http://127.255.255.254:8080/p.pdf",
+            "http://10.0.0.1/p.pdf",
+            "http://172.16.0.1/p.pdf",
+            "http://192.168.1.1/p.pdf",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://0.0.0.0/p.pdf",
+            "http://100.64.0.1/p.pdf",
+            "http://224.0.0.1/p.pdf",
+            "http://[::1]/p.pdf",
+            "http://[::ffff:127.0.0.1]/p.pdf",
+            "http://[::ffff:169.254.169.254]/p.pdf",
+            "http://[fe80::1]/p.pdf",
+            "http://[fe80::1%25eth0]/p.pdf",
+            "http://[fc00::1]/p.pdf",
+            "http://2130706433/p.pdf",
+            "http://127.1/p.pdf",
+            "http://0177.0.0.1/p.pdf",
+            "http://0x7f.0.0.1/p.pdf",
+        ],
+    )
+    def test_non_public_or_malformed_urls_are_rejected(self, url: str) -> None:
+        assert http.is_public_http_url(url) is False
+
+    def test_non_string_is_rejected(self) -> None:
+        assert http.is_public_http_url(None) is False  # type: ignore[arg-type]
+
+    @given(st.ip_addresses())
+    def test_ip_literal_matches_global_unicast_definition(
+        self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address
+    ) -> None:
+        host = f"[{ip}]" if isinstance(ip, ipaddress.IPv6Address) else str(ip)
+        url = f"https://{host}/paper.pdf"
+        expected = (
+            ip.is_global
+            and not ip.is_private
+            and not ip.is_loopback
+            and not ip.is_link_local
+            and not ip.is_multicast
+            and not ip.is_unspecified
+            and not ip.is_reserved
+        )
+        assert http.is_public_http_url(url) is expected
