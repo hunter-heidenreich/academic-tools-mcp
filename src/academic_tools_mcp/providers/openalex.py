@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -442,6 +442,32 @@ _BATCH_CHUNK_SIZE = 50
 MAX_SEARCH_RESULTS = 50
 
 
+async def _get_results_page(
+    fetch: Callable[[], Awaitable[httpx.Response]],
+) -> dict[str, Any]:
+    """Run a list or typeahead GET and unwrap ``{"items": [...], "total_results": N | None}``."""
+    try:
+        response = await fetch()
+        response.raise_for_status()
+        data = response.json()
+    except _PARSE_ERRORS:
+        return _parse_error_dict()
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(LABEL, e)
+
+    # A wrong shape here either raises out of the provider or reads as an empty
+    # result set, and "no matches" ends the agent's search.
+    if not isinstance(data, dict):
+        return _parse_error_dict()
+    results = data.get("results")
+    if not isinstance(results, list):
+        return _parse_error_dict()
+    return {
+        "items": [item for item in results if isinstance(item, dict)],
+        "total_results": _meta_count(data),
+    }
+
+
 async def search_works(query: str, *, year: int | None = None, rows: int = 10) -> dict[str, Any]:
     """Search OpenAlex works by free text over title, abstract and fulltext.
 
@@ -462,25 +488,13 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
     if year is not None:
         params["filter"] = f"publication_year:{year}"
 
-    try:
-        response = await _throttled_search_get(f"{OPENALEX_BASE_URL}/works", params=params)
-        response.raise_for_status()
-        data = response.json()
-    except _PARSE_ERRORS:
-        return _parse_error_dict()
-    except http.HTTPX_ERRORS as e:
-        return http.error_dict(LABEL, e)
+    page = await _get_results_page(
+        lambda: _throttled_search_get(f"{OPENALEX_BASE_URL}/works", params=params)
+    )
+    if "error" in page:
+        return page
 
-    # A wrong shape here either raises out of the provider or reads as an empty
-    # result set, and "no papers match" ends the agent's search.
-    if not isinstance(data, dict):
-        return _parse_error_dict()
-    results = data.get("results")
-    if not isinstance(results, list):
-        return _parse_error_dict()
-    items = [item for item in results if isinstance(item, dict)]
-
-    for item in items:
+    for item in page["items"]:
         # Strips the resolver prefix a response DOI carries, and shape-guards:
         # this runs outside the ``try`` above.
         if canonical := _canonical_from_response_doi(item.get("doi")):
@@ -493,7 +507,7 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
             cache.warm(NAMESPACE, "works", w_key, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
         _warm_work_mappings(item, doi=canonical)
 
-    return {"items": items, "total_results": _meta_count(data)}
+    return page
 
 
 async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
@@ -512,32 +526,20 @@ async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
     params["search"] = query
     params["per-page"] = str(min(max(rows, 1), MAX_SEARCH_RESULTS))
 
-    try:
-        response = await _throttled_search_get(f"{OPENALEX_BASE_URL}/authors", params=params)
-        response.raise_for_status()
-        data = response.json()
-    except _PARSE_ERRORS:
-        return _parse_error_dict()
-    except http.HTTPX_ERRORS as e:
-        return http.error_dict(LABEL, e)
+    page = await _get_results_page(
+        lambda: _throttled_search_get(f"{OPENALEX_BASE_URL}/authors", params=params)
+    )
+    if "error" in page:
+        return page
 
-    # A wrong shape here either raises out of the provider or reads as an empty
-    # result set, and "no such person" ends the agent's search.
-    if not isinstance(data, dict):
-        return _parse_error_dict()
-    results = data.get("results")
-    if not isinstance(results, list):
-        return _parse_error_dict()
-    items = [item for item in results if isinstance(item, dict)]
-
-    for item in items:
+    for item in page["items"]:
         # Shape-guarded before `canonical_author_id` strips it: this runs
         # outside the ``try`` above.
         raw_id = item.get("id")
         if isinstance(raw_id, str) and (canonical := canonical_author_id(raw_id)):
             cache.warm(NAMESPACE, "authors", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
 
-    return {"items": items, "total_results": _meta_count(data)}
+    return page
 
 
 # Closed: the value reaches a URL path segment, so an unvalidated one is a request-side hole.
@@ -557,30 +559,116 @@ async def autocomplete(query: str, *, entity_type: AutocompleteEntity = "works")
     """
     params = _build_params()
     params["q"] = query
+    # `safe=""`: a collection name has no path structure, so a stray slash is an escape.
+    url = f"{OPENALEX_BASE_URL}/autocomplete/{quote(entity_type, safe='')}"
+    return await _get_results_page(lambda: _throttled_get(url, params=params, metered=False))
+
+
+def _partition_batch_cache(
+    entity: str,
+    canonicals: list[str],
+    *,
+    force_refresh: bool,
+    shape_re: re.Pattern[str] | None = None,
+    not_found_label: str = "",
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Split ``canonicals`` into ``(cached_or_rejected_out, misses_to_fetch)``."""
+    out: dict[str, dict[str, Any]] = {}
+    misses: list[str] = []
+    for canonical in canonicals:
+        if shape_re is not None and not shape_re.match(canonical):
+            out[canonical] = http.not_found(f"No work found for {not_found_label}: {canonical}")
+            continue
+        if force_refresh:
+            cache.invalidate(NAMESPACE, entity, canonical)
+            misses.append(canonical)
+            continue
+        cached = cache.get(NAMESPACE, entity, canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            out[canonical] = cached
+            continue
+        neg = cache.get_negative(NAMESPACE, entity, canonical)
+        if neg is not None:
+            out[canonical] = neg
+            continue
+        misses.append(canonical)
+    return out, misses
+
+
+async def _fetch_filter_chunk_uncoalesced(
+    chunk: list[str],
+    *,
+    entity: str,
+    filter_key: str,
+    not_found_label: str,
+    store_work_item: Callable[[dict[str, Any], set[str]], tuple[str, dict[str, Any]] | None],
+) -> dict[str, dict[str, Any]]:
+    """Execute one ``/works?filter=<filter_key>:a|b|c`` chunk and account for misses.
+
+    ``store_work_item(work, chunk_set)`` warms/caches ``work`` and returns
+    ``(matched_key, value_for_out)`` when ``work`` answers a requested key in
+    ``chunk_set``, or ``None`` when ``work`` is unattributable to the chunk.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    params = _build_params()
+    params["filter"] = f"{filter_key}:" + "|".join(chunk)
+    params["per-page"] = str(len(chunk))
 
     try:
-        # `safe=""`: a collection name has no path structure, so a stray slash is an escape.
-        url = f"{OPENALEX_BASE_URL}/autocomplete/{quote(entity_type, safe='')}"
-        response = await _throttled_get(url, params=params, metered=False)  # zero credits
+        response = await _throttled_get(f"{OPENALEX_BASE_URL}/works", params=params)
         response.raise_for_status()
         data = response.json()
     except _PARSE_ERRORS:
-        return _parse_error_dict()
+        # Invariant: one fresh dict per key — ``dict.fromkeys`` would alias one
+        # object across the chunk, so a caller mutating its error corrupts all of them.
+        return {c: _parse_error_dict() for c in chunk}
     except http.HTTPX_ERRORS as e:
-        return http.error_dict(LABEL, e)
+        return {c: http.error_dict(LABEL, e) for c in chunk}
 
-    # A wrong shape here either raises out of the provider or reads as an empty
-    # result set, and "no matches" ends the agent's search.
     if not isinstance(data, dict):
-        return _parse_error_dict()
+        return {c: _parse_error_dict() for c in chunk}
+
+    # No ``or []`` ahead of the guard: it turns a falsy wrong shape — and a body with no
+    # ``results`` at all — into an empty page, which the accounting below then reads as
+    # every key in the chunk being definitively absent.
     results = data.get("results")
     if not isinstance(results, list):
-        return _parse_error_dict()
+        return {c: _parse_error_dict() for c in chunk}
 
-    return {
-        "items": [item for item in results if isinstance(item, dict)],
-        "total_results": _meta_count(data),
-    }
+    chunk_set = set(chunk)
+    seen_in_chunk: set[str] = set()
+    unattributed = 0
+    for work in results:
+        if not isinstance(work, dict):
+            unattributed += 1
+            continue
+        matched = store_work_item(work, chunk_set)
+        if matched is None:
+            unattributed += 1
+            continue
+        key, val = matched
+        out[key] = val
+        seen_in_chunk.add(key)
+
+    # A key we asked for and didn't get back is a definitive miss only if the response
+    # accounted for itself: after an unattributable record or a truncated page it may well
+    # exist, and negative-caching would poison a live identifier for the negative TTL.
+    reported = _meta_count(data)
+    truncated = reported is not None and reported > len(results)
+    trustworthy = unattributed == 0 and not truncated
+
+    for canonical in chunk:
+        if canonical in seen_in_chunk:
+            continue
+        err = http.not_found(f"No work found for {not_found_label}: {canonical}")
+        if trustworthy:
+            cache.put_negative(NAMESPACE, entity, canonical, err)
+        else:
+            # Inconclusive rather than absent — let the caller retry.
+            err = {"error": err["error"], "retryable": True}
+        out[canonical] = err
+
+    return out
 
 
 async def _fetch_chunk(
@@ -612,78 +700,26 @@ async def _fetch_chunk(
 
 
 async def _fetch_chunk_uncoalesced(chunk: list[str]) -> dict[str, dict[str, Any]]:
-    """The actual batch GET + result mapping for one chunk."""
-    out: dict[str, dict[str, Any]] = {}
-    params = _build_params()
-    # OpenAlex filter syntax: ``|`` is OR, and it wants the bare DOI, no resolver prefix.
-    params["filter"] = "doi:" + "|".join(chunk)
-    params["per-page"] = str(len(chunk))
+    """The actual batch GET + result mapping for one DOI chunk."""
 
-    try:
-        response = await _throttled_get(f"{OPENALEX_BASE_URL}/works", params=params)
-        response.raise_for_status()
-        data = response.json()
-    except _PARSE_ERRORS:
-        # A garbled 200 body is transient: every DOI in the chunk gets a retryable
-        # error, nothing is negative-cached (a retry must re-fetch), and we can't tell
-        # which DOI upstream meant to error on. Invariant: one fresh dict per key —
-        # ``dict.fromkeys`` would alias one object across the chunk, so a caller
-        # mutating its error corrupts all of them.
-        return {c: _parse_error_dict() for c in chunk}
-    except http.HTTPX_ERRORS as e:
-        return {c: http.error_dict(LABEL, e) for c in chunk}
-
-    if not isinstance(data, dict):
-        return {c: _parse_error_dict() for c in chunk}
-
-    # No ``or []`` ahead of the guard: it turns a falsy wrong shape — and a body with no
-    # ``results`` at all — into an empty page, which the accounting below then reads as
-    # every DOI in the chunk being definitively absent.
-    results = data.get("results")
-    if not isinstance(results, list):
-        return {c: _parse_error_dict() for c in chunk}
-
-    chunk_set = set(chunk)
-    seen_in_chunk: set[str] = set()
-    unattributed = 0
-    for work in results:
-        work_canonical = (
-            _canonical_from_response_doi(work.get("doi")) if isinstance(work, dict) else None
-        )
+    def _store_doi_work(
+        work: dict[str, Any], chunk_set: set[str]
+    ) -> tuple[str, dict[str, Any]] | None:
+        work_canonical = _canonical_from_response_doi(work.get("doi"))
+        if work_canonical is not None:
+            cache.put(NAMESPACE, "works", work_canonical, work)
+            _warm_work_mappings(work, doi=work_canonical)
         if work_canonical is None or work_canonical not in chunk_set:
-            # Unattributable — a non-dict entry, no usable ``doi``, or a DOI we did not
-            # ask for: still real data worth caching, but the response no longer accounts
-            # for itself.
-            unattributed += 1
-            if work_canonical is not None:
-                cache.put(NAMESPACE, "works", work_canonical, work)
-                _warm_work_mappings(work, doi=work_canonical)
-            continue
-        cache.put(NAMESPACE, "works", work_canonical, work)
-        _warm_work_mappings(work, doi=work_canonical)
-        out[work_canonical] = work
-        seen_in_chunk.add(work_canonical)
+            return None
+        return work_canonical, work
 
-    # A DOI we asked for and didn't get back is a definitive miss only if the response
-    # accounted for itself: after an unattributable record or a truncated page it may well
-    # exist, and negative-caching would poison a live DOI for the negative TTL.
-    reported = _meta_count(data)
-    truncated = reported is not None and reported > len(results)
-    trustworthy = unattributed == 0 and not truncated
-
-    for canonical in chunk:
-        if canonical in seen_in_chunk:
-            continue
-        err: dict[str, Any] = {"error": f"No work found for DOI: {canonical}"}
-        if trustworthy:
-            err["not_found"] = True
-            cache.put_negative(NAMESPACE, "works", canonical, err)
-        else:
-            # Inconclusive rather than absent — let the caller retry.
-            err["retryable"] = True
-        out[canonical] = err
-
-    return out
+    return await _fetch_filter_chunk_uncoalesced(
+        chunk,
+        entity="works",
+        filter_key="doi",
+        not_found_label="DOI",
+        store_work_item=_store_doi_work,
+    )
 
 
 async def get_works_batch(
@@ -707,32 +743,8 @@ async def get_works_batch(
     A transient failure contaminates its whole chunk: one HTTP failure doesn't
     say which DOI the upstream meant to error on.
     """
-    canonicals_in_order: list[str] = []
-    seen: set[str] = set()
-    for doi in dois:
-        canonical = canonical_doi(doi)
-        if canonical in seen:
-            continue
-        seen.add(canonical)
-        canonicals_in_order.append(canonical)
-
-    out: dict[str, dict[str, Any]] = {}
-    misses: list[str] = []
-
-    for canonical in canonicals_in_order:
-        if force_refresh:
-            cache.invalidate(NAMESPACE, "works", canonical)
-            misses.append(canonical)
-            continue
-        cached = cache.get(NAMESPACE, "works", canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            out[canonical] = cached
-            continue
-        neg = cache.get_negative(NAMESPACE, "works", canonical)
-        if neg is not None:
-            out[canonical] = neg
-            continue
-        misses.append(canonical)
+    canonicals_in_order = list(dict.fromkeys(canonical_doi(d) for d in dois))
+    out, misses = _partition_batch_cache("works", canonicals_in_order, force_refresh=force_refresh)
 
     # A DOI holding a filter metacharacter (``|`` = OR, ``,`` = AND) would corrupt the
     # OR-joined query and silently shift which records resolve, so it goes through
@@ -799,34 +811,10 @@ async def _fetch_id_chunk_uncoalesced(
     not_found_label: str,
 ) -> dict[str, dict[str, Any]]:
     """The actual batch GET + mapping extraction for one PMID or work-ID chunk."""
-    out: dict[str, dict[str, Any]] = {}
-    params = _build_params()
-    params["filter"] = f"{filter_key}:" + "|".join(chunk)
-    params["per-page"] = str(len(chunk))
 
-    try:
-        response = await _throttled_get(f"{OPENALEX_BASE_URL}/works", params=params)
-        response.raise_for_status()
-        data = response.json()
-    except _PARSE_ERRORS:
-        return {c: _parse_error_dict() for c in chunk}
-    except http.HTTPX_ERRORS as e:
-        return {c: http.error_dict(LABEL, e) for c in chunk}
-
-    if not isinstance(data, dict):
-        return {c: _parse_error_dict() for c in chunk}
-
-    results = data.get("results")
-    if not isinstance(results, list):
-        return {c: _parse_error_dict() for c in chunk}
-
-    chunk_set = set(chunk)
-    seen_in_chunk: set[str] = set()
-    unattributed = 0
-    for work in results:
-        if not isinstance(work, dict):
-            unattributed += 1
-            continue
+    def _store_id_work(
+        work: dict[str, Any], chunk_set: set[str]
+    ) -> tuple[str, dict[str, Any]] | None:
         key = extract_key(work)
         has_work_id = (
             isinstance(raw_id := work.get("id"), str)
@@ -843,27 +831,17 @@ async def _fetch_id_chunk_uncoalesced(
             else None
         )
         if key is None or key not in chunk_set or mapping is None:
-            unattributed += 1
-            continue
+            return None
         cache.put(NAMESPACE, entity, key, mapping)
-        out[key] = mapping
-        seen_in_chunk.add(key)
+        return key, mapping
 
-    reported = _meta_count(data)
-    truncated = reported is not None and reported > len(results)
-    trustworthy = unattributed == 0 and not truncated
-
-    for canonical in chunk:
-        if canonical in seen_in_chunk:
-            continue
-        err = http.not_found(f"No work found for {not_found_label}: {canonical}")
-        if trustworthy:
-            cache.put_negative(NAMESPACE, entity, canonical, err)
-        else:
-            err = {"error": err["error"], "retryable": True}
-        out[canonical] = err
-
-    return out
+    return await _fetch_filter_chunk_uncoalesced(
+        chunk,
+        entity=entity,
+        filter_key=filter_key,
+        not_found_label=not_found_label,
+        store_work_item=_store_id_work,
+    )
 
 
 async def _resolve_ids_batch(
@@ -878,35 +856,14 @@ async def _resolve_ids_batch(
     force_refresh: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Shared batch resolver for PMIDs and OpenAlex work IDs."""
-    canonicals_in_order: list[str] = []
-    seen: set[str] = set()
-    for ident in identifiers:
-        canonical = canonicalize(ident)
-        if canonical in seen:
-            continue
-        seen.add(canonical)
-        canonicals_in_order.append(canonical)
-
-    out: dict[str, dict[str, Any]] = {}
-    misses: list[str] = []
-
-    for canonical in canonicals_in_order:
-        if not shape_re.match(canonical):
-            out[canonical] = http.not_found(f"No work found for {not_found_label}: {canonical}")
-            continue
-        if force_refresh:
-            cache.invalidate(NAMESPACE, entity, canonical)
-            misses.append(canonical)
-            continue
-        cached = cache.get(NAMESPACE, entity, canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        if cached is not None:
-            out[canonical] = cached
-            continue
-        neg = cache.get_negative(NAMESPACE, entity, canonical)
-        if neg is not None:
-            out[canonical] = neg
-            continue
-        misses.append(canonical)
+    canonicals_in_order = list(dict.fromkeys(canonicalize(i) for i in identifiers))
+    out, misses = _partition_batch_cache(
+        entity,
+        canonicals_in_order,
+        force_refresh=force_refresh,
+        shape_re=shape_re,
+        not_found_label=not_found_label,
+    )
 
     chunks = [
         misses[start : start + _BATCH_CHUNK_SIZE]
