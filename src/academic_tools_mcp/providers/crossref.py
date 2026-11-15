@@ -12,38 +12,16 @@ from ..util import config, doinorm, useragent
 from ..util.jsonshape import str_or_none as _str_or_none
 from .crossref_parse import (
     _JATS_LABEL_RE as _JATS_LABEL_RE,
-)
-from .crossref_parse import (
     _JATS_TAG_RE as _JATS_TAG_RE,
-)
-from .crossref_parse import (
     RETRACTION_UPDATE_TYPES as RETRACTION_UPDATE_TYPES,
-)
-from .crossref_parse import (
-    _message_of as _message_of,
-)
-from .crossref_parse import (
-    _not_found_message as _not_found_message,
-)
-from .crossref_parse import (
+    _message_of,
+    _not_found_message,
     abstract_text as abstract_text,
-)
-from .crossref_parse import (
     author_name as author_name,
-)
-from .crossref_parse import (
-    canonical_doi as canonical_doi,
-)
-from .crossref_parse import (
+    canonical_doi,
     institution_name as institution_name,
-)
-from .crossref_parse import (
     relations as relations,
-)
-from .crossref_parse import (
     retracts as retracts,
-)
-from .crossref_parse import (
     updates as updates,
 )
 

@@ -90,6 +90,9 @@ ignore = [
     "TC003",    # so it buys no import time. The rest of TC guards the blocks themselves.
 ]
 
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 

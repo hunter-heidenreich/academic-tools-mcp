@@ -12,12 +12,8 @@ from ..util import doinorm
 from ..util.jsonshape import (
     as_dict,
     as_str,
-    non_empty_str,
-)
-from ..util.jsonshape import (
     dict_list as _dicts,
-)
-from ..util.jsonshape import (
+    non_empty_str,
     str_or_none as _str_or_none,
 )
 

@@ -17,8 +17,7 @@ import asyncio
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from academic_tools_mcp.providers import opencitations
 from academic_tools_mcp.store import cache

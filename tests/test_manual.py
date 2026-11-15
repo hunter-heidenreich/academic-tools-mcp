@@ -697,8 +697,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
         import asyncio
         import time
 
-        from academic_tools_mcp import manual as manual_mod
-        from academic_tools_mcp import server
+        from academic_tools_mcp import manual as manual_mod, server
         from academic_tools_mcp.store import cache
 
         monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")

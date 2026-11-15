@@ -26,8 +26,7 @@ from email.utils import format_datetime
 
 import httpx
 import pytest
-from hypothesis import HealthCheck, assume, given, settings
-from hypothesis import strategies as st
+from hypothesis import HealthCheck, assume, given, settings, strategies as st
 
 from academic_tools_mcp.net import http
 

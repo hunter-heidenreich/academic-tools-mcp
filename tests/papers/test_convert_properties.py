@@ -22,8 +22,7 @@ import string
 import sys
 from pathlib import Path
 
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
 
 from academic_tools_mcp.papers.convert import (
     _IMAGE_LINK_RE,

@@ -20,18 +20,10 @@ from .providers import acl, arxiv, openalex
 from .store import cache, stems
 from .util import doinorm
 from .util.jsonshape import (
-    as_dict as as_dict,
-)
-from .util.jsonshape import (
-    as_int as as_int,
-)
-from .util.jsonshape import (
-    dict_list as dict_list,
-)
-from .util.jsonshape import (
+    as_dict,
+    as_int,
+    dict_list,
     non_empty_str as non_empty_str,
-)
-from .util.jsonshape import (
     unwrap_first as unwrap_first,
 )
 

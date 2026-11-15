@@ -4,8 +4,7 @@ Fixtures are trimmed from real renderings (1706.03762v7, hep-th/9901001) —
 class names, nesting and the page chrome around the article kept as served.
 """
 
-from hypothesis import given, settings
-from hypothesis import strategies as st
+from hypothesis import given, settings, strategies as st
 
 from academic_tools_mcp.papers import latexml, sections
 

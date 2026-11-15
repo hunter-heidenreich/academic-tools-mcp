@@ -16,8 +16,7 @@ Four invariants, each with a concrete failure the module has to be safe from:
   the repo through `is_biorxiv_doi`, and must not rewrite any of them.
 """
 
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
 
 from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.providers import biorxiv

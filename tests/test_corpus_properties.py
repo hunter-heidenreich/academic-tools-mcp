@@ -19,8 +19,7 @@ been violated by code that passed a hand-written suite:
 
 import re
 
-from hypothesis import HealthCheck, assume, given, settings
-from hypothesis import strategies as st
+from hypothesis import HealthCheck, assume, given, settings, strategies as st
 
 from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.store import cache, stems

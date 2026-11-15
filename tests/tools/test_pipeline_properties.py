@@ -26,8 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from academic_tools_mcp import manual, papers, server
 from academic_tools_mcp.download import openaccess

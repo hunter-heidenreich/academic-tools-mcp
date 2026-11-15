@@ -19,8 +19,7 @@ build them from the same routing; importing them here is the same move that
 file makes with ``from tests.util.test_doinorm_properties import dois``.
 """
 
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.store import cache, stems

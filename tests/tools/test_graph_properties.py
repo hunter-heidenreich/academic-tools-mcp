@@ -19,8 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hypothesis import given, settings
-from hypothesis import strategies as st
+from hypothesis import given, settings, strategies as st
 
 from academic_tools_mcp import app
 from academic_tools_mcp.tools import graph
