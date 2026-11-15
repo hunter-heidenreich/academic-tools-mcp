@@ -235,6 +235,33 @@ async def search_crossref_by_title(
     }
 
 
+def _openalex_pmid(work: dict[str, Any]) -> str | None:
+    """The work's bare numeric PMID, or ``None``."""
+    raw = as_dict(work.get("ids")).get("pmid")
+    if not isinstance(raw, str):
+        return None
+    normalized = openalex.normalize_pmid(raw)
+    return normalized if normalized.isdecimal() else None
+
+
+def _openalex_arxiv_id(work: dict[str, Any]) -> str | None:
+    """The work's versionless arXiv ID, or ``None``."""
+    locations = (
+        as_dict(work.get("primary_location")),
+        as_dict(work.get("best_oa_location")),
+        *dict_list(work.get("locations")),
+    )
+    candidates = (
+        as_dict(work.get("ids")).get("arxiv"),
+        work.get("doi"),
+        *(loc.get(key) for loc in locations for key in ("landing_page_url", "pdf_url", "doi")),
+    )
+    for raw in candidates:
+        if isinstance(raw, str) and arxiv.is_arxiv_id(raw):
+            return arxiv.strip_version(arxiv.normalize_arxiv_id(raw))
+    return None
+
+
 def _openalex_first_author(work: dict[str, Any]) -> str | None:
     """The first OpenAlex authorship's display name, or None."""
     authorships = dict_list(work.get("authorships"))
@@ -274,12 +301,13 @@ async def search_openalex(
     preprints only and search_crossref_by_title matches bibliographically rather
     than on content. Use it when you have a topic rather than a title.
 
-    Returns ``{total_results, result_count, results: [{doi, openalex_id, title,
-    first_author, author_count, publication_year, cited_by_count, is_oa}, ...]}``.
-    ``total_results`` is OpenAlex's own match count, ``result_count`` what this
-    call returned. ``doi`` is null for the works OpenAlex indexes without one;
-    ``openalex_id`` is always present. The author list is omitted so consortium
-    papers can't balloon the response.
+    Returns ``{total_results, result_count, results: [{doi, openalex_id, pmid,
+    arxiv_id, title, first_author, author_count, publication_year,
+    cited_by_count, is_oa}, ...]}``. ``total_results`` is OpenAlex's own match
+    count, ``result_count`` what this call returned. ``doi``, ``pmid`` (bare
+    digits) and ``arxiv_id`` (bare, versionless) are null when OpenAlex has
+    none; ``openalex_id`` is always present. The author list is omitted so
+    consortium papers can't balloon the response.
 
     Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
     parse failure.
@@ -287,7 +315,8 @@ async def search_openalex(
     Chain get_paper_metadata(doi) (or get_paper_metadata(openalex_id) when
     ``doi`` is null) for the full record: unlike a search_crossref_by_title hit,
     every hit is already in the cache it reads, so the follow-up costs no
-    request.
+    request. When ``arxiv_id`` is present, chain it directly into convert_paper
+    or get_paper_code / get_paper_catalog.
     """
     response = await openalex.search_works(query, year=year, rows=max_results)
     if "error" in response:
@@ -304,6 +333,8 @@ async def search_openalex(
             {
                 "doi": doinorm.normalize(work["doi"]) if isinstance(work.get("doi"), str) else None,
                 "openalex_id": work.get("id"),
+                "pmid": _openalex_pmid(work),
+                "arxiv_id": _openalex_arxiv_id(work),
                 "title": work.get("title"),
                 "first_author": _openalex_first_author(work),
                 "author_count": len(authorships),
