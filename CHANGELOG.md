@@ -13,7 +13,7 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
-## [Unreleased]
+## [2026.11.15] — 2026-11-15
 
 ### Added
 
@@ -111,6 +111,16 @@ grouped by milestone rather than per commit.
   of `providers/openalex.py`, `providers/crossref.py`, and `providers/arxiv.py` into
   companion `*_parse.py` modules while preserving module-level re-exports.
   ([#184], [#185], [#186], [#188], [#189], [#190])
+
+- **Performance optimizations, strict type checking, and provider/tool deduplication.**
+  Ratchets `[tool.mypy]` to strict mode across `src/academic_tools_mcp`; skips no-op
+  SQLite churn writes in `corpus`, avoids full-document line splits on title scans in
+  `papers.sections`, streams the ACL Anthology DOI index, and adds an ASCII fast-path in
+  `textnorm.fold` and C-speed whitespace collapsing; and deduplicates OpenAlex batch
+  filter fetchers, non-DOI trade resolvers, BibTeX field builders, Papers with Code slug
+  lists, arXiv Atom XML fetches, Crossref reference mapping, search envelopes, and
+  markup/block helpers.
+  ([#191], [#192], [#193], [#194], [#195], [#196], [#197], [#198], [#199], [#200])
 
 ### Fixed
 
@@ -2307,6 +2317,7 @@ say which.
 - Configurable external PDF converter, env-based API configuration
   (mailto / keys), MIT license, and a public-facing README.
 
+[2026.11.15]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.19...v2026.11.15
 [2026.09.19]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.10...v2026.09.19
 [2026.09.10]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.08...v2026.09.10
 [2026.09.08]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.04...v2026.09.08
@@ -2466,4 +2477,14 @@ say which.
 [#188]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/188
 [#189]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/189
 [#190]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/190
+[#191]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/191
+[#192]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/192
+[#193]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/193
+[#194]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/194
+[#195]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/195
+[#196]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/196
+[#197]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/197
+[#198]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/198
+[#199]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/199
+[#200]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/200
 [#201]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/201
