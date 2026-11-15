@@ -63,3 +63,12 @@ The roster, defaults and semantics of every setting live in `README.md`
   builders) and an exported change applies immediately; capture at import
   (`server._DEBUG_TOOLS_ENABLED`, the headers `clients.get_client` bakes in) and it
   is fixed for the process. **Default to reading at the point of use.**
+
+## jsonshape.py
+
+**Single home for untyped-JSON shape guards (`as_dict`, `as_int`, `non_neg_int`,
+`as_bool`, `as_str`, `non_empty_str`, `stripped_str`, `dict_list`, `str_list`,
+`unwrap_first`).** Do not re-roll `_as_dict` / `_as_int` / `_non_neg_int` in
+providers, `bibtex`, or `app` (`app` re-exports `as_dict`, `as_int`, `dict_list`,
+and `unwrap_first` for the tool modules). `as_int` and `non_neg_int` explicitly
+reject `bool` (`isinstance(True, int)` is `True` in Python).

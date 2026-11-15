@@ -18,6 +18,21 @@ from ..net import clients, http
 from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
 from ..util import textnorm, useragent
+from ..util.jsonshape import (
+    as_bool as _bool,
+)
+from ..util.jsonshape import (
+    as_int as _int,
+)
+from ..util.jsonshape import (
+    dict_list as _dicts,
+)
+from ..util.jsonshape import (
+    non_empty_str as _str,
+)
+from ..util.jsonshape import (
+    str_list as _strs,
+)
 from . import arxiv
 
 NAMESPACE = "paperswithcode"
@@ -127,19 +142,6 @@ def canonical_slug(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _str(value: Any) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def _int(value: Any) -> int | None:
-    # bool is an int subclass; a `true` count is not a count.
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _bool(value: Any) -> bool | None:
-    return value if isinstance(value, bool) else None
-
-
 def _id(value: Any) -> str | None:
     """An ID as a string. Documented as one, but a bare integer is accepted too."""
     if isinstance(value, str) and value:
@@ -149,18 +151,6 @@ def _id(value: Any) -> str | None:
 
 def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
-
-
-def _dicts(value: Any) -> list[dict[str, Any]]:
-    return [item for item in _list(value) if isinstance(item, dict)]
-
-
-def _strs(value: Any) -> list[str]:
-    return (
-        [item for item in value if isinstance(item, str) and item]
-        if isinstance(value, list)
-        else []
-    )
 
 
 def _is_scalar_metric(value: Any) -> bool:
