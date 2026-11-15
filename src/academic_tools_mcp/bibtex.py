@@ -518,11 +518,6 @@ def _pages(page: Any) -> str:
     return escaped
 
 
-def _crossref_pages(work: dict[str, Any]) -> str:
-    """Crossref's single ``page`` string as a BibTeX range."""
-    return _pages(work.get("page"))
-
-
 def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
     """Generate a BibTeX entry from a Crossref work object (the response ``message``).
 
@@ -561,7 +556,7 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
     # Crossref's volume/issue are freeform strings; escaped like any other value.
     _add_escaped(fields, "volume", _str(work.get("volume")))
     _add_escaped(fields, "number", _str(work.get("issue")))
-    _add_braced(fields, "pages", _crossref_pages(work))
+    _add_braced(fields, "pages", _pages(work.get("page")))
     _add_braced(fields, "year", year_token)
     _add_escaped(fields, "publisher", publisher)
     _add_doi(fields, "doi", doi)

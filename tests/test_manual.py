@@ -451,10 +451,8 @@ class TestImportMarkdown:
 
 
 class TestImportForceRefresh:
-    def test_force_refresh_replaces_pdf_and_cascades(self, tmp_path, monkeypatch):
+    def test_force_refresh_replaces_pdf_and_cascades(self, tmp_path):
         from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         v1 = tmp_path / "v1.pdf"
         v1.write_bytes(b"%PDF-1.4 version ONE")
@@ -497,10 +495,8 @@ class TestImportForceRefresh:
         assert not md_path.exists()
         assert cache.get(namespace, "sections", stems.sections_key(canonical)) is None
 
-    def test_force_refresh_replaces_markdown(self, tmp_path, monkeypatch):
+    def test_force_refresh_replaces_markdown(self, tmp_path):
         from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         md1 = tmp_path / "v1.md"
         md1.write_text("## Alpha\n\nFirst.", encoding="utf-8")
@@ -532,11 +528,7 @@ class TestImportForceRefresh:
 
 
 class TestImportAtomicityAndEncoding:
-    def test_zero_byte_cached_pdf_is_not_served(self, tmp_path, monkeypatch):
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-
+    def test_zero_byte_cached_pdf_is_not_served(self, tmp_path):
         pdf = tmp_path / "real.pdf"
         pdf.write_bytes(b"%PDF-1.4 real content")
         ident = "10.1234/zero-byte"
@@ -556,10 +548,6 @@ class TestImportAtomicityAndEncoding:
         not a local check-then-stat, so a PDF unlinked in that window is a
         miss we re-import rather than an OSError out of the tool."""
         from pathlib import Path
-
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         pdf = tmp_path / "real.pdf"
         pdf.write_bytes(b"%PDF-1.4 real content")
@@ -600,10 +588,6 @@ class TestImportAtomicityAndEncoding:
         contract rather than raising out of the tool."""
         from pathlib import Path
 
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-
         pdf = tmp_path / "real.pdf"
         pdf.write_bytes(b"%PDF-1.4 real content")
         ident = "10.1234/post-copy-race"
@@ -628,10 +612,6 @@ class TestImportAtomicityAndEncoding:
     def test_import_local_pdf_atomic_copy_no_torn_file(self, tmp_path, monkeypatch):
         import shutil
 
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-
         pdf = tmp_path / "p.pdf"
         pdf.write_bytes(b"%PDF-1.4 content")
         ident = "10.1234/atomic-copy"
@@ -647,11 +627,7 @@ class TestImportAtomicityAndEncoding:
         assert not dest.exists(), "a failed copy left a torn canonical PDF"
         assert list(dest.parent.glob("*.tmp")) == []
 
-    def test_markdown_import_survives_non_utf8_locale(self, tmp_path, monkeypatch):
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-
+    def test_markdown_import_survives_non_utf8_locale(self, tmp_path):
         md = tmp_path / "p.md"
         content = "## Café\n\nMüller, François-René — 数据 \U0001f600\n"
         md.write_text(content, encoding="utf-8")
@@ -684,9 +660,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
         import time
 
         from academic_tools_mcp import manual as manual_mod, server
-        from academic_tools_mcp.store import cache
 
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         pdf = tmp_path / "slow.pdf"
         pdf.write_bytes(b"%PDF-1.4 payload")
 
@@ -724,7 +698,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
         assert worst_gap < 0.15, f"event loop stalled for {worst_gap:.3f}s during import"
 
     @pytest.mark.asyncio
-    async def test_markdown_import_holds_the_sections_lock(self, tmp_path, monkeypatch):
+    async def test_markdown_import_holds_the_sections_lock(self, tmp_path):
         """import_markdown replaces the markdown and its section index — the
         pair convert_pdf and the force_refresh cascade mutate under this lock.
         It took neither, so a concurrent reader could catch a half-replaced
@@ -732,9 +706,7 @@ class TestImportPaperToolDoesNotBlockTheLoop:
         import asyncio
 
         from academic_tools_mcp import papers, server
-        from academic_tools_mcp.store import cache
 
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         md = tmp_path / "paper.md"
         md.write_text("## Intro\n\nBody.\n", encoding="utf-8")
         ident = "10.1234/locked-import"
@@ -751,16 +723,14 @@ class TestImportPaperToolDoesNotBlockTheLoop:
         assert "error" not in await task
 
     @pytest.mark.asyncio
-    async def test_pdf_import_holds_the_sections_lock(self, tmp_path, monkeypatch):
+    async def test_pdf_import_holds_the_sections_lock(self, tmp_path):
         """The PDF branch cascades through papers.drop_derived, which
         unlinks the markdown — the same file reparse_sections_locked reads
         under this lock between its exists() check and its read."""
         import asyncio
 
         from academic_tools_mcp import papers, server
-        from academic_tools_mcp.store import cache
 
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         pdf = tmp_path / "paper.pdf"
         pdf.write_bytes(b"%PDF-1.4 body")
         ident = "10.1234/locked-pdf-import"
@@ -779,11 +749,8 @@ class TestImportPaperToolDoesNotBlockTheLoop:
 
 class TestImportPaperTool:
     @pytest.mark.asyncio
-    async def test_force_refresh_replaces_and_cascades(self, tmp_path, monkeypatch):
+    async def test_force_refresh_replaces_and_cascades(self, tmp_path):
         from academic_tools_mcp import server
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         v1 = tmp_path / "v1.pdf"
         v1.write_bytes(b"%PDF-1.4 ONE")
@@ -802,11 +769,8 @@ class TestImportPaperTool:
         assert manual.resolve_target(ident)["pdf_path"].read_bytes() == b"%PDF-1.4 TWO is longer"
 
     @pytest.mark.asyncio
-    async def test_markdown_force_refresh_slims_to_section_count(self, tmp_path, monkeypatch):
+    async def test_markdown_force_refresh_slims_to_section_count(self, tmp_path):
         from academic_tools_mcp import server
-        from academic_tools_mcp.store import cache
-
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         md1 = tmp_path / "v1.md"
         md1.write_text("## A\n\nx.", encoding="utf-8")

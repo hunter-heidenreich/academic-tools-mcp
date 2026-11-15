@@ -1,6 +1,5 @@
 import asyncio
-import json
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 import httpx
 import pytest
@@ -8,92 +7,25 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from academic_tools_mcp.net import clients, stats
 from academic_tools_mcp.providers import crossref
-from academic_tools_mcp.store import cache, singleflight
+from academic_tools_mcp.store import cache
 from academic_tools_mcp.util import doinorm
+from tests.helpers.json_transport import (
+    BAD_JSON as _BAD_JSON,
+    Resp as _Resp,
+    stub_json_responses,
+)
 
 # ---------------------------------------------------------------------------
 # Shared transport fakes
 # ---------------------------------------------------------------------------
 
 
-def _reset_crossref(monkeypatch, tmp_path=None):
-    """Zero both pacing gaps (the singles one is on the throttle, the search one
-    is a module constant) so a two-request test doesn't sleep for real."""
-    if tmp_path is not None:
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+def _stub_json_responses(monkeypatch, *payloads, slow=False):
+    """Zero both pacing gaps and retry count, then install ``stub_json_responses``."""
     monkeypatch.setattr(crossref._throttle, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(crossref, "_single_flight", singleflight.SingleFlight())
-
-
-# Sentinel: a payload whose .json() raises, simulating a malformed/truncated body.
-_BAD_JSON = object()
-
-
-def _stub_json_responses(
-    monkeypatch, *payloads, status_code=200, status_codes=None, slow=False, headers=None
-):
-    """Stub client returning ``payloads`` from successive GETs.
-
-    ``status_codes`` gives a per-response sequence (404 then 200); ``headers`` the
-    response headers every stubbed response carries, for the ``x-api-pool`` read;
-    ``slow`` adds a yield so concurrent callers interleave. The recorder exposes
-    ``.urls`` / ``.kwargs`` / ``.count``.
-    """
-    seq = list(payloads)
-
-    class _Recorder:
-        def __init__(self):
-            self.urls: list[str] = []
-            self.kwargs: list[dict] = []
-
-        @property
-        def count(self) -> int:
-            return len(self.urls)
-
-    recorder = _Recorder()
-
-    class StubResponse:
-        def __init__(self, payload, code):
-            self._payload = payload
-            self.status_code = code
-            self.headers: dict[str, str] = dict(headers or {})
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            if self._payload is _BAD_JSON:
-                raise json.JSONDecodeError("Expecting value", "", 0)
-            return self._payload
-
-    class StubClient:
-        async def get(self, url, **kwargs):
-            recorder.urls.append(url)
-            recorder.kwargs.append(kwargs)
-            idx = len(recorder.urls) - 1
-            if slow:
-                await asyncio.sleep(0)
-            payload = seq[idx] if idx < len(seq) else seq[-1]
-            if status_codes is None:
-                code = status_code
-            else:
-                code = status_codes[idx] if idx < len(status_codes) else status_codes[-1]
-            return StubResponse(payload, code)
-
-    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
-    return recorder
-
-
-def _stub_transport_error(monkeypatch, exc):
-    """Stub client whose GET raises ``exc``; one attempt, so no backoff sleep."""
     monkeypatch.setattr(crossref._throttle, "retry_attempts", 1)
-
-    class StubClient:
-        async def get(self, url, **kwargs):
-            raise exc
-
-    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: StubClient())
+    monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", 0.0)
+    return stub_json_responses(monkeypatch, *payloads, slow=slow)
 
 
 def _work_response(doi="10.1234/x"):
@@ -116,28 +48,26 @@ def _search_response(items, total=None):
 
 class TestSearchWorksParams:
     @pytest.mark.asyncio
-    async def test_builds_params_with_year(self, monkeypatch, tmp_path):
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _search_response([], total=42))
+    async def test_builds_params_with_year(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _search_response([], total=42))
 
         result = await crossref.search_works("some title", year=2022, rows=3)
 
         # total_results is the upstream match count, not len(items).
         assert result == {"items": [], "total_results": 42}
-        params = recorder.kwargs[0]["params"]
+        params = dict(requests[0].url.params)
         assert params["query.bibliographic"] == "some title"
         assert params["rows"] == "3"
         assert "from-pub-date:2022" in params["filter"]
         assert "until-pub-date:2022" in params["filter"]
 
     @pytest.mark.asyncio
-    async def test_builds_params_without_year(self, monkeypatch, tmp_path):
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _search_response([]))
+    async def test_builds_params_without_year(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _search_response([]))
 
         result = await crossref.search_works("some title", rows=5)
 
-        params = recorder.kwargs[0]["params"]
+        params = dict(requests[0].url.params)
         assert "filter" not in params
         assert params["rows"] == "5"
         # No `total-results` upstream reports None, not 0 — "unknown" and "none".
@@ -156,17 +86,14 @@ class TestSearchWorksParams:
         ],
     )
     @pytest.mark.asyncio
-    async def test_rows_is_clamped_to_the_published_bound(
-        self, monkeypatch, tmp_path, requested, sent
-    ):
+    async def test_rows_is_clamped_to_the_published_bound(self, monkeypatch, requested, sent):
         """Asserted on the params sent: this was two tests asserting
         ``min(max(100, 1), 20) == 20``, which passed with the clamp deleted."""
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _search_response([]))
+        requests = _stub_json_responses(monkeypatch, _search_response([]))
 
         await crossref.search_works("some title", rows=requested)
 
-        assert recorder.kwargs[0]["params"]["rows"] == sent
+        assert requests[0].url.params["rows"] == sent
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +106,7 @@ class TestSearchWorksCacheWarming:
     follow-up get_work free. Mirrors arxiv.search_papers."""
 
     @pytest.mark.asyncio
-    async def test_search_hits_warm_works_cache(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-
+    async def test_search_hits_warm_works_cache(self, monkeypatch):
         # Crossref occasionally returns items with no DOI: not fatal, not cached.
         items = [
             {"DOI": "10.1234/A", "title": ["A"], "type": "journal-article"},
@@ -197,25 +122,23 @@ class TestSearchWorksCacheWarming:
         assert result["items"] == items
 
     @pytest.mark.asyncio
-    async def test_warmed_hit_makes_get_work_free(self, tmp_path, monkeypatch):
+    async def test_warmed_hit_makes_get_work_free(self, monkeypatch):
         """The headline claim: search then get_work costs one HTTP call."""
-        _reset_crossref(monkeypatch, tmp_path)
         item = {"DOI": "10.1234/A", "title": ["A"], "type": "journal-article"}
-        recorder = _stub_json_responses(monkeypatch, _search_response([item]))
+        requests = _stub_json_responses(monkeypatch, _search_response([item]))
 
         await crossref.search_works("anything")
-        assert recorder.count == 1
+        assert len(requests) == 1
 
         # Any spelling of the DOI resolves to the warmed key.
         work = await crossref.get_work("https://doi.org/10.1234/a")
 
         assert work == item
-        assert recorder.count == 1
+        assert len(requests) == 1
 
     @pytest.mark.asyncio
-    async def test_existing_cached_entry_not_clobbered(self, tmp_path, monkeypatch):
+    async def test_existing_cached_entry_not_clobbered(self, monkeypatch):
         """A sparse search hit must not overwrite a deliberately fetched record."""
-        _reset_crossref(monkeypatch, tmp_path)
         rich = {"DOI": "10.1234/A", "title": ["A"], "abstract": "<p>full</p>"}
         cache.put(crossref.NAMESPACE, "works", "10.1234/a", rich)
 
@@ -242,8 +165,7 @@ class TestSearchWorksShapeGuards:
 
     @pytest.mark.parametrize("message", ["not-an-object", 5, None, ["a", "list"], True])
     @pytest.mark.asyncio
-    async def test_non_dict_message_is_a_parse_error(self, monkeypatch, tmp_path, message):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_non_dict_message_is_a_parse_error(self, monkeypatch, message):
         _stub_json_responses(monkeypatch, {"message": message})
 
         result = await crossref.search_works("some title")
@@ -267,8 +189,7 @@ class TestSearchWorksShapeGuards:
         ],
     )
     @pytest.mark.asyncio
-    async def test_non_list_items_is_a_parse_error(self, monkeypatch, tmp_path, items):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_non_list_items_is_a_parse_error(self, monkeypatch, items):
         _stub_json_responses(monkeypatch, _search_response(items))
 
         result = await crossref.search_works("some title")
@@ -277,9 +198,8 @@ class TestSearchWorksShapeGuards:
         assert result["retryable"] is True
 
     @pytest.mark.asyncio
-    async def test_a_message_without_items_is_a_parse_error(self, monkeypatch, tmp_path):
+    async def test_a_message_without_items_is_a_parse_error(self, monkeypatch):
         """Crossref always sends the key; a response without it is not an empty page."""
-        _reset_crossref(monkeypatch, tmp_path)
         _stub_json_responses(monkeypatch, {"message": {"total-results": 0}})
 
         result = await crossref.search_works("some title")
@@ -288,9 +208,8 @@ class TestSearchWorksShapeGuards:
         assert result["retryable"] is True
 
     @pytest.mark.asyncio
-    async def test_an_empty_item_list_is_still_a_real_answer(self, monkeypatch, tmp_path):
+    async def test_an_empty_item_list_is_still_a_real_answer(self, monkeypatch):
         """The line the guard must not cross: a query that genuinely matched nothing."""
-        _reset_crossref(monkeypatch, tmp_path)
         _stub_json_responses(monkeypatch, _search_response([], total=0))
 
         result = await crossref.search_works("nothing matches this")
@@ -298,8 +217,7 @@ class TestSearchWorksShapeGuards:
         assert result == {"items": [], "total_results": 0}
 
     @pytest.mark.asyncio
-    async def test_missing_message_key_is_a_parse_error(self, monkeypatch, tmp_path):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_missing_message_key_is_a_parse_error(self, monkeypatch):
         _stub_json_responses(monkeypatch, {"status": "ok"})
 
         result = await crossref.search_works("some title")
@@ -309,10 +227,9 @@ class TestSearchWorksShapeGuards:
 
     @pytest.mark.parametrize("doi", [True, 5, ["10.1/a"], {"v": "10.1/a"}])
     @pytest.mark.asyncio
-    async def test_a_non_string_doi_is_skipped_not_fatal(self, monkeypatch, tmp_path, doi):
+    async def test_a_non_string_doi_is_skipped_not_fatal(self, monkeypatch, doi):
         """Truthiness isn't enough: a non-string DOI reaches doinorm.normalize and
         raises AttributeError, caught by neither except clause."""
-        _reset_crossref(monkeypatch, tmp_path)
         good = {"DOI": "10.1234/A", "title": ["A"]}
         _stub_json_responses(monkeypatch, _search_response([{"DOI": doi}, good]))
 
@@ -322,9 +239,8 @@ class TestSearchWorksShapeGuards:
         assert cache.get(crossref.NAMESPACE, "works", "10.1234/a") == good
 
     @pytest.mark.asyncio
-    async def test_non_dict_items_are_skipped_not_fatal(self, monkeypatch, tmp_path):
+    async def test_non_dict_items_are_skipped_not_fatal(self, monkeypatch):
         """A partly-garbled list still yields its good hits, and warms only those."""
-        _reset_crossref(monkeypatch, tmp_path)
         good_a = {"DOI": "10.1234/A", "title": ["A"]}
         good_b = {"DOI": "10.5678/B", "title": ["B"]}
         _stub_json_responses(
@@ -409,24 +325,22 @@ class TestBuildParams:
         assert crossref._build_params() == {"mailto": "test@example.com"}
 
     @pytest.mark.asyncio
-    async def test_get_work_sends_it(self, monkeypatch, tmp_path):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_get_work_sends_it(self, monkeypatch):
         monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
-        recorder = _stub_json_responses(monkeypatch, _work_response())
+        requests = _stub_json_responses(monkeypatch, _work_response())
 
         await crossref.get_work("10.1234/x")
 
-        assert recorder.kwargs[0]["params"] == {"mailto": "test@example.com"}
+        assert dict(requests[0].url.params) == {"mailto": "test@example.com"}
 
     @pytest.mark.asyncio
-    async def test_search_sends_it_alongside_the_query(self, monkeypatch, tmp_path):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_search_sends_it_alongside_the_query(self, monkeypatch):
         monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
-        recorder = _stub_json_responses(monkeypatch, _search_response([]))
+        requests = _stub_json_responses(monkeypatch, _search_response([]))
 
         await crossref.search_works("attention is all you need")
 
-        params = recorder.kwargs[0]["params"]
+        params = dict(requests[0].url.params)
         assert params["mailto"] == "test@example.com"
         assert params["query.bibliographic"] == "attention is all you need"
 
@@ -456,7 +370,7 @@ class TestPoolConfirmation:
     """
 
     @pytest.fixture(autouse=True)
-    def _public_tier(self, monkeypatch):
+    def _public_tier(self):
         """Restore the starting tier; a promotion otherwise leaks into later tests."""
         crossref.reset_pool_tier()
         yield
@@ -464,11 +378,9 @@ class TestPoolConfirmation:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stamp", ["polite-single", "polite-multi", "polite", "Polite-Single"])
-    async def test_a_confirmed_polite_pool_widens_every_gate(self, monkeypatch, tmp_path, stamp):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-        monkeypatch.setattr(crossref, "_single_flight", singleflight.SingleFlight())
+    async def test_a_confirmed_polite_pool_widens_every_gate(self, monkeypatch, stamp):
         monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
-        _stub_json_responses(monkeypatch, _work_response(), headers={"x-api-pool": stamp})
+        stub_json_responses(monkeypatch, _Resp(200, _work_response(), {"x-api-pool": stamp}))
 
         assert _tier() == (1, pytest.approx(0.2), pytest.approx(1.0))
         await crossref.get_work("10.1234/x")
@@ -481,13 +393,12 @@ class TestPoolConfirmation:
         [{"x-api-pool": "public"}, {"x-api-pool": "public-single"}, {}, None],
     )
     async def test_anything_but_a_polite_stamp_leaves_the_public_tier(
-        self, monkeypatch, tmp_path, response_headers
+        self, monkeypatch, response_headers
     ):
         """A missing header is not a grant — ``net/stats`` leaves an unadvertised
         quota alone for the same reason."""
-        _reset_crossref(monkeypatch, tmp_path)
         monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
-        _stub_json_responses(monkeypatch, _work_response(), headers=response_headers)
+        _stub_json_responses(monkeypatch, _Resp(200, _work_response(), response_headers))
 
         await crossref.get_work("10.1234/x")
 
@@ -495,27 +406,23 @@ class TestPoolConfirmation:
         assert crossref.in_confirmed_polite_pool() is False
 
     @pytest.mark.asyncio
-    async def test_no_contact_means_no_promotion_whatever_crossref_says(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_no_contact_means_no_promotion_whatever_crossref_says(self, monkeypatch):
         """Belt and braces: we cannot be in a pool we sent no address for, so a
         stray header must not widen an anonymous client."""
-        _reset_crossref(monkeypatch, tmp_path)
         monkeypatch.delenv("CROSSREF_MAILTO", raising=False)
-        _stub_json_responses(monkeypatch, _work_response(), headers={"x-api-pool": "polite"})
+        _stub_json_responses(monkeypatch, _Resp(200, _work_response(), {"x-api-pool": "polite"}))
 
         await crossref.get_work("10.1234/x")
 
         assert crossref._throttle.max_concurrent == 1
 
     @pytest.mark.asyncio
-    async def test_promotion_happens_once(self, monkeypatch, tmp_path):
+    async def test_promotion_happens_once(self, monkeypatch):
         """``Semaphore.release`` adds a permit per call, so a re-run would widen
         concurrency without bound."""
-        _reset_crossref(monkeypatch, tmp_path)
         monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
         _stub_json_responses(
-            monkeypatch, _work_response("10.1234/a"), headers={"x-api-pool": "polite"}
+            monkeypatch, _Resp(200, _work_response("10.1234/a"), {"x-api-pool": "polite"})
         )
 
         await crossref.get_work("10.1234/a")
@@ -525,22 +432,22 @@ class TestPoolConfirmation:
         assert crossref._throttle.max_concurrent == 3
 
     @pytest.mark.asyncio
-    async def test_a_search_response_confirms_it_too(self, monkeypatch, tmp_path):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_a_search_response_confirms_it_too(self, monkeypatch):
         monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
-        _stub_json_responses(monkeypatch, _search_response([]), headers={"x-api-pool": "polite"})
+        _stub_json_responses(
+            monkeypatch, _Resp(200, _search_response([]), {"x-api-pool": "polite"})
+        )
 
         await crossref.search_works("anything")
 
         assert crossref.in_confirmed_polite_pool() is True
 
     @pytest.mark.asyncio
-    async def test_reset_pool_tier_restores_the_public_policy(self, monkeypatch, tmp_path):
+    async def test_reset_pool_tier_restores_the_public_policy(self, monkeypatch):
         """The conftest seam. Without it a promotion is the starting tier of every
         later test, and the suite goes order-dependent."""
-        _reset_crossref(monkeypatch, tmp_path)
         monkeypatch.setenv("CROSSREF_MAILTO", "test@example.com")
-        _stub_json_responses(monkeypatch, _work_response(), headers={"x-api-pool": "polite"})
+        _stub_json_responses(monkeypatch, _Resp(200, _work_response(), {"x-api-pool": "polite"}))
         await crossref.get_work("10.1234/x")
 
         crossref.reset_pool_tier()
@@ -557,9 +464,8 @@ class TestPoolConfirmation:
 
 class TestGetWorkParseErrors:
     @pytest.mark.asyncio
-    async def test_malformed_json_returns_retryable_error(self, tmp_path, monkeypatch):
+    async def test_malformed_json_returns_retryable_error(self, monkeypatch):
         """A 200 with a garbled body surfaces the uniform contract, not a crash."""
-        _reset_crossref(monkeypatch, tmp_path)
         _stub_json_responses(monkeypatch, _BAD_JSON)
 
         result = await crossref.get_work("10.1234/x")
@@ -568,36 +474,33 @@ class TestGetWorkParseErrors:
         assert result.get("retryable") is True
 
     @pytest.mark.asyncio
-    async def test_malformed_json_not_negative_cached(self, tmp_path, monkeypatch):
+    async def test_malformed_json_not_negative_cached(self, monkeypatch):
         """Transient, so a retry must re-fetch rather than be served the failure."""
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _BAD_JSON, _work_response())
+        requests = _stub_json_responses(monkeypatch, _BAD_JSON, _work_response())
 
         first = await crossref.get_work("10.1234/x")
         assert "error" in first
 
         second = await crossref.get_work("10.1234/x")
         assert second.get("DOI") == "10.1234/x"
-        assert recorder.count == 2
+        assert len(requests) == 2
 
     @pytest.mark.asyncio
-    async def test_missing_message_not_cached(self, tmp_path, monkeypatch):
+    async def test_missing_message_not_cached(self, monkeypatch):
         """A 200 with no `message` must not positive-cache an empty dict."""
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, {"status": "ok"}, _work_response())
+        requests = _stub_json_responses(monkeypatch, {"status": "ok"}, _work_response())
 
         first = await crossref.get_work("10.1234/x")
         assert "error" in first
 
         second = await crossref.get_work("10.1234/x")
         assert second.get("DOI") == "10.1234/x"
-        assert recorder.count == 2
+        assert len(requests) == 2
 
 
 class TestSearchWorksParseErrors:
     @pytest.mark.asyncio
-    async def test_malformed_json_returns_retryable_error(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_malformed_json_returns_retryable_error(self, monkeypatch):
         _stub_json_responses(monkeypatch, _BAD_JSON)
 
         result = await crossref.search_works("some title")
@@ -608,41 +511,39 @@ class TestSearchWorksParseErrors:
 
 class TestGetWorkDoiEncoding:
     @pytest.mark.asyncio
-    async def test_encodes_special_chars_in_doi(self, tmp_path, monkeypatch):
+    async def test_encodes_special_chars_in_doi(self, monkeypatch):
         """Unescaped, httpx reads '#bar' as a fragment and fetches the wrong record."""
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _work_response("10.1234/foo#bar"))
+        requests = _stub_json_responses(monkeypatch, _work_response("10.1234/foo#bar"))
 
         await crossref.get_work("10.1234/foo#bar")
 
-        assert "%23" in recorder.urls[0]
-        assert "#" not in recorder.urls[0]
+        path = urlsplit(str(requests[0].url)).path
+        assert "%23" in path
+        assert "#" not in path
 
     @pytest.mark.asyncio
-    async def test_preserves_slash_in_doi(self, tmp_path, monkeypatch):
+    async def test_preserves_slash_in_doi(self, monkeypatch):
         """The DOI's own slash stays literal — Crossref's proven-working form."""
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _work_response("10.1038/nature12373"))
+        requests = _stub_json_responses(monkeypatch, _work_response("10.1038/nature12373"))
 
         await crossref.get_work("10.1038/nature12373")
 
-        assert recorder.urls[0].endswith("/works/10.1038/nature12373")
+        assert urlsplit(str(requests[0].url)).path.endswith("/works/10.1038/nature12373")
 
 
 class TestGetWorkForceRefresh:
     @pytest.mark.asyncio
-    async def test_force_refresh_rebypasses_cache(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _work_response())
+    async def test_force_refresh_rebypasses_cache(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _work_response())
 
         await crossref.get_work("10.1234/x")
-        assert recorder.count == 1
+        assert len(requests) == 1
 
         await crossref.get_work("10.1234/x")
-        assert recorder.count == 1  # cache hit
+        assert len(requests) == 1  # cache hit
 
         await crossref.get_work("10.1234/x", force_refresh=True)
-        assert recorder.count == 2
+        assert len(requests) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -658,21 +559,19 @@ class TestPathShorteningIsRefused:
 
     @pytest.mark.parametrize("doi", ["10.1234/..", "10.1038/a/..", "10.1234/.", "10.1234/a/../b"])
     @pytest.mark.asyncio
-    async def test_it_is_a_definitive_miss_costing_no_request(self, tmp_path, monkeypatch, doi):
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _work_response())
+    async def test_it_is_a_definitive_miss_costing_no_request(self, monkeypatch, doi):
+        requests = _stub_json_responses(monkeypatch, _work_response())
 
         result = await crossref.get_work(doi)
 
-        assert recorder.count == 0
+        assert len(requests) == 0
         assert result["not_found"] is True
         assert "retryable" not in result
 
     @pytest.mark.asyncio
-    async def test_nothing_is_cached_for_it(self, tmp_path, monkeypatch):
+    async def test_nothing_is_cached_for_it(self, monkeypatch):
         # Uncached on purpose: no request was spent, so nothing was learned
         # about the identifier worth holding for the negative TTL.
-        _reset_crossref(monkeypatch, tmp_path)
         _stub_json_responses(monkeypatch, _work_response())
 
         await crossref.get_work("10.1234/..")
@@ -681,16 +580,15 @@ class TestPathShorteningIsRefused:
         assert cache.get_negative(crossref.NAMESPACE, "works", "10.1234/..") is None
 
     @pytest.mark.asyncio
-    async def test_an_escaped_dot_segment_is_a_normal_identifier(self, tmp_path, monkeypatch):
+    async def test_an_escaped_dot_segment_is_a_normal_identifier(self, monkeypatch):
         # The guard reads the *encoded* path, so a DOI whose suffix is a
         # literal '%2E%2E' addresses a real record and must not be refused.
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _work_response())
+        requests = _stub_json_responses(monkeypatch, _work_response())
 
         result = await crossref.get_work("10.1234/%2E%2E")
 
         assert "error" not in result
-        assert recorder.count == 1
+        assert len(requests) == 1
 
 
 class TestGetWorkNotFound:
@@ -699,9 +597,8 @@ class TestGetWorkNotFound:
     tell "Crossref lacks this DOI" from "Crossref was briefly unreachable"."""
 
     @pytest.mark.asyncio
-    async def test_404_is_a_definitive_not_found(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        _stub_json_responses(monkeypatch, {}, status_code=404)
+    async def test_404_is_a_definitive_not_found(self, monkeypatch):
+        _stub_json_responses(monkeypatch, _Resp(404, {}))
 
         result = await crossref.get_work("10.1234/missing")
 
@@ -710,9 +607,8 @@ class TestGetWorkNotFound:
         assert "retryable" not in result  # definitive
 
     @pytest.mark.asyncio
-    async def test_404_is_negative_cached(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, {}, status_code=404)
+    async def test_404_is_negative_cached(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _Resp(404, {}))
 
         first = await crossref.get_work("10.1234/missing")
         second = await crossref.get_work("10.1234/missing")
@@ -721,26 +617,24 @@ class TestGetWorkNotFound:
         assert second["not_found"] is True
         # The miss costs a second request to name the registering agency; the
         # negative entry carries the answer, so the repeat costs nothing.
-        assert recorder.count == 2
+        assert len(requests) == 2
 
     @pytest.mark.asyncio
-    async def test_the_negative_entry_is_keyed_canonically(self, tmp_path, monkeypatch):
+    async def test_the_negative_entry_is_keyed_canonically(self, monkeypatch):
         """Any spelling of the missed DOI hits the same negative entry."""
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, {}, status_code=404)
+        requests = _stub_json_responses(monkeypatch, _Resp(404, {}))
 
         await crossref.get_work("10.1234/MISSING")
         again = await crossref.get_work("https://doi.org/10.1234/missing")
 
         assert again["not_found"] is True
-        assert recorder.count == 2  # the work and its agency, once between them
+        assert len(requests) == 2  # the work and its agency, once between them
 
     @pytest.mark.asyncio
-    async def test_force_refresh_drops_the_negative_entry(self, tmp_path, monkeypatch):
+    async def test_force_refresh_drops_the_negative_entry(self, monkeypatch):
         """A DOI that 404'd is retryable once the publisher deposits it."""
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(
-            monkeypatch, {}, _work_response("10.1234/missing"), status_codes=[404, 200]
+        requests = _stub_json_responses(
+            monkeypatch, _Resp(404, {}), _work_response("10.1234/missing")
         )
 
         missed = await crossref.get_work("10.1234/missing")
@@ -750,7 +644,7 @@ class TestGetWorkNotFound:
 
         assert found["DOI"] == "10.1234/missing"
         # The 404, the agency probe behind it, then the refreshed hit.
-        assert recorder.count == 3
+        assert len(requests) == 3
 
 
 def _agency_response(agency_id, label=None):
@@ -765,8 +659,7 @@ class TestGetAgency:
     indexed this yet" and "this is a dataset nothing here will ever index"."""
 
     @pytest.mark.asyncio
-    async def test_returns_the_agency_object(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_returns_the_agency_object(self, monkeypatch):
         _stub_json_responses(monkeypatch, _agency_response("datacite", "DataCite"))
 
         assert await crossref.get_agency("10.5281/zenodo.1") == {
@@ -775,19 +668,17 @@ class TestGetAgency:
         }
 
     @pytest.mark.asyncio
-    async def test_is_cached(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _agency_response("crossref", "Crossref"))
+    async def test_is_cached(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _agency_response("crossref", "Crossref"))
 
         await crossref.get_agency("10.1234/x")
         await crossref.get_agency("10.1234/X")
 
-        assert recorder.count == 1  # and keyed canonically
+        assert len(requests) == 1  # and keyed canonically
 
     @pytest.mark.asyncio
-    async def test_a_missing_agency_key_is_a_parse_error(self, tmp_path, monkeypatch):
+    async def test_a_missing_agency_key_is_a_parse_error(self, monkeypatch):
         """A 200 whose message lacks `agency` is a wrong shape, not an empty answer."""
-        _reset_crossref(monkeypatch, tmp_path)
         _stub_json_responses(monkeypatch, {"message": {"DOI": "10.1234/x"}})
 
         result = await crossref.get_agency("10.1234/x")
@@ -796,15 +687,14 @@ class TestGetAgency:
         assert cache.get(crossref.NAMESPACE, "agency", "10.1234/x") is None
 
     @pytest.mark.asyncio
-    async def test_404_is_negative_cached(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, {}, status_code=404)
+    async def test_404_is_negative_cached(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, _Resp(404, {}))
 
         first = await crossref.get_agency("10.1234/missing")
         await crossref.get_agency("10.1234/missing")
 
         assert first["not_found"] is True
-        assert recorder.count == 1
+        assert len(requests) == 1
 
 
 class TestNotFoundNamesTheRegistrar:
@@ -813,14 +703,8 @@ class TestNotFoundNamesTheRegistrar:
     will ever answer."""
 
     @pytest.mark.asyncio
-    async def test_a_datacite_doi_says_so(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        _stub_json_responses(
-            monkeypatch,
-            {},
-            _agency_response("datacite", "DataCite"),
-            status_codes=[404, 200],
-        )
+    async def test_a_datacite_doi_says_so(self, monkeypatch):
+        _stub_json_responses(monkeypatch, _Resp(404, {}), _agency_response("datacite", "DataCite"))
 
         result = await crossref.get_work("10.5281/zenodo.1")
 
@@ -828,27 +712,20 @@ class TestNotFoundNamesTheRegistrar:
         assert "DataCite" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_a_crossref_doi_adds_nothing(self, tmp_path, monkeypatch):
+    async def test_a_crossref_doi_adds_nothing(self, monkeypatch):
         """Naming Crossref in a Crossref refusal is noise: the DOI is registered
         here and simply not deposited yet."""
-        _reset_crossref(monkeypatch, tmp_path)
-        _stub_json_responses(
-            monkeypatch,
-            {},
-            _agency_response("crossref", "Crossref"),
-            status_codes=[404, 200],
-        )
+        _stub_json_responses(monkeypatch, _Resp(404, {}), _agency_response("crossref", "Crossref"))
 
         result = await crossref.get_work("10.1234/notyet")
 
         assert result["error"] == "No work found on Crossref for DOI: 10.1234/notyet"
 
     @pytest.mark.asyncio
-    async def test_a_failed_agency_probe_degrades_to_the_plain_refusal(self, tmp_path, monkeypatch):
+    async def test_a_failed_agency_probe_degrades_to_the_plain_refusal(self, monkeypatch):
         """The miss is definitive whatever the probe does; a transient failure
         there must not turn it into something an agent reads as retryable."""
-        _reset_crossref(monkeypatch, tmp_path)
-        _stub_json_responses(monkeypatch, {}, status_codes=[404, 500])
+        _stub_json_responses(monkeypatch, _Resp(404, {}), _Resp(500, {}))
 
         result = await crossref.get_work("10.1234/missing")
 
@@ -1012,21 +889,19 @@ class TestRelations:
 
 class TestGetWorkSingleFlight:
     @pytest.mark.asyncio
-    async def test_concurrent_callers_share_one_fetch(self, tmp_path, monkeypatch):
+    async def test_concurrent_callers_share_one_fetch(self, monkeypatch):
         """``slow`` is load-bearing: a stub that never awaits runs inline, so the
         second caller would find a warm cache and pass for the wrong reason."""
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(monkeypatch, _work_response(), slow=True)
+        requests = _stub_json_responses(monkeypatch, _work_response(), slow=True)
 
         results = await asyncio.gather(*(crossref.get_work("10.1234/x") for _ in range(5)))
 
-        assert recorder.count == 1
+        assert len(requests) == 1
         assert all(r["DOI"] == "10.1234/x" for r in results)
 
     @pytest.mark.asyncio
-    async def test_every_caller_gets_an_independent_copy(self, tmp_path, monkeypatch):
+    async def test_every_caller_gets_an_independent_copy(self, monkeypatch):
         """``cached_lookup`` deep-copies, so one caller's mutation is its own."""
-        _reset_crossref(monkeypatch, tmp_path)
         _stub_json_responses(monkeypatch, _work_response(), slow=True)
 
         first, second = await asyncio.gather(
@@ -1037,15 +912,14 @@ class TestGetWorkSingleFlight:
         assert second["title"] == ["A Great Work"]
 
     @pytest.mark.asyncio
-    async def test_different_dois_do_not_coalesce(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        recorder = _stub_json_responses(
+    async def test_different_dois_do_not_coalesce(self, monkeypatch):
+        requests = _stub_json_responses(
             monkeypatch, _work_response("10.1234/a"), _work_response("10.1234/b"), slow=True
         )
 
         await asyncio.gather(crossref.get_work("10.1234/a"), crossref.get_work("10.1234/b"))
 
-        assert recorder.count == 2
+        assert len(requests) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1059,8 +933,7 @@ class TestSearchPacing:
     ``_throttled_get`` left the suite green and the limit unenforced."""
 
     @pytest.mark.asyncio
-    async def test_search_uses_the_search_gate_and_get_work_does_not(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_search_uses_the_search_gate_and_get_work_does_not(self, monkeypatch):
         _stub_json_responses(monkeypatch, _search_response([]), _work_response())
 
         calls: list[str] = []
@@ -1086,12 +959,11 @@ class TestSearchPacing:
         assert "search" not in calls[1:]
 
     @pytest.mark.asyncio
-    async def test_the_first_search_does_not_wait(self, tmp_path, monkeypatch):
+    async def test_the_first_search_does_not_wait(self, monkeypatch):
         """A fresh gap has no last start, so nothing to wait out."""
-        _reset_crossref(monkeypatch, tmp_path)
+        _stub_json_responses(monkeypatch, _search_response([]))
         monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", 30.0)
         crossref._search_gap.reset()
-        _stub_json_responses(monkeypatch, _search_response([]))
 
         started = asyncio.get_running_loop().time()
         await crossref.search_works("some title")
@@ -1099,12 +971,11 @@ class TestSearchPacing:
         assert asyncio.get_running_loop().time() - started < 1.0
 
     @pytest.mark.asyncio
-    async def test_a_second_search_waits_out_the_gap(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
+    async def test_a_second_search_waits_out_the_gap(self, monkeypatch):
         gap = 0.05
+        _stub_json_responses(monkeypatch, _search_response([]))
         monkeypatch.setattr(crossref._search_gap, "min_gap_seconds", gap)
         crossref._search_gap.reset()
-        _stub_json_responses(monkeypatch, _search_response([]))
 
         started = asyncio.get_running_loop().time()
         await crossref.search_works("first")
@@ -1134,7 +1005,6 @@ class TestMalformedPayloadShape:
     @pytest.mark.parametrize("payload", [None, 5, "a string", [1, 2, 3], True])
     @pytest.mark.asyncio
     async def test_get_work_does_not_raise(self, monkeypatch, payload):
-        _reset_crossref(monkeypatch)
         _stub_json_responses(monkeypatch, payload)
 
         result = await crossref.get_work("10.1234/x")
@@ -1145,7 +1015,6 @@ class TestMalformedPayloadShape:
     @pytest.mark.parametrize("payload", [None, 5, "a string", [1, 2, 3]])
     @pytest.mark.asyncio
     async def test_search_works_does_not_raise(self, monkeypatch, payload):
-        _reset_crossref(monkeypatch)
         _stub_json_responses(monkeypatch, payload)
 
         result = await crossref.search_works("some title")
@@ -1155,7 +1024,6 @@ class TestMalformedPayloadShape:
 
     @pytest.mark.asyncio
     async def test_non_dict_message_is_a_parse_error(self, monkeypatch):
-        _reset_crossref(monkeypatch)
         _stub_json_responses(monkeypatch, {"message": "not-an-object"})
 
         result = await crossref.get_work("10.1234/x")
@@ -1166,15 +1034,14 @@ class TestMalformedPayloadShape:
     @pytest.mark.asyncio
     async def test_malformed_payload_is_not_negative_cached(self, monkeypatch):
         """A parse failure says nothing about whether the DOI exists."""
-        _reset_crossref(monkeypatch)
-        recorder = _stub_json_responses(monkeypatch, None, {"message": {"DOI": "10.1234/x"}})
+        requests = _stub_json_responses(monkeypatch, None, {"message": {"DOI": "10.1234/x"}})
 
         first = await crossref.get_work("10.1234/x")
         second = await crossref.get_work("10.1234/x")
 
         assert "error" in first
         assert second.get("DOI") == "10.1234/x"
-        assert recorder.count == 2
+        assert len(requests) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1190,9 +1057,8 @@ class TestTransportErrors:
         "exc", [httpx.ConnectError("no route"), httpx.ReadTimeout("timed out")]
     )
     @pytest.mark.asyncio
-    async def test_get_work_surfaces_a_retryable_error(self, tmp_path, monkeypatch, exc):
-        _reset_crossref(monkeypatch, tmp_path)
-        _stub_transport_error(monkeypatch, exc)
+    async def test_get_work_surfaces_a_retryable_error(self, monkeypatch, exc):
+        _stub_json_responses(monkeypatch, exc)
 
         result = await crossref.get_work("10.1234/x")
 
@@ -1201,19 +1067,17 @@ class TestTransportErrors:
         assert "not_found" not in result
 
     @pytest.mark.asyncio
-    async def test_a_transport_failure_is_not_cached(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        _stub_transport_error(monkeypatch, httpx.ConnectError("no route"))
+    async def test_a_transport_failure_is_not_cached(self, monkeypatch):
+        _stub_json_responses(monkeypatch, httpx.ConnectError("no route"))
         assert "error" in await crossref.get_work("10.1234/x")
 
-        recorder = _stub_json_responses(monkeypatch, _work_response())
+        requests = _stub_json_responses(monkeypatch, _work_response())
         assert (await crossref.get_work("10.1234/x"))["DOI"] == "10.1234/x"
-        assert recorder.count == 1
+        assert len(requests) == 1
 
     @pytest.mark.asyncio
-    async def test_search_surfaces_a_retryable_error(self, tmp_path, monkeypatch):
-        _reset_crossref(monkeypatch, tmp_path)
-        _stub_transport_error(monkeypatch, httpx.ReadTimeout("timed out"))
+    async def test_search_surfaces_a_retryable_error(self, monkeypatch):
+        _stub_json_responses(monkeypatch, httpx.ReadTimeout("timed out"))
 
         result = await crossref.search_works("some title")
 
@@ -1221,9 +1085,8 @@ class TestTransportErrors:
         assert result["retryable"] is True
 
     @pytest.mark.asyncio
-    async def test_local_backpressure_reaches_the_agent_as_an_error(self, tmp_path, monkeypatch):
+    async def test_local_backpressure_reaches_the_agent_as_an_error(self, monkeypatch):
         """A refusal we raised ourselves uses the same contract as an upstream one."""
-        _reset_crossref(monkeypatch, tmp_path)
         monkeypatch.setattr(crossref._throttle, "max_pending", 1)
         monkeypatch.setattr(crossref._throttle, "pending", 1)
         _stub_json_responses(monkeypatch, _work_response())
@@ -1282,10 +1145,9 @@ _bare_dois = st.builds(
 def test_search_works_never_raises_and_always_returns_one_of_two_shapes(monkeypatch, body):
     """The tool layer indexes straight into these hits, so anything escaping
     here reaches the agent as a traceback rather than an ``{error}``."""
-    _reset_crossref(monkeypatch)
+    _stub_json_responses(monkeypatch, body)
     crossref._search_gap.reset()
     crossref._throttle.reset()
-    _stub_json_responses(monkeypatch, body)
 
     result = asyncio.run(crossref.search_works("some title"))
 
@@ -1303,15 +1165,14 @@ def test_search_works_never_raises_and_always_returns_one_of_two_shapes(monkeypa
 def test_the_requested_path_round_trips_to_the_bare_doi(monkeypatch, doi):
     """A surviving reserved character doesn't fail loudly — httpx fetches a
     different, existing record, which then caches under this DOI's key."""
-    _reset_crossref(monkeypatch)
+    requests = _stub_json_responses(monkeypatch, _work_response(doi))
     crossref._throttle.reset()
-    recorder = _stub_json_responses(monkeypatch, _work_response(doi))
 
     # force_refresh so every example fetches: hypothesis reuses one cache root,
     # and two DOIs differing only in case share a canonical key.
     result = asyncio.run(crossref.get_work(doi, force_refresh=True))
 
-    if not recorder.urls:
+    if not requests:
         # `http.addresses_a_record` refused before the request was spent — an
         # encoded path that no longer names a record (a trailing `/` leaves the
         # /works *collection*). Nothing round-trips, and that is the outcome
@@ -1319,10 +1180,9 @@ def test_the_requested_path_round_trips_to_the_bare_doi(monkeypatch, doi):
         assert result["not_found"] is True
         return
 
-    prefix = f"{crossref.CROSSREF_BASE_URL}/works/"
-    url = recorder.urls[0]
-    assert url.startswith(prefix)
-    tail = url[len(prefix) :]
+    path = urlsplit(str(requests[0].url)).path
+    assert path.startswith("/v1/works/")
+    tail = path.removeprefix("/v1/works/")
     assert "#" not in tail
     assert "?" not in tail
     assert unquote(tail) == doinorm.normalize(doi)

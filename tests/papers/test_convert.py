@@ -874,38 +874,37 @@ class TestFinalizeMarkdown:
     every conversion — unguarded.
     """
 
-    def _finalize(self, tmp_path, monkeypatch, raw):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    def _finalize(self, raw):
         md_path = stems.markdown_path("test", "finalize")
         papers.convert._finalize_markdown("test", "finalize", md_path, raw, "full")
         return md_path.read_text(encoding="utf-8")
 
-    def test_image_paths_are_stripped_but_captions_kept(self, tmp_path, monkeypatch):
-        out = self._finalize(tmp_path, monkeypatch, "![Figure 1](images/fig1.png)\n")
+    def test_image_paths_are_stripped_but_captions_kept(self):
+        out = self._finalize("![Figure 1](images/fig1.png)\n")
         assert out == "![Figure 1]()\n"
 
-    def test_a_parenthesised_image_path_does_not_leak_into_the_body(self, tmp_path, monkeypatch):
+    def test_a_parenthesised_image_path_does_not_leak_into_the_body(self):
         # A flat ``\([^)]*\)`` stops at the first ``)`` inside the path and
         # leaves ``.png)`` behind as body text the agent reads as content.
         # Converter leaf filenames derive from the PDF stem, and an Elsevier
         # PII DOI carries parentheses.
         raw = "![Figure 1](images/10.1002_(sici)_fig1.png)\n"
-        out = self._finalize(tmp_path, monkeypatch, raw)
+        out = self._finalize(raw)
         assert out == "![Figure 1]()\n"
         assert ".png" not in out
 
-    def test_a_bracketed_caption_still_loses_its_path(self, tmp_path, monkeypatch):
+    def test_a_bracketed_caption_still_loses_its_path(self):
         # A flat ``\[([^\]]*)\]`` skips this entirely, leaving a path into the
         # deleted extraction dir in agent-visible markdown.
-        out = self._finalize(tmp_path, monkeypatch, "![see [1] for detail](/tmp/x/f.png)\n")
+        out = self._finalize("![see [1] for detail](/tmp/x/f.png)\n")
         assert out == "![see [1] for detail]()\n"
 
-    def test_ordinary_links_are_untouched(self, tmp_path, monkeypatch):
-        out = self._finalize(tmp_path, monkeypatch, "See [the paper](https://example.org/a).\n")
+    def test_ordinary_links_are_untouched(self):
+        out = self._finalize("See [the paper](https://example.org/a).\n")
         assert out == "See [the paper](https://example.org/a).\n"
 
-    def test_trailing_whitespace_is_normalised_per_line(self, tmp_path, monkeypatch):
-        out = self._finalize(tmp_path, monkeypatch, "## A   \n\nbody\t\n")
+    def test_trailing_whitespace_is_normalised_per_line(self):
+        out = self._finalize("## A   \n\nbody\t\n")
         assert out == "## A\n\nbody\n"
 
 
