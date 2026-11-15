@@ -107,9 +107,13 @@ convention = "google"
 [tool.mypy]
 python_version = "3.11"
 files = ["src/academic_tools_mcp"]
-# Pragmatic, not strict: check what's annotated, ignore third-party stubs.
-# Tighten incrementally.
+strict = true
+# Internal package (no py.typed); modules re-export companion helpers without
+# redundant `X as X` aliases on locally used imports.
+no_implicit_reexport = false
 ignore_missing_imports = true
-check_untyped_defs = true
-warn_redundant_casts = true
-warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = "academic_tools_mcp.fast_extract"
+# pymupdf (optional `[fast]` extra) ships untyped `Document`/`open` definitions.
+disallow_untyped_calls = false

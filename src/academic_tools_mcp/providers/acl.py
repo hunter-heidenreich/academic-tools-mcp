@@ -359,7 +359,7 @@ async def get_paper(identifier: str, *, force_refresh: bool = False) -> dict[str
         if "error" in fetched:
             return fetched
 
-        record = fetched["records"].get(anthology_id)
+        record: dict[str, Any] | None = fetched["records"].get(anthology_id)
         if record is None:
             err = http.not_found(f"No ACL Anthology paper: {anthology_id}")
             cache.put_negative(
