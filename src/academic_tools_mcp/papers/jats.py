@@ -33,8 +33,6 @@ _SECTION_TAGS = frozenset({"sec", "ack", "app", "glossary", "notes", "bio"})
 # Containers walked for the blocks inside them.
 _CONTAINER_TAGS = frozenset({"body", "app-group", "boxed-text", "fn-group", "fn", "floats-group"})
 
-_WHITESPACE_RE = re.compile(r"\s+")
-
 # A ``tex-math`` body is often a whole LaTeX document around the formula.
 _TEX_DOCUMENT_RE = re.compile(r"\\begin\{document\}(.*?)\\end\{document\}", re.DOTALL)
 
@@ -54,7 +52,7 @@ def _attr(element: Element, name: str) -> str | None:
 
 
 def _collapse(text: str) -> str:
-    return _WHITESPACE_RE.sub(" ", text).strip()
+    return " ".join(text.split())
 
 
 def _child(element: Element, name: str) -> Element | None:

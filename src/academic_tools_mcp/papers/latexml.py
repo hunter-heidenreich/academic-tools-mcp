@@ -10,7 +10,6 @@ footer, the issue-report dialog) sits outside it. Math is its LaTeX source from
 Images are dropped and captions kept, as for converter output.
 """
 
-import re
 from html.parser import HTMLParser
 
 from .blocks import escape_headings, pipe_table, span
@@ -61,8 +60,6 @@ _TITLE_LEVELS = {
 }
 _DEEPEST_LEVEL = 4
 
-_WHITESPACE_RE = re.compile(r"\s+")
-
 
 class _Node:
     __slots__ = ("attrs", "children", "classes", "tag")
@@ -102,7 +99,7 @@ class _TreeBuilder(HTMLParser):
 
 
 def _collapse(text: str) -> str:
-    return _WHITESPACE_RE.sub(" ", text).strip()
+    return " ".join(text.split())
 
 
 def _skipped(node: _Node) -> bool:

@@ -108,7 +108,7 @@ def _extract_snippet(
     start = 0 if best_offset is None else max(0, best_offset - half)
     snippet = markdown[start : start + _SNIPPET_CHARS]
     # Collapsed: one crossing a heading renders as "## Methods\n\n\n\nWe trained...".
-    return re.sub(r"\s+", " ", snippet.strip()), best_offset
+    return " ".join(snippet.split()), best_offset
 
 
 # --- Filename → identifier inversion per namespace ---

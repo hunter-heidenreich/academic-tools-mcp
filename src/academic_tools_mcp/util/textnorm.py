@@ -16,6 +16,8 @@ _SEGMENT_RE = re.compile(r"[\x00-\x7f]+|[^\x00-\x7f]+")
 
 def fold(text: str) -> str:
     """NFKD-normalize ``text`` and drop combining marks. Case is left untouched."""
+    if text.isascii():
+        return text
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
@@ -45,6 +47,9 @@ def _transform_with_map(text: str, *, fold_marks: bool, lower: bool) -> tuple[st
     whole-string transforms always agree in *length*, pinned by property test
     rather than asserted here.
     """
+    if text.isascii():
+        return (text.lower() if lower else text), list(range(len(text) + 1))
+
     folded = fold(text) if fold_marks else text
     transformed = folded.lower() if lower else folded
 
