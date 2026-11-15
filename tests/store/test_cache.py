@@ -484,6 +484,35 @@ def test_gc_orphan_tmp_files_no_cache_dir(tmp_path, monkeypatch):
     assert cache.gc_orphan_tmp_files() == 0
 
 
+def test_gc_expired_negatives_removes_expired_and_corrupt_entries(tmp_path, monkeypatch):
+    """Startup GC sweeps expired and corrupt `_neg/*.json` files while keeping
+    live negative entries and positive entries intact."""
+    now = 1_700_000_000.0
+    monkeypatch.setattr(cache.time, "time", lambda: now)
+
+    cache.put("openalex", "works", "pos-1", {"id": "W1"})
+    cache.put_negative("openalex", "works", "live-neg", {"error": "404"}, ttl_seconds=60.0)
+    cache.put_negative("openalex", "works", "edge-neg", {"error": "404"}, ttl_seconds=0.0)
+    cache.put_negative("arxiv", "papers", "expired-neg", {"error": "404"}, ttl_seconds=-1.0)
+
+    corrupt_path = cache._neg_path("crossref", "works", "corrupt-neg")
+    corrupt_path.parent.mkdir(parents=True, exist_ok=True)
+    corrupt_path.write_text("{truncated", encoding="utf-8")
+
+    bool_ttl_path = cache._neg_path("biorxiv", "papers", "bool-ttl")
+    bool_ttl_path.parent.mkdir(parents=True, exist_ok=True)
+    bool_ttl_path.write_text(json.dumps({"error": "404", "_expires_at": True}), encoding="utf-8")
+
+    removed = cache.gc_expired_negatives()
+    assert removed == 3
+    assert cache.get("openalex", "works", "pos-1") == {"id": "W1"}
+    assert cache.get_negative("openalex", "works", "live-neg") == {"error": "404"}
+    assert cache.get_negative("openalex", "works", "edge-neg") == {"error": "404"}
+    assert not cache._neg_path("arxiv", "papers", "expired-neg").exists()
+    assert not corrupt_path.exists()
+    assert not bool_ttl_path.exists()
+
+
 def test_concurrent_writers_dont_corrupt_file(tmp_path, monkeypatch):
     """Stress test: many writers hammering the same key produce a final
     file that is always valid JSON and matches one of the inputs. With

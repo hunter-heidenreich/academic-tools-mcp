@@ -6,6 +6,7 @@ the helpers the tool groups share. Never imports `tools` (CI-enforced by
 """
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal, TypeVar
@@ -21,17 +22,31 @@ from .util import doinorm
 
 _T = TypeVar("_T")
 
+_MIGRATION_STAMP = ".migrations_v1"
 
-@asynccontextmanager
-async def _lifespan(app: FastMCP) -> AsyncGenerator[None]:
-    """Startup sweeps, then shutdown cleanup.
 
-    A sweep added here must be idempotent and must not raise out of the lifespan.
-    """
+def _run_startup_sweeps() -> None:
+    """Run startup cache maintenance and one-time legacy stem migrations."""
     cache.gc_orphan_tmp_files()
+    cache.gc_expired_negatives()
+    stamp = cache.CACHE_ROOT / _MIGRATION_STAMP
+    if stamp.exists():
+        return
     stems.migrate_legacy_stems()
     manual.migrate_misrouted_arxiv()
     manual.migrate_acl_stems()
+    if cache.CACHE_ROOT.is_dir():
+        with contextlib.suppress(OSError):
+            stamp.write_text("1\n", encoding="utf-8")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastMCP) -> AsyncGenerator[None]:
+    """Startup sweeps (off the event loop), then shutdown cleanup.
+
+    A sweep added here must be idempotent and must not raise out of the lifespan.
+    """
+    await asyncio.to_thread(_run_startup_sweeps)
     try:
         yield
     finally:
