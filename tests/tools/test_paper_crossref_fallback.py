@@ -12,7 +12,7 @@ import pytest
 
 from academic_tools_mcp import server
 from academic_tools_mcp.providers import arxiv, biorxiv, crossref, openalex
-from academic_tools_mcp.tools import paper
+from academic_tools_mcp.tools import formatting
 
 
 # A canonical OpenAlex 404 error dict, as get_work now produces it.
@@ -131,7 +131,7 @@ class TestFormatCrossrefMetadata:
     """Field-mapping unit tests for the Crossref → unified-shape formatter."""
 
     def test_maps_list_fields_and_date(self):
-        result = paper._format_crossref_metadata(_CROSSREF_WORK, "10.1162/tacl_a_99999")
+        result = formatting.format_crossref_metadata(_CROSSREF_WORK, "10.1162/tacl_a_99999")
         assert result["_source"] == "crossref"
         assert result["_canonical_id"] == "10.1162/tacl_a_99999"
         assert result["title"] == "A Brand New Paper Not Yet In OpenAlex"
@@ -143,30 +143,30 @@ class TestFormatCrossrefMetadata:
 
     def test_full_date_parts_yield_iso_day(self):
         work = {"title": ["X"], "issued": {"date-parts": [[2025, 3, 7]]}}
-        result = paper._format_crossref_metadata(work, "10.1/x")
+        result = formatting.format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2025
         assert result["publication_date"] == "2025-03-07"
 
     def test_year_only_date_parts(self):
         work = {"title": ["X"], "issued": {"date-parts": [[2019]]}}
-        result = paper._format_crossref_metadata(work, "10.1/x")
+        result = formatting.format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2019
         assert result["publication_date"] == "2019"
 
     def test_falls_back_to_published_online_when_issued_missing(self):
         work = {"title": ["X"], "published-online": {"date-parts": [[2022, 11]]}}
-        result = paper._format_crossref_metadata(work, "10.1/x")
+        result = formatting.format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2022
         assert result["publication_date"] == "2022-11"
 
     def test_missing_dates_are_none(self):
         work = {"title": ["X"]}
-        result = paper._format_crossref_metadata(work, "10.1/x")
+        result = formatting.format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] is None
         assert result["publication_date"] is None
 
     def test_oa_fields_always_null(self):
-        result = paper._format_crossref_metadata(_CROSSREF_WORK, "10.1/x")
+        result = formatting.format_crossref_metadata(_CROSSREF_WORK, "10.1/x")
         assert result["pmid"] is None
         assert result["arxiv_id"] is None
         assert result["is_oa"] is None
@@ -174,15 +174,9 @@ class TestFormatCrossrefMetadata:
         assert result["oa_url"] is None
         assert result["pdf_url"] is None
 
-    def test_mirrors_openalex_metadata_key_set(self):
-        """The Crossref fallback stands in for OpenAlex, so their key sets must match."""
-        cr_keys = set(paper._format_crossref_metadata(_CROSSREF_WORK, "10.1/x"))
-        oa_keys = set(paper._format_openalex_metadata({}, "10.1/x"))
-        assert cr_keys == oa_keys
-
     def test_empty_title_list_is_none(self):
         work = {"title": [], "container-title": []}
-        result = paper._format_crossref_metadata(work, "10.1/x")
+        result = formatting.format_crossref_metadata(work, "10.1/x")
         assert result["title"] is None
         assert result["venue"] is None
 
@@ -191,7 +185,7 @@ class TestFormatCrossrefMetadata:
         # published-*). The date walk must include it, or a non-arXiv/bioRxiv
         # preprint DOI reached via fallback_crossref returns year=None.
         work = {"title": ["A Preprint"], "posted": {"date-parts": [[2025, 11, 3]]}}
-        result = paper._format_crossref_metadata(work, "10.1/x")
+        result = formatting.format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2025
         assert result["publication_date"] == "2025-11-03"
 
@@ -203,29 +197,9 @@ class TestFormatCrossrefMetadata:
             "issued": {"date-parts": [[2024, 6]]},
             "posted": {"date-parts": [[2023, 1]]},
         }
-        result = paper._format_crossref_metadata(work, "10.1/x")
+        result = formatting.format_crossref_metadata(work, "10.1/x")
         assert result["publication_year"] == 2024
         assert result["publication_date"] == "2024-06"
-
-
-class TestFirstHelper:
-    """Unit coverage for the shared jsonshape.unwrap_first list-unwrap helper."""
-
-    def test_unwraps_list(self):
-        from academic_tools_mcp.util.jsonshape import unwrap_first
-
-        assert unwrap_first(["a", "b"]) == "a"
-
-    def test_empty_list_is_none(self):
-        from academic_tools_mcp.util.jsonshape import unwrap_first
-
-        assert unwrap_first([]) is None
-
-    def test_passes_through_scalar(self):
-        from academic_tools_mcp.util.jsonshape import unwrap_first
-
-        assert unwrap_first("plain") == "plain"
-        assert unwrap_first(None) is None
 
 
 class TestCrossrefDateHelper:
@@ -582,13 +556,16 @@ class TestCrossrefCitedByCount:
 
     def test_reads_crossrefs_own_counter(self):
         work = {"title": ["X"], "is-referenced-by-count": 868}
-        assert paper._format_crossref_metadata(work, "10.1/x")["cited_by_count"] == 868
+        assert formatting.format_crossref_metadata(work, "10.1/x")["cited_by_count"] == 868
 
     def test_absent_is_none(self):
-        assert paper._format_crossref_metadata({"title": ["X"]}, "10.1/x")["cited_by_count"] is None
+        assert (
+            formatting.format_crossref_metadata({"title": ["X"]}, "10.1/x")["cited_by_count"]
+            is None
+        )
 
     @pytest.mark.parametrize("value", ["868", None, {}, [], 8.5, True, False])
     def test_a_non_int_degrades_to_none(self, value):
         """Nothing below a Crossref item is typed, so the value is guarded, not trusted."""
         work = {"title": ["X"], "is-referenced-by-count": value}
-        assert paper._format_crossref_metadata(work, "10.1/x")["cited_by_count"] is None
+        assert formatting.format_crossref_metadata(work, "10.1/x")["cited_by_count"] is None

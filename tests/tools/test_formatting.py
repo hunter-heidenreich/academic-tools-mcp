@@ -16,7 +16,14 @@ class TestPaperFormatting:
             )
             == "https://arxiv.org/pdf/1706.03762v1"
         )
+        assert formatting.arxiv_pdf_url({"links": [{"href": "x", "rel": "alternate"}]}) is None
+        assert formatting.arxiv_pdf_url({}) is None
+        assert formatting.arxiv_pdf_url({"links": None}) is None
         assert formatting.arxiv_pdf_url({"links": "not-a-list"}) is None
+        assert (
+            formatting.arxiv_pdf_url({"links": ["not a dict", {"title": "pdf", "href": "u"}]})
+            == "u"
+        )
 
     def test_format_arxiv_and_biorxiv_followed_published_flag(self) -> None:
         arxiv_meta = formatting.format_arxiv_metadata(

@@ -23,7 +23,7 @@ from academic_tools_mcp.download import openaccess, streaming
 from academic_tools_mcp.net import clients
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 from academic_tools_mcp.store import cache, stems
-from academic_tools_mcp.tools import paper, pipeline
+from academic_tools_mcp.tools import formatting, pipeline
 from tests.helpers.download_fakes import (
     TIMEOUT as _TIMEOUT,
     install_stream as _install_stream,
@@ -169,13 +169,13 @@ class TestMetadataPdfUrl:
             "best_oa_location": {"pdf_url": "http://x/best.pdf"},
             "open_access": {"is_oa": True, "oa_status": "gold", "oa_url": "http://x/l"},
         }
-        out = paper._format_openalex_metadata(work, _DOI)
+        out = formatting.format_openalex_metadata(work, _DOI)
         assert out["pdf_url"] == "http://x/best.pdf"
         assert out["oa_url"] == "http://x/l"  # existing field preserved
 
     def test_pdf_url_none_for_closed_access(self):
         work = {"title": "T", "open_access": {"is_oa": False}}
-        assert paper._format_openalex_metadata(work, _DOI)["pdf_url"] is None
+        assert formatting.format_openalex_metadata(work, _DOI)["pdf_url"] is None
 
 
 # --- openaccess.download_pdf ----------------------------------------------

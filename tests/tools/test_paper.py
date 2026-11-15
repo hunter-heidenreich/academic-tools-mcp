@@ -14,7 +14,7 @@ import pytest
 
 from academic_tools_mcp import manual, server
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, crossref, openalex
-from academic_tools_mcp.tools import paper
+from academic_tools_mcp.tools import formatting, paper
 
 # ---------------------------------------------------------------------------
 # get_paper_metadata: follow_published auto-chain to OpenAlex
@@ -226,7 +226,7 @@ class TestFormatOpenalexAuthors:
             ]
         }
         # author_count is the global total; the returned page is just [0, 2).
-        out = paper._format_openalex_authors(work, 0, 2)
+        out = formatting.format_openalex_authors(work, 0, 2)
         assert out["author_count"] == 3
         assert [a["name"] for a in out["authors"]] == ["Dan", "Eve"]
         assert out["authors"][0]["openalex_id"] == "A1"
@@ -237,7 +237,7 @@ class TestFormatOpenalexAuthors:
         assert out["page_institution_count"] == 2
 
     def test_empty_authorships(self):
-        out = paper._format_openalex_authors({}, 0, 25)
+        out = formatting.format_openalex_authors({}, 0, 25)
         assert out["author_count"] == 0
         assert out["authors"] == []
         assert out["page_institutions"] == []
@@ -469,22 +469,24 @@ class TestFetchSourceDispatch:
 
 
 class TestFormatMetadataBySource:
-    """_format_metadata_by_source routes a raw object to the right per-source
+    """format_metadata_by_source routes a raw object to the right per-source
     formatter so get_paper_metadata and the batch path share one mapping."""
 
     def test_dispatches_each_source(self):
         arxiv_obj = {"id": "http://arxiv.org/abs/2301.00001v1", "title": "A"}
         assert (
-            paper._format_metadata_by_source("arxiv", arxiv_obj, "2301.00001")["_source"] == "arxiv"
+            formatting.format_metadata_by_source("arxiv", arxiv_obj, "2301.00001")["_source"]
+            == "arxiv"
         )
         bio_obj = {"doi": "10.1101/x", "title": "B"}
         assert (
-            paper._format_metadata_by_source("biorxiv", bio_obj, "10.1101/x")["_source"]
+            formatting.format_metadata_by_source("biorxiv", bio_obj, "10.1101/x")["_source"]
             == "biorxiv"
         )
         oa_obj = {"title": "C"}
         assert (
-            paper._format_metadata_by_source("openalex", oa_obj, "10.1/c")["_source"] == "openalex"
+            formatting.format_metadata_by_source("openalex", oa_obj, "10.1/c")["_source"]
+            == "openalex"
         )
 
 
@@ -1082,28 +1084,13 @@ class TestBatchUncoveredBranches:
 # ---------------------------------------------------------------------------
 
 
-class TestArxivPdfUrl:
-    def test_picks_the_link_titled_pdf(self):
-        links = [
-            {"href": "http://arxiv.org/abs/2301.00001v1", "rel": "alternate"},
-            {"href": "http://arxiv.org/pdf/2301.00001v1", "rel": "related", "title": "pdf"},
-        ]
-        assert paper._arxiv_pdf_url({"links": links}) == "http://arxiv.org/pdf/2301.00001v1"
-
-    def test_no_pdf_link_is_none(self):
-        assert paper._arxiv_pdf_url({"links": [{"href": "x", "rel": "alternate"}]}) is None
-
-    def test_missing_links_is_none(self):
-        assert paper._arxiv_pdf_url({}) is None
-
-
 class TestFlatMetadataFormatters:
-    """`_format_metadata_by_source` was asserted only on `_source`, so a
+    """`format_metadata_by_source` was asserted only on `_source`, so a
     mis-mapped field passed. The Crossref formatter has this coverage already.
     """
 
     def test_arxiv_field_mapping(self):
-        out = paper._format_arxiv_metadata(
+        out = formatting.format_arxiv_metadata(
             {
                 "id": "http://arxiv.org/abs/2301.00001v2",
                 "title": "A Paper",
@@ -1134,7 +1121,7 @@ class TestFlatMetadataFormatters:
         }
 
     def test_biorxiv_field_mapping_omits_followed_published_by_default(self):
-        out = paper._format_biorxiv_metadata(
+        out = formatting.format_biorxiv_metadata(
             {
                 "doi": "10.1101/2024.01.01.123",
                 "title": "A Preprint",
@@ -1170,7 +1157,7 @@ class TestFlatMetadataFormatters:
         }
 
     def test_openalex_metadata_surfaces_the_best_pdf_url(self):
-        out = paper._format_openalex_metadata(
+        out = formatting.format_openalex_metadata(
             {
                 "id": "W1",
                 "title": "A Work",
@@ -1463,7 +1450,7 @@ class TestOpenalexArxivId:
         ],
     )
     def test_extracts_from_doi_and_locations(self, work):
-        result = paper._format_openalex_metadata(work, "10.5555/3295222.3295349")
+        result = formatting.format_openalex_metadata(work, "10.5555/3295222.3295349")
         assert result["arxiv_id"] == "1706.03762"
 
     def test_ids_arxiv_takes_precedence_over_locations(self):
@@ -1471,11 +1458,11 @@ class TestOpenalexArxivId:
             "ids": {"arxiv": "https://arxiv.org/abs/1706.03762v2"},
             "locations": [{"landing_page_url": "https://arxiv.org/abs/2301.00001v1"}],
         }
-        assert paper._format_openalex_metadata(work, "10.1/x")["arxiv_id"] == "1706.03762"
+        assert formatting.format_openalex_metadata(work, "10.1/x")["arxiv_id"] == "1706.03762"
 
     def test_preserves_old_style_archive_case(self):
         work = {"ids": {"arxiv": "https://arxiv.org/abs/math.GT/0309136v1"}}
-        assert paper._format_openalex_metadata(work, "10.1/x")["arxiv_id"] == "math.GT/0309136"
+        assert formatting.format_openalex_metadata(work, "10.1/x")["arxiv_id"] == "math.GT/0309136"
 
     @pytest.mark.parametrize(
         "work",
@@ -1501,7 +1488,7 @@ class TestOpenalexArxivId:
         ],
     )
     def test_non_arxiv_and_malformed_fields_return_none(self, work):
-        assert paper._format_openalex_metadata(work, "10.1038/nature12373")["arxiv_id"] is None
+        assert formatting.format_openalex_metadata(work, "10.1038/nature12373")["arxiv_id"] is None
 
 
 class TestCitedByCountReachesEveryOpenalexPath:
@@ -2404,10 +2391,6 @@ class TestWorkIdRouting:
 class TestUntypedPaperFieldGuards:
     """Nested fields on cached records must be shape-checked before iteration or
     chaining."""
-
-    def test_arxiv_pdf_url_tolerates_null_or_non_dict_links(self):
-        assert paper._arxiv_pdf_url({"links": None}) is None
-        assert paper._arxiv_pdf_url({"links": ["not a dict", {"title": "pdf", "href": "u"}]}) == "u"
 
     @pytest.mark.asyncio
     async def test_authors_tolerates_null_or_non_dict_flat_authors(self, monkeypatch):

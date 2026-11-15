@@ -27,7 +27,7 @@ from hypothesis import HealthCheck, given, settings, strategies as st
 
 from academic_tools_mcp import server
 from academic_tools_mcp.providers import arxiv, biorxiv, openalex
-from academic_tools_mcp.tools import paper
+from academic_tools_mcp.tools import formatting, paper
 from academic_tools_mcp.util import doinorm
 from tests.providers.test_arxiv_properties import bare_arxiv_ids
 from tests.providers.test_biorxiv_properties import biorxiv_dois
@@ -166,7 +166,7 @@ def test_the_institution_rollup_describes_only_its_own_page(
         ]
     }
     start, end = (page - 1) * page_size, (page - 1) * page_size + page_size
-    out = paper._format_openalex_authors(work, start, end)
+    out = formatting.format_openalex_authors(work, start, end)
 
     on_page = {i for a in out["authors"] for i in a["institutions"]}
     assert set(out["page_institutions"]) == on_page
@@ -216,7 +216,7 @@ def test_any_openalex_work_pages_without_raising(work: dict[str, Any], page_size
     and does so for the whole positive TTL. The count and the slice must also
     describe the same objects, so the survey an agent pages against is honest.
     """
-    out = paper._format_openalex_authors(work, 0, page_size)
+    out = formatting.format_openalex_authors(work, 0, page_size)
 
     assert out["author_count"] == len(paper.dict_list(work.get("authorships")))
     assert len(out["authors"]) <= page_size
@@ -230,7 +230,7 @@ def test_any_openalex_work_pages_without_raising(work: dict[str, Any], page_size
 def test_any_openalex_work_formats_as_metadata_without_raising(work: dict[str, Any]) -> None:
     """The same guarantee for the metadata slice, which walks two levels into
     `primary_location` for the venue."""
-    out = paper._format_openalex_metadata(work, "10.1/x")
+    out = formatting.format_openalex_metadata(work, "10.1/x")
     assert out["_source"] == "openalex"
     assert out["_canonical_id"] == "10.1/x"
 

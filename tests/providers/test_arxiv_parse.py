@@ -5,36 +5,17 @@ from defusedxml.ElementTree import fromstring
 from academic_tools_mcp.providers import arxiv, arxiv_parse
 
 
-def test_arxiv_reexports_all_parse_helpers() -> None:
+def test_arxiv_reexports_public_parse_helpers() -> None:
     for name in (
-        "_ATOM_NS",
-        "_ARXIV_NS",
-        "_OPENSEARCH_NS",
-        "_OAI_NS",
-        "_ARXIV_RAW_NS",
-        "_ARXIV_URL_RE",
         "ARXIV_DOI_PREFIX",
-        "_ARXIV_DOI_RE",
         "OLD_ARCHIVE_PATTERN",
-        "_VERSION_PATTERN",
         "OLD_NUMBER_PATTERN",
-        "_NEW_ID_PATTERN",
-        "_NEW_ID_RE",
-        "_OLD_ID_RE",
-        "_VERSION_SUFFIX_RE",
-        "_is_arxiv_shape",
         "normalize_arxiv_id",
         "canonical_arxiv_id",
         "is_arxiv_id",
         "strip_version",
         "base_arxiv_id",
-        "_version_number",
         "id_from_entry",
-        "_is_error_entry",
-        "_total_results",
-        "_parse_entry",
-        "_iso_utc",
-        "_parse_versions",
     ):
         assert getattr(arxiv, name) is getattr(arxiv_parse, name)
 

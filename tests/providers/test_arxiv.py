@@ -6,7 +6,7 @@ from typing import ClassVar
 import httpx
 import pytest
 
-from academic_tools_mcp.providers import arxiv
+from academic_tools_mcp.providers import arxiv, arxiv_parse
 
 # ---------------------------------------------------------------------------
 # ID normalization
@@ -2258,7 +2258,7 @@ class TestGetVersions:
         ],
     )
     def test_dates_convert_or_degrade_to_none(self, raw, expected):
-        assert arxiv._iso_utc(raw) == expected
+        assert arxiv_parse._iso_utc(raw) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 from academic_tools_mcp.providers import crossref, crossref_parse
 
 
-def test_crossref_reexports_all_parse_helpers() -> None:
+def test_crossref_reexports_public_parse_helpers() -> None:
     for name in (
         "canonical_doi",
         "author_name",
@@ -13,8 +13,6 @@ def test_crossref_reexports_all_parse_helpers() -> None:
         "retracts",
         "updates",
         "relations",
-        "_message_of",
-        "_not_found_message",
     ):
         assert getattr(crossref, name) is getattr(crossref_parse, name)
 
