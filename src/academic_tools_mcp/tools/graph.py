@@ -11,6 +11,7 @@ from ..app import (
     PAGE_SIZE,
     REF_SOURCE,
     as_int,
+    dict_list,
     enrich_error,
     mcp,
     page_bounds,
@@ -88,10 +89,7 @@ def _crossref_refs(work: dict[str, Any]) -> list[dict[str, Any]]:
     count tool and the page tool read, so filtering here keeps them agreeing about a
     work. Mirrors ``opencitations._edges_of``.
     """
-    refs = work.get("reference")
-    if not isinstance(refs, list):
-        return []
-    return [ref for ref in refs if isinstance(ref, dict)]
+    return dict_list(work.get("reference"))
 
 
 def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:

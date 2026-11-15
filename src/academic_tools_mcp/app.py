@@ -29,6 +29,9 @@ from .util.jsonshape import (
     dict_list as dict_list,
 )
 from .util.jsonshape import (
+    non_empty_str as non_empty_str,
+)
+from .util.jsonshape import (
     unwrap_first as unwrap_first,
 )
 

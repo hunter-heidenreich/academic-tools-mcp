@@ -67,8 +67,9 @@ The roster, defaults and semantics of every setting live in `README.md`
 ## jsonshape.py
 
 **Single home for untyped-JSON shape guards (`as_dict`, `as_int`, `non_neg_int`,
-`as_bool`, `as_str`, `non_empty_str`, `stripped_str`, `dict_list`, `str_list`,
-`unwrap_first`).** Do not re-roll `_as_dict` / `_as_int` / `_non_neg_int` in
-providers, `bibtex`, or `app` (`app` re-exports `as_dict`, `as_int`, `dict_list`,
-and `unwrap_first` for the tool modules). `as_int` and `non_neg_int` explicitly
-reject `bool` (`isinstance(True, int)` is `True` in Python).
+`as_bool`, `as_str`, `str_or_none`, `non_empty_str`, `stripped_str`, `dict_list`,
+`str_list`, `unwrap_first`).** Do not re-roll `_as_dict` / `_as_int` / `_non_neg_int` /
+`_dicts` / `_str_or_none` in providers, `bibtex`, or `app` (`app` re-exports
+`as_dict`, `as_int`, `dict_list`, `non_empty_str`, and `unwrap_first` for the tool
+modules). `as_int` and `non_neg_int` explicitly reject `bool` (`isinstance(True, int)`
+is `True` in Python).

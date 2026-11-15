@@ -36,6 +36,11 @@ def as_str(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def str_or_none(value: Any) -> str | None:
+    """``value`` when it is a ``str``, else ``None``."""
+    return value if isinstance(value, str) else None
+
+
 def non_empty_str(value: Any) -> str | None:
     """``value`` when it is a non-empty ``str``, else ``None``."""
     return value if isinstance(value, str) and value else None

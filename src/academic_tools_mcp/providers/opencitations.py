@@ -11,6 +11,7 @@ from ..net import clients, http
 from ..net.throttle import Throttle
 from ..store import cache, singleflight
 from ..util import config, doinorm, useragent
+from ..util.jsonshape import dict_list, non_empty_str
 
 OPENCITATIONS_BASE_URL = "https://api.opencitations.net/index/v2"
 NAMESPACE = "opencitations"
@@ -104,10 +105,11 @@ def _parse_ids(raw: Any) -> dict[str, str]:
 
     ``Any``, not ``str``: the value comes from untyped JSON.
     """
-    if not isinstance(raw, str) or not raw:
+    text = non_empty_str(raw)
+    if text is None:
         return {}
     ids: dict[str, str] = {}
-    for token in raw.split():
+    for token in text.split():
         prefix, sep, value = token.partition(":")
         # A token with no `:`, or with either half empty, is dropped: these flatten
         # onto the record, where a blank `doi` reads to an agent as a real identifier.
@@ -134,7 +136,7 @@ def _edges_of(records: Any, *, kind: str, id_field: str) -> dict[str, Any] | Non
     """
     if not isinstance(records, list):
         return None
-    formatted = [_format_record(r, id_field) for r in records if isinstance(r, dict)]
+    formatted = [_format_record(r, id_field) for r in dict_list(records)]
     return {kind: formatted, "count": len(formatted)}
 
 
