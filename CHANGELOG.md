@@ -17,6 +17,16 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`get_paper_code`, `get_paper_catalog`, and `get_paper_evaluations` auto-resolve DOIs,
+  PMIDs, and OpenAlex `W...` work IDs to their arXiv ID via OpenAlex.** When handed a
+  published journal or conference DOI, a PMID, or an OpenAlex work ID instead of an
+  arXiv ID, `catalog._paper` now resolves the identifier via `app.resolve_paper_identifier`
+  and `openalex.get_work` (reading from the existing `("openalex", "works", ...)` cache
+  when already warmed by `search_openalex` or `get_paper_metadata`) and extracts its
+  versionless `arxiv_id` before querying Papers with Code. Papers with no arXiv record in
+  OpenAlex continue to return `not_found: true` with `_NOT_ARXIV_SUGGESTION` without
+  spending a Papers with Code request.
+
 - **True OR-filter batch resolution for cold PMIDs and OpenAlex `W...` work IDs in
   `get_papers_metadata` (`openalex.resolve_pmids_batch` and
   `openalex.resolve_work_ids_batch`).** When `get_papers_metadata` receives multiple PMIDs

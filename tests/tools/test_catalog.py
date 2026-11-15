@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from academic_tools_mcp import server
-from academic_tools_mcp.providers import paperswithcode
+from academic_tools_mcp.providers import openalex, paperswithcode
 from academic_tools_mcp.tools import catalog
 
 _RECORD: dict[str, Any] = {
@@ -70,6 +70,14 @@ _ROW = {
     "hf_model_url": None,
     "source_url": None,
 }
+
+
+@pytest.fixture(autouse=True)
+def _stub_openalex_work(monkeypatch):
+    async def _not_found(doi, *, force_refresh=False):
+        return {"error": "not found", "not_found": True}
+
+    monkeypatch.setattr(openalex, "get_work", _not_found)
 
 
 def _patch_paper(monkeypatch, result):
@@ -308,6 +316,142 @@ class TestCatalogForceRefreshThreading:
         await server.get_benchmark_leaderboard("wmt14", force_refresh=flag)
 
         assert seen == [flag]
+
+
+class TestCatalogNonArxivResolution:
+    """DOIs, PMIDs, and OpenAlex work IDs resolve to their arXiv ID via OpenAlex."""
+
+    @pytest.mark.asyncio
+    async def test_published_doi_resolves_to_arxiv_id_across_all_three_tools(self, monkeypatch):
+        seen_ids: list[str] = []
+
+        async def fake_get_work(doi, *, force_refresh=False):
+            assert doi == "10.5555/3295222.3295349"
+            return {
+                "id": "https://openalex.org/W2963403868",
+                "doi": "https://doi.org/10.5555/3295222.3295349",
+                "ids": {"arxiv": "https://arxiv.org/abs/1706.03762v2"},
+            }
+
+        async def fake_pwc_paper(arxiv_id, *, force_refresh=False):
+            seen_ids.append(arxiv_id)
+            return dict(_RECORD)
+
+        async def fake_evals(paper, *, page, page_size, force_refresh):
+            return {"total_results": 1, "next_page": None, "evaluations": [_ROW]}
+
+        monkeypatch.setattr(openalex, "get_work", fake_get_work)
+        monkeypatch.setattr(paperswithcode, "get_paper", fake_pwc_paper)
+        monkeypatch.setattr(paperswithcode, "get_paper_evaluations", fake_evals)
+
+        code = await server.get_paper_code("10.5555/3295222.3295349")
+        cat = await server.get_paper_catalog("10.5555/3295222.3295349")
+        evals = await server.get_paper_evaluations("10.5555/3295222.3295349")
+
+        assert seen_ids == ["1706.03762", "1706.03762", "1706.03762"]
+        assert code["arxiv_id"] == "1706.03762"
+        assert cat["arxiv_id"] == "1706.03762"
+        assert evals["arxiv_id"] == "1706.03762"
+
+    @pytest.mark.asyncio
+    async def test_published_doi_resolves_from_location_preserving_old_archive_case(
+        self, monkeypatch
+    ):
+        seen_ids: list[str] = []
+
+        async def fake_get_work(doi, *, force_refresh=False):
+            return {
+                "id": "https://openalex.org/W1",
+                "doi": "https://doi.org/10.1090/jams/1",
+                "locations": [{"landing_page_url": "https://arxiv.org/abs/math.GT/0309136v1"}],
+            }
+
+        async def fake_pwc_paper(arxiv_id, *, force_refresh=False):
+            seen_ids.append(arxiv_id)
+            return {**_RECORD, "arxiv_id": "math.GT/0309136"}
+
+        monkeypatch.setattr(openalex, "get_work", fake_get_work)
+        monkeypatch.setattr(paperswithcode, "get_paper", fake_pwc_paper)
+
+        result = await server.get_paper_code("10.1090/jams/1")
+
+        assert seen_ids == ["math.GT/0309136"]
+        assert result["arxiv_id"] == "math.gt/0309136"
+
+    @pytest.mark.asyncio
+    async def test_pmid_and_work_id_resolve_through_openalex(self, monkeypatch):
+        seen_pwc: list[str] = []
+        seen_oa_refresh: list[bool] = []
+
+        async def fake_resolve_pmid(pmid, *, force_refresh=False):
+            return {"doi": "10.48550/arxiv.1706.03762", "openalex_id": "https://openalex.org/W1"}
+
+        async def fake_resolve_work_id(work_id, *, force_refresh=False):
+            return {"doi": None, "openalex_id": "https://openalex.org/W2963403868"}
+
+        async def fake_get_work(identifier, *, force_refresh=False):
+            seen_oa_refresh.append(force_refresh)
+            return {
+                "id": "https://openalex.org/W2963403868",
+                "doi": None,
+                "best_oa_location": {"pdf_url": "https://arxiv.org/pdf/1706.03762v5.pdf"},
+            }
+
+        async def fake_pwc_paper(arxiv_id, *, force_refresh=False):
+            seen_pwc.append(arxiv_id)
+            return dict(_RECORD)
+
+        monkeypatch.setattr(openalex, "resolve_pmid", fake_resolve_pmid)
+        monkeypatch.setattr(openalex, "resolve_work_id", fake_resolve_work_id)
+        monkeypatch.setattr(openalex, "get_work", fake_get_work)
+        monkeypatch.setattr(paperswithcode, "get_paper", fake_pwc_paper)
+
+        by_pmid = await server.get_paper_code("pmid:20079334")
+        by_work = await server.get_paper_catalog("W2963403868", force_refresh=True)
+
+        assert by_pmid["arxiv_id"] == "1706.03762"
+        assert by_work["arxiv_id"] == "1706.03762"
+        assert seen_pwc == ["10.48550/arxiv.1706.03762", "1706.03762"]
+        assert seen_oa_refresh == [False]
+
+    @pytest.mark.asyncio
+    async def test_doi_without_arxiv_id_in_openalex_returns_not_arxiv_suggestion(self, monkeypatch):
+        async def fake_get_work(doi, *, force_refresh=False):
+            return {
+                "id": "https://openalex.org/W1",
+                "doi": "https://doi.org/10.1038/nature12373",
+            }
+
+        monkeypatch.setattr(openalex, "get_work", fake_get_work)
+
+        result = await server.get_paper_code("10.1038/nature12373")
+
+        assert result["not_found"] is True
+        assert "get_paper_metadata" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_transient_openalex_error_forwards_retryable_with_suggestion(self, monkeypatch):
+        async def fake_get_work(doi, *, force_refresh=False):
+            return {"error": "503", "retryable": True}
+
+        monkeypatch.setattr(openalex, "get_work", fake_get_work)
+
+        result = await server.get_paper_code("10.5555/3295222.3295349")
+
+        assert result["retryable"] is True
+        assert "get_paper_metadata" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_pmid_trade_error_returns_without_calling_pwc(self, monkeypatch):
+        async def fake_resolve_pmid(pmid, *, force_refresh=False):
+            return {"error": "503", "retryable": True}
+
+        monkeypatch.setattr(openalex, "resolve_pmid", fake_resolve_pmid)
+
+        result = await server.get_paper_code("pmid:20079334")
+
+        assert result["retryable"] is True
+        assert "pubmed.ncbi.nlm.nih.gov" in result["suggestion"]
 
 
 _TOOLS = (
