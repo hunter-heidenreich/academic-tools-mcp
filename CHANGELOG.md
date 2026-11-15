@@ -29,7 +29,7 @@ grouped by milestone rather than per commit.
   Standardized the identifier parameter name on `get_paper_code`, `get_paper_catalog`,
   and `get_paper_evaluations` to `identifier` (matching the rest of the single-paper
   tool surface) and clarified `DOI` / `ARXIV_ID` parameter descriptions and pipeline
-  guidance in `app.py`. ([#191])
+  guidance in `app.py`. ([#201])
 
 - **Startup sweep for expired positive cache entries (`cache.gc_expired_positives`).**
   `app._run_startup_sweeps` now calls `cache.gc_expired_positives()`, which sweeps
@@ -2466,4 +2466,4 @@ say which.
 [#188]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/188
 [#189]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/189
 [#190]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/190
-[#191]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/191
+[#201]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/201
