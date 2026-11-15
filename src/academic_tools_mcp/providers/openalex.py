@@ -4,7 +4,7 @@ import asyncio
 import re
 from collections.abc import Callable
 from typing import Any, Literal
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import httpx
 
@@ -59,20 +59,11 @@ def canonical_doi(doi: str) -> str:
 
 
 def _usable_http_url(value: Any) -> str | None:
-    """Return a stripped ``http(s)`` URL with a valid host and port, or None."""
+    """Return a stripped ``http(s)`` URL with a valid public host and port, or None."""
     if not isinstance(value, str):
         return None
     candidate = value.strip()
-    if not candidate:
-        return None
-    try:
-        parts = urlsplit(candidate)
-        _ = parts.port
-    except ValueError:
-        return None
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        return None
-    return candidate
+    return candidate if http.is_public_http_url(candidate) else None
 
 
 def best_pdf_url(work: dict[str, Any]) -> str | None:

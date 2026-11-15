@@ -6,9 +6,10 @@ is on *resolution*: the only URL this module will fetch is the one OpenAlex
 reports, never a caller-supplied one — a metadata-gated fetcher, not a general
 scraper.
 
-The gate does not reach the host that serves the bytes: redirects are followed,
-so a fetch can end somewhere ``best_pdf_url`` never saw, and there is no scheme
-or private-host allowlist behind it.
+The gate also checks every host on the path: ``best_pdf_url`` and every
+redirect hop in ``stream_to_file`` must pass ``http.is_public_http_url``,
+rejecting non-HTTP(S) schemes and loopback, RFC 1918 private, link-local /
+cloud-metadata, or reserved addresses before a request is sent.
 """
 
 from contextlib import AbstractAsyncContextManager

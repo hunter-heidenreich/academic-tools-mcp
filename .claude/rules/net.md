@@ -24,6 +24,11 @@ the other failure — they sum the bound and pin the lifespan.
 - **Every downstream classifier reads these flags** — `tools/graph._FORWARDED_ERROR_KEYS`,
   `tools/paper`'s `fallback_crossref` gate, `openaccess`'s import-suggestion
   allowlist. A hand-spelled dict that omits one reads to all three as "unknown".
+- **`is_public_http_url` is the single host/scheme guard for untrusted upstream
+  URLs (`openalex.best_pdf_url` and `streaming.stream_to_file`).** It rejects
+  non-HTTP(S) schemes, credentials, `localhost`/`.local`/`.internal`, non-global
+  IPv4/IPv6 literals (including IPv4-mapped IPv6), and numeric/hex/octal `inet_aton`
+  shorthands.
 - **`max_concurrency` in the backpressure dict carries `max_pending`.** It is the
   burst cap despite the name, and nothing but this line says so.
 

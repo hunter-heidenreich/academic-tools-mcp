@@ -631,6 +631,17 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **Open-access PDF downloads reject non-public hosts and unsafe redirect hops
+  (`http.is_public_http_url`, `streaming.require_public_url`).** `openalex.best_pdf_url`
+  and `streaming.stream_to_file` now validate both the initial candidate URL and every
+  redirect hop before opening a connection, rejecting non-HTTP(S) schemes, embedded
+  credentials, `localhost` / `.local` / `.internal` hostnames, non-global IPv4/IPv6
+  literals (loopback, RFC 1918 private, link-local / cloud-metadata `169.254.0.0/16`,
+  multicast, unspecified, reserved, and IPv4-mapped IPv6), and `inet_aton`
+  numeric/hex/octal shorthands. Disallowed candidate URLs in `best_oa_location` fall
+  through to `primary_location` / `open_access.oa_url`, and a redirect hop to a
+  non-public target aborts before connecting as a definitive (`retryable: false`)
+  failure with the `import_paper` suggestion. ([#181])
 - **Every ORCID spelling is one author.** `canonical_author_id` only lowercased
   an ORCID, so the two URL forms, `orcid:0000-…` and a bare `0000-…` were four
   cache entries for one person — and only `https://orcid.org/…` resolved, so the
@@ -2382,3 +2393,5 @@ say which.
 [#177]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/177
 [#178]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/178
 [#179]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/179
+[#180]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/180
+[#181]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/181

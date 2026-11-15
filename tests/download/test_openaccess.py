@@ -123,6 +123,14 @@ class TestBestPdfUrl:
             "http://:80/empty-host.pdf",
             "http://[::1/unclosed-ipv6.pdf",
             "http://example.org:bad/bad-port.pdf",
+            "http://localhost/local.pdf",
+            "http://127.0.0.1/loopback.pdf",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/private.pdf",
+            "http://192.168.1.1/private.pdf",
+            "http://[::1]/ipv6-loopback.pdf",
+            "http://[::ffff:127.0.0.1]/mapped-loopback.pdf",
+            "http://user:secret@example.org/cred.pdf",
         ],
     )
     def test_an_unusable_url_falls_through_to_the_next_candidate(self, unusable):
@@ -930,3 +938,59 @@ class TestRedirectChase:
         monkeypatch.setattr(openalex, "get_work", boom)
         monkeypatch.setattr(clients, "get_client", boom)
         assert await openaccess.download_pdf(_DOI) == first
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "unsafe_target",
+        [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8080/internal.pdf",
+            "http://localhost/admin.pdf",
+            "http://10.0.0.1/corp.pdf",
+            "http://[::1]/loopback.pdf",
+            "http://[::ffff:169.254.169.254]/mapped.pdf",
+            "file:///etc/passwd",
+        ],
+    )
+    async def test_a_redirect_to_a_non_public_host_is_refused_before_connecting(
+        self, unsafe_target: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A redirect hop to a private, loopback, link-local, or non-HTTP target
+        must be blocked before the transport ever sends the redirected request,
+        and classified as a definitive (`retryable: False`) failure."""
+        contacted: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            contacted.append(str(request.url))
+            return httpx.Response(302, headers={"location": unsafe_target})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+        _stub_get_work(monkeypatch, {"best_oa_location": {"pdf_url": self._START}})
+        monkeypatch.setattr(openaccess, "_request_slot", _passthrough_slot)
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+        try:
+            result = await openaccess.download_pdf(_DOI)
+        finally:
+            await client.aclose()
+
+        assert contacted == [self._START]
+        assert "invalid URL" in result["error"]
+        assert result["retryable"] is False
+        assert "import_paper" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_stream_to_file_rejects_initial_non_public_url(self, tmp_path: Path) -> None:
+        client = MagicMock()
+        result = await streaming.stream_to_file(
+            client,
+            "http://127.0.0.1/secret.pdf",
+            tmp_path / "out.pdf",
+            slot_factory=_passthrough_slot,
+            namespace="oa_download",
+            provider_label="OA download",
+            require_pdf=True,
+            timeout=_TIMEOUT,
+        )
+        assert "invalid URL" in result["error"]
+        assert result["retryable"] is False
+        client.stream.assert_not_called()
