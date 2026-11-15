@@ -17,6 +17,26 @@ grouped by milestone rather than per commit.
 
 ### Fixed
 
+- **`openalex` cross-warms `work_ids` and `pmids` across all work fetches, and
+  `paper.get_papers_metadata` bounds concurrent resolution and singleton fan-outs.**
+  `openalex._warm_work_mappings` now populates `("openalex", "work_ids", ...)` and
+  `("openalex", "pmids", ...)` on every full work response (`_traded_ids`, `get_work`,
+  `search_works`, and `_fetch_chunk_uncoalesced`), so chaining `search_openalex` into
+  `get_paper_metadata(hit["openalex_id"])` or trading between PMIDs, `W...` work IDs and
+  DOIs hits the cache with zero extra requests. In `get_papers_metadata`, concurrent
+  `resolve_paper_identifier` calls (`Semaphore(4)`) and `_singleton_one` calls
+  (`Semaphore(2)`) are now bounded so batches of 10–100 cold PMIDs, `W...` work IDs or
+  bioRxiv DOIs no longer overflow upstream throttle burst caps with
+  `LocalBackpressureError`. ([#174])
+
+- **`biorxiv._parse_paper`, `openalex` integer guards, and `acl._index_meta` harden
+  untyped JSON parsing.** `biorxiv._parse_paper` now routes `author_corresponding`,
+  `author_corresponding_institution`, `date`, `type`, `license`, `category`, and
+  `jatsxml` through `_text_or_none`; `openalex` adds `_non_neg_int` and `_meta_count` so
+  booleans and negative integers are rejected in `reconstruct_abstract` word positions
+  and `meta.count`; and `acl._index_meta` rejects boolean or non-finite (`nan`, `±inf`)
+  `fetched_at` timestamps and non-string `registrants` entries. ([#172])
+
 - **`paper._format_crossref_metadata` includes `pmid: None` to match
   `_format_openalex_metadata`'s key set, and `app.as_int` / `dict_list` guard untyped
   JSON fields across `app`, `tools/paper` and `tools/graph`.** The `fallback_crossref`
