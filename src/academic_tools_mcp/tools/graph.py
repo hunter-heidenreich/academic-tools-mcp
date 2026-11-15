@@ -10,14 +10,13 @@ from ..app import (
     PAGE,
     PAGE_SIZE,
     REF_SOURCE,
-    as_int,
-    dict_list,
     enrich_error,
     mcp,
     page_bounds,
     resolve_doi_identifier,
 )
 from ..providers import crossref, openalex, opencitations
+from ..util.jsonshape import as_int, dict_list
 
 # Every graph call goes through one DOI resolver; this names the tools in its refusal.
 _SUBJECT = "Reference and citation graphs"

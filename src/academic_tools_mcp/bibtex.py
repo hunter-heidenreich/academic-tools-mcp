@@ -315,6 +315,24 @@ def _url_field(url: str) -> tuple[str, str]:
     return ("howpublished", f"{{\\url{{{_escaped_url(url)}}}}}")
 
 
+def _add_braced(fields: list[tuple[str, str]], name: str, value: str) -> None:
+    """Append ``(name, "{value}")`` when *value* is non-empty."""
+    if value:
+        fields.append((name, f"{{{value}}}"))
+
+
+def _add_escaped(fields: list[tuple[str, str]], name: str, value: str) -> None:
+    """Append ``(name, "{_escape_bibtex(value)}")`` when *value* is non-empty."""
+    if value:
+        fields.append((name, f"{{{_escape_bibtex(value)}}}"))
+
+
+def _add_doi(fields: list[tuple[str, str]], name: str, value: str) -> None:
+    """Append ``(name, "{_escape_doi(value)}")`` when *value* is non-empty."""
+    if value:
+        fields.append((name, f"{{{_escape_doi(value)}}}"))
+
+
 def _render_entry(entry_type: str, key: str, fields: list[tuple[str, str]]) -> str:
     """Assemble ``@type{key, ...}`` — the one formatting site. Values arrive brace-delimited."""
     body = ",\n".join(f"  {name}={value}" for name, value in fields)
@@ -340,13 +358,12 @@ def generate_bibtex(work: dict[str, Any]) -> str:
     publisher = _str(source.get("host_organization_name"))
 
     fields: list[tuple[str, str]] = [_title_field(_str(work.get("title")))]
-    if authors := _format_authors_bibtex(authorships):
-        fields.append(("author", f"{{{authors}}}"))
+    _add_braced(fields, "author", _format_authors_bibtex(authorships))
 
-    if entry_type == "article" and venue_name:
-        fields.append(("journal", f"{{{_escape_bibtex(venue_name)}}}"))
-    elif entry_type in ("inproceedings", "incollection") and venue_name:
-        fields.append(("booktitle", f"{{{_escape_bibtex(venue_name)}}}"))
+    if entry_type == "article":
+        _add_escaped(fields, "journal", venue_name)
+    elif entry_type in ("inproceedings", "incollection"):
+        _add_escaped(fields, "booktitle", venue_name)
     elif entry_type == "phdthesis":
         # Shape-guarded at both levels: OpenAlex's tree carries a null or wrong-shaped element.
         school = next(
@@ -359,34 +376,28 @@ def generate_bibtex(work: dict[str, Any]) -> str:
             ),
             "",
         )
-        if school:
-            fields.append(("school", f"{{{_escape_bibtex(school)}}}"))
-    elif entry_type == "techreport" and venue_name:
-        fields.append(("institution", f"{{{_escape_bibtex(venue_name)}}}"))
+        _add_escaped(fields, "school", school)
+    elif entry_type == "techreport":
+        _add_escaped(fields, "institution", venue_name)
 
     # biblio values arrive as freeform strings, occasionally as numbers.
-    if volume := _biblio_scalar(biblio.get("volume")):
-        fields.append(("volume", f"{{{_escape_bibtex(volume)}}}"))
-    if issue := _biblio_scalar(biblio.get("issue")):
-        fields.append(("number", f"{{{_escape_bibtex(issue)}}}"))
+    _add_escaped(fields, "volume", _biblio_scalar(biblio.get("volume")))
+    _add_escaped(fields, "number", _biblio_scalar(biblio.get("issue")))
     if first_page := _biblio_scalar(biblio.get("first_page")):
         pages = _escape_bibtex(first_page)
         if last_page := _biblio_scalar(biblio.get("last_page")):
             pages += f"--{_escape_bibtex(last_page)}"
-        fields.append(("pages", f"{{{pages}}}"))
-    if year:
-        fields.append(("year", f"{{{year}}}"))
-    if publisher:
-        fields.append(("publisher", f"{{{_escape_bibtex(publisher)}}}"))
-    if doi:
-        fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
+        _add_braced(fields, "pages", pages)
+    _add_braced(fields, "year", year)
+    _add_escaped(fields, "publisher", publisher)
+    _add_doi(fields, "doi", doi)
 
     # Keys on the work type, not `@misc`: datasets and software land there too.
     # arXiv DOI -> eprint; else a resolver URL, then the OpenAlex landing page,
     # then no URL field at all — never a bare \url{}.
     if work_type == "preprint":
         if eprint := _arxiv_eprint_from_doi(doi):
-            fields.append(("eprint", f"{{{_escape_doi(eprint)}}}"))
+            _add_doi(fields, "eprint", eprint)
             fields.append(("archiveprefix", "{arXiv}"))
         elif doi:
             fields.append(_url_field(f"https://doi.org/{doi}"))
@@ -408,19 +419,14 @@ def generate_arxiv_bibtex(paper: dict[str, Any]) -> str:
     eprint_id = arxiv.strip_version(arxiv.id_from_entry(paper))
 
     fields: list[tuple[str, str]] = [_title_field(_str(paper.get("title")))]
-    if authors := _format_flat_authors_bibtex(paper.get("authors")):
-        fields.append(("author", f"{{{authors}}}"))
-    if journal_ref:
-        fields.append(("journal", f"{{{_escape_bibtex(journal_ref)}}}"))
-    if year:
-        fields.append(("year", f"{{{year}}}"))
+    _add_braced(fields, "author", _format_flat_authors_bibtex(paper.get("authors")))
+    _add_escaped(fields, "journal", journal_ref)
+    _add_braced(fields, "year", year)
     if eprint_id:
-        fields.append(("eprint", f"{{{_escape_doi(eprint_id)}}}"))
+        _add_doi(fields, "eprint", eprint_id)
         fields.append(("archiveprefix", "{arXiv}"))
-    if primary_cat := _str(paper.get("primary_category")):
-        fields.append(("primaryclass", f"{{{_escape_doi(primary_cat)}}}"))
-    if doi:
-        fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
+    _add_doi(fields, "primaryclass", _str(paper.get("primary_category")))
+    _add_doi(fields, "doi", doi)
 
     return _render_entry(entry_type, key, fields)
 
@@ -442,19 +448,16 @@ def generate_biorxiv_bibtex(paper: dict[str, Any]) -> str:
     year = _year_from_date(paper, date_field)
 
     fields: list[tuple[str, str]] = [_title_field(_str(paper.get("title")))]
-    if authors := _format_flat_authors_bibtex(paper.get("authors")):
-        fields.append(("author", f"{{{authors}}}"))
-    if published_doi and (journal := _str(paper.get("published_journal"))):
-        fields.append(("journal", f"{{{_escape_bibtex(journal)}}}"))
+    _add_braced(fields, "author", _format_flat_authors_bibtex(paper.get("authors")))
     if published_doi:
-        fields.append(("doi", f"{{{_escape_doi(published_doi)}}}"))
-    if year:
-        fields.append(("year", f"{{{year}}}"))
+        _add_escaped(fields, "journal", _str(paper.get("published_journal")))
+        _add_doi(fields, "doi", published_doi)
+    _add_braced(fields, "year", year)
     if entry_type == "misc":
         server_name = "medRxiv" if server == "medrxiv" else "bioRxiv"
-        fields.append(("publisher", f"{{{server_name}}}"))
+        _add_braced(fields, "publisher", server_name)
         if doi:
-            fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
+            _add_doi(fields, "doi", doi)
             fields.append(_url_field(f"https://doi.org/{doi}"))
 
     return _render_entry(entry_type, key, fields)
@@ -544,39 +547,30 @@ def generate_crossref_bibtex(work: dict[str, Any], *, year: Any = None) -> str:
     publisher = work["publisher"] if isinstance(work.get("publisher"), str) else ""
 
     fields: list[tuple[str, str]] = [_title_field(title)]
-    if authors := _format_names(authors_list, crossref.author_name):
-        fields.append(("author", f"{{{authors}}}"))
+    _add_braced(fields, "author", _format_names(authors_list, crossref.author_name))
 
-    if entry_type == "article" and venue:
-        fields.append(("journal", f"{{{_escape_bibtex(venue)}}}"))
-    elif entry_type in ("inproceedings", "incollection") and venue:
-        fields.append(("booktitle", f"{{{_escape_bibtex(venue)}}}"))
-    elif entry_type == "phdthesis" and (
-        school := crossref.institution_name(work.get("institution"))
-    ):
-        fields.append(("school", f"{{{_escape_bibtex(school)}}}"))
-    elif entry_type == "techreport" and (issuer := venue or publisher):
-        fields.append(("institution", f"{{{_escape_bibtex(issuer)}}}"))
+    if entry_type == "article":
+        _add_escaped(fields, "journal", venue)
+    elif entry_type in ("inproceedings", "incollection"):
+        _add_escaped(fields, "booktitle", venue)
+    elif entry_type == "phdthesis":
+        _add_escaped(fields, "school", crossref.institution_name(work.get("institution")))
+    elif entry_type == "techreport":
+        _add_escaped(fields, "institution", venue or publisher)
 
     # Crossref's volume/issue are freeform strings; escaped like any other value.
-    if isinstance(volume := work.get("volume"), str) and volume:
-        fields.append(("volume", f"{{{_escape_bibtex(volume)}}}"))
-    if isinstance(issue := work.get("issue"), str) and issue:
-        fields.append(("number", f"{{{_escape_bibtex(issue)}}}"))
-    if pages := _crossref_pages(work):
-        fields.append(("pages", f"{{{pages}}}"))
-    if year_token:
-        fields.append(("year", f"{{{year_token}}}"))
-    if publisher:
-        fields.append(("publisher", f"{{{_escape_bibtex(publisher)}}}"))
-    if doi:
-        fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
+    _add_escaped(fields, "volume", _str(work.get("volume")))
+    _add_escaped(fields, "number", _str(work.get("issue")))
+    _add_braced(fields, "pages", _crossref_pages(work))
+    _add_braced(fields, "year", year_token)
+    _add_escaped(fields, "publisher", publisher)
+    _add_doi(fields, "doi", doi)
 
     # Keys on the work type, as `generate_bibtex` does: a preprint has no venue,
     # so a locator is the only thing that makes the entry findable.
     if work_type == _CROSSREF_PREPRINT_TYPE:
         if eprint := _arxiv_eprint_from_doi(doi):
-            fields.append(("eprint", f"{{{_escape_doi(eprint)}}}"))
+            _add_doi(fields, "eprint", eprint)
             fields.append(("archiveprefix", "{arXiv}"))
         elif doi:
             fields.append(_url_field(f"https://doi.org/{doi}"))
@@ -633,37 +627,28 @@ def generate_acl_bibtex(paper: dict[str, Any]) -> str:
     is_journal = paper.get("volume_type") == "journal"
 
     fields: list[tuple[str, str]] = [_title_field(_str(paper.get("title")))]
-    if names := _format_flat_authors_bibtex(authors):
-        fields.append(("author", f"{{{names}}}"))
+    _add_braced(fields, "author", _format_flat_authors_bibtex(authors))
 
     if is_journal:
         m = _JOURNAL_FROM_BOOKTITLE_RE.match(booktitle)
-        if journal := (m.group(1) if m else booktitle):
-            fields.append(("journal", f"{{{_escape_bibtex(journal)}}}"))
-        if volume := _biblio_scalar(paper.get("journal_volume")):
-            fields.append(("volume", f"{{{_escape_bibtex(volume)}}}"))
-        if issue := _biblio_scalar(paper.get("journal_issue")):
-            fields.append(("number", f"{{{_escape_bibtex(issue)}}}"))
+        _add_escaped(fields, "journal", m.group(1) if m else booktitle)
+        _add_escaped(fields, "volume", _biblio_scalar(paper.get("journal_volume")))
+        _add_escaped(fields, "number", _biblio_scalar(paper.get("journal_issue")))
     else:
-        if names := _format_flat_authors_bibtex(editors):
-            fields.append(("editor", f"{{{names}}}"))
-        if booktitle:
-            fields.append(("booktitle", f"{{{_escape_bibtex(booktitle)}}}"))
+        _add_braced(fields, "editor", _format_flat_authors_bibtex(editors))
+        _add_escaped(fields, "booktitle", booktitle)
 
     if month := _month_field(paper.get("month")):
         fields.append(month)
-    if year:
-        fields.append(("year", f"{{{year}}}"))
-    if not is_journal and (address := _str(paper.get("address"))):
-        fields.append(("address", f"{{{_escape_bibtex(address)}}}"))
-    if publisher := _str(paper.get("publisher")):
-        fields.append(("publisher", f"{{{_escape_bibtex(publisher)}}}"))
-    if pages := _pages(paper.get("pages")):
-        fields.append(("pages", f"{{{pages}}}"))
+    _add_braced(fields, "year", year)
+    if not is_journal:
+        _add_escaped(fields, "address", _str(paper.get("address")))
+    _add_escaped(fields, "publisher", _str(paper.get("publisher")))
+    _add_braced(fields, "pages", _pages(paper.get("pages")))
     if doi:
-        fields.append(("doi", f"{{{_escape_doi(doi)}}}"))
+        _add_doi(fields, "doi", doi)
     elif url := _str(paper.get("url")):
-        fields.append(("url", f"{{{_escaped_url(url)}}}"))
+        _add_braced(fields, "url", _escaped_url(url))
 
     entry_type = "article" if is_journal else "inproceedings"
     return _render_entry(entry_type, key, fields)

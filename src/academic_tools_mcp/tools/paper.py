@@ -18,13 +18,11 @@ from ..app import (
     INSTITUTION_ID,
     PAPER_ID,
     crossref_date,
-    dict_list,
     enrich_error,
     mcp,
     page_bounds,
     resolve_doi_identifier,
     resolve_paper_identifier,
-    unwrap_first,
 )
 from ..bibtex import (
     generate_acl_bibtex,
@@ -36,6 +34,7 @@ from ..bibtex import (
 from ..net import http
 from ..providers import acl, arxiv, biorxiv, crossref, openalex
 from ..util import doinorm
+from ..util.jsonshape import dict_list, unwrap_first
 from .formatting import (
     arxiv_pdf_url as _arxiv_pdf_url,  # noqa: F401
     authors_envelope as _authors_envelope,

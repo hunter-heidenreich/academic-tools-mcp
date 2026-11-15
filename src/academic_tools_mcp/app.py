@@ -19,13 +19,7 @@ from .net import clients, http
 from .providers import acl, arxiv, openalex
 from .store import cache, stems
 from .util import doinorm
-from .util.jsonshape import (
-    as_dict,
-    as_int,
-    dict_list,
-    non_empty_str as non_empty_str,
-    unwrap_first as unwrap_first,
-)
+from .util.jsonshape import as_dict, as_int, dict_list
 
 _T = TypeVar("_T")
 
@@ -496,10 +490,6 @@ def page_bounds(page: int, page_size: int) -> tuple[int, int]:
     """
     start = (page - 1) * page_size
     return start, start + page_size
-
-
-# Shape guards (as_dict, as_int, dict_list, unwrap_first) live in util.jsonshape
-# and are re-exported above for tool modules.
 
 
 # Crossref date fallback order: `posted` is the preprint date, so it answers last.
