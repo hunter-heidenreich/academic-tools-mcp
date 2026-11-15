@@ -17,6 +17,16 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **True OR-filter batch resolution for cold PMIDs and OpenAlex `W...` work IDs in
+  `get_papers_metadata` (`openalex.resolve_pmids_batch` and
+  `openalex.resolve_work_ids_batch`).** When `get_papers_metadata` receives multiple PMIDs
+  or OpenAlex work IDs, it now pre-batches their resolution into `/works?filter=pmid:...|...`
+  and `/works?filter=openalex:...|...` chunks of up to 50 IDs per request instead of issuing
+  individual singleton lookups. Because each returned item is a full OpenAlex work object,
+  `_traded_ids` simultaneously warms `("openalex", "works", ...)`,
+  `("openalex", "work_ids", ...)`, and `("openalex", "pmids", ...)`, collapsing 20–50 cold
+  PMIDs or `W...` work IDs in `get_papers_metadata` into a single HTTP request.
+
 - **`search_openalex` surfaces `pmid` and `arxiv_id` on every triage hit.** Each row in
   `search_openalex`'s `results` now includes bare numeric `pmid` (from `ids.pmid`) and
   bare, versionless `arxiv_id` (from `ids.arxiv`, top-level `doi`, and

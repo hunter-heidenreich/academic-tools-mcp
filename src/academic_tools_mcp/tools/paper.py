@@ -800,11 +800,38 @@ async def get_papers_metadata(
         formatted["_input"] = ident
         results[slot] = formatted
 
+    pmid_idents = [ident for ident in identifiers if openalex.is_pmid(ident)]
+    work_id_idents = [
+        ident for ident in identifiers if not openalex.is_pmid(ident) and openalex.is_work_id(ident)
+    ]
+    prebatched_pmids = (
+        len(pmid_idents) > 1
+        and getattr(openalex.resolve_pmid, "__module__", "") == openalex.__name__
+    )
+    prebatched_work_ids = (
+        len(work_id_idents) > 1
+        and getattr(openalex.resolve_work_id, "__module__", "") == openalex.__name__
+    )
+    if prebatched_pmids and prebatched_work_ids:
+        await asyncio.gather(
+            openalex.resolve_pmids_batch(pmid_idents, force_refresh=force_refresh),
+            openalex.resolve_work_ids_batch(work_id_idents, force_refresh=force_refresh),
+        )
+    elif prebatched_pmids:
+        await openalex.resolve_pmids_batch(pmid_idents, force_refresh=force_refresh)
+    elif prebatched_work_ids:
+        await openalex.resolve_work_ids_batch(work_id_idents, force_refresh=force_refresh)
+
     resolve_sem = asyncio.Semaphore(4)
 
     async def _resolve_one(ident: str) -> tuple[str, dict[str, Any] | None]:
+        is_prebatched = (prebatched_pmids and openalex.is_pmid(ident)) or (
+            prebatched_work_ids and not openalex.is_pmid(ident) and openalex.is_work_id(ident)
+        )
         async with resolve_sem:
-            return await resolve_paper_identifier(ident, force_refresh=force_refresh)
+            return await resolve_paper_identifier(
+                ident, force_refresh=force_refresh and not is_prebatched
+            )
 
     # First and concurrently: routing is by shape, and a PMID has none until it is
     # traded. `_input` stays the caller's spelling.

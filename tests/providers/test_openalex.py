@@ -2156,3 +2156,248 @@ class TestWorkMappingCrossWarming:
         by_pmid = await openalex.resolve_pmid("20079334")
         assert by_pmid == {"doi": "10.1234/x", "openalex_id": "https://openalex.org/W4312223440"}
         assert len(requests) == 1
+
+
+class TestResolveIdsBatch:
+    """Batch resolution for PMIDs and OpenAlex work IDs (`resolve_pmids_batch`
+    and `resolve_work_ids_batch`)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_input_makes_no_requests(self, monkeypatch):
+        _stub_no_network(monkeypatch)
+        assert await openalex.resolve_pmids_batch([]) == {}
+        assert await openalex.resolve_work_ids_batch([]) == {}
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_shapes_locally_without_http(self, monkeypatch):
+        _stub_no_network(monkeypatch)
+
+        pmid_out = await openalex.resolve_pmids_batch(["not-a-pmid", "123456789"])
+        assert pmid_out["not-a-pmid"]["not_found"] is True
+        assert pmid_out["123456789"]["not_found"] is True
+        assert cache.get_negative("openalex", "pmids", "not-a-pmid") is None
+
+        wid_out = await openalex.resolve_work_ids_batch(["A12345678", "Wabc"])
+        assert wid_out["a12345678"]["not_found"] is True
+        assert wid_out["wabc"]["not_found"] is True
+        assert cache.get_negative("openalex", "work_ids", "a12345678") is None
+
+    @pytest.mark.asyncio
+    async def test_serves_cached_positive_and_negative_hits_without_http(self, monkeypatch):
+        stats.reset()
+        cache.put(
+            "openalex",
+            "pmids",
+            "20079334",
+            {"doi": "10.1234/a", "openalex_id": "https://openalex.org/W1"},
+        )
+        cache.put_negative(
+            "openalex",
+            "pmids",
+            "99999999",
+            {"error": "No work found for PMID: 99999999", "not_found": True},
+        )
+        cache.put(
+            "openalex",
+            "work_ids",
+            "w4312223440",
+            {"doi": "10.1234/b", "openalex_id": "https://openalex.org/W4312223440"},
+        )
+        _stub_no_network(monkeypatch)
+
+        pmid_out = await openalex.resolve_pmids_batch(["pmid:20079334", "99999999"])
+        wid_out = await openalex.resolve_work_ids_batch(["W4312223440"])
+
+        assert pmid_out["20079334"]["doi"] == "10.1234/a"
+        assert pmid_out["99999999"]["not_found"] is True
+        assert wid_out["w4312223440"]["doi"] == "10.1234/b"
+        row = stats.snapshot()["providers"]["openalex"]
+        assert row["cache_hits"] == 2
+        assert row["negative_hits"] == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_pmids_batch_fetches_and_warms_works_and_work_ids(self, monkeypatch):
+        requests = _stub_json_responses(
+            monkeypatch,
+            {
+                "meta": {"count": 2},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W4312223440",
+                        "doi": "https://doi.org/10.1234/a",
+                        "title": "Work A",
+                        "ids": {"pmid": "https://pubmed.ncbi.nlm.nih.gov/20079334"},
+                    },
+                    {
+                        "id": "https://openalex.org/W4312223441",
+                        "doi": None,
+                        "title": "DOI-less Work B",
+                        "ids": {"pmid": "https://pubmed.ncbi.nlm.nih.gov/12345678"},
+                    },
+                ],
+            },
+        )
+
+        out = await openalex.resolve_pmids_batch(
+            ["pmid:20079334", "https://pubmed.ncbi.nlm.nih.gov/12345678", "20079334"]
+        )
+
+        assert len(requests) == 1
+        params = parse_qs(requests[0].url.query.decode())
+        assert params["filter"] == ["pmid:20079334|12345678"]
+        assert params["per-page"] == ["2"]
+        assert list(out) == ["20079334", "12345678"]
+        assert out["20079334"] == {
+            "doi": "10.1234/a",
+            "openalex_id": "https://openalex.org/W4312223440",
+        }
+        assert out["12345678"] == {
+            "doi": None,
+            "openalex_id": "https://openalex.org/W4312223441",
+        }
+        # Follow-up singleton and work-ID lookups are warm (0 extra HTTP calls).
+        assert (await openalex.get_work("10.1234/a"))["title"] == "Work A"
+        assert (await openalex.get_work("W4312223441"))["title"] == "DOI-less Work B"
+        assert (await openalex.resolve_work_id("W4312223440"))["doi"] == "10.1234/a"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_work_ids_batch_fetches_and_warms_works_and_pmids(self, monkeypatch):
+        requests = _stub_json_responses(
+            monkeypatch,
+            {
+                "meta": {"count": 2},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W4312223440",
+                        "doi": "https://doi.org/10.1234/a",
+                        "title": "Work A",
+                        "ids": {"pmid": "https://pubmed.ncbi.nlm.nih.gov/20079334"},
+                    },
+                    {
+                        "id": "https://openalex.org/W4312223441",
+                        "doi": None,
+                        "title": "DOI-less Work B",
+                    },
+                ],
+            },
+        )
+
+        out = await openalex.resolve_work_ids_batch(
+            ["W4312223440", "openalex:w4312223441", "https://openalex.org/W4312223440"]
+        )
+
+        assert len(requests) == 1
+        params = parse_qs(requests[0].url.query.decode())
+        assert params["filter"] == ["openalex:w4312223440|w4312223441"]
+        assert params["per-page"] == ["2"]
+        assert list(out) == ["w4312223440", "w4312223441"]
+        assert out["w4312223440"] == {
+            "doi": "10.1234/a",
+            "openalex_id": "https://openalex.org/W4312223440",
+        }
+        assert out["w4312223441"] == {
+            "doi": None,
+            "openalex_id": "https://openalex.org/W4312223441",
+        }
+        assert (await openalex.get_work("10.1234/a"))["title"] == "Work A"
+        assert (await openalex.get_work("W4312223441"))["title"] == "DOI-less Work B"
+        assert (await openalex.resolve_pmid("20079334"))["doi"] == "10.1234/a"
+        assert len(requests) == 1
+
+    @pytest.mark.asyncio
+    async def test_chunks_past_batch_chunk_size_and_respects_force_refresh(self, monkeypatch):
+        cache.put(
+            "openalex",
+            "work_ids",
+            "w4300000000",
+            {"doi": "10.1234/stale", "openalex_id": "https://openalex.org/W4300000000"},
+        )
+        requests: list[httpx.Request] = []
+        _reset_openalex(monkeypatch)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            raw = parse_qs(request.url.query.decode())["filter"][0]
+            asked = raw.removeprefix("openalex:").split("|")
+            return httpx.Response(
+                200,
+                json={
+                    "meta": {"count": len(asked)},
+                    "results": [
+                        {
+                            "id": f"https://openalex.org/{w.upper()}",
+                            "doi": f"https://doi.org/10.1234/{w}",
+                        }
+                        for w in asked
+                    ],
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+
+        wids = [f"W{4300000000 + i}" for i in range(openalex._BATCH_CHUNK_SIZE + 1)]
+        out = await openalex.resolve_work_ids_batch(wids, force_refresh=True)
+
+        assert len(requests) == 2
+        assert len(out) == openalex._BATCH_CHUNK_SIZE + 1
+        assert out["w4300000000"]["doi"] == "10.1234/w4300000000"
+
+    @pytest.mark.asyncio
+    async def test_trustworthy_miss_is_negative_cached_while_unattributed_or_truncated_is_retryable(
+        self, monkeypatch
+    ):
+        _stub_json_responses(
+            monkeypatch,
+            # 1: Clean miss -> negative cached
+            {
+                "meta": {"count": 1},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W4312223440",
+                        "doi": "https://doi.org/10.1234/a",
+                        "ids": {"pmid": "https://pubmed.ncbi.nlm.nih.gov/20079334"},
+                    }
+                ],
+            },
+            # 2: Truncated -> retryable, not negative cached
+            {
+                "meta": {"count": 5},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W4312223440",
+                        "doi": "https://doi.org/10.1234/a",
+                    }
+                ],
+            },
+            # 3: Unattributed entry -> retryable, not negative cached
+            {
+                "meta": {"count": 2},
+                "results": [
+                    {
+                        "id": "https://openalex.org/W4312223440",
+                        "doi": "https://doi.org/10.1234/a",
+                    },
+                    "not-a-dict",
+                ],
+            },
+        )
+
+        out1 = await openalex.resolve_pmids_batch(["20079334", "99999999"])
+        assert out1["99999999"]["not_found"] is True
+        assert cache.get_negative("openalex", "pmids", "99999999") is not None
+
+        out2 = await openalex.resolve_work_ids_batch(
+            ["W4312223440", "W9999999991"], force_refresh=True
+        )
+        assert out2["w9999999991"]["retryable"] is True
+        assert "not_found" not in out2["w9999999991"]
+        assert cache.get_negative("openalex", "work_ids", "w9999999991") is None
+
+        out3 = await openalex.resolve_work_ids_batch(
+            ["W4312223440", "W9999999992"], force_refresh=True
+        )
+        assert out3["w9999999992"]["retryable"] is True
+        assert "not_found" not in out3["w9999999992"]
+        assert cache.get_negative("openalex", "work_ids", "w9999999992") is None
