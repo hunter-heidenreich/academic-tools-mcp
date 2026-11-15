@@ -114,8 +114,7 @@ class TestStoredChecksumDescribesTheStoredText:
     it was never re-parsed.
     """
 
-    def test_checksum_comes_from_the_parsed_text_not_the_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    def test_checksum_comes_from_the_parsed_text_not_the_file(self, monkeypatch):
         md_path = stems.markdown_path("test", "racy")
 
         ours = "## Ours\n\nour body\n"
@@ -140,8 +139,7 @@ class TestStoredChecksumDescribesTheStoredText:
         assert entry["markdown_checksum"] == stems.checksum_text(ours)
         assert entry["markdown_checksum"] != markdown_checksum(md_path)
 
-    def test_checksum_text_agrees_with_the_file_the_writer_wrote(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    def test_checksum_text_agrees_with_the_file_the_writer_wrote(self):
         md_path = stems.markdown_path("test", "agree")
         # Non-ASCII and every newline shape: atomic.write_text pins newline=""
         # so the bytes on disk are exactly the UTF-8 encoding of the payload.
@@ -152,8 +150,7 @@ class TestStoredChecksumDescribesTheStoredText:
         assert stems.checksum_text(text) == markdown_checksum(md_path)
 
     @pytest.mark.asyncio
-    async def test_a_mismatched_entry_self_heals_on_the_next_read(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    async def test_a_mismatched_entry_self_heals_on_the_next_read(self):
         md_path = stems.markdown_path("test", "heal")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Real\n\nreal body\n", encoding="utf-8")
@@ -174,10 +171,7 @@ class TestStoredChecksumDescribesTheStoredText:
 
 class TestGetOrParseSectionsForceRefresh:
     @pytest.mark.asyncio
-    async def test_force_refresh_drops_the_index_so_the_next_read_reparses(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    async def test_force_refresh_drops_the_index_so_the_next_read_reparses(self):
         md_path = stems.markdown_path("test", "forced")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## Real\n\nbody\n", encoding="utf-8")
@@ -209,8 +203,7 @@ class TestDropDerived:
     """
 
     @pytest.fixture
-    def converted(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    def converted(self):
         md_path = stems.markdown_path("test", "dropme")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text("## A\n\nbody\n", encoding="utf-8")
@@ -262,19 +255,18 @@ class TestDropDerived:
 class TestReparseGates:
     """Each clause of the cache-hit gate, failed on its own."""
 
-    def _converted(self, tmp_path, monkeypatch, body="## A\n\nbody\n"):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    def _converted(self, body="## A\n\nbody\n"):
         md_path = stems.markdown_path("test", "gate")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(body, encoding="utf-8")
         return md_path, stems.checksum_text(body)
 
     @pytest.mark.asyncio
-    async def test_an_entry_without_sections_is_reparsed(self, tmp_path, monkeypatch):
+    async def test_an_entry_without_sections_is_reparsed(self):
         """A matching checksum is not enough: an entry can carry the checksum
         and no parsed sections, and returning it hands the agent nothing.
         """
-        _, checksum = self._converted(tmp_path, monkeypatch)
+        _, checksum = self._converted()
         cache.put(
             "test",
             "sections",
@@ -293,12 +285,12 @@ class TestReparseGates:
         assert cache.get("test", "sections", stems.sections_key("gate"))["sections"]
 
     @pytest.mark.asyncio
-    async def test_a_first_parse_records_no_conversion_mode(self, tmp_path, monkeypatch):
+    async def test_a_first_parse_records_no_conversion_mode(self):
         """With no prior entry there is no evidence of what converted the file,
         so the mode must be null — never a guessed "fast", which would brand a
         paper degraded on nothing.
         """
-        self._converted(tmp_path, monkeypatch)
+        self._converted()
 
         payload = await papers.get_or_parse_sections("test", "gate")
 
@@ -306,13 +298,11 @@ class TestReparseGates:
         assert cache.get("test", "sections", stems.sections_key("gate"))["conversion_mode"] is None
 
     @pytest.mark.asyncio
-    async def test_an_unconverted_paper_is_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    async def test_an_unconverted_paper_is_none(self):
         assert await papers.get_or_parse_sections("test", "never-converted") is None
 
     @pytest.mark.asyncio
-    async def test_non_utf8_markdown_degrades_to_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    async def test_non_utf8_markdown_degrades_to_none(self):
         md_path = stems.markdown_path("test", "corrupt")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_bytes(b"## Heading\n\n\xff\xfebad bytes\n")
@@ -320,8 +310,8 @@ class TestReparseGates:
         assert await papers.get_or_parse_sections("test", "corrupt") is None
 
     @pytest.mark.asyncio
-    async def test_unreadable_markdown_degrades_to_none(self, tmp_path, monkeypatch):
-        md_path, _ = self._converted(tmp_path, monkeypatch)
+    async def test_unreadable_markdown_degrades_to_none(self, monkeypatch):
+        md_path, _ = self._converted()
 
         def denied(self, *a, **kw):
             raise PermissionError(str(self))
@@ -330,11 +320,11 @@ class TestReparseGates:
         assert await papers.get_or_parse_sections("test", "gate") is None
 
     @pytest.mark.asyncio
-    async def test_concurrent_readers_parse_once(self, tmp_path, monkeypatch):
+    async def test_concurrent_readers_parse_once(self, monkeypatch):
         """The per-paper lock is the only thing between three cold readers and
         three parses of the same document.
         """
-        self._converted(tmp_path, monkeypatch)
+        self._converted()
 
         calls = 0
         real = papers.index.parse_sections_and_detect
@@ -356,13 +346,12 @@ class TestReparseGates:
 
 class TestForceRefreshPreservesProvenance:
     @pytest.mark.asyncio
-    async def test_refreshing_the_index_does_not_erase_conversion_mode(self, tmp_path, monkeypatch):
+    async def test_refreshing_the_index_does_not_erase_conversion_mode(self):
         """``force_refresh`` drops the index, not the record of what converted
         the file. The markdown is untouched, so the provenance still holds — and
         ``null`` is published to agents as "converted before the field existed",
         a claim a refresh must not be able to manufacture.
         """
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         md_path = stems.markdown_path("test", "prov")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         papers.store_markdown_and_index("test", "prov", md_path, "## A\n\nbody\n", "full")
@@ -374,9 +363,8 @@ class TestForceRefreshPreservesProvenance:
         assert entry["conversion_mode"] == "full"
 
     @pytest.mark.asyncio
-    async def test_a_refresh_still_reparses(self, tmp_path, monkeypatch):
+    async def test_a_refresh_still_reparses(self):
         """Preserving the mode must not turn the refresh into a cache hit."""
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
         md_path = stems.markdown_path("test", "prov2")
         md_path.parent.mkdir(parents=True, exist_ok=True)
         papers.store_markdown_and_index("test", "prov2", md_path, "## Stale\n\nbody\n", "fast")
@@ -452,8 +440,7 @@ class TestRekeySections:
     def test_no_source_entry_is_not_an_error(self):
         assert not papers.rekey_sections("manual", "20079334", "manual", "10.1234/example")
 
-    def test_updates_recorded_canonical_id_on_rekey(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    def test_updates_recorded_canonical_id_on_rekey(self):
         md_path = stems.markdown_path("manual", "pmid:20079334")
         papers.store_markdown_and_index(
             "manual", "pmid:20079334", md_path, "# Intro\n\nBody.\n", "imported"
@@ -474,8 +461,7 @@ class TestMarkdownWriteFailure:
     """
 
     @pytest.fixture
-    def md_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+    def md_path(self):
         path = stems.markdown_path("test", "unwritable")
         path.parent.mkdir(parents=True, exist_ok=True)
         return path

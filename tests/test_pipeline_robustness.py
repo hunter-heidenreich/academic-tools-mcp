@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from academic_tools_mcp import corpus, papers
-from academic_tools_mcp.store import cache, stems
+from academic_tools_mcp.store import stems
 from academic_tools_mcp.tools import search as search_tools
 
 
@@ -115,7 +115,6 @@ class TestCancellationKillsTheConverter:
         pdf = tmp_path / "p.pdf"
         pdf.write_bytes(b"%PDF-1.4\n")
         monkeypatch.setenv("PDF_CONVERTER", "sleep 60")
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         started: list[object] = []
         real_exec = asyncio.create_subprocess_exec
@@ -151,7 +150,6 @@ class TestCancellationKillsTheConverter:
         pdf = tmp_path / "p.pdf"
         pdf.write_bytes(b"%PDF-1.4\n")
         monkeypatch.setenv("PDF_FAST_CONVERTER", "sleep 60")
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
 
         started: list[object] = []
         real_exec = asyncio.create_subprocess_exec

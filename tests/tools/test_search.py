@@ -6,10 +6,10 @@ error contract, and ``find_in_paper``.
 
 import pytest
 
-from academic_tools_mcp import manual, server
+from academic_tools_mcp import server
 from academic_tools_mcp.app import SEARCH_YEAR_MAX, SEARCH_YEAR_MIN
 from academic_tools_mcp.providers import arxiv, crossref, openalex
-from academic_tools_mcp.store import cache, stems
+from tests.helpers.conversion_fakes import seed_markdown as _seed_markdown
 
 # ---------------------------------------------------------------------------
 # Slim search hits: author_count lets the agent decide whether to paginate
@@ -520,13 +520,8 @@ class TestFindInPaper:
     isn't converted, and return positioned hits when it is.
     """
 
-    @pytest.fixture
-    def isolated_cache(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / ".cache")
-        return tmp_path / ".cache"
-
     @pytest.mark.asyncio
-    async def test_unconverted_paper_errors_with_suggestion(self, isolated_cache):
+    async def test_unconverted_paper_errors_with_suggestion(self):
         # No markdown on disk for this identifier — the response must carry
         # both an `error` and a `suggestion`, matching the {error, suggestion}
         # contract the rest of the search tools honour.
@@ -535,13 +530,14 @@ class TestFindInPaper:
         assert "suggestion" in result
 
     @pytest.mark.asyncio
-    async def test_finds_substring_in_converted_paper(self, isolated_cache):
+    async def test_finds_substring_in_converted_paper(self):
         # Seed a converted-markdown file at the path find_in_paper resolves
         # to, then assert it locates the query and returns positioned hits.
-        target = manual.resolve_target("2301.00001")
-        md_path = stems.markdown_path(target["namespace"], target["canonical"])
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text("# Title\n\n## Introduction\n\nWe study variational dropout here.\n")
+        _seed_markdown(
+            "arxiv",
+            "2301.00001",
+            "# Title\n\n## Introduction\n\nWe study variational dropout here.\n",
+        )
 
         result = await server.find_in_paper("2301.00001", "variational dropout")
         assert result["result_count"] == 1
@@ -551,13 +547,10 @@ class TestFindInPaper:
         assert "char_offset" in hit
 
     @pytest.mark.asyncio
-    async def test_case_sensitive_and_whole_words_reach_the_scanner(self, isolated_cache):
+    async def test_case_sensitive_and_whole_words_reach_the_scanner(self):
         # Both flags were exercised only against papers.find_in_markdown, so
         # the kwarg wiring through the tool was unverified.
-        target = manual.resolve_target("2301.00002")
-        md_path = stems.markdown_path(target["namespace"], target["canonical"])
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text("# T\n\n## Intro\n\nA subset of the Set of sets.\n")
+        _seed_markdown("arxiv", "2301.00002", "# T\n\n## Intro\n\nA subset of the Set of sets.\n")
 
         loose = await server.find_in_paper("2301.00002", "set")
         assert loose["result_count"] == 3  # subset, Set, sets
@@ -569,27 +562,21 @@ class TestFindInPaper:
         assert [h["match"] for h in cased["results"]] == ["Set"]
 
     @pytest.mark.asyncio
-    async def test_the_echoed_identifier_is_canonical(self, isolated_cache):
+    async def test_the_echoed_identifier_is_canonical(self):
         """One markdown file must not answer to two identities.
 
         Every other tool that echoes an identifier canonicalizes it first —
         `_canonical_id` on the paper family, `doi` on the graph tools.
         """
-        target = manual.resolve_target("2301.00003v2")
-        md_path = stems.markdown_path(target["namespace"], target["canonical"])
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text("# T\n\n## Intro\n\ndropout.\n")
+        _seed_markdown("arxiv", "2301.00003v2", "# T\n\n## Intro\n\ndropout.\n")
 
         for spelling in ("2301.00003v2", "arXiv:2301.00003v2"):
             result = await server.find_in_paper(spelling, "dropout")
             assert result["paper_identifier"] == "2301.00003v2"
 
     @pytest.mark.asyncio
-    async def test_truncated_is_true_when_more_matches_exist(self, isolated_cache):
-        target = manual.resolve_target("2301.00004")
-        md_path = stems.markdown_path(target["namespace"], target["canonical"])
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-        md_path.write_text("# T\n\n## Intro\n\ndropout dropout dropout.\n")
+    async def test_truncated_is_true_when_more_matches_exist(self):
+        _seed_markdown("arxiv", "2301.00004", "# T\n\n## Intro\n\ndropout dropout dropout.\n")
 
         capped = await server.find_in_paper("2301.00004", "dropout", max_results=2)
         assert capped["result_count"] == 2
