@@ -190,6 +190,18 @@ def _convert_suggestion(result: dict[str, Any], mode: str) -> str:
     )
 
 
+def _total_approx_tokens(sections: list[dict[str, Any]]) -> int:
+    """Sum ``approx_tokens`` across a section index."""
+    return sum(int(s.get("approx_tokens", 0)) for s in sections)
+
+
+def _finish_convert(result: dict[str, Any]) -> dict[str, Any]:
+    """Strip internal paths and attach ``total_approx_tokens`` to a conversion result."""
+    cleaned = _strip_internal_paths(result)
+    cleaned["total_approx_tokens"] = _total_approx_tokens(cleaned.get("sections", []))
+    return cleaned
+
+
 @mcp.tool
 async def convert_paper(
     identifier: PAPER_ID,
@@ -208,11 +220,16 @@ async def convert_paper(
     in seconds, with no PDF. Papers without it fall through to the PDF path, which
     needs download_pdf.
 
-    Returns ``{sections, sections_detected, cached, conversion_mode}``, each
-    section entry ``{index, title, h3s, approx_tokens}``. ``cached`` is true
-    whenever the expensive conversion was skipped, re-parses included.
-    ``conversion_mode`` is provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's
-    rendering), ``"jats"`` (bioRxiv's JATS XML), ``"imported"`` (a file handed to
+    Returns ``{sections, total_approx_tokens, sections_detected, cached,
+    conversion_mode}``, each section entry ``{index, title, h3s, approx_tokens}``.
+    Because ``sections`` and ``total_approx_tokens`` are returned here directly,
+    you can proceed straight to ``get_paper_section`` (for specific sections) or
+    ``get_paper_markdown`` (to read the full paper in one call when
+    ``total_approx_tokens`` fits your context) without calling
+    ``get_paper_sections`` first. ``cached`` is true whenever the expensive
+    conversion was skipped, re-parses included. ``conversion_mode`` is
+    provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's rendering),
+    ``"jats"`` (bioRxiv's JATS XML), ``"imported"`` (a file handed to
     import_paper), or null (converted before the field existed).
 
     Errors: ``{error, retryable, conversion_mode, pdf_size_mb?, suggestion}``,
@@ -249,7 +266,7 @@ async def convert_paper(
             force_refresh=force_refresh,
         )
         if converted is not None and "error" not in converted:
-            return _strip_internal_paths(converted)
+            return _finish_convert(converted)
         markup_error = converted
 
     # Not merely absent: a 0-byte or non-%PDF- leftover is a miss too.
@@ -273,7 +290,7 @@ async def convert_paper(
     )
     if "error" in result:
         return _strip_internal_paths(enrich_error(result, _convert_suggestion(result, mode)))
-    return _strip_internal_paths(result)
+    return _finish_convert(result)
 
 
 @mcp.tool
@@ -283,8 +300,11 @@ async def get_paper_sections(
 ) -> dict[str, Any]:
     """Get the section index for a converted paper.
 
-    Step 3 of the PDF pipeline. Cheap — no network, no conversion — and it
-    re-parses automatically when the cached markdown's checksum changed.
+    Step 3 of the PDF pipeline (optional immediately after ``convert_paper``,
+    which already returns ``sections`` and ``total_approx_tokens``; use this to
+    inspect an already-converted or imported paper). Cheap — no network, no
+    conversion — and it re-parses automatically when the cached markdown's
+    checksum changed.
 
     Returns ``{total_sections, total_approx_tokens, sections_detected,
     conversion_mode, sections}``, each section entry ``{index, title, h3s,
@@ -298,7 +318,8 @@ async def get_paper_sections(
     a one-section paper. A ``sections_note`` then says what to do instead.
 
     Errors: not yet converted → guidance to run convert_paper.
-    Next step: get_paper_section(identifier, index_or_title).
+    Next step: ``get_paper_section(identifier, index_or_title)`` for targeted
+    sections, or ``get_paper_markdown(identifier)`` to read the full paper at once.
     """
     # No force_refresh: threading it here would put a PMID trade on the network and
     # break this tool's "no network" promise, which is the whole point of the flag.
@@ -319,7 +340,7 @@ async def get_paper_sections(
     detected = sections_data["sections_detected"]
     response: dict[str, Any] = {
         "total_sections": len(sections_list),
-        "total_approx_tokens": sum(s.get("approx_tokens", 0) for s in sections_list),
+        "total_approx_tokens": _total_approx_tokens(sections_list),
         "sections_detected": detected,
         "conversion_mode": sections_data.get("conversion_mode"),
         "sections": sections_list,
@@ -372,6 +393,37 @@ async def get_paper_section(
         lambda markdown: papers.get_section_content(
             markdown, section_key, offset=offset, max_chars=max_chars
         ),
+    )
+    if isinstance(read, dict):
+        return read
+    _, content = read
+    return content
+
+
+@mcp.tool(meta={"anthropic/maxResultSizeChars": SECTION_HARNESS_CAP})
+async def get_paper_markdown(
+    identifier: PAPER_ID,
+    offset: SECTION_OFFSET = 0,
+    max_chars: SECTION_MAX_CHARS = 100000,
+) -> dict[str, Any]:
+    """Read a slice of a converted paper's full markdown document.
+
+    Alternative to get_paper_section when you want the whole paper in one call
+    rather than reading section-by-section (check ``total_approx_tokens`` from
+    convert_paper or get_paper_sections first; for long papers or targeted
+    lookup, prefer find_in_paper and get_paper_section).
+
+    Returns: ``{content, offset, chars_returned, total_chars, approx_tokens,
+    has_more, next_offset}``. ``total_chars`` and ``approx_tokens`` describe
+    the full markdown document, not the slice.
+
+    Errors: not yet converted → guidance to run convert_paper. Offset beyond
+    document length → ``{error}``. Markdown with no readable text →
+    ``{error, suggestion, retryable: False}``.
+    """
+    read = await read_markdown(
+        identifier,
+        lambda markdown: papers.get_markdown_content(markdown, offset=offset, max_chars=max_chars),
     )
     if isinstance(read, dict):
         return read

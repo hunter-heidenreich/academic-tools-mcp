@@ -47,6 +47,7 @@ from .tools.paper import (
 from .tools.pipeline import (
     convert_paper,
     download_pdf,
+    get_paper_markdown,
     get_paper_section,
     get_paper_sections,
     import_paper,
@@ -84,6 +85,7 @@ __all__ = [
     "get_paper_citations_count",
     "get_paper_code",
     "get_paper_evaluations",
+    "get_paper_markdown",
     "get_paper_metadata",
     "get_paper_references",
     "get_paper_references_count",

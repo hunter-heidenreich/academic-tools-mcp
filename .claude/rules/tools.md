@@ -117,8 +117,9 @@ goes there, not into a caller.
 ## Pagination
 
 **`tools/graph._page` and `get_paper_authors` share only the arithmetic**; each
-keeps its own envelope keys and its own `le=` bound, and `get_paper_section` pages
-by character offset and shares none of it.
+keeps its own envelope keys and its own `le=` bound, and `get_paper_section` and
+`get_paper_markdown` page by character offset via `sections._slice_text` and share
+none of it.
 
 **Bounds are enforced at the MCP boundary**, not in Python — an in-process caller
 can pass `page=0`, so constrain the test domain rather than clamping.

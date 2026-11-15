@@ -51,6 +51,18 @@ class TestNonUtf8Reads:
         assert "résumé naïve" in result["content"]
 
     @pytest.mark.asyncio
+    async def test_get_paper_markdown_reads_non_utf8(self, isolated_cache):
+        ident = "non-utf8-markdown"
+        target = manual.resolve_target(ident)
+        _seed_markdown(target["namespace"], target["canonical"], _NON_ASCII_MD)
+
+        with _c_ctype_locale():
+            result = await server.get_paper_markdown(ident)
+
+        assert "error" not in result, result
+        assert "résumé naïve" in result["content"]
+
+    @pytest.mark.asyncio
     async def test_get_paper_sections_reads_non_utf8(self, isolated_cache):
         # No sections cache seeded → get_paper_sections must read+parse the
         # markdown, which is where the encoding-less read bit.
@@ -122,6 +134,10 @@ class TestConcurrentUnlink:
         result = await server.get_paper_section(ident, "A")
         assert "error" in result
         assert "not converted" in result["error"].lower()
+
+        md_result = await server.get_paper_markdown(ident)
+        assert "error" in md_result
+        assert "not converted" in md_result["error"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +402,7 @@ class TestConvertPaperTool:
 
         assert result["conversion_mode"] == "full"
         assert result["sections_detected"] is True
+        assert result["total_approx_tokens"] == 4
         assert result["cached"] is False
         assert "markdown_path" not in result
         assert seen["force_refresh"] is True
@@ -621,6 +638,45 @@ class TestGetPaperSectionTool:
         assert result["content"] == "a"
 
 
+class TestGetPaperMarkdownTool:
+    @pytest.mark.asyncio
+    async def test_an_unconverted_paper_gets_the_pipeline_chain(self, isolated_cache):
+        result = await server.get_paper_markdown("never-converted")
+
+        assert "not converted" in result["error"].lower()
+        assert "convert_paper" in result["suggestion"]
+
+    @pytest.mark.asyncio
+    async def test_reads_full_markdown_and_pages_by_offset(self, isolated_cache):
+        ident = "full-md"
+        target = manual.resolve_target(ident)
+        markdown = "## Intro\n\nAlpha body.\n\n## Methods\n\nBeta body.\n"
+        _seed_markdown(target["namespace"], target["canonical"], markdown)
+
+        full = await server.get_paper_markdown(ident)
+        assert full["content"] == markdown.strip()
+        assert full["has_more"] is False
+        assert full["next_offset"] is None
+
+        first = await server.get_paper_markdown(ident, max_chars=15)
+        assert first["chars_returned"] == 15
+        assert first["has_more"] is True
+        rest = await server.get_paper_markdown(ident, offset=first["next_offset"], max_chars=1000)
+        assert first["content"] + rest["content"] == markdown.strip()
+        assert rest["has_more"] is False
+        assert rest["next_offset"] is None
+
+    @pytest.mark.asyncio
+    async def test_offset_beyond_document_length_returns_error(self, isolated_cache):
+        ident = "md-oor"
+        target = manual.resolve_target(ident)
+        _seed_markdown(target["namespace"], target["canonical"], "## A\n\nbody\n")
+
+        result = await server.get_paper_markdown(ident, offset=999)
+
+        assert "beyond document length" in result["error"]
+
+
 # ---------------------------------------------------------------------------
 # import_paper — extension routing and the slimmed markdown response
 # ---------------------------------------------------------------------------
@@ -762,6 +818,9 @@ class TestPipelineToolsAcceptPmids:
         assert sections["total_sections"] == 1
         assert sections["conversion_mode"] == "imported"
 
+        md = await server.get_paper_markdown("20079334")
+        assert md["content"] == "# Intro\n\nthe body"
+
         hits = await server.find_in_paper("pmid:20079334", "the body")
         assert hits["paper_identifier"] == self.DOI
         assert hits["result_count"] == 1
@@ -846,6 +905,7 @@ class TestConvertPaperHtmlFirst:
 
         assert result["conversion_mode"] == "html"
         assert [s["title"] for s in result["sections"]] == ["1 Intro"]
+        assert result["total_approx_tokens"] == sum(s["approx_tokens"] for s in result["sections"])
         assert "markdown_path" not in result
         assert calls == [("arXiv:2301.00001", False)]
         sections = await server.get_paper_sections("2301.00001")

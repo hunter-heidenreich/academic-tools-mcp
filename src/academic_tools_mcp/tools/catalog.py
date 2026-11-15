@@ -125,7 +125,7 @@ def _rank_repositories(repositories: list[dict[str, Any]], limit: int) -> list[d
 
 @mcp.tool
 async def get_paper_code(
-    arxiv_id: ARXIV_ID,
+    identifier: ARXIV_ID,
     max_repositories: Annotated[
         int,
         Field(
@@ -145,8 +145,7 @@ async def get_paper_code(
     total; ``repositories_truncated`` is true when more exist than were returned.
     ``is_official`` is Papers with Code's label, not verified. The ``hf_*`` URL lists
     are usually empty for arXiv papers, but ``hf_artifact_counts`` still counts them.
-    ``arxiv_id`` is echoed canonical, without version. A DOI, PMID, or OpenAlex work ID
-    is automatically resolved to its arXiv ID via OpenAlex when OpenAlex records one.
+    ``arxiv_id`` is echoed canonical, without version.
 
     Errors: ``{error, suggestion}``, plus ``not_found: true`` for an uncatalogued paper
     or an identifier with no arXiv ID, or ``retryable: true`` (with
@@ -154,7 +153,7 @@ async def get_paper_code(
 
     get_paper_catalog reads the same cached record, so calling both costs one request.
     """
-    canonical, paper = await _paper(arxiv_id, force_refresh=force_refresh)
+    canonical, paper = await _paper(identifier, force_refresh=force_refresh)
     if "error" in paper:
         return paper
     repositories = paper["repositories"]
@@ -179,7 +178,7 @@ async def get_paper_code(
 
 @mcp.tool
 async def get_paper_catalog(
-    arxiv_id: ARXIV_ID,
+    identifier: ARXIV_ID,
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
     """How Papers with Code classifies a paper: tasks, methods, benchmarks, lineage.
@@ -193,15 +192,14 @@ async def get_paper_catalog(
     successors: [{arxiv_id, title}]}``. ``tldr`` is machine-generated. ``hf_authors``
     holds only authors with a Hugging Face account; get_paper_authors has the full
     list. ``leaderboard_ranks`` holds only the best placements; get_paper_evaluations
-    pages every result. A DOI, PMID, or OpenAlex work ID is automatically resolved to
-    its arXiv ID via OpenAlex when OpenAlex records one.
+    pages every result.
 
     Errors: as get_paper_code.
 
     Chain: a task ``slug`` → get_pwc_task; a ``benchmark_slug`` →
     get_benchmark_leaderboard.
     """
-    canonical, paper = await _paper(arxiv_id, force_refresh=force_refresh)
+    canonical, paper = await _paper(identifier, force_refresh=force_refresh)
     if "error" in paper:
         return paper
     return {
@@ -245,7 +243,7 @@ def _without(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
 
 @mcp.tool
 async def get_paper_evaluations(
-    arxiv_id: ARXIV_ID,
+    identifier: ARXIV_ID,
     page: PWC_PAGE = 1,
     page_size: PWC_PAGE_SIZE = 10,
     force_refresh: FORCE_REFRESH = False,
@@ -257,9 +255,7 @@ async def get_paper_evaluations(
     benchmark_slug, metrics: {name: value}, best_metric, rank, num_parameters,
     is_open, uses_additional_data, harness, evaluated_on, code_url, hf_model_url,
     source_url}, ...]}``. ``rank`` is the row's leaderboard position; ``metrics``
-    values may be numbers or strings, as upstream reports them. A DOI, PMID, or
-    OpenAlex work ID is automatically resolved to its arXiv ID via OpenAlex when
-    OpenAlex records one.
+    values may be numbers or strings, as upstream reports them.
 
     Errors: as get_paper_code.
 
@@ -267,7 +263,7 @@ async def get_paper_evaluations(
     paging far. ``force_refresh`` reloads the paper record as well as the page, so
     it costs two.
     """
-    canonical, paper = await _paper(arxiv_id, force_refresh=force_refresh)
+    canonical, paper = await _paper(identifier, force_refresh=force_refresh)
     if "error" in paper:
         return paper
     result = await paperswithcode.get_paper_evaluations(

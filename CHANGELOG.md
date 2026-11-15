@@ -17,6 +17,20 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **Full-paper markdown reader (`get_paper_markdown`) and `total_approx_tokens` in
+  `convert_paper`.** Added `papers.get_markdown_content` and the `@mcp.tool`
+  `get_paper_markdown(identifier, offset=0, max_chars=100000)` to read a converted
+  paper's full markdown document in one call (or paginate via `offset` / `next_offset`
+  up to `SECTION_HARNESS_CAP = 200000`), sharing `_slice_text`, empty-markdown
+  detection, and `app.read_markdown` with `get_paper_section`. `convert_paper` now
+  also returns `total_approx_tokens` alongside `sections`, so an agent can immediately
+  decide between reading the full paper via `get_paper_markdown` or reading targeted
+  sections via `get_paper_section` without an extra `get_paper_sections` round-trip.
+  Standardized the identifier parameter name on `get_paper_code`, `get_paper_catalog`,
+  and `get_paper_evaluations` to `identifier` (matching the rest of the single-paper
+  tool surface) and clarified `DOI` / `ARXIV_ID` parameter descriptions and pipeline
+  guidance in `app.py`. ([#191])
+
 - **Startup sweep for expired positive cache entries (`cache.gc_expired_positives`).**
   `app._run_startup_sweeps` now calls `cache.gc_expired_positives()`, which sweeps
   `.cache/*/*/*.json` by `st_mtime` and unlinks positive entries older than the 30-day
@@ -2452,3 +2466,4 @@ say which.
 [#188]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/188
 [#189]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/189
 [#190]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/190
+[#191]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/191
