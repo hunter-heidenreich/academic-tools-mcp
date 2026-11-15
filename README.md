@@ -113,7 +113,7 @@ uv run fastmcp run src/academic_tools_mcp/server.py:mcp
 | Tool | Description |
 |------|-------------|
 | `get_paper_metadata` | Title, dates, venue / categories, identifiers, citation count — shape varies by `_source`. Optional `follow_published=True` auto-chains a bioRxiv or arXiv preprint to its journal version on OpenAlex when one exists. |
-| `get_papers_metadata` | Bulk metadata for many identifiers at once. *Uncached* OpenAlex DOIs are chunked into batched `/works?filter=doi:...` calls and uncached arXiv IDs into `id_list` calls — a cached one costs no request at all; bioRxiv / ACL Anthology fan out concurrently. Designed for reference-graph enrichment after `get_paper_references`. Cap 100 per call. |
+| `get_papers_metadata` | Bulk metadata for many identifiers at once. *Uncached* OpenAlex DOIs, PMIDs, and `W...` work IDs are chunked into batched `/works?filter=...` calls and uncached arXiv IDs into `id_list` calls — a cached one costs no request at all; bioRxiv / ACL Anthology fan out concurrently. Designed for reference-graph enrichment after `get_paper_references`. Cap 100 per call. |
 | `get_paper_authors` | Author list with source-appropriate detail (affiliations, corresponding author, OpenAlex IDs) |
 | `get_paper_abstract` | Plain text abstract |
 | `get_paper_bibtex` | Ready-to-paste BibTeX entry |
@@ -208,7 +208,7 @@ After importing a PDF, use the unified pipeline tools (`convert_paper` → `get_
 | `get_benchmark_leaderboard` | A benchmark's details (license, modalities, introducing paper) and its leaderboard, best rank first; optionally open models only |
 | `search_paperswithcode` | Keyword search, optionally limited to official code or a date range |
 
-The paper tools take an arXiv ID in any spelling; a DOI is refused without a request. `get_paper_code` and `get_paper_catalog` share one cached record, so calling both costs one request.
+The paper tools take an arXiv ID in any spelling, or a DOI, PMID, or OpenAlex work ID (which is automatically resolved to its arXiv ID via OpenAlex when OpenAlex records one). `get_paper_code` and `get_paper_catalog` share one cached record, so calling both costs one request.
 
 **Rate limits are treated as hard.** Requests go out one at a time at no more than 90% of the documented sustained rates, never using the burst allowance. Nothing is retried automatically or paged on the agent's behalf. After a 429, every Papers with Code call returns `{error, retryable, quota_exhausted, retry_after_seconds}` without a request until `Retry-After` passes.
 
@@ -278,7 +278,8 @@ API responses and downloaded files are cached under `.cache/`:
   openalex/works/          # OpenAlex work objects (JSON)
   openalex/authors/        # OpenAlex author objects (JSON)
   openalex/institutions/   # OpenAlex institution objects (JSON)
-  openalex/pmids/          # PMID -> DOI mappings (JSON)
+  openalex/pmids/          # PMID -> DOI / OpenAlex ID mappings (JSON)
+  openalex/work_ids/       # OpenAlex work ID -> DOI / OpenAlex ID mappings (JSON)
   arxiv/papers/            # arXiv paper entries (JSON)
   arxiv/pdfs/              # Downloaded PDFs
   arxiv/markdown/          # Converted markdown

@@ -25,7 +25,7 @@ grouped by milestone rather than per commit.
   when already warmed by `search_openalex` or `get_paper_metadata`) and extracts its
   versionless `arxiv_id` before querying Papers with Code. Papers with no arXiv record in
   OpenAlex continue to return `not_found: true` with `_NOT_ARXIV_SUGGESTION` without
-  spending a Papers with Code request.
+  spending a Papers with Code request. ([#178])
 
 - **True OR-filter batch resolution for cold PMIDs and OpenAlex `W...` work IDs in
   `get_papers_metadata` (`openalex.resolve_pmids_batch` and
@@ -35,7 +35,7 @@ grouped by milestone rather than per commit.
   individual singleton lookups. Because each returned item is a full OpenAlex work object,
   `_traded_ids` simultaneously warms `("openalex", "works", ...)`,
   `("openalex", "work_ids", ...)`, and `("openalex", "pmids", ...)`, collapsing 20–50 cold
-  PMIDs or `W...` work IDs in `get_papers_metadata` into a single HTTP request.
+  PMIDs or `W...` work IDs in `get_papers_metadata` into a single HTTP request. ([#177])
 
 - **`search_openalex` surfaces `pmid` and `arxiv_id` on every triage hit.** Each row in
   `search_openalex`'s `results` now includes bare numeric `pmid` (from `ids.pmid`) and
@@ -43,7 +43,7 @@ grouped by milestone rather than per commit.
   `primary_location` / `best_oa_location` / `locations`), or `None` when absent, so
   callers can chain an OpenAlex search hit directly into `convert_paper(arxiv_id)` or
   `get_paper_code(arxiv_id)` / `get_paper_catalog(arxiv_id)` without an extra metadata
-  round-trip.
+  round-trip. ([#176])
 
 - **DOI-less OpenAlex works (`W...`) and PMIDs are supported across the paper, author,
   abstract, BibTeX, batch metadata and OA-download tools.** When OpenAlex indexes a work
@@ -71,6 +71,14 @@ grouped by milestone rather than per commit.
   separate `search_arxiv` lookup. ([#173])
 
 ### Fixed
+
+- **Single-home `openalex_pmid` and `openalex_arxiv_id` in `app.py`, and sync agent-facing
+  instructions, parameter descriptions, and `README.md`.** Moves `_openalex_pmid` and
+  `_openalex_arxiv_id` out of `tools/paper.py`, `tools/search.py`, and `tools/catalog.py`
+  into `app.py` (`openalex_pmid` / `openalex_arxiv_id`) so all three tool modules share
+  one implementation, and updates `mcp`'s `instructions`, `ARXIV_ID`, `ALLOW_OA_URL`, and
+  `README.md` to reflect DOI-less OpenAlex work chaining, batched PMID/work-ID resolution,
+  and non-arXiv identifier resolution in the Papers with Code tools. ([#179])
 
 - **`openalex` cross-warms `work_ids` and `pmids` across all work fetches, and
   `paper.get_papers_metadata` bounds concurrent resolution and singleton fan-outs.**
@@ -100,7 +108,7 @@ grouped by milestone rather than per commit.
   `app.crossref_date`, `paper._format_crossref_metadata`, `paper.get_author`
   affiliation `years`, and `graph._openalex_cited_by`; `paper._arxiv_pdf_url` and
   `paper.get_paper_authors` filter `links` and flat `authors` through `dict_list`; and
-  the bioRxiv `follow_published` gate requires a non-empty string `published_doi`.
+  the bioRxiv `follow_published` gate requires a non-empty string `published_doi`. ([#171])
 
 - **`bibtex.generate_bibtex` and the flat BibTeX generators guard against untyped JSON
   shapes, and `papers.index._read_markdown` / `app.read_markdown` degrade on
@@ -111,7 +119,7 @@ grouped by milestone rather than per commit.
   their Python repr into the BibTeX entry. In the markdown reader paths, non-UTF-8
   bytes or non-`FileNotFoundError` filesystem errors on a cached `.md` file now degrade
   to `not_converted_error` (`None` in `papers.index`) instead of escaping the tool
-  boundary.
+  boundary. ([#170])
 
 - **`paperswithcode.get_leaderboard` threads `force_refresh` to `get_benchmark`, and
   `wikipedia.get_summary` requires `title` and `type` before caching.** Nothing else
@@ -122,7 +130,7 @@ grouped by milestone rather than per commit.
   In `wikipedia._summary_of`, a 200 missing a non-empty string `title` or `type` now
   returns a retryable parse error instead of caching a hollow summary for 30 days, and
   explicit `null` or wrong-typed `extract`, `description`, `pageid` and `totalhits`
-  values degrade cleanly.
+  values degrade cleanly. ([#169])
 
 - **The open-access PDF trust boundary rejects non-HTTP and malformed URLs before
   the request, and classifies redirect-time ones as definitive.** `openalex.best_pdf_url`
@@ -135,7 +143,7 @@ grouped by milestone rather than per commit.
   both unflagged rather than misclassifying `UnsupportedProtocol` as a transient
   network error, and `streaming.stream_to_file` marks both `retryable: False` so a
   publisher 302 to `ftp://` or a malformed `Location` header negative-caches and
-  carries the `import_paper` suggestion.
+  carries the `import_paper` suggestion. ([#168])
 
 ## [2026.09.19] — 2026-09-19
 
@@ -2362,3 +2370,15 @@ say which.
 [#162]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/162
 [#163]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/163
 [#164]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/164
+[#168]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/168
+[#169]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/169
+[#170]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/170
+[#171]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/171
+[#172]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/172
+[#173]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/173
+[#174]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/174
+[#175]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/175
+[#176]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/176
+[#177]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/177
+[#178]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/178
+[#179]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/179

@@ -75,6 +75,7 @@ force_refresh→check→single-flight→re-check dance, or a DOI regex.
 | Outbound User-Agent | `useragent.headers` |
 | Page arithmetic | `app.page_bounds` |
 | Markdown read outside the lock | `app.read_markdown` |
+| OpenAlex work PMID / arXiv ID extraction | `app.openalex_pmid` · `app.openalex_arxiv_id` |
 
 `stems` shows why the *layer* matters, not just the count: it holds `safe_stem`
 and the path builders, so three providers can name a PDF without importing the

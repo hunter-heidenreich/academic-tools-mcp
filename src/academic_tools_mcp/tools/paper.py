@@ -23,6 +23,8 @@ from ..app import (
     dict_list,
     enrich_error,
     mcp,
+    openalex_arxiv_id,
+    openalex_pmid,
     page_bounds,
     resolve_doi_identifier,
     resolve_paper_identifier,
@@ -215,46 +217,6 @@ def _format_acl_metadata(paper: dict[str, Any], canonical_id: str | None) -> dic
     }
 
 
-def _openalex_pmid(work: dict[str, Any]) -> str | None:
-    """The work's PMID as bare digits, or ``None``.
-
-    OpenAlex spells it as a PubMed URL; normalized here so the server hands back
-    a spelling it also accepts. ``isdecimal``, not ``is_pmid``: that predicate's
-    floor on a bare run is a routing tier, and short PMIDs on early papers are
-    real.
-    """
-    raw = as_dict(work.get("ids")).get("pmid")
-    if not isinstance(raw, str) or not raw:
-        return None
-    normalized = openalex.normalize_pmid(raw)
-    return normalized if normalized.isdecimal() else None
-
-
-def _openalex_arxiv_id(work: dict[str, Any]) -> str | None:
-    """The work's versionless arXiv ID, or ``None``.
-
-    OpenAlex records an arXiv preprint in ``ids.arxiv`` when indexed, or in a
-    location's landing page, PDF URL, or DataCite ``10.48550/arXiv.*`` DOI when
-    merged under the published work. Normalized to the bare versionless form
-    (preserving old-style archive case like ``math.GT/0309136``) that every
-    arXiv-keyed tool accepts.
-    """
-    locations = (
-        as_dict(work.get("primary_location")),
-        as_dict(work.get("best_oa_location")),
-        *dict_list(work.get("locations")),
-    )
-    candidates = (
-        as_dict(work.get("ids")).get("arxiv"),
-        work.get("doi"),
-        *(loc.get(key) for loc in locations for key in ("landing_page_url", "pdf_url", "doi")),
-    )
-    for raw in candidates:
-        if isinstance(raw, str) and arxiv.is_arxiv_id(raw):
-            return arxiv.strip_version(arxiv.normalize_arxiv_id(raw))
-    return None
-
-
 def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> dict[str, Any]:
     primary_location = as_dict(work.get("primary_location"))
     source_obj = as_dict(primary_location.get("source"))
@@ -264,8 +226,8 @@ def _format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) ->
         "_canonical_id": canonical_id,
         "title": work.get("title"),
         "doi": work.get("doi"),
-        "pmid": _openalex_pmid(work),
-        "arxiv_id": _openalex_arxiv_id(work),
+        "pmid": openalex_pmid(work),
+        "arxiv_id": openalex_arxiv_id(work),
         "publication_year": work.get("publication_year"),
         "publication_date": work.get("publication_date"),
         "type": work.get("type"),
