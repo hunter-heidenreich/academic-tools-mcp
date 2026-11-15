@@ -11,6 +11,17 @@ from ..net import clients, http
 from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
 from ..util import config, doinorm, useragent
+from ..util.jsonshape import (
+    as_dict,
+    as_str,
+    non_empty_str,
+)
+from ..util.jsonshape import (
+    dict_list as _dicts,
+)
+from ..util.jsonshape import (
+    str_or_none as _str_or_none,
+)
 
 CROSSREF_BASE_URL = "https://api.crossref.org/v1"
 NAMESPACE = "crossref"
@@ -174,12 +185,10 @@ def author_name(author: Any) -> str:
     """
     if not isinstance(author, dict):
         return ""
-    given = author.get("given")
-    family = author.get("family")
-    if isinstance(family, str) and family:
-        return f"{given} {family}".strip() if isinstance(given, str) and given else family
-    name = author.get("name")
-    return name if isinstance(name, str) else ""
+    given = non_empty_str(author.get("given"))
+    if family := non_empty_str(author.get("family")):
+        return f"{given} {family}".strip() if given else family
+    return as_str(author.get("name"))
 
 
 def institution_name(institution: Any) -> str:
@@ -195,10 +204,7 @@ def institution_name(institution: Any) -> str:
         return next((found for entry in institution if (found := institution_name(entry))), "")
     if isinstance(institution, str):
         return institution
-    if not isinstance(institution, dict):
-        return ""
-    name = institution.get("name")
-    return name if isinstance(name, str) else ""
+    return as_str(as_dict(institution).get("name"))
 
 
 # Crossref deposits an abstract as a JATS fragment, so it is markup, not text.
@@ -244,19 +250,6 @@ def retracts(update_type: str) -> bool:
     return update_type.strip().lower().replace("-", "_") in RETRACTION_UPDATE_TYPES
 
 
-def _dicts(value: Any) -> list[dict[str, Any]]:
-    """The dict elements of ``value``, or ``[]`` when it isn't a list.
-
-    ``app.dict_list`` in miniature: a provider sits below ``app`` and cannot reach it.
-    """
-    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
-
-
-def _str_or_none(value: Any) -> str | None:
-    """``value`` when it is a string, else ``None`` — the shape these fields promise."""
-    return value if isinstance(value, str) else None
-
-
 def updates(work: dict[str, Any]) -> list[dict[str, Any]]:
     """Retraction and correction notices naming this work, from ``updated-by``.
 
@@ -268,19 +261,18 @@ def updates(work: dict[str, Any]) -> list[dict[str, Any]]:
     """
     found = []
     for entry in _dicts(work.get("updated-by")):
-        doi = entry.get("DOI")
-        update_type = entry.get("type")
+        doi = non_empty_str(entry.get("DOI"))
+        update_type = _str_or_none(entry.get("type"))
         # Both are required upstream, and a notice missing either is unciteable.
-        if not isinstance(doi, str) or not doi or not isinstance(update_type, str):
+        if doi is None or update_type is None:
             continue
-        updated = entry.get("updated")
         found.append(
             {
                 "doi": canonical_doi(doi),
                 "type": update_type,
                 "label": _str_or_none(entry.get("label")),
                 "source": _str_or_none(entry.get("source")),
-                "updated": updated if isinstance(updated, dict) else {},
+                "updated": as_dict(entry.get("updated")),
             }
         )
     return found

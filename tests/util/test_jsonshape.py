@@ -57,6 +57,9 @@ class TestJsonShape:
         assert jsonshape.as_str("abc") == "abc"
         assert jsonshape.as_str("") == ""
         assert jsonshape.as_str(None) == ""
+        assert jsonshape.str_or_none("abc") == "abc"
+        assert jsonshape.str_or_none("") == ""
+        assert jsonshape.str_or_none(None) is None
         assert jsonshape.non_empty_str("abc") == "abc"
         assert jsonshape.non_empty_str("") is None
         assert jsonshape.non_empty_str(None) is None

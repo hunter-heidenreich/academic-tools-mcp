@@ -21,6 +21,7 @@ from ..app import (
     dict_list,
     enrich_error,
     mcp,
+    non_empty_str,
     openalex_arxiv_id,
     openalex_pmid,
     page_bounds,
@@ -58,11 +59,10 @@ def _crossref_first_author(authors: list[dict[str, Any]]) -> str | None:
     Values are ``isinstance``-checked and non-empty-checked: the rows arrive verbatim.
     """
     for a in authors:
-        name_parts = [p for p in (a.get("given"), a.get("family")) if isinstance(p, str) and p]
+        name_parts = [p for raw in (a.get("given"), a.get("family")) if (p := non_empty_str(raw))]
         if name_parts:
             return " ".join(name_parts)
-        org = a.get("name")
-        if isinstance(org, str) and org:
+        if org := non_empty_str(a.get("name")):
             return org
     return None
 
@@ -334,7 +334,7 @@ def _last_known_institution(author: dict[str, Any]) -> str | None:
     same-named people apart, and no shared helper between the two tools.
     """
     for inst in dict_list(author.get("last_known_institutions")):
-        if isinstance(name := inst.get("display_name"), str) and name:
+        if name := non_empty_str(inst.get("display_name")):
             return name
     return None
 

@@ -11,6 +11,15 @@ from ..net import clients, http
 from ..net.throttle import Throttle
 from ..store import cache, singleflight
 from ..util import config, useragent
+from ..util.jsonshape import (
+    as_dict,
+    as_int,
+    as_str,
+    dict_list,
+    non_empty_str,
+    str_or_none,
+    stripped_str,
+)
 
 NAMESPACE = "wikipedia"
 
@@ -170,27 +179,22 @@ def _search_of(data: Any) -> dict[str, Any] | None:
             "url": _article_url(row["title"]),
             "snippet": _snippet_text(row.get("snippet")),
         }
-        for row in rows
-        if isinstance(row, dict) and isinstance(row.get("title"), str) and row["title"].strip()
+        for row in dict_list(rows)
+        if stripped_str(row.get("title")) is not None
     ]
     # Rows that yielded nothing usable are malformed, not "no results".
     if rows and not hits:
         return None
 
-    info = query.get("searchinfo")
-    info = info if isinstance(info, dict) else {}
-    total = info.get("totalhits")
-    suggested = info.get("suggestion")
+    info = as_dict(query.get("searchinfo"))
     return {
         "results": hits,
         # A missing total is unknown, never zero; the tool layer folds it to an int.
-        "total_results": (
-            total if isinstance(total, int) and not isinstance(total, bool) else None
-        ),
+        "total_results": as_int(info.get("totalhits")),
         # Not "suggestion": ``enrich_error`` owns that key on the error shape, and one
         # name meaning "recovery advice" on one branch and "did you mean" on the other
         # is a fork an agent cannot see.
-        "did_you_mean": suggested if isinstance(suggested, str) and suggested else None,
+        "did_you_mean": non_empty_str(info.get("suggestion")),
     }
 
 
@@ -260,13 +264,7 @@ def _desktop_page_url(content_urls: Any) -> str:
     ``Any``: a non-dict at either level degrades to ``""`` rather than raising
     the ``AttributeError`` neither ``_PARSE_ERRORS`` nor ``HTTPX_ERRORS`` catches.
     """
-    if not isinstance(content_urls, dict):
-        return ""
-    desktop = content_urls.get("desktop")
-    if not isinstance(desktop, dict):
-        return ""
-    page = desktop.get("page")
-    return page if isinstance(page, str) else ""
+    return as_str(as_dict(as_dict(content_urls).get("desktop")).get("page"))
 
 
 def _canonical_of(titles: Any) -> str:
@@ -275,10 +273,7 @@ def _canonical_of(titles: Any) -> str:
     ``Any``: ``_desktop_page_url``'s argument again — a non-dict degrades rather than
     raising the ``AttributeError`` neither error tuple catches.
     """
-    if not isinstance(titles, dict):
-        return ""
-    canonical = titles.get("canonical")
-    return canonical if isinstance(canonical, str) else ""
+    return as_str(as_dict(titles).get("canonical"))
 
 
 def _revision_of(data: Any) -> int | None:
@@ -339,21 +334,21 @@ def _summary_of(data: Any) -> dict[str, Any] | None:
         "title": title,
         # What the request resolved *to*: a redirect answers under the target's title.
         "canonical_title": canonical,
-        "description": description if isinstance(description, str) else None,
+        "description": str_or_none(description),
         # A disambiguation page's extract is one candidate meaning in prose, and reads
         # exactly like a real summary — "A transformer is a device that transfers
         # electrical energy" for `Transformer`. Cited as the article's, it is wrong.
-        "extract": extract if page_type == "standard" and isinstance(extract, str) else "",
+        "extract": as_str(extract) if page_type == "standard" else "",
         "url": _desktop_page_url(data.get("content_urls")),
         "permalink": _permalink(canonical, revision),
         "revision": revision,
-        "timestamp": timestamp if isinstance(timestamp, str) else None,
+        "timestamp": str_or_none(timestamp),
         "type": page_type,
-        "pageid": pageid if isinstance(pageid, int) and not isinstance(pageid, bool) else None,
+        "pageid": as_int(pageid),
         # The Wikidata QID, and the reason this provider earns a place in a paper
         # server: it is the join from an article to the ORCID and ROR that
         # `get_author` and `get_institution` already take.
-        "wikibase_item": wikibase_item if isinstance(wikibase_item, str) else None,
+        "wikibase_item": str_or_none(wikibase_item),
     }
 
 
