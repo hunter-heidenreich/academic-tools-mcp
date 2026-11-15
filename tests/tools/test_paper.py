@@ -2465,6 +2465,7 @@ class TestBatchBackpressureAndSearchChaining:
     async def test_twenty_cold_pmids_complete_without_backpressure(self, monkeypatch):
         import asyncio
         import json
+        from urllib.parse import parse_qs
 
         import httpx
 
@@ -2476,11 +2477,19 @@ class TestBatchBackpressureAndSearchChaining:
         async def respond(request: httpx.Request) -> httpx.Response:
             await asyncio.sleep(0)
             requests.append(request.url.path)
-            pmid = request.url.path.removeprefix("/works/pmid:")
+            raw_filter = parse_qs(request.url.query.decode())["filter"][0]
+            asked = raw_filter.removeprefix("pmid:").split("|")
             payload = {
-                "id": f"https://openalex.org/W{pmid}",
-                "doi": f"https://doi.org/10.1234/p{pmid}",
-                "title": f"Paper {pmid}",
+                "meta": {"count": len(asked)},
+                "results": [
+                    {
+                        "id": f"https://openalex.org/W{pmid}",
+                        "doi": f"https://doi.org/10.1234/p{pmid}",
+                        "title": f"Paper {pmid}",
+                        "ids": {"pmid": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}"},
+                    }
+                    for pmid in asked
+                ],
             }
             return httpx.Response(
                 200,
@@ -2497,13 +2506,14 @@ class TestBatchBackpressureAndSearchChaining:
         assert result["count"] == 20
         assert all("error" not in p and p["_source"] == "openalex" for p in result["papers"])
         assert [p["_input"] for p in result["papers"]] == pmids
-        # Each PMID resolution warmed `works`, so the batch step made 0 extra calls.
-        assert len(requests) == 20
+        # All 20 PMIDs resolve and warm `works` in 1 single batch filter request!
+        assert len(requests) == 1
 
     @pytest.mark.asyncio
     async def test_twenty_cold_work_ids_complete_without_backpressure(self, monkeypatch):
         import asyncio
         import json
+        from urllib.parse import parse_qs
 
         import httpx
 
@@ -2515,11 +2525,18 @@ class TestBatchBackpressureAndSearchChaining:
         async def respond(request: httpx.Request) -> httpx.Response:
             await asyncio.sleep(0)
             requests.append(request.url.path)
-            wid = request.url.path.removeprefix("/works/").upper()
+            raw_filter = parse_qs(request.url.query.decode())["filter"][0]
+            asked = raw_filter.removeprefix("openalex:").split("|")
             payload = {
-                "id": f"https://openalex.org/{wid}",
-                "doi": f"https://doi.org/10.1234/{wid.lower()}",
-                "title": f"Work {wid}",
+                "meta": {"count": len(asked)},
+                "results": [
+                    {
+                        "id": f"https://openalex.org/{wid.upper()}",
+                        "doi": f"https://doi.org/10.1234/{wid.lower()}",
+                        "title": f"Work {wid.upper()}",
+                    }
+                    for wid in asked
+                ],
             }
             return httpx.Response(
                 200,
@@ -2536,7 +2553,8 @@ class TestBatchBackpressureAndSearchChaining:
         assert result["count"] == 20
         assert all("error" not in p and p["_source"] == "openalex" for p in result["papers"])
         assert [p["_input"] for p in result["papers"]] == work_ids
-        assert len(requests) == 20
+        # All 20 work IDs resolve and warm `works` in 1 single batch filter request!
+        assert len(requests) == 1
 
     @pytest.mark.asyncio
     async def test_twenty_cold_biorxiv_dois_complete_without_backpressure(self, monkeypatch):

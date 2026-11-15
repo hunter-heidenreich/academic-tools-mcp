@@ -990,6 +990,241 @@ async def get_works_batch(
     return {c: out[c] for c in canonicals_in_order}
 
 
+def _extract_batch_pmid(work: dict[str, Any]) -> str | None:
+    """The normalized bare PMID from an OpenAlex work's ``ids.pmid``, or None."""
+    ids = work.get("ids")
+    raw_pmid = ids.get("pmid") if isinstance(ids, dict) else None
+    if not isinstance(raw_pmid, str) or not raw_pmid:
+        return None
+    normalized = normalize_pmid(raw_pmid)
+    return normalized if _PMID_RE.match(normalized) else None
+
+
+def _extract_batch_work_id(work: dict[str, Any]) -> str | None:
+    """The canonical bare work ID from an OpenAlex work's ``id``, or None."""
+    raw_id = work.get("id")
+    if not isinstance(raw_id, str) or not raw_id:
+        return None
+    canonical = canonical_work_id(raw_id)
+    return canonical if _WORK_ID_RE.match(canonical) else None
+
+
+async def _fetch_id_chunk(
+    chunk: list[str],
+    *,
+    entity: str,
+    filter_key: str,
+    extract_key: Callable[[dict[str, Any]], str | None],
+    not_found_label: str,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Fetch one ``/works?filter=<filter_key>:a|b|c`` chunk, coalesced by single-flight."""
+    sf_key = (f"{entity}_batch", tuple(sorted(chunk)), force_refresh)
+
+    async def _runner() -> dict[str, dict[str, Any]]:
+        for _ in chunk:
+            stats.incr(NAMESPACE, "cache_misses")
+        return await _fetch_id_chunk_uncoalesced(
+            chunk,
+            entity=entity,
+            filter_key=filter_key,
+            extract_key=extract_key,
+            not_found_label=not_found_label,
+        )
+
+    return await _single_flight.do(sf_key, _runner)
+
+
+async def _fetch_id_chunk_uncoalesced(
+    chunk: list[str],
+    *,
+    entity: str,
+    filter_key: str,
+    extract_key: Callable[[dict[str, Any]], str | None],
+    not_found_label: str,
+) -> dict[str, dict[str, Any]]:
+    """The actual batch GET + mapping extraction for one PMID or work-ID chunk."""
+    out: dict[str, dict[str, Any]] = {}
+    params = _build_params()
+    params["filter"] = f"{filter_key}:" + "|".join(chunk)
+    params["per-page"] = str(len(chunk))
+
+    try:
+        response = await _throttled_get(f"{OPENALEX_BASE_URL}/works", params=params)
+        response.raise_for_status()
+        data = response.json()
+    except _PARSE_ERRORS:
+        return {c: _parse_error_dict() for c in chunk}
+    except http.HTTPX_ERRORS as e:
+        return {c: http.error_dict(LABEL, e) for c in chunk}
+
+    if not isinstance(data, dict):
+        return {c: _parse_error_dict() for c in chunk}
+
+    results = data.get("results")
+    if not isinstance(results, list):
+        return {c: _parse_error_dict() for c in chunk}
+
+    chunk_set = set(chunk)
+    seen_in_chunk: set[str] = set()
+    unattributed = 0
+    for work in results:
+        if not isinstance(work, dict):
+            unattributed += 1
+            continue
+        key = extract_key(work)
+        has_work_id = (
+            isinstance(raw_id := work.get("id"), str)
+            and bool(w_key := canonical_work_id(raw_id))
+            and bool(_WORK_ID_RE.match(w_key))
+        )
+        mapping = (
+            _traded_ids(work)
+            if (
+                key is not None
+                or _canonical_from_response_doi(work.get("doi")) is not None
+                or has_work_id
+            )
+            else None
+        )
+        if key is None or key not in chunk_set or mapping is None:
+            unattributed += 1
+            continue
+        cache.put(NAMESPACE, entity, key, mapping)
+        out[key] = mapping
+        seen_in_chunk.add(key)
+
+    reported = _meta_count(data)
+    truncated = reported is not None and reported > len(results)
+    trustworthy = unattributed == 0 and not truncated
+
+    for canonical in chunk:
+        if canonical in seen_in_chunk:
+            continue
+        err = http.not_found(f"No work found for {not_found_label}: {canonical}")
+        if trustworthy:
+            cache.put_negative(NAMESPACE, entity, canonical, err)
+        else:
+            err = {"error": err["error"], "retryable": True}
+        out[canonical] = err
+
+    return out
+
+
+async def _resolve_ids_batch(
+    identifiers: list[str],
+    *,
+    entity: str,
+    filter_key: str,
+    canonicalize: Callable[[str], str],
+    shape_re: re.Pattern[str],
+    extract_key: Callable[[dict[str, Any]], str | None],
+    not_found_label: str,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Shared batch resolver for PMIDs and OpenAlex work IDs."""
+    canonicals_in_order: list[str] = []
+    seen: set[str] = set()
+    for ident in identifiers:
+        canonical = canonicalize(ident)
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        canonicals_in_order.append(canonical)
+
+    out: dict[str, dict[str, Any]] = {}
+    misses: list[str] = []
+
+    for canonical in canonicals_in_order:
+        if not shape_re.match(canonical):
+            out[canonical] = http.not_found(f"No work found for {not_found_label}: {canonical}")
+            continue
+        if force_refresh:
+            cache.invalidate(NAMESPACE, entity, canonical)
+            misses.append(canonical)
+            continue
+        cached = cache.get(NAMESPACE, entity, canonical, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        if cached is not None:
+            out[canonical] = cached
+            continue
+        neg = cache.get_negative(NAMESPACE, entity, canonical)
+        if neg is not None:
+            out[canonical] = neg
+            continue
+        misses.append(canonical)
+
+    chunks = [
+        misses[start : start + _BATCH_CHUNK_SIZE]
+        for start in range(0, len(misses), _BATCH_CHUNK_SIZE)
+    ]
+
+    results = await asyncio.gather(
+        *(
+            _fetch_id_chunk(
+                chunk,
+                entity=entity,
+                filter_key=filter_key,
+                extract_key=extract_key,
+                not_found_label=not_found_label,
+                force_refresh=force_refresh,
+            )
+            for chunk in chunks
+        )
+    )
+    for chunk_out in results:
+        out.update(chunk_out)
+
+    return {c: out[c] for c in canonicals_in_order}
+
+
+async def resolve_pmids_batch(
+    pmids: list[str],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Resolve many PMIDs in batched ``/works?filter=pmid:...|...`` calls.
+
+    Returns ``{normalized_pmid: mapping_or_error_dict}`` in first-appearance
+    order, warming ``works``, ``work_ids``, and ``pmids`` for every resolved
+    work so follow-up ``resolve_pmid`` and ``get_works_batch`` calls hit the
+    cache with zero additional HTTP requests.
+    """
+    return await _resolve_ids_batch(
+        pmids,
+        entity="pmids",
+        filter_key="pmid",
+        canonicalize=normalize_pmid,
+        shape_re=_PMID_RE,
+        extract_key=_extract_batch_pmid,
+        not_found_label="PMID",
+        force_refresh=force_refresh,
+    )
+
+
+async def resolve_work_ids_batch(
+    work_ids: list[str],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Resolve many OpenAlex work IDs in batched ``/works?filter=openalex:...|...`` calls.
+
+    Returns ``{canonical_work_id: mapping_or_error_dict}`` in first-appearance
+    order, warming ``works``, ``work_ids``, and ``pmids`` for every resolved
+    work so follow-up ``resolve_work_id`` and ``get_works_batch`` calls hit the
+    cache with zero additional HTTP requests.
+    """
+    return await _resolve_ids_batch(
+        work_ids,
+        entity="work_ids",
+        filter_key="openalex",
+        canonicalize=canonical_work_id,
+        shape_re=_WORK_ID_RE,
+        extract_key=_extract_batch_work_id,
+        not_found_label="OpenAlex ID",
+        force_refresh=force_refresh,
+    )
+
+
 def reconstruct_abstract(inverted_index: Any) -> str:
     """Reconstruct plain text from OpenAlex's inverted index abstract format.
 
