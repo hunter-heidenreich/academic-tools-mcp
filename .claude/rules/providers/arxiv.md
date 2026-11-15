@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/academic_tools_mcp/providers/arxiv.py"
+  - "src/academic_tools_mcp/providers/arxiv_parse.py"
 ---
 
 # arxiv.py
