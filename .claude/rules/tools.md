@@ -17,7 +17,10 @@ semantics live in the `app.py` alias. This file holds what spans tools instead.
 ## Layout
 
 **`tools/paper.py` importing from `tools/search.py` is the violation to catch, not
-the cycle** — a helper two tool modules need moves into `app.py`.
+the cycle** — a helper two tool modules need moves into `app.py`. Pure payload
+shapers for paper metadata, author pages, and entity profiles live in
+`tools/formatting.py` (which may not import any `tools.*` module) and are re-exported
+as `_`-prefixed aliases on `tools/paper.py`.
 
 **Don't add a passthrough wrapper in `app` to create a patch point.** Tool modules
 call providers directly and tests monkeypatch the provider module object, which

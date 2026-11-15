@@ -282,7 +282,10 @@ def test_app_never_imports_tools():
 
 
 def test_no_tool_module_imports_another():
-    # A helper needed by two tool modules belongs in app, not imported sideways.
+    # A helper needed by two tool modules belongs in app, not imported sideways;
+    # `tools.formatting` is the pure payload-shaping submodule for `tools.paper`
+    # and may not import any `tools.*` module itself.
     for name in sorted(n for n in _MODULES if n.startswith("tools.")):
-        offenders = {t for t in _GRAPH[name] if t.startswith("tools.")}
+        offenders = {t for t in _GRAPH[name] if t.startswith("tools.") and t != "tools.formatting"}
         assert not offenders, f"{name} imports {offenders} — move the shared helper to app"
+    assert not {t for t in _GRAPH.get("tools.formatting", set()) if t.startswith("tools.")}
