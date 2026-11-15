@@ -28,12 +28,22 @@ def _resolve_cache_root() -> Path:
     return config.project_root() / ".cache"
 
 
-# Bound at import, so CACHE_DIR must be set before it. No size bound: the only
-# eviction is on-read TTL.
+# Bound at import, so CACHE_DIR must be set before it. Eviction is TTL-based
+# (on-read per-provider TTLs plus a startup sweep at the 30-day ceiling).
 CACHE_ROOT = _resolve_cache_root()
 
 # Absorbs burst retries on a known-bad identifier without hiding a DOI registered since.
 _DEFAULT_NEG_TTL_SECONDS = 86400.0
+
+# Longest positive TTL across all providers (OpenAlex, Crossref, Wikipedia,
+# Papers with Code tasks = 30d). Any positive entry older than this ceiling is
+# expired under its own provider's positive_ttl too.
+_DEFAULT_POS_SWEEP_MAX_AGE_SECONDS = 30 * 86400.0
+
+# JSON entities that do not expire by mtime:
+# - "sections": derived from converted markdown and validated by checksum.
+# - "doi_index": ACL Anthology's stale-while-revalidate hosted-DOI shard map.
+_UNBOUNDED_JSON_ENTITIES = frozenset({"sections", "doi_index"})
 
 # Negatives live in their own tree, so a corrupt or expired one can never be
 # misread as a positive.
@@ -360,4 +370,38 @@ def gc_expired_negatives() -> int:
             _unlink_quietly(path)
             if not path.exists():
                 removed += 1
+    return removed
+
+
+def gc_expired_positives(*, max_age_seconds: float = _DEFAULT_POS_SWEEP_MAX_AGE_SECONDS) -> int:
+    """Sweep ``.cache/*/*/*.json`` and unlink positive entries older than ``max_age_seconds``.
+
+    Positive entries expire by ``st_mtime`` on read, so a record that is fetched
+    once (or warmed by a search or collection parse) and never read again would
+    otherwise stay on disk forever. Checks ``st_mtime`` without parsing JSON so
+    startup stays fast across large caches, and skips unbounded entities
+    (``sections``, ``doi_index``).
+
+    Returns the number unlinked; idempotent. Matches :func:`get`'s boundary:
+    an entry aged *strictly* more than ``max_age_seconds`` is swept; one at the
+    exact age is kept.
+    """
+    now = time.time()
+    removed = 0
+    for path in CACHE_ROOT.glob("*/*/*.json"):
+        entity = path.parent.name
+        namespace = path.parent.parent.name
+        if (
+            entity in _UNBOUNDED_JSON_ENTITIES
+            or entity == _NEG_SUBDIR
+            or namespace.startswith("__")
+        ):
+            continue
+        try:
+            if now - path.stat().st_mtime <= max_age_seconds:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
     return removed
