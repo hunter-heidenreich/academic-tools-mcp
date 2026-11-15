@@ -12,7 +12,7 @@ Images are dropped and captions kept, as for converter output.
 
 from html.parser import HTMLParser
 
-from .blocks import escape_headings, pipe_table, span
+from .blocks import DEEPEST_LEVEL, collapse, escape_headings, pipe_table, span
 
 # HTML elements that never take an end tag.
 _VOID = frozenset(
@@ -58,7 +58,6 @@ _TITLE_LEVELS = {
     "ltx_title_bibliography": 2,
     "ltx_title_subsection": 3,
 }
-_DEEPEST_LEVEL = 4
 
 
 class _Node:
@@ -98,17 +97,13 @@ class _TreeBuilder(HTMLParser):
         self._stack[-1].children.append(data)
 
 
-def _collapse(text: str) -> str:
-    return " ".join(text.split())
-
-
 def _skipped(node: _Node) -> bool:
     return node.tag in _SKIP_TAGS or not _SKIP_CLASSES.isdisjoint(node.classes)
 
 
 def _math(node: _Node) -> str:
     """LaTeX source from ``alttext``; MathML children are never read."""
-    tex = _collapse(node.attrs.get("alttext", ""))
+    tex = collapse(node.attrs.get("alttext", ""))
     if not tex:
         return ""
     return f"$${tex}$$" if node.attrs.get("display") == "block" else f"${tex}$"
@@ -121,7 +116,7 @@ def _heading_level(node: _Node) -> int | None:
         if cls in node.classes:
             return level
     # Subsubsection, paragraph and anything deeper, or an ``<hN>`` without a title class.
-    return _DEEPEST_LEVEL if "ltx_title" in node.classes else min(int(node.tag[1:]), _DEEPEST_LEVEL)
+    return DEEPEST_LEVEL if "ltx_title" in node.classes else min(int(node.tag[1:]), DEEPEST_LEVEL)
 
 
 def _inline(node: _Node | str) -> str:
@@ -137,7 +132,7 @@ def _inline(node: _Node | str) -> str:
     text = "".join(_inline(child) for child in node.children)
     # A footnote's text reads inline beside the sentence it annotates.
     if "ltx_note_outer" in node.classes:
-        return f" [{_collapse(text)}] "
+        return f" [{collapse(text)}] "
     if node.tag in _BLOCK_TAGS or node.tag in ("td", "th", "tr"):
         return f" {text} "
     return text
@@ -153,10 +148,10 @@ def _equation(node: _Node) -> str:
             if isinstance(cell, str):
                 continue
             if "ltx_eqn_eqno" in cell.classes:
-                tag = _collapse(_inline(cell))
+                tag = collapse(_inline(cell))
             else:
                 parts.append(_inline(cell))
-        line = _collapse(" ".join(parts))
+        line = collapse(" ".join(parts))
         if line:
             rows.append(f"{line} {tag}".rstrip())
     return "\n".join(rows)
@@ -167,7 +162,7 @@ def _table(node: _Node) -> str:
     return pipe_table(
         [
             (
-                _collapse(_inline(cell)),
+                collapse(_inline(cell)),
                 span(cell.attrs.get("colspan")),
                 span(cell.attrs.get("rowspan")),
             )
@@ -196,7 +191,7 @@ class _Renderer:
         self._inline: list[str] = []
 
     def flush(self) -> None:
-        text = _collapse("".join(self._inline))
+        text = collapse("".join(self._inline))
         self._inline = []
         if text:
             self.blocks.append(escape_headings(text))
@@ -221,7 +216,7 @@ class _Renderer:
         if _skipped(node):
             return
         if (level := _heading_level(node)) is not None:
-            self.heading(level, _collapse(_inline(node)))
+            self.heading(level, collapse(_inline(node)))
         elif node.tag == "math":
             if node.attrs.get("display") == "block":
                 self.block(_math(node))
@@ -238,7 +233,7 @@ class _Renderer:
             items = [c for c in node.children if isinstance(c, _Node) and c.tag == "li"]
             for n, item in enumerate(items, start=1):
                 marker = f"{n}." if ordered and "ltx_bibitem" not in item.classes else "-"
-                self.blocks.append(f"{marker} {_collapse(_inline(item))}")
+                self.blocks.append(f"{marker} {collapse(_inline(item))}")
         elif node.tag == "img":
             return
         elif node.tag in _BLOCK_TAGS:

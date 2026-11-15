@@ -24,10 +24,6 @@ class TestSectionLockLifetime:
     between ``release()`` and a queued waiter resuming, ``locked()`` reads False.
     """
 
-    @pytest.fixture(autouse=True)
-    def _reset_locks(self, monkeypatch):
-        monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
-
     def test_returns_same_lock_for_same_key(self):
         lock1 = papers.sections_lock("test", "same")
         lock2 = papers.sections_lock("test", "same")
@@ -339,7 +335,6 @@ class TestReparseGates:
         three parses of the same document.
         """
         self._converted(tmp_path, monkeypatch)
-        monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
 
         calls = 0
         real = papers.index.parse_sections_and_detect

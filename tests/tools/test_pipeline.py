@@ -16,56 +16,18 @@ markdown/section state is seeded straight into the cache.
 """
 
 import asyncio
-import contextlib
 from pathlib import Path
-from weakref import WeakValueDictionary
 
 import pytest
 
 from academic_tools_mcp import manual, papers, server
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 from academic_tools_mcp.store import cache, stems
-
-
-@pytest.fixture
-def isolated_cache(tmp_path, monkeypatch):
-    # Redirect the cache root so each test runs against a clean filesystem.
-    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
-    return tmp_path
-
-
-@pytest.fixture(autouse=True)
-def _reset_section_locks(monkeypatch):
-    # Start every test from a clean per-paper lock dict so a lock acquired
-    # in one test can't leak into another (and so a held lock is the one the
-    # tool re-derives by key).
-    monkeypatch.setattr(papers.index, "_section_locks", WeakValueDictionary())
-
-
-def _seed_markdown(namespace, canonical, body):
-    """Write markdown straight into the cache path (no subprocess)."""
-    md_path = stems.markdown_path(namespace, canonical)
-    md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(body, encoding="utf-8")
-    return md_path
-
-
-@contextlib.contextmanager
-def _c_ctype_locale():
-    """Pin LC_CTYPE to C for the body so an encoding-less read() picks ASCII
-    — the situation in an LC_ALL=C container/cron job. Restored on exit."""
-    import locale
-
-    saved = locale.setlocale(locale.LC_CTYPE)
-    try:
-        locale.setlocale(locale.LC_CTYPE, "C")
-    except locale.Error:
-        pytest.skip("C locale not available on this host")
-    try:
-        yield
-    finally:
-        locale.setlocale(locale.LC_CTYPE, saved)
-
+from tests.helpers.conversion_fakes import (
+    c_ctype_locale as _c_ctype_locale,
+    seed_index as _seed_index,
+    seed_markdown as _seed_markdown,
+)
 
 _NON_ASCII_MD = "## Café\n\nrésumé naïve coöperate ☃ — αβγ\n"
 
@@ -536,23 +498,6 @@ class TestConvertPaperTool:
 # ---------------------------------------------------------------------------
 # get_paper_sections / get_paper_section — the read tools' own contracts
 # ---------------------------------------------------------------------------
-
-
-def _seed_index(namespace, canonical, markdown, mode):
-    """Seed markdown plus a matching, non-stale section index."""
-    _seed_markdown(namespace, canonical, markdown)
-    sections, detected = papers.parse_sections_and_detect(markdown)
-    cache.put(
-        namespace,
-        "sections",
-        stems.sections_key(canonical),
-        {
-            "sections": sections,
-            "sections_detected": detected,
-            "markdown_checksum": stems.checksum_text(markdown),
-            "conversion_mode": mode,
-        },
-    )
 
 
 class TestGetPaperSectionsTool:

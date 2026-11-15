@@ -8,8 +8,7 @@ the provider actually uses stay in the path.
 """
 
 import asyncio
-import json
-from typing import Any, ClassVar, NamedTuple
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -24,79 +23,33 @@ from academic_tools_mcp.providers.openalex import (
     reconstruct_abstract,
 )
 from academic_tools_mcp.store import cache
+from tests.helpers.json_transport import (
+    BAD_JSON as _BAD_JSON,
+    Resp as _Resp,
+    stub_json_responses,
+    stub_no_network,
+)
 
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
 
-# Sentinel: a 200 whose body is not JSON, simulating a malformed/truncated body.
-_BAD_JSON = object()
-
-
-class _Resp(NamedTuple):
-    """A payload with a non-200 status, for the HTTP-error branches."""
-
-    status_code: int
-    payload: Any = None
-
 
 def _reset_openalex(monkeypatch):
-    """Zero the throttle gap and the retry so a multi-request test doesn't wait.
-
-    Cache root, pooled clients and single-flight state are already reset per
-    test by the conftest autouse fixtures; only pacing is this module's
-    business. ``retry_attempts=1`` matters for the retryable-status tests,
-    which would otherwise sleep out ``get_with_retry``'s one-second backoff.
-    """
+    """Zero the throttle gap and the retry so a multi-request test doesn't wait."""
     monkeypatch.setattr(openalex._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(openalex._throttle, "retry_attempts", 1)
-    # The search gap is a module constant, not a throttle attribute; without this a
-    # single search test sleeps out `_SEARCH_REQUEST_GAP` for real.
     monkeypatch.setattr(openalex._search_gap, "min_gap_seconds", 0.0)
 
 
 def _stub_json_responses(monkeypatch, *payloads, slow=False):
-    """Serve ``payloads`` from successive GETs over a real MockTransport.
-
-    A payload may be ``_BAD_JSON``, a ``_Resp`` carrying a status code, or an
-    exception to raise; the last one repeats once the sequence is exhausted.
-    ``slow=True`` yields to the event loop before answering, so concurrent
-    callers actually overlap and single-flight has something to coalesce.
-    Returns the list of captured ``httpx.Request``s.
-    """
     _reset_openalex(monkeypatch)
-    requests: list[httpx.Request] = []
-    seq = list(payloads)
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        payload = seq[len(requests)] if len(requests) < len(seq) else seq[-1]
-        requests.append(request)
-        if isinstance(payload, Exception):
-            raise payload
-        status = 200
-        if isinstance(payload, _Resp):
-            status, payload = payload.status_code, payload.payload
-        body = b"{ truncated" if payload is _BAD_JSON else json.dumps(payload).encode()
-        return httpx.Response(status, headers={"content-type": "application/json"}, content=body)
-
-    async def slow_respond(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(0)
-        return respond(request)
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(slow_respond if slow else respond))
-    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
-    return requests
+    return stub_json_responses(monkeypatch, *payloads, slow=slow)
 
 
 def _stub_no_network(monkeypatch):
-    """Install a transport that fails the test if anything reaches it."""
     _reset_openalex(monkeypatch)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError(f"unexpected request: {request.url}")
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
+    stub_no_network(monkeypatch)
 
 
 def _stub_filter_echo(monkeypatch, *, known=None):

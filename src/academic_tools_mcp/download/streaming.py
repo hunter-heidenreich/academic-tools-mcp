@@ -75,6 +75,28 @@ def resolve_max_pdf_bytes() -> int | None:
     )
 
 
+def markup_dict(
+    response: httpx.Response,
+    *,
+    label: str,
+    kind: str,
+    marker: str,
+    parse_detail: str,
+) -> dict[str, Any]:
+    """Validate a fetched markup response against ``MAX_PDF_BYTES`` and ``marker``."""
+    max_bytes = resolve_max_pdf_bytes()
+    if max_bytes is not None and len(response.content) > max_bytes:
+        return {
+            "error": f"{label} {kind} exceeds MAX_PDF_BYTES ({max_bytes} bytes).",
+            "retryable": False,
+            "max_bytes": max_bytes,
+        }
+    text = response.text
+    if marker not in text:
+        return http.parse_error_dict(label, detail=parse_detail)
+    return {"markup": text}
+
+
 async def stream_to_file(
     client: httpx.AsyncClient,
     url: str,

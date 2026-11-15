@@ -182,8 +182,7 @@ class TestFindInPaperReadHardening:
     """The one pipeline read path that relied on the host locale."""
 
     @pytest.fixture
-    def converted(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def converted(self):
         md = stems.markdown_path("manual", "paper-x")
         md.parent.mkdir(parents=True, exist_ok=True)
         md.write_text("# T\n\nSchrödinger and naïve café résumé.\n", encoding="utf-8")
@@ -252,8 +251,7 @@ class TestUnindexableDocumentsAreReported:
     """
 
     @pytest.fixture
-    def markdown_corpus(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def markdown_corpus(self, tmp_path):
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "english.md").write_text("# A\n\nTransformer attention.\n", encoding="utf-8")
@@ -405,8 +403,7 @@ class TestUnindexableDocumentsAreReported:
         assert "error" not in await search_tools.find_in_paper(entry["canonical_id"], "x")
 
     @pytest.mark.asyncio
-    async def test_clean_corpus_stays_lean(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    async def test_clean_corpus_stays_lean(self, tmp_path):
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "english.md").write_text("# A\n\nTransformer attention.\n", encoding="utf-8")
@@ -416,8 +413,7 @@ class TestUnindexableDocumentsAreReported:
         assert "unindexable_count" not in result
         assert "unindexable_note" not in result
 
-    def test_an_empty_document_is_reported(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def test_an_empty_document_is_reported(self, tmp_path):
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "blank.md").write_text("", encoding="utf-8")
@@ -448,8 +444,7 @@ class TestNonLatinDocumentsAreIndexedNotReported:
     """
 
     @pytest.fixture
-    def markdown_corpus(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def markdown_corpus(self, tmp_path):
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "russian.md").write_text("# Сети\n\nнейронных сетей.\n", encoding="utf-8")
@@ -475,11 +470,10 @@ class TestNonLatinDocumentsAreIndexedNotReported:
         assert "unindexable_count" not in result
         assert "unindexable_note" not in result
 
-    def test_cjk_matches_whole_runs_not_substrings(self, tmp_path, monkeypatch):
+    def test_cjk_matches_whole_runs_not_substrings(self, tmp_path):
         # A documented limit of ``unicode61``, not a defect: it does not
         # segment CJK, so a run delimited by whitespace or punctuation is one
         # token. Pinned so a future tokenizer change is a deliberate choice.
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "run.md").write_text("# 研究\n\n注意力機構の研究。\n", encoding="utf-8")

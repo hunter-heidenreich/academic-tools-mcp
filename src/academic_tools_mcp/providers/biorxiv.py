@@ -519,17 +519,13 @@ async def get_jats(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
         except http.HTTPX_ERRORS as e:
             return http.error_dict(LABEL, e)
 
-        max_bytes = streaming.resolve_max_pdf_bytes()
-        if max_bytes is not None and len(response.content) > max_bytes:
-            return {
-                "error": f"{LABEL} JATS XML exceeds MAX_PDF_BYTES ({max_bytes} bytes).",
-                "retryable": False,
-                "max_bytes": max_bytes,
-            }
-        text = response.text
-        if _JATS_MARKER not in text:
-            return http.parse_error_dict(LABEL, detail="was not a JATS article")
-        return {"markup": text}
+        return streaming.markup_dict(
+            response,
+            label=LABEL,
+            kind="JATS XML",
+            marker=_JATS_MARKER,
+            parse_detail="was not a JATS article",
+        )
 
     # Tuple-keyed to stay distinct from get_paper's slot, which _fetch awaits.
     return await _single_flight.do(("jats", canonical), _fetch)

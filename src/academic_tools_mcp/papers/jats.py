@@ -11,9 +11,7 @@ from xml.etree.ElementTree import Element, ParseError
 from defusedxml import DefusedXmlException
 from defusedxml.ElementTree import fromstring
 
-from .blocks import escape_headings, pipe_table, span
-
-_DEEPEST_LEVEL = 4
+from .blocks import DEEPEST_LEVEL, collapse, escape_headings, pipe_table, span
 
 # Subtrees with nothing to read: identifiers, images, and files outside the text.
 _SKIP_TAGS = frozenset(
@@ -51,10 +49,6 @@ def _attr(element: Element, name: str) -> str | None:
     return None
 
 
-def _collapse(text: str) -> str:
-    return " ".join(text.split())
-
-
 def _child(element: Element, name: str) -> Element | None:
     return next((c for c in element if _local(c) == name), None)
 
@@ -64,7 +58,7 @@ def _tex(element: Element) -> str:
     tex = "".join(element.itertext())
     if m := _TEX_DOCUMENT_RE.search(tex):
         tex = m.group(1)
-    return _collapse(tex).strip("$").strip()
+    return collapse(tex).strip("$").strip()
 
 
 def _formula(element: Element) -> str:
@@ -73,7 +67,7 @@ def _formula(element: Element) -> str:
         name = _local(node)
         if name == "tex-math" and (tex := _tex(node)):
             return tex
-        if name == "math" and (alt := _collapse(_attr(node, "alttext") or "")):
+        if name == "math" and (alt := collapse(_attr(node, "alttext") or "")):
             return alt
     return ""
 
@@ -90,7 +84,7 @@ def _inline(element: Element) -> str:
         tex = _formula(element)
         return f" $${tex}$$ " if tex else ""
     if name == "math":
-        alt = _collapse(_attr(element, "alttext") or "")
+        alt = collapse(_attr(element, "alttext") or "")
         return f"${alt}$" if alt else ""
     if name == "tex-math":
         tex = _tex(element)
@@ -125,7 +119,7 @@ def _table(element: Element) -> str:
     """A ``table`` as a pipe table (``blocks.pipe_table``)."""
     return pipe_table(
         [
-            (_collapse(_inline(cell)), span(_attr(cell, "colspan")), span(_attr(cell, "rowspan")))
+            (collapse(_inline(cell)), span(_attr(cell, "colspan")), span(_attr(cell, "rowspan")))
             for cell in row
             if _local(cell) in ("td", "th")
         ]
@@ -138,19 +132,19 @@ class _Renderer:
         self.blocks: list[str] = []
 
     def paragraph(self, text: str) -> None:
-        if text := _collapse(text):
+        if text := collapse(text):
             self.blocks.append(escape_headings(text))
 
     def heading(self, level: int, element: Element | None, fallback: str = "") -> None:
-        text = _collapse(_inline(element)) if element is not None else ""
+        text = collapse(_inline(element)) if element is not None else ""
         if text := text or fallback:
-            self.blocks.append(f"{'#' * min(level, _DEEPEST_LEVEL)} {text}")
+            self.blocks.append(f"{'#' * min(level, DEEPEST_LEVEL)} {text}")
 
     def float_(self, element: Element) -> None:
         """A ``fig`` / ``table-wrap``: label and caption as one paragraph, then any table."""
         label = _child(element, "label")
         caption = _child(element, "caption")
-        head = " ".join(_collapse(_inline(e)) for e in (label, caption) if e is not None)
+        head = " ".join(collapse(_inline(e)) for e in (label, caption) if e is not None)
         self.paragraph(head)
         for node in _descendants(element, "table"):
             if table := _table(node):
@@ -160,7 +154,7 @@ class _Renderer:
         self.heading(2, _child(element, "title"), "References")
         for ref in element:
             if _local(ref) == "ref":
-                if text := _collapse(" ".join(_inline(child) for child in ref)):
+                if text := collapse(" ".join(_inline(child) for child in ref)):
                     self.blocks.append(f"- {escape_headings(text)}")
             elif _local(ref) == "ref-list":
                 self.references(ref)
@@ -187,7 +181,7 @@ class _Renderer:
                     self.blocks.append(f"$${tex}$$")
             elif name in ("list", "def-list"):
                 for item in child:
-                    if text := _collapse(_inline(item)):
+                    if text := collapse(_inline(item)):
                         self.blocks.append(f"- {escape_headings(text)}")
             elif name in _CONTAINER_TAGS:
                 self.walk(child, level)

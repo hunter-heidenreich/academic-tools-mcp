@@ -1,12 +1,14 @@
-import json
-from typing import Any, NamedTuple
-
 import httpx
 import pytest
 
 from academic_tools_mcp.net import clients, http
 from academic_tools_mcp.providers import biorxiv
 from academic_tools_mcp.store import cache
+from tests.helpers.json_transport import (
+    BAD_JSON as _BAD_JSON,
+    Resp as _Resp,
+    stub_json_responses,
+)
 
 # ---------------------------------------------------------------------------
 # DOI normalization
@@ -445,52 +447,13 @@ class TestCollectionOf:
 
 
 def _reset_biorxiv(monkeypatch):
-    """Zero the throttle gap so a two-request test doesn't wait it out.
-
-    Cache root and single-flight state are already reset per test by the
-    conftest autouse fixtures; only the gap is this module's business.
-    """
+    """Zero the throttle gap so a two-request test doesn't wait it out."""
     monkeypatch.setattr(biorxiv._throttle, "min_gap_seconds", 0.0)
 
 
-# Sentinel: a 200 whose body is not JSON, simulating a malformed/truncated body.
-_BAD_JSON = object()
-
-
-class _Resp(NamedTuple):
-    """A payload with a non-200 status, for the HTTP-error branch."""
-
-    status_code: int
-    payload: Any = None
-
-
 def _stub_json_responses(monkeypatch, *payloads):
-    """Serve ``payloads`` from successive GETs over a real MockTransport.
-
-    A genuine transport rather than a hand-rolled stub: ``status_code`` and
-    ``raise_for_status`` are real, so ``http.HTTPX_ERRORS`` is reachable and
-    the request URL is assertable. bioRxiv may issue two GETs per ``get_paper``
-    (bioRxiv then the medRxiv fallback). A payload may be ``_BAD_JSON``, a
-    ``_Resp`` carrying a status code, or an ``httpx`` exception to raise.
-    Returns the list of captured requests.
-    """
-    requests: list[httpx.Request] = []
-    seq = list(payloads)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        payload = seq[len(requests)] if len(requests) < len(seq) else seq[-1]
-        requests.append(request)
-        if isinstance(payload, Exception):
-            raise payload
-        status = 200
-        if isinstance(payload, _Resp):
-            status, payload = payload.status_code, payload.payload
-        body = b"{ truncated" if payload is _BAD_JSON else json.dumps(payload).encode()
-        return httpx.Response(status, headers={"content-type": "application/json"}, content=body)
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
-    return requests
+    _reset_biorxiv(monkeypatch)
+    return stub_json_responses(monkeypatch, *payloads)
 
 
 def _collection(**overrides):
@@ -512,7 +475,6 @@ class TestGetPaperParseErrors:
     async def test_malformed_json_returns_retryable_error(self, monkeypatch):
         # A 200 with a garbled body must NOT crash — it should surface the
         # uniform {error, retryable} contract like every other failure.
-        _reset_biorxiv(monkeypatch)
         _stub_json_responses(monkeypatch, _BAD_JSON)
 
         result = await biorxiv.get_paper("10.1101/2024.01.01.573838")
@@ -526,7 +488,6 @@ class TestGetPaperParseErrors:
         # A non-numeric version in a multi-version collection must not raise
         # ValueError out of ``_pick_latest_version`` (the single-entry case
         # short-circuits before int(); only 2+ entries hit the int() sort key).
-        _reset_biorxiv(monkeypatch)
         bad = {
             "collection": [
                 {
@@ -560,8 +521,6 @@ class TestGetPaperParseErrors:
     async def test_parse_failure_not_negative_cached(self, monkeypatch):
         # A parse failure is transient (garbled body), not "not found": it must
         # NOT be negative-cached, so a retry re-fetches.
-
-        _reset_biorxiv(monkeypatch)
         calls = _stub_json_responses(monkeypatch, _BAD_JSON, _BAD_JSON, _BAD_JSON, _BAD_JSON)
 
         await biorxiv.get_paper("10.1101/2024.01.01.573838")
@@ -576,7 +535,6 @@ class TestGetPaperParseErrors:
 class TestGetPaperIntegration:
     @pytest.mark.asyncio
     async def test_success_parses_collection(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
         _stub_json_responses(monkeypatch, _collection())
 
         result = await biorxiv.get_paper("10.1101/2024.01.01.573838")
@@ -588,7 +546,6 @@ class TestGetPaperIntegration:
     @pytest.mark.asyncio
     async def test_medrxiv_fallback(self, monkeypatch):
         # Empty bioRxiv response, then a populated medRxiv response.
-        _reset_biorxiv(monkeypatch)
         med = _collection(
             doi="10.1101/2020.09.09.20191205", title="A Medical Study", server="medRxiv"
         )
@@ -602,8 +559,6 @@ class TestGetPaperIntegration:
 
     @pytest.mark.asyncio
     async def test_not_found_negative_cached(self, monkeypatch):
-
-        _reset_biorxiv(monkeypatch)
         calls = _stub_json_responses(monkeypatch, {"collection": []}, {"collection": []})
 
         result = await biorxiv.get_paper("10.1101/9999.99.99.999999")
@@ -626,12 +581,6 @@ class TestMalformedPayloadShape:
     Neither AttributeError nor TypeError is in ``_PARSE_ERRORS`` or
     ``HTTPX_ERRORS``, so both escaped the provider entirely.
     """
-
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        # These cases issue up to three GETs each; without this they pay the
-        # real 0.5s inter-request gap and dominate the suite's runtime.
-        _reset_biorxiv(monkeypatch)
 
     @pytest.mark.parametrize("payload", [None, 5, "a string", [1, 2, 3], True])
     @pytest.mark.asyncio
@@ -726,10 +675,6 @@ class TestNotFoundNeedsBothServers:
     negative-caching would file a live preprint as absent for the hour.
     """
 
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.asyncio
     async def test_both_empty_is_a_definitive_miss(self, monkeypatch):
         _stub_json_responses(monkeypatch, _EMPTY, _EMPTY)
@@ -798,10 +743,6 @@ class TestHttpErrors:
     status is a server problem rather than an answer about the paper.
     """
 
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [404, 500, 503])
     async def test_a_status_error_is_retryable_and_uncached(self, monkeypatch, status):
@@ -833,10 +774,6 @@ class TestHttpErrors:
 
 
 class TestRequestPath:
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.asyncio
     async def test_it_asks_both_servers_in_order(self, monkeypatch):
         calls = _stub_json_responses(monkeypatch, _EMPTY, _EMPTY)
@@ -875,10 +812,6 @@ class TestPathTraversalIsRefused:
     """The DOI is a middle path segment, so a `.`/`..` or empty one shortens
     `/details/{server}/{doi}/na/json` to the endpoint's interval/cursor form —
     a live route whose collection would cache as this DOI's paper."""
-
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
 
     @pytest.mark.parametrize(
         "doi",
@@ -932,10 +865,6 @@ class TestPdfUrlIsBuiltFromAnUntrustedBody:
     straight to `stream_to_file`, so a `..` segment or a space in a field upstream
     controls reached the content host verbatim.
     """
-
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
 
     @pytest.mark.parametrize(
         "doi",
@@ -1006,10 +935,6 @@ class TestDetailsFieldsAreShapeGuarded:
     instead of surfacing as `{error, retryable}`.
     """
 
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.parametrize(
         "overrides",
         [
@@ -1078,10 +1003,6 @@ class TestDetailsFieldsAreShapeGuarded:
 
 
 class TestGetPaperCaching:
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.asyncio
     async def test_a_second_call_is_served_from_cache(self, monkeypatch):
         calls = _stub_json_responses(monkeypatch, _collection())
@@ -1153,10 +1074,6 @@ class TestPdfPath:
 
 
 class TestDownloadPdfMetadataBranches:
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.asyncio
     async def test_a_metadata_error_is_returned_untouched(self, monkeypatch):
         _stub_json_responses(monkeypatch, _EMPTY, _EMPTY)
@@ -1275,6 +1192,7 @@ class TestContentHostPacing:
 
 def _stub_routes(monkeypatch, routes):
     """Serve JSON by URL-path prefix (``/details/``, ``/pubs/``); records every request."""
+    _reset_biorxiv(monkeypatch)
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1324,10 +1242,6 @@ class TestParsePublication:
 
 
 class TestGetPublication:
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize("server", ["biorxiv", "medrxiv"])
     async def test_asks_the_named_server(self, monkeypatch, server):
@@ -1400,10 +1314,6 @@ class TestGetPublication:
 
 
 class TestGetPaperMergesPublication:
-    @pytest.fixture(autouse=True)
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.asyncio
     async def test_a_published_record_gains_journal_and_date(self, monkeypatch):
         _stub_routes(
@@ -1539,7 +1449,6 @@ class TestParseVersions:
 
     @pytest.mark.asyncio
     async def test_get_paper_records_every_version(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
         body = {
             "collection": [
                 {**_collection()["collection"][0], "version": "1", "date": "2024-01-02"},
@@ -1741,12 +1650,7 @@ class TestServerOrder:
     def test_the_likelier_server_comes_first(self, doi, expected):
         assert biorxiv._servers_for(doi) == expected
 
-    @pytest.fixture
-    def _no_gap(self, monkeypatch):
-        _reset_biorxiv(monkeypatch)
-
     @pytest.mark.asyncio
-    @pytest.mark.usefixtures("_no_gap")
     async def test_a_medrxiv_doi_is_one_request(self, monkeypatch):
         body = _collection(doi=_MEDRXIV_DOI, server="medRxiv")
         calls = _stub_json_responses(monkeypatch, body)
@@ -1759,7 +1663,6 @@ class TestServerOrder:
         ]
 
     @pytest.mark.asyncio
-    @pytest.mark.usefixtures("_no_gap")
     async def test_a_medrxiv_shaped_doi_biorxiv_holds_still_resolves(self, monkeypatch):
         calls = _stub_json_responses(monkeypatch, _EMPTY, _collection(doi=_MEDRXIV_DOI))
 
@@ -1769,7 +1672,6 @@ class TestServerOrder:
         assert [r.url.path.split("/")[2] for r in calls] == ["medrxiv", "biorxiv"]
 
     @pytest.mark.asyncio
-    @pytest.mark.usefixtures("_no_gap")
     async def test_a_medrxiv_doi_still_needs_both_servers_for_a_miss(self, monkeypatch):
         _stub_json_responses(monkeypatch, _EMPTY, _WRONG_SHAPE)
 

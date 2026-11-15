@@ -1,47 +1,21 @@
 """Tests for the Papers with Code client: slugs, parsing, caching and politeness."""
 
 import asyncio
-import json
 from typing import Any
 
 import httpx
 import pytest
 
-from academic_tools_mcp.net import clients, stats
+from academic_tools_mcp.net import stats
 from academic_tools_mcp.providers import paperswithcode as pwc
 from academic_tools_mcp.store import cache
-
-_BAD_JSON = object()
+from tests.helpers.json_transport import BAD_JSON as _BAD_JSON, stub_json_responses
 
 
 def _stub(monkeypatch: pytest.MonkeyPatch, *payloads: Any) -> list[httpx.Request]:
-    """Serve ``payloads`` from successive GETs, returning the captured requests.
-
-    A payload may be ``_BAD_JSON``, a ``(status, payload)`` or ``(status, payload,
-    headers)`` tuple, or an exception to raise; the last one repeats.
-    """
-    requests: list[httpx.Request] = []
-    seq = list(payloads)
-
-    def respond(request: httpx.Request) -> httpx.Response:
-        payload = seq[len(requests)] if len(requests) < len(seq) else seq[-1]
-        requests.append(request)
-        if isinstance(payload, Exception):
-            raise payload
-        status, headers = 200, {}
-        if isinstance(payload, tuple):
-            status, payload, *rest = payload
-            headers = rest[0] if rest else {}
-        body = b"{ truncated" if payload is _BAD_JSON else json.dumps(payload).encode()
-        return httpx.Response(
-            status, headers={"content-type": "application/json", **headers}, content=body
-        )
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(pwc._throttle, "min_gap_seconds", 0.0)
     monkeypatch.setattr(pwc._search_gap, "min_gap_seconds", 0.0)
-    monkeypatch.setattr(clients, "get_client", lambda *a, **kw: client)
-    return requests
+    return stub_json_responses(monkeypatch, *payloads)
 
 
 _PAPER = {

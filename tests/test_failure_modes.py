@@ -162,8 +162,7 @@ class TestEmptyConversion:
 
 class TestConverterSubprocessPlumbing:
     @pytest.fixture
-    def pdf(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    def pdf(self, tmp_path):
         # PDF_CONVERTER_VENV / PDF_CONVERT_TIMEOUT are cleared by conftest's
         # `_scrub_config_env`, not here.
         p = tmp_path / "paper.pdf"

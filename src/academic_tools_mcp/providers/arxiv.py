@@ -581,19 +581,13 @@ async def get_html(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, A
         except http.HTTPX_ERRORS as e:
             return http.error_dict(LABEL, e)
 
-        max_bytes = streaming.resolve_max_pdf_bytes()
-        if max_bytes is not None and len(response.content) > max_bytes:
-            return {
-                "error": f"{LABEL} HTML exceeds MAX_PDF_BYTES ({max_bytes} bytes).",
-                "retryable": False,
-                "max_bytes": max_bytes,
-            }
-
-        text = response.text
-        # A 200 of the wrong shape is transient, as a garbled body is.
-        if _HTML_MARKER not in text:
-            return http.parse_error_dict(LABEL, detail="was not a LaTeXML rendering")
-        return {"markup": text}
+        return streaming.markup_dict(
+            response,
+            label=LABEL,
+            kind="HTML",
+            marker=_HTML_MARKER,
+            parse_detail="was not a LaTeXML rendering",
+        )
 
     # Tuple-keyed to stay distinct from get_paper's and download_pdf's slots.
     return await _single_flight.do(("html", canonical), _fetch)

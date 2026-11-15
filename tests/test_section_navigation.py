@@ -28,8 +28,7 @@ NO_HEADINGS = "plain layout text with no markdown headings at all\n" * 200
 
 
 @pytest.fixture
-def markdown_corpus(tmp_path, monkeypatch):
-    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+def markdown_corpus(tmp_path):
     md = tmp_path / "manual" / "markdown"
     md.mkdir(parents=True)
     (md / "dup.md").write_text(DUPLICATE_TITLES, encoding="utf-8")
@@ -114,8 +113,7 @@ class TestHeadinglessDocumentsAreFlagged:
         assert "find_in_paper" in result["sections_note"]
 
     @pytest.mark.asyncio
-    async def test_a_real_one_section_paper_is_not_flagged(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    async def test_a_real_one_section_paper_is_not_flagged(self, tmp_path):
         md = tmp_path / "manual" / "markdown"
         md.mkdir(parents=True)
         (md / "one.md").write_text("## Only Section\n\nreal body text\n", encoding="utf-8")

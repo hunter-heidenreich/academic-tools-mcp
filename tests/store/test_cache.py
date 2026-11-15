@@ -7,13 +7,13 @@ the resolution itself -- which is how a move of this module one directory
 deeper silently relocated the cache and orphaned everything already in it.
 """
 
-import contextlib
 import json
 from pathlib import Path
 
 import pytest
 
 from academic_tools_mcp.store import cache
+from tests.helpers.conversion_fakes import c_ctype_locale as _c_ctype_locale
 
 
 class TestNamespaceVocabulary:
@@ -601,21 +601,6 @@ def test_concurrent_writers_dont_corrupt_file(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Encoding: reads must be UTF-8 regardless of the host locale
 # ---------------------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _c_ctype_locale():
-    """Pin LC_CTYPE to C for the body, so the process default text encoding
-    (what an encoding-less open() picks up) becomes ASCII — the situation in
-    an LC_ALL=C container/cron job. Restored on exit."""
-    import locale
-
-    saved = locale.setlocale(locale.LC_CTYPE)
-    locale.setlocale(locale.LC_CTYPE, "C")
-    try:
-        yield
-    finally:
-        locale.setlocale(locale.LC_CTYPE, saved)
 
 
 def test_get_decodes_utf8_under_c_locale(tmp_path, monkeypatch):
