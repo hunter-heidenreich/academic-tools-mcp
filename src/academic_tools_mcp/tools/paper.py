@@ -480,7 +480,7 @@ async def get_papers_metadata(
     n = len(identifiers)
     results: list[dict[str, Any] | None] = [None] * n
 
-    singleton_tasks: list[asyncio.Task] = []
+    singleton_tasks: list[asyncio.Task[None]] = []
     plans = (
         _BatchPlan(
             "openalex",
