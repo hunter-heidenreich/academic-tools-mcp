@@ -489,6 +489,24 @@ class TestAnthologyIdForDoi:
 
         assert await acl.anthology_id_for_doi("10.1162/tacl.a.63") == "2026.tacl-1.1"
 
+    @pytest.mark.parametrize(
+        "corrupt_meta",
+        [
+            {"fetched_at": True, "registrants": ["10.1162"]},
+            {"fetched_at": False, "registrants": ["10.1162"]},
+            {"fetched_at": float("nan"), "registrants": ["10.1162"]},
+            {"fetched_at": float("inf"), "registrants": ["10.1162"]},
+            {"fetched_at": float("-inf"), "registrants": ["10.1162"]},
+            {"fetched_at": 1700000000.0, "registrants": [101162]},
+            {"fetched_at": 1700000000.0, "registrants": ["10.1162", None]},
+        ],
+    )
+    def test_index_meta_rejects_bool_non_finite_fetched_at_and_non_string_registrants(
+        self, corrupt_meta
+    ):
+        cache.put(acl.NAMESPACE, "doi_index", "meta", corrupt_meta)
+        assert acl._index_meta() is None
+
 
 # ---------------------------------------------------------------------------
 # download_pdf
