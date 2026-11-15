@@ -80,8 +80,10 @@ def _scan(markdown: str) -> tuple[list[str], list[Section], bool]:
             h3s.append(m.group(2).strip())
 
     spans.append(Section(title, start, len(lines), tuple(h3s)))
-    # Same as body(lines) == "", without materialising every body to discard it.
-    non_empty = [sp for sp in spans if any(ln.strip() for ln in lines[sp.start : sp.end])]
+    # Same as body(lines) == "", without materialising every body or stripped line.
+    non_empty = [
+        sp for sp in spans if any(ln and not ln.isspace() for ln in lines[sp.start : sp.end])
+    ]
     return lines, non_empty, detected
 
 
@@ -96,7 +98,7 @@ def has_detected_sections(markdown: str) -> bool:
     A document with none collapses to one synthetic "Preamble", indistinguishable
     from a paper that genuinely has one section unless the caller is told.
     """
-    return _scan(markdown)[2]
+    return _FIRST_SECTION_HEADING_RE.search(markdown) is not None
 
 
 def first_section_heading(markdown: str) -> str | None:
