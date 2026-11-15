@@ -1502,15 +1502,23 @@ class TestIndexReuse:
         corpus.search("attention")
 
         indexed: list[int] = []
+        churn_writes: list[int] = []
         real = corpus._index_document
+        real_set_churn = corpus._set_churn
         monkeypatch.setattr(
             corpus,
             "_index_document",
             lambda con, rowid, text: (indexed.append(rowid), real(con, rowid, text))[1],
         )
+        monkeypatch.setattr(
+            corpus,
+            "_set_churn",
+            lambda con, val: (churn_writes.append(val), real_set_churn(con, val))[1],
+        )
         corpus.search("attention")
 
         assert indexed == [], "an unchanged corpus must not be re-indexed"
+        assert churn_writes == [], "an unchanged corpus must not write stat_churn"
 
     def test_corpus_edit_triggers_reindex(self, isolated_cache, monkeypatch):
         _seed_markdown(isolated_cache, "arxiv", "2301.00001", "# P\n\nattention model\n")

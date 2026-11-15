@@ -492,9 +492,10 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                 for row in con.execute("SELECT rowid, ns, stem, mtime_ns, size FROM files")
             }
             seen: set[tuple[str, str]] = set()
+            recorded_churn = _churn(con) if known else 0
             # Both paths re-index everything, so the reset is free; the counter is
             # from previous refreshes, so a crossing resets on the next search.
-            reset = force_refresh or (known and _churn(con) >= len(known))
+            reset = force_refresh or (bool(known) and recorded_churn >= len(known))
 
             with con:
                 if reset:
@@ -508,7 +509,9 @@ def _refresh_index(*, force_refresh: bool = False) -> None:
                         churn += _reindex_file(con, found, existing)
                 churn += _prune_missing(con, known, seen)
                 # Rebuilt from nothing, so the displacements above are accounted for.
-                _set_churn(con, 0 if reset else _churn(con) + churn)
+                # Skip the write when nothing changed so warm searches stay read-only.
+                if reset or churn:
+                    _set_churn(con, 0 if reset else recorded_churn + churn)
         finally:
             con.close()
 
