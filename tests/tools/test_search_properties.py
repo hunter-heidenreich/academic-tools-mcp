@@ -105,6 +105,10 @@ _openalex_items = st.fixed_dictionaries(
     optional={
         "id": _json_values,
         "doi": _json_values,
+        "ids": _json_values,
+        "primary_location": _json_values,
+        "best_oa_location": _json_values,
+        "locations": _json_values,
         "title": _json_values,
         "publication_year": _json_values,
         "cited_by_count": _json_values,
@@ -178,6 +182,8 @@ def test_any_openalex_payload_triages_without_raising(
         assert set(hit) == {
             "doi",
             "openalex_id",
+            "pmid",
+            "arxiv_id",
             "title",
             "first_author",
             "author_count",
@@ -185,8 +191,10 @@ def test_any_openalex_payload_triages_without_raising(
             "cited_by_count",
             "is_oa",
         }
-        # The two an agent chains on: a DOI is bare or absent, never a URL.
+        # The four an agent chains on: a DOI, PMID, or arXiv ID is bare or absent, never a URL.
         assert hit["doi"] is None or not hit["doi"].lower().startswith("http")
+        assert hit["pmid"] is None or hit["pmid"].isdecimal()
+        assert hit["arxiv_id"] is None or not hit["arxiv_id"].lower().startswith("http")
         assert isinstance(hit["author_count"], int)
 
 

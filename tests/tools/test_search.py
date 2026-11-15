@@ -635,6 +635,8 @@ class TestSearchOpenalex:
             {
                 "doi": "10.1234/x",
                 "openalex_id": "https://openalex.org/W1",
+                "pmid": None,
+                "arxiv_id": None,
                 "title": "A Great Work",
                 "first_author": "Ada Lovelace",
                 "author_count": 2,
@@ -643,6 +645,59 @@ class TestSearchOpenalex:
                 "is_oa": True,
             }
         ]
+
+    @pytest.mark.parametrize(
+        ("over", "expected_pmid", "expected_arxiv_id"),
+        [
+            (
+                {
+                    "ids": {
+                        "pmid": "https://pubmed.ncbi.nlm.nih.gov/31452104",
+                        "arxiv": "https://arxiv.org/abs/1706.03762v5",
+                    }
+                },
+                "31452104",
+                "1706.03762",
+            ),
+            (
+                {
+                    "locations": [
+                        {
+                            "landing_page_url": "https://arxiv.org/abs/2301.00001v2",
+                            "pdf_url": "https://arxiv.org/pdf/2301.00001v2.pdf",
+                        }
+                    ]
+                },
+                None,
+                "2301.00001",
+            ),
+            (
+                {"ids": {"arxiv": "https://arxiv.org/abs/math.GT/0309136v1"}},
+                None,
+                "math.GT/0309136",
+            ),
+            (
+                {"ids": {"pmid": "not-a-pmid", "arxiv": "https://example.com/not-arxiv"}},
+                None,
+                None,
+            ),
+            (
+                {"ids": {"pmid": 12345, "arxiv": 12345}, "locations": ["not-a-dict"]},
+                None,
+                None,
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_surfaces_bare_pmid_and_versionless_arxiv_id(
+        self, monkeypatch, over, expected_pmid, expected_arxiv_id
+    ):
+        self._stub(monkeypatch, {"items": [self._work(**over)], "total_results": 1})
+
+        hit = (await server.search_openalex("q"))["results"][0]
+
+        assert hit["pmid"] == expected_pmid
+        assert hit["arxiv_id"] == expected_arxiv_id
 
     @pytest.mark.asyncio
     async def test_doi_is_bare_so_it_chains_straight_back_in(self, monkeypatch):

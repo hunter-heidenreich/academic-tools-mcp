@@ -17,6 +17,14 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **`search_openalex` surfaces `pmid` and `arxiv_id` on every triage hit.** Each row in
+  `search_openalex`'s `results` now includes bare numeric `pmid` (from `ids.pmid`) and
+  bare, versionless `arxiv_id` (from `ids.arxiv`, top-level `doi`, and
+  `primary_location` / `best_oa_location` / `locations`), or `None` when absent, so
+  callers can chain an OpenAlex search hit directly into `convert_paper(arxiv_id)` or
+  `get_paper_code(arxiv_id)` / `get_paper_catalog(arxiv_id)` without an extra metadata
+  round-trip.
+
 - **DOI-less OpenAlex works (`W...`) and PMIDs are supported across the paper, author,
   abstract, BibTeX, batch metadata and OA-download tools.** When OpenAlex indexes a work
   without a DOI (common for ML conference papers at NeurIPS/ICML/ICLR/CVPR, workshop
