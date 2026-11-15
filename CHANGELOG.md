@@ -86,7 +86,31 @@ grouped by milestone rather than per commit.
   tools (`get_paper_code`, `get_paper_catalog`, `get_paper_evaluations`) without a
   separate `search_arxiv` lookup. ([#173])
 
+### Changed
+
+- **Extract pure parsing, formatting, and JSON-shape modules (`util/jsonshape.py`,
+  `tools/formatting.py`, `providers/openalex_parse.py`, `providers/crossref_parse.py`,
+  `providers/arxiv_parse.py`).** Single-homes untyped-JSON shape guards (`as_int`,
+  `non_neg_int`, `finite_float`, `nonempty_str`, `str_or_none`, `as_dict`, `dict_list`)
+  in `util/jsonshape.py`, moves provider metadata and author response formatters out of
+  `tools/paper.py` into `tools/formatting.py`, and splits pure ID/JSON/XML parsing out
+  of `providers/openalex.py`, `providers/crossref.py`, and `providers/arxiv.py` into
+  companion `*_parse.py` modules while preserving module-level re-exports.
+  ([#184], [#185], [#186], [#188], [#189], [#190])
+
 ### Fixed
+
+- **Run startup cache sweeps off the event loop, stamp legacy migrations, and prune
+  expired negative entries (`app._run_startup_sweeps`, `cache.gc_expired_negatives`).**
+  Moves the startup cache maintenance pass into `asyncio.to_thread`, records a sentinel
+  file after the one-time legacy cache migration so subsequent startups skip directory
+  walks, and sweeps expired `_neg/*.json` files on startup. ([#182])
+
+- **Reject non-public hosts and unsafe redirects on open-access PDF downloads.**
+  `openalex.is_http_url` now rejects loopback, link-local, private, reserved, and
+  single-label/localhost hosts before `best_pdf_url` or `openaccess.download_pdf` makes a
+  request, and `streaming.stream_to_file` takes an optional `url_validator` hook used by
+  `openaccess.download_pdf` to validate every redirect target before following it. ([#181])
 
 - **Single-home `openalex_pmid` and `openalex_arxiv_id` in `app.py`, and sync agent-facing
   instructions, parameter descriptions, and `README.md`.** Moves `_openalex_pmid` and
@@ -2421,4 +2445,10 @@ say which.
 [#181]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/181
 [#182]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/182
 [#183]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/183
+[#184]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/184
+[#185]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/185
+[#186]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/186
 [#187]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/187
+[#188]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/188
+[#189]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/189
+[#190]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/190

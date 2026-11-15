@@ -367,25 +367,31 @@ server.py            thin entry: re-exports mcp + tools, registers the
   ├── fast_extract.py  bundled pymupdf text extractor (a `python -m` target)
   │
   ├── tools/         33 @mcp.tool functions, split by job
-  │                    paper.py     metadata / authors / abstract / bibtex
-  │                    pipeline.py  download → convert → sections → section
-  │                    graph.py     references and citations
-  │                    search.py    arXiv / OpenAlex / Crossref / Wikipedia /
-  │                                 local corpus
-  │                    catalog.py   Papers with Code: code, tasks, leaderboards
+  │                    paper.py       metadata / authors / abstract / bibtex
+  │                    formatting.py  provider metadata + author payload formatters
+  │                    pipeline.py    download → convert → sections → section
+  │                    graph.py       references and citations
+  │                    search.py      arXiv / OpenAlex / Crossref / Wikipedia /
+  │                                   local corpus
+  │                    catalog.py     Papers with Code: code, tasks, leaderboards
   │
-  ├── providers/     eight API clients, all the same shape
-  │                    openalex.py  arxiv.py     biorxiv.py   crossref.py
-  │                    opencitations.py  wikipedia.py  acl.py
-  │                    paperswithcode.py
+  ├── providers/     eight API clients + pure parsing companions
+  │                    openalex.py       arxiv.py        biorxiv.py    crossref.py
+  │                    openalex_parse.py arxiv_parse.py                crossref_parse.py
+  │                    opencitations.py  wikipedia.py    acl.py        paperswithcode.py
   │
-  ├── papers/        PDF → markdown → sections
+  ├── papers/        PDF / HTML / JATS → markdown → sections
   │                    sections.py  markdown structure + search
+  │                    blocks.py    block-level markdown splitters + math/table guards
   │                    index.py     the section index + its lock
   │                    convert.py   converter subprocess + gate
+  │                    latexml.py   arXiv LaTeXML HTML → markdown
+  │                    jats.py      bioRxiv JATS XML → markdown
   │
   ├── download/      getting PDF bytes onto disk
-  │                    streaming.py   streaming download, size cap, cached-download
+  │                    streaming.py   streaming download + byte cap
+  │                    protocol.py    cached-download single-flight protocol
+  │                    artifact.py    PDF artifact path + header checks
   │                    openaccess.py  gated open-access fetch for generic DOIs
   │
   ├── net/           the outbound network edge
@@ -403,6 +409,8 @@ server.py            thin entry: re-exports mcp + tools, registers the
   └── util/          leaf helpers — every module here imports nothing else
                        config.py     .env + environment resolution
                        doinorm.py    DOI normalization — one home, every caller
+                       orcidnorm.py  ORCID normalization — one home, every caller
+                       jsonshape.py  untyped-JSON shape guards (int/float/str/dict/list)
                        textnorm.py   diacritic folding + maps back to original offsets
                        useragent.py  the outbound User-Agent — one home, every client
 ```
