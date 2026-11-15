@@ -112,3 +112,8 @@ strict = true
 # redundant `X as X` aliases on locally used imports.
 no_implicit_reexport = false
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "academic_tools_mcp.fast_extract"
+# pymupdf (optional `[fast]` extra) ships untyped `Document`/`open` definitions.
+disallow_untyped_calls = false
