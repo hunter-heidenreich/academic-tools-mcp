@@ -15,7 +15,7 @@ from pydantic import Field
 
 from . import corpus, manual, papers
 from .net import clients, http
-from .providers import acl, openalex
+from .providers import acl, arxiv, openalex
 from .store import cache, stems
 from .util import doinorm
 
@@ -72,8 +72,8 @@ mcp = FastMCP(
         "References/citations: call the `_count` tool first, then paginate. "
         "Search tools return slim triage hits — chain to get_paper_metadata. "
         "search_openalex is the broad topic search and its hits are free to "
-        "chain, except ACL Anthology papers and `doi: null` hits, which are not "
-        "fetchable at all; search_arxiv the field-scoped preprint one; "
+        "chain (by doi or openalex_id), except ACL Anthology papers, whose "
+        "cache is Anthology-keyed; search_arxiv the field-scoped preprint one; "
         "search_crossref_by_title finds a DOI from a title, and warms the "
         "reference tools rather than get_paper_metadata. search_authors is the "
         "way into get_author when you have a person rather than one of their "
@@ -85,7 +85,8 @@ mcp = FastMCP(
         "searches article text, not papers: use it to situate a concept, method "
         "or person, and read its `did_you_mean` before concluding a topic is "
         "absent.\n\n"
-        "Papers with Code (arXiv IDs only): get_paper_code for repositories and HF "
+        "Papers with Code (arXiv IDs, or DOIs / PMIDs / OpenAlex work IDs resolved "
+        "to arXiv via OpenAlex): get_paper_code for repositories and HF "
         "artifacts, get_paper_catalog for tasks, methods and best leaderboard ranks, "
         "get_paper_evaluations for every reported result, get_pwc_task and "
         "get_benchmark_leaderboard for tasks and leaderboards, search_paperswithcode "
@@ -128,8 +129,9 @@ ARXIV_ID = Annotated[
     str,
     Field(
         description="arXiv ID: bare (1706.03762, hep-th/9901001), arXiv:-prefixed, "
-        "or an arxiv.org URL; any version suffix is ignored. DOIs are not accepted — "
-        "find the arXiv ID with get_paper_metadata or search_arxiv."
+        "or an arxiv.org URL; any version suffix is ignored. A DOI, PMID, or OpenAlex "
+        "work ID is also accepted and automatically resolved to its arXiv ID via "
+        "OpenAlex when OpenAlex records one."
     ),
 ]
 
@@ -528,6 +530,46 @@ def crossref_date(work: dict[str, Any]) -> tuple[int | None, str | None]:
     return None, None
 
 
+def openalex_pmid(work: dict[str, Any]) -> str | None:
+    """The work's PMID as bare digits, or ``None``.
+
+    OpenAlex spells it as a PubMed URL; normalized here so the server hands back
+    a spelling it also accepts. ``isdecimal``, not ``is_pmid``: that predicate's
+    floor on a bare run is a routing tier, and short PMIDs on early papers are
+    real.
+    """
+    raw = as_dict(work.get("ids")).get("pmid")
+    if not isinstance(raw, str) or not raw:
+        return None
+    normalized = openalex.normalize_pmid(raw)
+    return normalized if normalized.isdecimal() else None
+
+
+def openalex_arxiv_id(work: dict[str, Any]) -> str | None:
+    """The work's versionless arXiv ID, or ``None``.
+
+    OpenAlex records an arXiv preprint in ``ids.arxiv`` when indexed, or in a
+    location's landing page, PDF URL, or DataCite ``10.48550/arXiv.*`` DOI when
+    merged under the published work. Normalized to the bare versionless form
+    (preserving old-style archive case like ``math.GT/0309136``) that every
+    arXiv-keyed tool accepts.
+    """
+    locations = (
+        as_dict(work.get("primary_location")),
+        as_dict(work.get("best_oa_location")),
+        *dict_list(work.get("locations")),
+    )
+    candidates = (
+        as_dict(work.get("ids")).get("arxiv"),
+        work.get("doi"),
+        *(loc.get(key) for loc in locations for key in ("landing_page_url", "pdf_url", "doi")),
+    )
+    for raw in candidates:
+        if isinstance(raw, str) and arxiv.is_arxiv_id(raw):
+            return arxiv.strip_version(arxiv.normalize_arxiv_id(raw))
+    return None
+
+
 FOLLOW_PUBLISHED = Annotated[
     bool,
     Field(
@@ -600,12 +642,12 @@ ALLOW_OA_URL = Annotated[
     bool,
     Field(
         description=(
-            "Let a DOI no native provider hosts download from the open-access "
-            "PDF URL OpenAlex reports for it. Only that URL is fetched, never an "
-            "arbitrary one. Errors if the paper is closed-access, absent from "
-            "OpenAlex, or the URL is a landing page. Otherwise such DOIs are "
-            "refused — fetch the PDF yourself and use import_paper. Ignored for "
-            "arXiv/bioRxiv/ACL."
+            "Let a DOI, PMID, or OpenAlex work ID no native provider hosts download "
+            "from the open-access PDF URL OpenAlex reports for it. Only that URL is "
+            "fetched, never an arbitrary one. Errors if the paper is closed-access, "
+            "absent from OpenAlex, or the URL is a landing page. Otherwise such "
+            "identifiers are refused — fetch the PDF yourself and use import_paper. "
+            "Ignored for arXiv/bioRxiv/ACL."
         ),
     ),
 ]

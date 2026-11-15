@@ -11,10 +11,9 @@ from pydantic import Field
 from ..app import (
     ARXIV_ID,
     FORCE_REFRESH,
-    as_dict,
-    dict_list,
     enrich_error,
     mcp,
+    openalex_arxiv_id,
     resolve_paper_identifier,
 )
 from ..providers import arxiv, openalex, paperswithcode
@@ -67,24 +66,6 @@ def _suggest(result: dict[str, Any], *, not_found: str) -> dict[str, Any]:
     return enrich_error(result, "Papers with Code rejected the request; check the arguments.")
 
 
-def _openalex_arxiv_id(work: dict[str, Any]) -> str | None:
-    """The work's versionless arXiv ID, or ``None``."""
-    locations = (
-        as_dict(work.get("primary_location")),
-        as_dict(work.get("best_oa_location")),
-        *dict_list(work.get("locations")),
-    )
-    candidates = (
-        as_dict(work.get("ids")).get("arxiv"),
-        work.get("doi"),
-        *(loc.get(key) for loc in locations for key in ("landing_page_url", "pdf_url", "doi")),
-    )
-    for raw in candidates:
-        if isinstance(raw, str) and arxiv.is_arxiv_id(raw):
-            return arxiv.strip_version(arxiv.normalize_arxiv_id(raw))
-    return None
-
-
 async def _resolve_to_arxiv_id(
     identifier: str, *, force_refresh: bool
 ) -> tuple[str | None, dict[str, Any] | None]:
@@ -111,7 +92,7 @@ async def _resolve_to_arxiv_id(
             if work.get("not_found") is True:
                 return None, None
             return None, enrich_error(work, _NOT_ARXIV_SUGGESTION)
-        return _openalex_arxiv_id(work), None
+        return openalex_arxiv_id(work), None
     return None, None
 
 

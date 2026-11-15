@@ -28,9 +28,10 @@ second entity holding the work itself would double every citation count's
 staleness window.
 
 **A batch miss is negative-cached only when the response accounted for itself**:
-every returned record attributable to a DOI we asked for, **and `meta.count` not
+every returned record attributable to an ID we asked for (`get_works_batch`,
+`resolve_pmids_batch`, `resolve_work_ids_batch`), **and `meta.count` not
 exceeding `len(results)`**. The second conjunct is the one that is easy to drop —
-without it a truncated page poisons a live DOI for the full negative TTL.
+without it a truncated page poisons a live ID for the full negative TTL.
 
 **Element-level guards are load-bearing**, each consumed where nothing above
 catches an `AttributeError`/`TypeError`: `best_pdf_url` (the OA download trust

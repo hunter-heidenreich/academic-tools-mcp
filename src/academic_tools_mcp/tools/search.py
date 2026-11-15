@@ -21,6 +21,8 @@ from ..app import (
     dict_list,
     enrich_error,
     mcp,
+    openalex_arxiv_id,
+    openalex_pmid,
     page_bounds,
     read_markdown,
     unwrap_first,
@@ -235,33 +237,6 @@ async def search_crossref_by_title(
     }
 
 
-def _openalex_pmid(work: dict[str, Any]) -> str | None:
-    """The work's bare numeric PMID, or ``None``."""
-    raw = as_dict(work.get("ids")).get("pmid")
-    if not isinstance(raw, str):
-        return None
-    normalized = openalex.normalize_pmid(raw)
-    return normalized if normalized.isdecimal() else None
-
-
-def _openalex_arxiv_id(work: dict[str, Any]) -> str | None:
-    """The work's versionless arXiv ID, or ``None``."""
-    locations = (
-        as_dict(work.get("primary_location")),
-        as_dict(work.get("best_oa_location")),
-        *dict_list(work.get("locations")),
-    )
-    candidates = (
-        as_dict(work.get("ids")).get("arxiv"),
-        work.get("doi"),
-        *(loc.get(key) for loc in locations for key in ("landing_page_url", "pdf_url", "doi")),
-    )
-    for raw in candidates:
-        if isinstance(raw, str) and arxiv.is_arxiv_id(raw):
-            return arxiv.strip_version(arxiv.normalize_arxiv_id(raw))
-    return None
-
-
 def _openalex_first_author(work: dict[str, Any]) -> str | None:
     """The first OpenAlex authorship's display name, or None."""
     authorships = dict_list(work.get("authorships"))
@@ -333,8 +308,8 @@ async def search_openalex(
             {
                 "doi": doinorm.normalize(work["doi"]) if isinstance(work.get("doi"), str) else None,
                 "openalex_id": work.get("id"),
-                "pmid": _openalex_pmid(work),
-                "arxiv_id": _openalex_arxiv_id(work),
+                "pmid": openalex_pmid(work),
+                "arxiv_id": openalex_arxiv_id(work),
                 "title": work.get("title"),
                 "first_author": _openalex_first_author(work),
                 "author_count": len(authorships),
