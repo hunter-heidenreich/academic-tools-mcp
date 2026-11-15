@@ -8,8 +8,17 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
-from ..app import ARXIV_ID, FORCE_REFRESH, enrich_error, mcp
-from ..providers import arxiv, paperswithcode
+from ..app import (
+    ARXIV_ID,
+    FORCE_REFRESH,
+    as_dict,
+    dict_list,
+    enrich_error,
+    mcp,
+    resolve_paper_identifier,
+)
+from ..providers import arxiv, openalex, paperswithcode
+from ..util import doinorm
 
 PWC_PAGE = Annotated[
     int,
@@ -58,13 +67,65 @@ def _suggest(result: dict[str, Any], *, not_found: str) -> dict[str, Any]:
     return enrich_error(result, "Papers with Code rejected the request; check the arguments.")
 
 
+def _openalex_arxiv_id(work: dict[str, Any]) -> str | None:
+    """The work's versionless arXiv ID, or ``None``."""
+    locations = (
+        as_dict(work.get("primary_location")),
+        as_dict(work.get("best_oa_location")),
+        *dict_list(work.get("locations")),
+    )
+    candidates = (
+        as_dict(work.get("ids")).get("arxiv"),
+        work.get("doi"),
+        *(loc.get(key) for loc in locations for key in ("landing_page_url", "pdf_url", "doi")),
+    )
+    for raw in candidates:
+        if isinstance(raw, str) and arxiv.is_arxiv_id(raw):
+            return arxiv.strip_version(arxiv.normalize_arxiv_id(raw))
+    return None
+
+
+async def _resolve_to_arxiv_id(
+    identifier: str, *, force_refresh: bool
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Resolve *identifier* to an arXiv ID when OpenAlex records one.
+
+    Returns ``(arxiv_id, None)`` when *identifier* is already an arXiv ID or
+    resolves to one through OpenAlex, ``(None, error)`` on an upstream lookup
+    failure, or ``(None, None)`` when no arXiv ID is known.
+    """
+    if arxiv.is_arxiv_id(identifier):
+        return identifier, None
+    was_non_doi = openalex.is_pmid(identifier) or openalex.is_work_id(identifier)
+    routed, trade_err = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
+    if trade_err is not None:
+        return None, trade_err
+    if arxiv.is_arxiv_id(routed):
+        return routed, None
+    if doinorm.looks_like_doi(routed) or openalex.is_work_id(routed):
+        work = await openalex.get_work(
+            routed,
+            force_refresh=force_refresh and not (was_non_doi and openalex.is_work_id(routed)),
+        )
+        if "error" in work:
+            if work.get("not_found") is True:
+                return None, None
+            return None, enrich_error(work, _NOT_ARXIV_SUGGESTION)
+        return _openalex_arxiv_id(work), None
+    return None, None
+
+
 async def _paper(arxiv_id: str, *, force_refresh: bool) -> tuple[str, dict[str, Any]]:
     """The canonical ID, and the paper's record or an error with a suggestion."""
-    canonical = arxiv.base_arxiv_id(arxiv_id)
-    paper = await paperswithcode.get_paper(arxiv_id, force_refresh=force_refresh)
+    resolved, err = await _resolve_to_arxiv_id(arxiv_id, force_refresh=force_refresh)
+    if err is not None:
+        return arxiv.base_arxiv_id(arxiv_id), err
+    target = resolved if resolved is not None else arxiv_id
+    canonical = arxiv.base_arxiv_id(target)
+    paper = await paperswithcode.get_paper(target, force_refresh=force_refresh)
     if "error" in paper:
         suggestion = (
-            _NOT_CATALOGUED_SUGGESTION if arxiv.is_arxiv_id(arxiv_id) else _NOT_ARXIV_SUGGESTION
+            _NOT_CATALOGUED_SUGGESTION if arxiv.is_arxiv_id(target) else _NOT_ARXIV_SUGGESTION
         )
         return canonical, _suggest(paper, not_found=suggestion)
     return canonical, paper
@@ -103,11 +164,12 @@ async def get_paper_code(
     total; ``repositories_truncated`` is true when more exist than were returned.
     ``is_official`` is Papers with Code's label, not verified. The ``hf_*`` URL lists
     are usually empty for arXiv papers, but ``hf_artifact_counts`` still counts them.
-    ``arxiv_id`` is echoed canonical, without version.
+    ``arxiv_id`` is echoed canonical, without version. A DOI, PMID, or OpenAlex work ID
+    is automatically resolved to its arXiv ID via OpenAlex when OpenAlex records one.
 
     Errors: ``{error, suggestion}``, plus ``not_found: true`` for an uncatalogued paper
-    or a non-arXiv ID, or ``retryable: true`` (with ``retry_after_seconds`` when
-    rate-limited).
+    or an identifier with no arXiv ID, or ``retryable: true`` (with
+    ``retry_after_seconds`` when rate-limited).
 
     get_paper_catalog reads the same cached record, so calling both costs one request.
     """
@@ -150,7 +212,8 @@ async def get_paper_catalog(
     successors: [{arxiv_id, title}]}``. ``tldr`` is machine-generated. ``hf_authors``
     holds only authors with a Hugging Face account; get_paper_authors has the full
     list. ``leaderboard_ranks`` holds only the best placements; get_paper_evaluations
-    pages every result.
+    pages every result. A DOI, PMID, or OpenAlex work ID is automatically resolved to
+    its arXiv ID via OpenAlex when OpenAlex records one.
 
     Errors: as get_paper_code.
 
@@ -213,7 +276,9 @@ async def get_paper_evaluations(
     benchmark_slug, metrics: {name: value}, best_metric, rank, num_parameters,
     is_open, uses_additional_data, harness, evaluated_on, code_url, hf_model_url,
     source_url}, ...]}``. ``rank`` is the row's leaderboard position; ``metrics``
-    values may be numbers or strings, as upstream reports them.
+    values may be numbers or strings, as upstream reports them. A DOI, PMID, or
+    OpenAlex work ID is automatically resolved to its arXiv ID via OpenAlex when
+    OpenAlex records one.
 
     Errors: as get_paper_code.
 
