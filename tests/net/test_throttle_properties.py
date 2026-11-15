@@ -24,8 +24,7 @@ import itertools
 from types import SimpleNamespace
 
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
+from hypothesis import given, settings, strategies as st
 
 from academic_tools_mcp.net import http, throttle
 from academic_tools_mcp.net.throttle import _MAX_TRACKED_HOSTS, Throttle

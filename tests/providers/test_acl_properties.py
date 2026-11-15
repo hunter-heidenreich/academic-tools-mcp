@@ -2,8 +2,7 @@
 
 from urllib.parse import urlsplit
 
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
 
 from academic_tools_mcp import corpus, manual
 from academic_tools_mcp.providers import acl

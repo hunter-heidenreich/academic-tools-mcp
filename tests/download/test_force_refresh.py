@@ -21,9 +21,11 @@ import pytest
 
 from academic_tools_mcp.providers import acl, arxiv, biorxiv
 from academic_tools_mcp.store import stems
-from tests.helpers.download_fakes import install_stream as _install_stream
-from tests.helpers.download_fakes import mock_stream_response as _mock_stream_response
-from tests.helpers.download_fakes import passthrough_slot as _passthrough_slot
+from tests.helpers.download_fakes import (
+    install_stream as _install_stream,
+    mock_stream_response as _mock_stream_response,
+    passthrough_slot as _passthrough_slot,
+)
 
 
 def _connect_error_stream():

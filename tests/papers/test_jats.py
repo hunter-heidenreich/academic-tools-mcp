@@ -5,8 +5,7 @@ math, tables and lists are synthetic, as that paper has none in markup.
 """
 
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
+from hypothesis import given, settings, strategies as st
 
 from academic_tools_mcp.papers import jats, sections
 

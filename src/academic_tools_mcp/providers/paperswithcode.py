@@ -20,17 +20,9 @@ from ..store import cache, singleflight
 from ..util import textnorm, useragent
 from ..util.jsonshape import (
     as_bool as _bool,
-)
-from ..util.jsonshape import (
     as_int as _int,
-)
-from ..util.jsonshape import (
     dict_list as _dicts,
-)
-from ..util.jsonshape import (
     non_empty_str as _str,
-)
-from ..util.jsonshape import (
     str_list as _strs,
 )
 from . import arxiv

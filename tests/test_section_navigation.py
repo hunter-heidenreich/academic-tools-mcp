@@ -16,8 +16,7 @@ import pytest
 
 from academic_tools_mcp import corpus, papers
 from academic_tools_mcp.store import cache, stems
-from academic_tools_mcp.tools import pipeline as pipeline_tools
-from academic_tools_mcp.tools import search as search_tools
+from academic_tools_mcp.tools import pipeline as pipeline_tools, search as search_tools
 
 DUPLICATE_TITLES = (
     "# Paper\n\n"

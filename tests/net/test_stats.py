@@ -14,8 +14,7 @@ from collections import Counter
 from typing import Any
 
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
 
 import academic_tools_mcp
 from academic_tools_mcp.net import stats

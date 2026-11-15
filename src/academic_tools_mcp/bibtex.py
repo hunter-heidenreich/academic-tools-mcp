@@ -6,8 +6,7 @@ from typing import Any
 
 from .providers import arxiv, crossref
 from .util import doinorm
-from .util.jsonshape import as_dict as _dict
-from .util.jsonshape import as_str as _str
+from .util.jsonshape import as_dict as _dict, as_str as _str
 from .util.textnorm import fold
 
 # OpenAlex's `type` vocabulary (not Crossref's); anything unlisted falls to

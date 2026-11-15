@@ -4,8 +4,7 @@ The invariant stronger than any example: every spelling of one ORCID collapses t
 one cache key, and ``canonical`` is idempotent.
 """
 
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
 
 from academic_tools_mcp.util import orcidnorm
 

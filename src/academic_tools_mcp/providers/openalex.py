@@ -14,89 +14,33 @@ from ..store import cache, singleflight
 from ..util import config, doinorm, useragent
 from .openalex_parse import (
     _BARE_PMID_FLOOR as _BARE_PMID_FLOOR,
-)
-from .openalex_parse import (
     _BARE_WORK_ID_FLOOR as _BARE_WORK_ID_FLOOR,
-)
-from .openalex_parse import (
     _OPENALEX_URL_RE as _OPENALEX_URL_RE,
-)
-from .openalex_parse import (
-    _PMID_RE as _PMID_RE,
-)
-from .openalex_parse import (
+    _PMID_RE,
     _PUBMED_URL_RE as _PUBMED_URL_RE,
-)
-from .openalex_parse import (
     _RESPONSE_DOI_URL_RE as _RESPONSE_DOI_URL_RE,
-)
-from .openalex_parse import (
     _ROR_RE as _ROR_RE,
-)
-from .openalex_parse import (
     _ROR_URL_RE as _ROR_URL_RE,
-)
-from .openalex_parse import (
-    _WORK_ID_RE as _WORK_ID_RE,
-)
-from .openalex_parse import (
-    _author_path_id as _author_path_id,
-)
-from .openalex_parse import (
-    _canonical_from_response_doi as _canonical_from_response_doi,
-)
-from .openalex_parse import (
-    _extract_batch_pmid as _extract_batch_pmid,
-)
-from .openalex_parse import (
-    _extract_batch_work_id as _extract_batch_work_id,
-)
-from .openalex_parse import (
-    _institution_path_id as _institution_path_id,
-)
-from .openalex_parse import (
+    _WORK_ID_RE,
+    _author_path_id,
+    _canonical_from_response_doi,
+    _extract_batch_pmid,
+    _extract_batch_work_id,
+    _institution_path_id,
     _looks_like_ror as _looks_like_ror,
-)
-from .openalex_parse import (
-    _meta_count as _meta_count,
-)
-from .openalex_parse import (
-    _normalize_author_id as _normalize_author_id,
-)
-from .openalex_parse import (
-    _normalize_institution_id as _normalize_institution_id,
-)
-from .openalex_parse import (
+    _meta_count,
+    _normalize_author_id,
+    _normalize_institution_id,
     _usable_http_url as _usable_http_url,
-)
-from .openalex_parse import (
     best_pdf_url as best_pdf_url,
-)
-from .openalex_parse import (
-    canonical_author_id as canonical_author_id,
-)
-from .openalex_parse import (
-    canonical_doi as canonical_doi,
-)
-from .openalex_parse import (
-    canonical_institution_id as canonical_institution_id,
-)
-from .openalex_parse import (
-    canonical_work_id as canonical_work_id,
-)
-from .openalex_parse import (
+    canonical_author_id,
+    canonical_doi,
+    canonical_institution_id,
+    canonical_work_id,
     is_pmid as is_pmid,
-)
-from .openalex_parse import (
-    is_work_id as is_work_id,
-)
-from .openalex_parse import (
-    normalize_pmid as normalize_pmid,
-)
-from .openalex_parse import (
+    is_work_id,
+    normalize_pmid,
     normalize_work_id as normalize_work_id,
-)
-from .openalex_parse import (
     reconstruct_abstract as reconstruct_abstract,
 )
 

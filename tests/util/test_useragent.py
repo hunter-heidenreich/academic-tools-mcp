@@ -9,8 +9,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 import httpx
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
 
 from academic_tools_mcp.util import useragent
 

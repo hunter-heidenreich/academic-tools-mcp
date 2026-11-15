@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import asyncio
 
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from academic_tools_mcp import manual
 from academic_tools_mcp.download import openaccess

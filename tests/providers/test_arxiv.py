@@ -1457,8 +1457,11 @@ class TestDownloadPdfMetadataBranches:
         Mutate `download_pdf`'s `force_refresh=force_refresh` away and this is
         the assertion that fails; every other download test swallows `**_kw`.
         """
-        from tests.helpers.download_fakes import install_stream, mock_stream_response
-        from tests.helpers.download_fakes import passthrough_slot as _passthrough_slot
+        from tests.helpers.download_fakes import (
+            install_stream,
+            mock_stream_response,
+            passthrough_slot as _passthrough_slot,
+        )
 
         _reset_throttle(monkeypatch, tmp_path)
         seen: list[bool] = []

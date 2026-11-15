@@ -38,39 +38,17 @@ from ..providers import acl, arxiv, biorxiv, crossref, openalex
 from ..util import doinorm
 from .formatting import (
     arxiv_pdf_url as _arxiv_pdf_url,  # noqa: F401
-)
-from .formatting import (
     authors_envelope as _authors_envelope,
-)
-from .formatting import (
     format_arxiv_metadata as _format_arxiv_metadata,
-)
-from .formatting import (
     format_author_profile,
-    format_institution_profile,
-)
-from .formatting import (
     format_biorxiv_metadata as _format_biorxiv_metadata,
-)
-from .formatting import (
     format_crossref_authors as _format_crossref_authors,
-)
-from .formatting import (
     format_crossref_metadata as _format_crossref_metadata,
-)
-from .formatting import (
+    format_institution_profile,
     format_metadata_by_source as _format_metadata_by_source,
-)
-from .formatting import (
     format_openalex_authors as _format_openalex_authors,
-)
-from .formatting import (
     format_openalex_metadata as _format_openalex_metadata,  # noqa: F401
-)
-from .formatting import (
     format_openalex_via_arxiv as _format_openalex_via_arxiv,
-)
-from .formatting import (
     format_openalex_via_biorxiv as _format_openalex_via_biorxiv,
 )
 

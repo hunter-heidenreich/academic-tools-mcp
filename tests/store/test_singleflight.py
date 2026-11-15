@@ -24,8 +24,7 @@ coalescing can be observed.
 import asyncio
 
 import pytest
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
+from hypothesis import HealthCheck, given, settings, strategies as st
 
 from academic_tools_mcp.store import singleflight
 from academic_tools_mcp.store.singleflight import SingleFlight
