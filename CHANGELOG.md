@@ -17,6 +17,20 @@ grouped by milestone rather than per commit.
 
 ### Added
 
+- **DOI-less OpenAlex works (`W...`) and PMIDs are supported across the paper, author,
+  abstract, BibTeX, batch metadata and OA-download tools.** When OpenAlex indexes a work
+  without a DOI (common for ML conference papers at NeurIPS/ICML/ICLR/CVPR, workshop
+  papers, books and older PubMed records), `openalex._traded_ids` and
+  `openalex.search_works` now cache the full work under its canonical work ID
+  (`("openalex", "works", "w...")`) while keeping DOI-bearing works keyed solely by DOI,
+  preserving the single-cache-entry invariant. `app.resolve_pmid_identifier` and
+  `app.resolve_work_id_identifier` fall back to the normalized bare OpenAlex work ID
+  (`W4312223440`) when `doi` is `None`, `manual.resolve_metadata_source` and
+  `openalex.get_work` accept OpenAlex work IDs directly, and `get_papers_metadata`
+  serves DOI-less OpenAlex works from the cache warmed during resolution without an
+  extra network call. Reference/citation graph tools (`app.resolve_doi_identifier`)
+  continue to refuse DOI-less work IDs by name. ([#175])
+
 - **`get_paper_metadata` and `get_papers_metadata` surface `arxiv_id` on OpenAlex and
   Crossref-fallback records.** `paper._format_openalex_metadata` now extracts a bare,
   versionless `arxiv_id` (preserving old-style archive case like `math.GT/0309136`) from

@@ -364,14 +364,21 @@ def _warm_work_mappings(work: dict[str, Any], *, doi: str | None = None) -> dict
 def _traded_ids(work: dict[str, Any]) -> dict[str, Any]:
     """The id mapping ``pmids`` and ``work_ids`` cache: what a non-DOI id trades for.
 
-    Not the work — that is warmed into ``works`` under its DOI, so the paper
-    keeps one full entry on one TTL clock. ``doi`` is bare and canonical, or
-    ``None`` for a work OpenAlex indexes without one.
+    Not the work — that is warmed into ``works`` under its DOI (or under its
+    canonical work ID when DOI-less), so the paper keeps one full entry on one
+    TTL clock. ``doi`` is bare and canonical, or ``None`` for a work OpenAlex
+    indexes without one.
     """
     work_doi = work.get("doi")
     doi = doinorm.canonical(work_doi) if isinstance(work_doi, str) and work_doi else None
     if doi:
         cache.warm(NAMESPACE, "works", doi, work, max_age_seconds=_POSITIVE_TTL_SECONDS)
+    elif (
+        isinstance(raw_id := work.get("id"), str)
+        and (w_key := canonical_work_id(raw_id))
+        and _WORK_ID_RE.match(w_key)
+    ):
+        cache.put(NAMESPACE, "works", w_key, work)
     return _warm_work_mappings(work, doi=doi)
 
 
@@ -566,12 +573,37 @@ def _store_work(work: dict[str, Any]) -> dict[str, Any]:
 
 
 async def get_work(doi: str, *, force_refresh: bool = False) -> dict[str, Any]:
-    """Fetch a work by DOI, using cache when available.
+    """Fetch a work by DOI or OpenAlex work ID, using cache when available.
 
-    Concurrent callers for the same DOI share one fetch. ``force_refresh=True``
+    Concurrent callers for the same identifier share one fetch. ``force_refresh=True``
     drops both cache halves first — for a fresh citation count, or to retry an
     identifier that previously 404'd.
     """
+    if is_work_id(doi):
+        canonical = canonical_work_id(doi)
+
+        async def _fetch_by_work_id() -> dict[str, Any]:
+            api_id = quote(canonical, safe="")
+            return await _fetch_singleton(
+                entity="works",
+                url=f"{OPENALEX_BASE_URL}/works/{api_id}",
+                bare=canonical,
+                canonical=canonical,
+                not_found_error=f"No work found for OpenAlex ID: {doi}",
+                store=_store_work,
+            )
+
+        return await cache.cached_lookup(
+            single_flight=_single_flight,
+            namespace=NAMESPACE,
+            entity="works",
+            canonical=canonical,
+            positive_ttl=_POSITIVE_TTL_SECONDS,
+            fetch=_fetch_by_work_id,
+            force_refresh=force_refresh,
+            sf_key=("work", canonical),
+        )
+
     canonical = canonical_doi(doi)
 
     async def _fetch() -> dict[str, Any]:
@@ -679,6 +711,12 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
         # this runs outside the ``try`` above.
         if canonical := _canonical_from_response_doi(item.get("doi")):
             cache.warm(NAMESPACE, "works", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
+        elif (
+            isinstance(raw_id := item.get("id"), str)
+            and (w_key := canonical_work_id(raw_id))
+            and _WORK_ID_RE.match(w_key)
+        ):
+            cache.warm(NAMESPACE, "works", w_key, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
         _warm_work_mappings(item, doi=canonical)
 
     return {"items": items, "total_results": _meta_count(data)}
