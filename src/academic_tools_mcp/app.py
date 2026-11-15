@@ -284,6 +284,41 @@ async def _trade_hosted_doi(identifier: str) -> str:
     return anthology_id
 
 
+async def _resolve_openalex_trade(
+    identifier: str,
+    *,
+    resolved: dict[str, Any],
+    refile: Callable[[str, str], int],
+    error_suggestion: str,
+    missing_label: Callable[[Any], str],
+) -> tuple[str, dict[str, Any] | None]:
+    """Complete a PMID or OpenAlex work-ID trade from an ``openalex.resolve_*`` result."""
+    if "error" in resolved:
+        return identifier, enrich_error(resolved, error_suggestion)
+
+    doi = resolved.get("doi")
+    if not doi:
+        raw_id = resolved.get("openalex_id")
+        if isinstance(raw_id, str) and openalex.is_work_id(
+            bare_work_id := openalex.normalize_work_id(raw_id)
+        ):
+            await _repair_import(refile, identifier, bare_work_id)
+            return bare_work_id, None
+        return identifier, {
+            **http.not_found(
+                f"OpenAlex indexes {missing_label(raw_id)} without a "
+                "DOI or usable OpenAlex work ID."
+            ),
+            "suggestion": (
+                "Fetch the PDF yourself and call import_paper with a label of "
+                "your choosing to read the full text."
+            ),
+        }
+
+    await _repair_import(refile, identifier, doi)
+    return doi, None
+
+
 async def resolve_pmid_identifier(
     identifier: str, *, force_refresh: bool = False
 ) -> tuple[str, dict[str, Any] | None]:
@@ -294,35 +329,16 @@ async def resolve_pmid_identifier(
     if not openalex.is_pmid(identifier):
         return identifier, None
 
-    resolved = await openalex.resolve_pmid(identifier, force_refresh=force_refresh)
-    if "error" in resolved:
-        return identifier, enrich_error(
-            resolved,
+    return await _resolve_openalex_trade(
+        identifier,
+        resolved=await openalex.resolve_pmid(identifier, force_refresh=force_refresh),
+        refile=manual.refile_pmid_stems,
+        error_suggestion=(
             "Check the PMID on pubmed.ncbi.nlm.nih.gov, or pass the paper's DOI "
-            "directly. Only papers OpenAlex has indexed resolve by PMID.",
-        )
-
-    doi = resolved.get("doi")
-    if not doi:
-        raw_id = resolved.get("openalex_id")
-        if isinstance(raw_id, str) and openalex.is_work_id(
-            bare_work_id := openalex.normalize_work_id(raw_id)
-        ):
-            await _repair_import(manual.refile_pmid_stems, identifier, bare_work_id)
-            return bare_work_id, None
-        return identifier, {
-            **http.not_found(
-                f"OpenAlex indexes PMID {openalex.normalize_pmid(identifier)} "
-                f"({raw_id}) without a DOI or usable OpenAlex work ID."
-            ),
-            "suggestion": (
-                "Fetch the PDF yourself and call import_paper with a label of "
-                "your choosing to read the full text."
-            ),
-        }
-
-    await _repair_import(manual.refile_pmid_stems, identifier, doi)
-    return doi, None
+            "directly. Only papers OpenAlex has indexed resolve by PMID."
+        ),
+        missing_label=lambda raw_id: f"PMID {openalex.normalize_pmid(identifier)} ({raw_id})",
+    )
 
 
 async def resolve_work_id_identifier(
@@ -337,35 +353,16 @@ async def resolve_work_id_identifier(
     if not openalex.is_work_id(identifier):
         return identifier, None
 
-    resolved = await openalex.resolve_work_id(identifier, force_refresh=force_refresh)
-    if "error" in resolved:
-        return identifier, enrich_error(
-            resolved,
+    return await _resolve_openalex_trade(
+        identifier,
+        resolved=await openalex.resolve_work_id(identifier, force_refresh=force_refresh),
+        refile=manual.refile_work_id_stems,
+        error_suggestion=(
             "Check the ID on openalex.org, or pass the paper's DOI directly. Only "
-            "works OpenAlex still indexes under that ID resolve.",
-        )
-
-    doi = resolved.get("doi")
-    if not doi:
-        raw_id = resolved.get("openalex_id")
-        if isinstance(raw_id, str) and openalex.is_work_id(
-            bare_work_id := openalex.normalize_work_id(raw_id)
-        ):
-            await _repair_import(manual.refile_work_id_stems, identifier, bare_work_id)
-            return bare_work_id, None
-        return identifier, {
-            **http.not_found(
-                f"OpenAlex indexes {openalex.normalize_work_id(identifier)} without a "
-                "DOI or usable OpenAlex work ID."
-            ),
-            "suggestion": (
-                "Fetch the PDF yourself and call import_paper with a label of "
-                "your choosing to read the full text."
-            ),
-        }
-
-    await _repair_import(manual.refile_work_id_stems, identifier, doi)
-    return doi, None
+            "works OpenAlex still indexes under that ID resolve."
+        ),
+        missing_label=lambda _raw_id: openalex.normalize_work_id(identifier),
+    )
 
 
 def reject_non_doi(doi: str, *, subject: str) -> dict[str, Any] | None:
