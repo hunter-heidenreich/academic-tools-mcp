@@ -457,6 +457,19 @@ class TestRekeySections:
     def test_no_source_entry_is_not_an_error(self):
         assert not papers.rekey_sections("manual", "20079334", "manual", "10.1234/example")
 
+    def test_updates_recorded_canonical_id_on_rekey(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path / "cache")
+        md_path = stems.markdown_path("manual", "pmid:20079334")
+        papers.store_markdown_and_index(
+            "manual", "pmid:20079334", md_path, "# Intro\n\nBody.\n", "imported"
+        )
+        src_stem = stems.safe_stem("pmid:20079334")
+        assert papers.recorded_canonical_id("manual", src_stem) == "pmid:20079334"
+
+        assert papers.rekey_sections("manual", src_stem, "manual", "10.1000/sub/part_1")
+        dst_stem = stems.safe_stem("10.1000/sub/part_1")
+        assert papers.recorded_canonical_id("manual", dst_stem) == "10.1000/sub/part_1"
+
 
 class TestMarkdownWriteFailure:
     """The markdown write had no handler at all, so a read-only or full cache

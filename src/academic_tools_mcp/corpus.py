@@ -138,6 +138,18 @@ def _filename_to_canonical(namespace: str, stem: str) -> str:
     return unquote(_restore_slashes(namespace, stem))
 
 
+def _resolve_canonical_id(namespace: str, stem: str) -> str:
+    """Return the sections-recorded ``canonical_id`` for ``(namespace, stem)``, or invert the filename.
+
+    Prefer the exact identifier written into the sections index by
+    :func:`papers.store_markdown_and_index` or :func:`papers.get_or_parse_sections`
+    so multi-slash DOIs and underscore-bearing labels survive ``safe_stem``'s
+    lossy ``"/" -> "_"`` projection; fall back to :func:`_filename_to_canonical`
+    when only a bare markdown file exists on disk.
+    """
+    return papers.recorded_canonical_id(namespace, stem) or _filename_to_canonical(namespace, stem)
+
+
 def _restore_slashes(namespace: str, stem: str) -> str:
     """Undo ``safe_stem``'s ``"/" -> "_"`` mapping, as far as it is decidable."""
     if namespace == arxiv.NAMESPACE:
@@ -213,7 +225,7 @@ def _scan_markdown() -> list[_ScannedFile]:
 _INDEX_DIRNAME = "__search_index__"
 
 # Bump when the row schema or the tokenizer changes; a mismatch rebuilds.
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 
 # Never equals a real stat, so a file that failed to read is retried.
 _UNREADABLE_MTIME = -1
@@ -253,12 +265,13 @@ def _legacy_index_path() -> Path:
 _SCHEMA = (
     # Declared, not implicit — VACUUM renumbers an implicit rowid, and fts keys on it.
     """CREATE TABLE IF NOT EXISTS files (
-           rowid     INTEGER PRIMARY KEY,
-           ns        TEXT    NOT NULL,
-           stem      TEXT    NOT NULL,
-           mtime_ns  INTEGER NOT NULL,
-           size      INTEGER NOT NULL,
-           unindexable TEXT,
+           rowid        INTEGER PRIMARY KEY,
+           ns           TEXT    NOT NULL,
+           stem         TEXT    NOT NULL,
+           mtime_ns     INTEGER NOT NULL,
+           size         INTEGER NOT NULL,
+           unindexable  TEXT,
+           canonical_id TEXT,
            UNIQUE (ns, stem)
        )""",
     # contentless_delete=1 needs SQLite 3.43+; it is what lets a removed paper go.
@@ -427,18 +440,19 @@ def _reindex_file(
 
     # Storing the stat that succeeded would freeze the failure: a chmod leaves mtime alone.
     recorded_mtime = _UNREADABLE_MTIME if reason else found.mtime_ns
+    canonical_id = _resolve_canonical_id(found.namespace, found.stem)
 
     if existing is None:
         cur = con.execute(
-            "INSERT INTO files(ns, stem, mtime_ns, size) VALUES (?,?,?,?)",
-            (found.namespace, found.stem, recorded_mtime, found.size),
+            "INSERT INTO files(ns, stem, mtime_ns, size, canonical_id) VALUES (?,?,?,?,?)",
+            (found.namespace, found.stem, recorded_mtime, found.size, canonical_id),
         )
         rowid = int(cur.lastrowid or 0)
     else:
         rowid = existing.rowid
         con.execute(
-            "UPDATE files SET mtime_ns = ?, size = ? WHERE rowid = ?",
-            (recorded_mtime, found.size, rowid),
+            "UPDATE files SET mtime_ns = ?, size = ?, canonical_id = ? WHERE rowid = ?",
+            (recorded_mtime, found.size, canonical_id, rowid),
         )
     # Always: it drops the old postings, and adds none for unreadable text.
     probed = _index_document(con, rowid, text)
@@ -558,7 +572,8 @@ def _search_sql(
     every value is bound — why the f-string below is safe.
     """
     sql = (
-        f"SELECT f.ns AS ns, f.stem AS stem, bm25({table}) AS score "  # noqa: S608
+        f"SELECT f.ns AS ns, f.stem AS stem, f.canonical_id AS canonical_id, "  # noqa: S608
+        f"bm25({table}) AS score "
         f"FROM {table} JOIN files f ON f.rowid = {table}.rowid "
         f"WHERE {table} MATCH ?"
     )
@@ -587,7 +602,7 @@ def _hit(row: sqlite3.Row, terms: set[str], *, normalize: bool) -> dict[str, Any
     section_index, section = found or (None, None)
     return {
         "namespace": row["ns"],
-        "canonical_id": _filename_to_canonical(row["ns"], row["stem"]),
+        "canonical_id": row["canonical_id"] or _resolve_canonical_id(row["ns"], row["stem"]),
         # Significant figures, not decimals: a degenerate IDF scales below 1e-7.
         "score": float(f"{score:.6g}"),
         "title": _extract_title(text),
@@ -652,7 +667,7 @@ def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[d
         _refresh_index()
     con = _connect()
     try:
-        sql = "SELECT ns, stem, unindexable FROM files WHERE unindexable IS NOT NULL"
+        sql = "SELECT ns, stem, canonical_id, unindexable FROM files WHERE unindexable IS NOT NULL"
         params: tuple[Any, ...] = ()
         if namespace is not None:
             sql += " AND ns = ?"
@@ -664,7 +679,7 @@ def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[d
         {
             "namespace": r["ns"],
             "stem": r["stem"],
-            "canonical_id": _filename_to_canonical(r["ns"], r["stem"]),
+            "canonical_id": r["canonical_id"] or _resolve_canonical_id(r["ns"], r["stem"]),
             "reason": r["unindexable"],
         }
         for r in rows

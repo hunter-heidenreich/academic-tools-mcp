@@ -7,15 +7,18 @@ paths:
 
 ## Cross-module contracts
 
-- **`_filename_to_canonical`'s output is the `canonical_id` an agent chains back
-  into the paper tools** — a stem that doesn't round-trip is a hit that goes
-  nowhere. The router and the inverter must be built from the same exported
+- **`_resolve_canonical_id` prefers `papers.recorded_canonical_id(namespace, stem)` and
+  falls back to `_filename_to_canonical`** — a stem that doesn't round-trip is a hit
+  that goes nowhere. Persisting `canonical_id` in `files` during `_reindex_file` lets
+  multi-slash DOIs (`10.1000/sub/part_1`) survive `safe_stem`'s `"/" -> "_"` mapping,
+  while `_filename_to_canonical` remains the fallback for bare markdown files without a
+  sections index. The router and the inverter must be built from the same exported
   patterns (`arxiv.OLD_ARCHIVE_PATTERN`, `biorxiv.DOI_PREFIX`); spell either out
   again and they drift.
 - **`search` must keep taking its section from `papers.section_at_offset` and its
   title from `papers.first_section_heading`** — never a local heading scan.
-- **`unindexable` records carry `canonical_id`**, inverted by the same
-  `_filename_to_canonical` a hit uses, so both readers of the `files` table name a
+- **`unindexable` records carry `canonical_id`**, resolved by the same
+  `_resolve_canonical_id` a hit uses, so both readers of the `files` table name a
   paper identically and the "use `find_in_paper` on them" advice is actionable.
 
 ## Two FTS5 facts, and what they cost

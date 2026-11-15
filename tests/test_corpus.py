@@ -728,6 +728,37 @@ class TestSearch:
         assert len(corpus.search("attention", top_k=cap)) == cap
         assert len(corpus.search("attention", top_k=cap + 1)) == cap
 
+    def test_multi_slash_doi_round_trips_losslessly_when_stored_via_papers(self, isolated_cache):
+        """A DOI with multiple slashes and underscores cannot be inverted from its stem
+        alone, but ``store_markdown_and_index`` records ``canonical_id`` in the sections
+        index and ``corpus`` persists it in ``files.canonical_id``.
+        """
+        canonical = "10.1000/sub/part_1"
+        md_path = stems.markdown_path("manual", canonical)
+        papers.store_markdown_and_index(
+            "manual",
+            canonical,
+            md_path,
+            "# Multi-Slash Paper\n\nUnique token xylophone appears here.\n",
+            "imported",
+        )
+
+        hits = corpus.search("xylophone")
+        assert [h["canonical_id"] for h in hits] == [canonical]
+
+        # An unindexable paper with a multi-slash DOI also preserves its exact canonical_id.
+        unidx_canonical = "10.1000/empty/doc_2"
+        unidx_path = stems.markdown_path("manual", unidx_canonical)
+        papers.store_markdown_and_index(
+            "manual",
+            unidx_canonical,
+            unidx_path,
+            "   ---   \n",
+            "imported",
+        )
+        bad = corpus.unindexable(namespace="manual")
+        assert any(r["canonical_id"] == unidx_canonical for r in bad)
+
 
 # ---------------------------------------------------------------------------
 # MCP tool wiring

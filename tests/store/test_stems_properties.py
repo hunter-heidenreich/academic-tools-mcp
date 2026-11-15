@@ -305,7 +305,9 @@ def test_a_written_entry_is_read_back_without_reparsing(tmp_path_factory, markdo
             "sections_detected",
             "markdown_checksum",
             "conversion_mode",
+            "canonical_id",
         }
+        assert entry["canonical_id"] == "roundtrip"
         assert entry["markdown_checksum"] == stems.checksum_text(markdown)
 
         # The reader must serve that entry as-is: a re-parse here would mean the

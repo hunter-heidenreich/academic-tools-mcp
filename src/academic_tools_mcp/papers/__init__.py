@@ -25,6 +25,7 @@ from .convert import MarkupMode, convert_markup, convert_pdf
 from .index import (
     drop_derived,
     get_or_parse_sections,
+    recorded_canonical_id,
     recorded_conversion_mode,
     rekey_sections,
     sections_lock,
@@ -52,6 +53,7 @@ __all__ = [
     "get_section_content",
     "parse_sections",
     "parse_sections_and_detect",
+    "recorded_canonical_id",
     "recorded_conversion_mode",
     "rekey_sections",
     "section_at_offset",
