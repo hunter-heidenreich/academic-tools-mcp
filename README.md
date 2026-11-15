@@ -158,9 +158,10 @@ bare, `ror:`-prefixed, or a `ror.org` URL. It resolves what an affiliation strin
 | Tool | Description |
 |------|-------------|
 | `download_pdf` | Download and cache the PDF — auto-detects arXiv, ACL Anthology, bioRxiv/medRxiv. Streams chunks to disk (peak memory = 64 KiB) and aborts mid-stream if the response would exceed `MAX_PDF_BYTES` (default 200 MB). Whenever it actually downloads (not on a cache hit), the cached markdown + section index are dropped automatically so the next `convert_paper` picks up the new bytes. Markdown you imported yourself, or converted from arXiv's HTML, survives that; pass `force_refresh=True` to replace it too. |
-| `convert_paper` | Convert a paper to markdown, parse into sections. arXiv papers use arXiv's HTML first, bioRxiv/medRxiv papers bioRxiv's JATS XML — seconds, no PDF needed. Otherwise it converts the downloaded PDF (slow: tens of minutes; `PDF_CONVERT_TIMEOUT` caps it at 30 min by default). The server runs at most one conversion at a time across all callers — a second concurrent caller gets `{busy: True, retryable: True, in_progress: {...}}` immediately rather than queueing |
+| `convert_paper` | Convert a paper to markdown, parse into sections, and return `sections` and `total_approx_tokens`. arXiv papers use arXiv's HTML first, bioRxiv/medRxiv papers bioRxiv's JATS XML — seconds, no PDF needed. Otherwise it converts the downloaded PDF (slow: tens of minutes; `PDF_CONVERT_TIMEOUT` caps it at 30 min by default). The server runs at most one conversion at a time across all callers — a second concurrent caller gets `{busy: True, retryable: True, in_progress: {...}}` immediately rather than queueing |
 | `get_paper_sections` | Section index with titles, sub-heading previews, token counts, and `conversion_mode` — what produced the markdown (`full` / `fast` / `html` / `jats` / `imported`) |
 | `get_paper_section` | Markdown of a section (by index or title substring); truncated by default (16000 chars) |
+| `get_paper_markdown` | Full converted markdown document (or a paged slice by `offset` and `max_chars`, default 100000 chars) for reading a paper in one call when `total_approx_tokens` fits your context |
 | `find_in_paper` | Substring (or whole-word) search inside one converted paper. Returns each hit's section + char offset + ~120-char snippet, and echoes `paper_identifier` in canonical form. Char offsets align with `get_paper_section`'s stripped text so you can chain straight to the surrounding context. |
 | `search_cached_papers` | BM25 keyword search across **every** converted paper in the local cache. Answers "which paper mentioned X?"; pair it with `find_in_paper` for "where in that paper?". Papers the index could never use are reported separately as `unindexable`, each with a `canonical_id` you can hand straight to `find_in_paper`. |
 
@@ -193,7 +194,7 @@ For citations, follow the **count-then-page** pattern: call `get_paper_citations
 
 For PDFs outside arXiv/bioRxiv/ACL, fetch the file yourself (browser, `curl`, publisher portal, institutional proxy) and then call `import_paper` — the server deliberately does not download arbitrary URLs.
 
-After importing a PDF, use the unified pipeline tools (`convert_paper` → `get_paper_sections` → `get_paper_section`) with the same identifier. Markdown imports skip the conversion step and go straight to `get_paper_sections` / `get_paper_section`.
+After importing a PDF, use the unified pipeline tools (`convert_paper` → `get_paper_section` or `get_paper_markdown`) with the same identifier. Markdown imports skip the conversion step and go straight to `get_paper_sections` / `get_paper_section` / `get_paper_markdown`.
 
 **Provider-aware routing**: if the identifier is an arXiv ID, bioRxiv DOI, or ACL Anthology ID, URL or DOI, the file is stored in that provider's cache namespace automatically. A subsequent `download_pdf("2301.00001")` will find an already-imported PDF — no duplicates.
 
@@ -366,10 +367,10 @@ server.py            thin entry: re-exports mcp + tools, registers the
   ├── bibtex.py        BibTeX generation
   ├── fast_extract.py  bundled pymupdf text extractor (a `python -m` target)
   │
-  ├── tools/         33 @mcp.tool functions, split by job
+  ├── tools/         34 @mcp.tool functions, split by job
   │                    paper.py       metadata / authors / abstract / bibtex
   │                    formatting.py  provider metadata + author payload formatters
-  │                    pipeline.py    download → convert → sections → section
+  │                    pipeline.py    download → convert → sections → section / markdown
   │                    graph.py       references and citations
   │                    search.py      arXiv / OpenAlex / Crossref / Wikipedia /
   │                                   local corpus

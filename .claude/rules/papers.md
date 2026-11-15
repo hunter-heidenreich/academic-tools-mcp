@@ -33,10 +33,10 @@ filename recover the pre-sanitized identifier without guessing which `_` came fr
 
 - **`_scan()` is the only heading scan**, and its readers span modules —
   `section_boundaries`, `has_detected_sections`, `parse_sections`,
-  `parse_sections_and_detect`, `find_in_markdown`, `get_section_content` and
-  `corpus.search`. A private copy that drops the empty-section filter names a
-  section the reader's index doesn't have; one returning a title instead of an
-  index dead-ends on "Ambiguous section title".
+  `parse_sections_and_detect`, `find_in_markdown`, `get_section_content`,
+  `get_markdown_content` and `corpus.search`. A private copy that drops the
+  empty-section filter names a section the reader's index doesn't have; one
+  returning a title instead of an index dead-ends on "Ambiguous section title".
 - **`Section.body(lines)` is the one body recipe**, which is what makes a hit's
   `char_offset` an offset into the text the reader returns. Two hand-spelled
   `"\n".join(lines[s:e]).strip()` cannot be relied on to stay equal.

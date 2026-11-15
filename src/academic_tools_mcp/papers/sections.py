@@ -286,6 +286,37 @@ def _match_section_title(section: str, spans: list[Section]) -> list[tuple[int, 
     return _resolve_titles(textnorm.fold(section).lower(), folded, spans)
 
 
+_EMPTY_MARKDOWN_ERROR: dict[str, Any] = {
+    "error": "The converted markdown for this paper is empty — no readable text.",
+    "suggestion": (
+        "The PDF probably has no extractable text layer (a scan or an "
+        "image-only document). Re-run convert_paper with force_refresh=True "
+        "to try again, or check the PDF opens and contains selectable text."
+    ),
+    "retryable": False,
+}
+
+
+def _slice_text(full_content: str, *, offset: int, max_chars: int, kind: str) -> dict[str, Any]:
+    """Slice ``full_content`` at ``[offset : offset + max_chars]`` with paging metadata."""
+    total_chars = len(full_content)
+    if offset > total_chars:
+        return {"error": f"offset {offset} is beyond {kind} length {total_chars}"}
+
+    end_offset = min(offset + max_chars, total_chars)
+    slice_content = full_content[offset:end_offset]
+    has_more = end_offset < total_chars
+    return {
+        "content": slice_content,
+        "offset": offset,
+        "chars_returned": len(slice_content),
+        "total_chars": total_chars,
+        "approx_tokens": max(1, total_chars // _CHARS_PER_TOKEN),
+        "has_more": has_more,
+        "next_offset": end_offset if has_more else None,
+    }
+
+
 def get_section_content(
     markdown: str,
     section: int | str,
@@ -318,15 +349,7 @@ def get_section_content(
 
     if not spans:
         # A converter exits 0 on a 0-page or image-only PDF; beats "out of range (0--1)".
-        return {
-            "error": "The converted markdown for this paper is empty — no readable text.",
-            "suggestion": (
-                "The PDF probably has no extractable text layer (a scan or an "
-                "image-only document). Re-run convert_paper with force_refresh=True "
-                "to try again, or check the PDF opens and contains selectable text."
-            ),
-            "retryable": False,
-        }
+        return dict(_EMPTY_MARKDOWN_ERROR)
 
     if isinstance(section, int):
         if not 0 <= section < len(spans):
@@ -343,25 +366,42 @@ def get_section_content(
             titles = [sp.title for sp in spans]
             return {"error": f"No section matching '{section}'. Available: {titles}"}
 
-    full_content = span.body(lines)
-    total_chars = len(full_content)
-    approx_tokens = max(1, total_chars // _CHARS_PER_TOKEN)
-
-    if offset > total_chars:
-        return {"error": f"offset {offset} is beyond section length {total_chars}"}
-
-    end_offset = min(offset + max_chars, total_chars)
-    slice_content = full_content[offset:end_offset]
-    has_more = end_offset < total_chars
-
+    sliced = _slice_text(span.body(lines), offset=offset, max_chars=max_chars, kind="section")
+    if "error" in sliced:
+        return sliced
     return {
         "index": resolved_index,
         "title": span.title,
-        "content": slice_content,
-        "offset": offset,
-        "chars_returned": len(slice_content),
-        "total_chars": total_chars,
-        "approx_tokens": approx_tokens,
-        "has_more": has_more,
-        "next_offset": end_offset if has_more else None,
+        **sliced,
     }
+
+
+def get_markdown_content(
+    markdown: str,
+    offset: int = 0,
+    max_chars: int = 100000,
+) -> dict[str, Any]:
+    """Retrieve a slice of the full converted markdown document.
+
+    Args:
+        markdown: Full markdown text.
+        offset: Starting character offset within the document; pass ``next_offset``
+            from a previous call to page through.
+        max_chars: Slice size in characters (~4 per token). Must be positive.
+
+    Returns:
+        On success: ``{content, offset, chars_returned, total_chars,
+        approx_tokens, has_more, next_offset}``; ``approx_tokens`` and
+        ``total_chars`` describe the full document, not the slice. On error:
+        ``{"error": ...}``.
+    """
+    if max_chars <= 0:
+        return {"error": f"max_chars must be positive, got {max_chars}"}
+    if offset < 0:
+        return {"error": f"offset must be non-negative, got {offset}"}
+
+    _, spans, _ = _scan(markdown)
+    if not spans:
+        return dict(_EMPTY_MARKDOWN_ERROR)
+
+    return _slice_text(markdown.strip(), offset=offset, max_chars=max_chars, kind="document")

@@ -11,6 +11,7 @@ from academic_tools_mcp import papers
 from academic_tools_mcp.papers import (
     find_in_markdown,
     first_section_heading,
+    get_markdown_content,
     get_section_content,
     parse_sections,
     parse_sections_and_detect,
@@ -570,3 +571,66 @@ class TestSectionProperties:
             start = hit["char_offset"]
             end = start + len(hit["match"])
             assert sec["content"][start:end] == hit["match"]
+
+
+class TestGetMarkdownContent:
+    """``get_markdown_content`` slices the full document under the same contract
+    as ``get_section_content``: stripped outer whitespace, empty-document detection
+    via ``_scan``, and ``offset`` / ``max_chars`` pagination.
+    """
+
+    def test_reads_full_document_in_one_slice(self):
+        result = get_markdown_content(_H2_MARKDOWN)
+        expected = _H2_MARKDOWN.strip()
+        assert result == {
+            "content": expected,
+            "offset": 0,
+            "chars_returned": len(expected),
+            "total_chars": len(expected),
+            "approx_tokens": max(1, len(expected) // 4),
+            "has_more": False,
+            "next_offset": None,
+        }
+
+    def test_paginates_across_slices_with_next_offset(self):
+        expected = _H2_MARKDOWN.strip()
+        first = get_markdown_content(_H2_MARKDOWN, offset=0, max_chars=50)
+        assert first["chars_returned"] == 50
+        assert first["total_chars"] == len(expected)
+        assert first["has_more"] is True
+        assert first["next_offset"] == 50
+
+        rest = get_markdown_content(_H2_MARKDOWN, offset=first["next_offset"], max_chars=10000)
+        assert first["content"] + rest["content"] == expected
+        assert rest["has_more"] is False
+        assert rest["next_offset"] is None
+
+    def test_offset_at_total_chars_returns_empty_slice(self):
+        expected = _H2_MARKDOWN.strip()
+        result = get_markdown_content(_H2_MARKDOWN, offset=len(expected))
+        assert result["content"] == ""
+        assert result["chars_returned"] == 0
+        assert result["has_more"] is False
+        assert result["next_offset"] is None
+
+    def test_offset_beyond_total_chars_returns_error(self):
+        expected = _H2_MARKDOWN.strip()
+        result = get_markdown_content(_H2_MARKDOWN, offset=len(expected) + 1)
+        assert "beyond document length" in result["error"]
+
+    @pytest.mark.parametrize("max_chars", [0, -1, -50])
+    def test_non_positive_max_chars_rejected(self, max_chars):
+        result = get_markdown_content(_H2_MARKDOWN, max_chars=max_chars)
+        assert "max_chars must be positive" in result["error"]
+
+    @pytest.mark.parametrize("offset", [-1, -10])
+    def test_negative_offset_rejected(self, offset):
+        result = get_markdown_content(_H2_MARKDOWN, offset=offset)
+        assert "offset must be non-negative" in result["error"]
+
+    @pytest.mark.parametrize("empty", ["", "   \n\n  ", "# Title only\n\n## Empty heading\n"])
+    def test_empty_or_heading_only_markdown_returns_empty_error(self, empty):
+        result = get_markdown_content(empty)
+        assert "empty" in result["error"].lower()
+        assert result["retryable"] is False
+        assert "suggestion" in result

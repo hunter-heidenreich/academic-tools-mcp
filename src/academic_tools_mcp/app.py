@@ -69,8 +69,12 @@ mcp = FastMCP(
         "including the graph tools — so an OpenCitations row with no `doi` is still "
         "chainable on its `openalex`. Batch many "
         "identifiers with get_papers_metadata.\n\n"
-        "PDF pipeline: download_pdf → convert_paper → get_paper_sections → "
-        "get_paper_section, all auto-detecting the provider. download_pdf "
+        "PDF pipeline: download_pdf → convert_paper → get_paper_section or "
+        "get_paper_markdown (get_paper_sections inspects the section index of an "
+        "already-converted paper; convert_paper already returns sections and "
+        "total_approx_tokens). Use get_paper_markdown when total_approx_tokens is "
+        "small enough to read the paper in one call, or get_paper_section / "
+        "find_in_paper for targeted section reading. download_pdf "
         "handles arXiv/bioRxiv/ACL; other DOIs need allow_oa_url=True (fetches "
         "only the OA URL OpenAlex reports) or import_paper with a file you "
         "fetched, which also takes pre-converted .md. convert_paper turns an "
@@ -86,7 +90,10 @@ mcp = FastMCP(
         "get_paper_updates checks a DOI for retraction and correction notices "
         "before you cite it; a false there means Crossref lists none, not that "
         "the paper stands.\n\n"
-        "References/citations: call the `_count` tool first, then paginate. "
+        "References/citations: get_paper_references and get_paper_citations "
+        "default to source='auto', which surveys providers in parallel and serves "
+        "page 1 from the best source (or call the `_count` tool to inspect counts "
+        "without fetching a page). "
         "Search tools return slim triage hits — chain to get_paper_metadata. "
         "search_openalex is the broad topic search and its hits are free to "
         "chain (by doi or openalex_id), except ACL Anthology papers, whose "
@@ -118,11 +125,11 @@ mcp = FastMCP(
 DOI = Annotated[
     str,
     Field(
-        description="Paper DOI. Full URL, doi:-prefixed, or bare (10.1234/example). "
-        "A PMID works too — pmid:20079334, a pubmed.ncbi.nlm.nih.gov URL, or a "
-        "bare 7-8 digit run — as does an OpenAlex work ID (W4312223440, "
-        "openalex:-prefixed, or an openalex.org URL), so a `pmid` or `openalex` from "
-        "an OpenCitations row pastes back in. An ACL Anthology ID or URL works too."
+        description="Paper DOI (full URL, doi:-prefixed, or bare like 10.1234/example "
+        "or 10.48550/arXiv.*), PMID (pmid:20079334, a pubmed.ncbi.nlm.nih.gov URL, or "
+        "a bare 7-8 digit run), OpenAlex work ID (W4312223440, openalex:-prefixed, or "
+        "an openalex.org URL), or ACL Anthology ID or URL — so a `pmid` or `openalex` "
+        "from an OpenCitations row pastes back in."
     ),
 ]
 
@@ -145,10 +152,10 @@ INSTITUTION_ID = Annotated[
 ARXIV_ID = Annotated[
     str,
     Field(
-        description="arXiv ID: bare (1706.03762, hep-th/9901001), arXiv:-prefixed, "
-        "or an arxiv.org URL; any version suffix is ignored. A DOI, PMID, or OpenAlex "
-        "work ID is also accepted and automatically resolved to its arXiv ID via "
-        "OpenAlex when OpenAlex records one."
+        description="Paper identifier for Papers with Code: an arXiv ID (bare like "
+        "1706.03762 or hep-th/9901001, arXiv:-prefixed, or an arxiv.org URL; any "
+        "version suffix is ignored), or a DOI, PMID, or OpenAlex work ID (automatically "
+        "resolved to its arXiv ID via OpenAlex when OpenAlex records one)."
     ),
 ]
 
@@ -163,13 +170,13 @@ PAPER_ID = Annotated[
         "work ID (W4312223440, openalex:-prefixed, or an openalex.org URL). Pipeline and "
         "markdown tools (download_pdf, "
         "convert_paper, import_paper, get_paper_sections, get_paper_section, "
-        "find_in_paper) also take a freeform label for a manually imported "
-        "file; metadata tools require a shape above."
+        "get_paper_markdown, find_in_paper) also take a freeform label for a manually "
+        "imported file; metadata tools require a shape above."
     ),
 ]
 
-# The harness's per-result cap: get_paper_section declares it as
-# `anthropic/maxResultSizeChars` and SECTION_MAX_CHARS caps requests at it.
+# The harness's per-result cap: get_paper_section and get_paper_markdown declare
+# it as `anthropic/maxResultSizeChars` and SECTION_MAX_CHARS caps requests at it.
 SECTION_HARNESS_CAP = 200000
 
 SECTION_OFFSET = Annotated[
@@ -199,7 +206,9 @@ SEARCH_YEAR_MAX = 2100
 
 
 # Single-homed: every "run the pipeline first" suggestion quotes this chain.
-PIPELINE_CHAIN = "download_pdf → convert_paper → get_paper_sections → get_paper_section"
+PIPELINE_CHAIN = (
+    "download_pdf → convert_paper → get_paper_sections → get_paper_section (or get_paper_markdown)"
+)
 
 
 def not_converted_error(identifier: str) -> dict[str, Any]:
@@ -458,10 +467,11 @@ async def read_markdown(
     """Resolve *identifier*, read its cached markdown, apply ``scan``.
 
     Returns ``(target, scan(markdown))``, else :func:`not_converted_error`. One
-    home for the two reads outside ``papers.sections_lock`` (``get_paper_section``,
-    ``find_in_paper``), so their guards can't drift: off the event loop, explicit
-    UTF-8, ``OSError`` and ``UnicodeDecodeError`` degraded — a cascade can unlink
-    mid-read, and a hand-edited file can fail UTF-8 decoding.
+    home for the reads outside ``papers.sections_lock`` (``get_paper_section``,
+    ``get_paper_markdown``, ``find_in_paper``), so their guards can't drift: off
+    the event loop, explicit UTF-8, ``OSError`` and ``UnicodeDecodeError``
+    degraded — a cascade can unlink mid-read, and a hand-edited file can fail
+    UTF-8 decoding.
     """
     identifier, pmid_error = await resolve_paper_identifier(identifier)
     if pmid_error is not None:
