@@ -23,6 +23,10 @@ _CHARS_PER_TOKEN = 4
 # Heading lines: captures (level, title). Matched per line, so no re.MULTILINE.
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
 
+# First H1/H2 heading scan: multiline with non-newline whitespace so we stop at the
+# first title without materialising ``markdown.split("\n")`` over a full paper.
+_FIRST_SECTION_HEADING_RE = re.compile(r"^#{1,2}[^\S\n]+(.+)$", re.MULTILINE)
+
 # Fixed, not adaptive: H1 and H2 both open a section (converters disagree on which
 # level the paper title gets), H3 is the sub-heading level, H4+ are ignored.
 _SECTION_LEVELS: frozenset[int] = frozenset({1, 2})
@@ -101,11 +105,8 @@ def first_section_heading(markdown: str) -> str | None:
     Not ``section_boundaries(md)[0].title``, which is ``"Preamble"`` for the
     span before the first heading — and which drops a heading with no body.
     """
-    for line in markdown.split("\n"):
-        m = _HEADING_RE.match(line)
-        if m is not None and len(m.group(1)) in _SECTION_LEVELS:
-            return m.group(2).strip()
-    return None
+    m = _FIRST_SECTION_HEADING_RE.search(markdown)
+    return m.group(1).strip() if m is not None else None
 
 
 def section_at_offset(markdown: str, offset: int) -> tuple[int, str] | None:

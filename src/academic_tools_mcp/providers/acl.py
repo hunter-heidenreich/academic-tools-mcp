@@ -2,6 +2,7 @@
 
 import asyncio
 import gzip
+import io
 import math
 import re
 import time
@@ -384,28 +385,48 @@ async def get_paper(identifier: str, *, force_refresh: bool = False) -> dict[str
 # Hosted-DOI index
 # ---------------------------------------------------------------------------
 
-_BIB_URL_RE = re.compile(r'^\s*url = "https://aclanthology\.org/([^/"]+)/"', re.MULTILINE)
-_BIB_DOI_RE = re.compile(r'^\s*doi = "([^"]+)"', re.MULTILINE)
+_BIB_URL_RE = re.compile(r'^\s*url = "https://aclanthology\.org/([^/"]+)/"')
+_BIB_DOI_RE = re.compile(r'^\s*doi = "([^"]+)"')
 
 # gzip: OSError, EOFError, zlib.error; bad UTF-8: ValueError.
 _DUMP_ERRORS = (OSError, EOFError, zlib.error, ValueError)
 
 
+def _record_doi_index_entry(
+    shards: dict[str, dict[str, str]], url_aid: str | None, doi_raw: str | None
+) -> None:
+    """Record one ``(url_aid, doi_raw)`` pair into ``shards`` if it is a non-derivable DOI."""
+    if url_aid is None or doi_raw is None:
+        return
+    canonical = doinorm.canonical(doi_raw)
+    if not doinorm.looks_like_doi(canonical) or is_anthology_id(canonical):
+        return
+    if not is_anthology_id(url_aid):
+        return
+    registrant = canonical.split("/", 1)[0]
+    shards.setdefault(registrant, {})[canonical] = canonical_key(url_aid)
+
+
 def _parse_doi_index(body: bytes) -> dict[str, dict[str, str]]:
-    """``{registrant: {DOI: Anthology ID}}`` for DOIs the router can't already derive."""
+    """``{registrant: {DOI: Anthology ID}}`` for DOIs the router can't already derive.
+
+    Streams ``anthology.bib.gz`` line-by-line rather than decompressing and splitting
+    the entire ~160 MB dump in memory at once.
+    """
     shards: dict[str, dict[str, str]] = {}
-    for entry in gzip.decompress(body).decode("utf-8").split("\n@"):
-        url = _BIB_URL_RE.search(entry)
-        doi = _BIB_DOI_RE.search(entry)
-        if url is None or doi is None:
-            continue
-        canonical = doinorm.canonical(doi.group(1))
-        if not doinorm.looks_like_doi(canonical) or is_anthology_id(canonical):
-            continue
-        if not is_anthology_id(url.group(1)):
-            continue
-        registrant = canonical.split("/", 1)[0]
-        shards.setdefault(registrant, {})[canonical] = canonical_key(url.group(1))
+    url_aid: str | None = None
+    doi_raw: str | None = None
+    with gzip.open(io.BytesIO(body), mode="rt", encoding="utf-8") as stream:
+        for line in stream:
+            if line.startswith("@"):
+                _record_doi_index_entry(shards, url_aid, doi_raw)
+                url_aid = None
+                doi_raw = None
+            elif url_aid is None and (m := _BIB_URL_RE.search(line)):
+                url_aid = m.group(1)
+            elif doi_raw is None and (m := _BIB_DOI_RE.search(line)):
+                doi_raw = m.group(1)
+    _record_doi_index_entry(shards, url_aid, doi_raw)
     return shards
 
 

@@ -426,6 +426,9 @@ class TestFirstSectionHeading:
     def test_the_first_of_several_wins(self):
         assert papers.first_section_heading("# A\n\nx\n\n# B\n\ny\n") == "A"
 
+    def test_bare_hashes_without_inline_whitespace_do_not_capture_next_line(self):
+        assert papers.first_section_heading("##\nNot a heading\n# Real Title\n") == "Real Title"
+
 
 class TestSectionAtOffsetPastTheLastSection:
     def test_an_offset_in_a_trailing_empty_section_resolves_to_the_last_real_one(self):
