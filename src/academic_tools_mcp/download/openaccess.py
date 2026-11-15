@@ -1,9 +1,10 @@
-"""Open-access PDF download path for generic publisher DOIs.
+"""Open-access PDF download path for generic publisher DOIs and OpenAlex works.
 
 arxiv/biorxiv/acl derive a PDF URL from the identifier; a generic publisher DOI
-has none, but OpenAlex often surfaces one. The gate is on *resolution*: the only
-URL this module will fetch is the one OpenAlex reports, never a caller-supplied
-one — a metadata-gated fetcher, not a general scraper.
+or DOI-less OpenAlex work ID has none, but OpenAlex often surfaces one. The gate
+is on *resolution*: the only URL this module will fetch is the one OpenAlex
+reports, never a caller-supplied one — a metadata-gated fetcher, not a general
+scraper.
 
 The gate does not reach the host that serves the bytes: redirects are followed,
 so a fetch can end somewhere ``best_pdf_url`` never saw, and there is no scheme

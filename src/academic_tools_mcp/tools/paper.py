@@ -689,7 +689,7 @@ async def get_papers_metadata(
         Field(
             description=(
                 "List of paper identifiers (arXiv IDs, ACL Anthology IDs, DOIs, "
-                "PMIDs). Mixed "
+                "PMIDs, OpenAlex work IDs). Mixed "
                 "sources are fine; each is dispatched to the right "
                 "provider. Cap 100 per call to keep responses bounded — "
                 "for larger sets, page through in batches."
@@ -702,8 +702,8 @@ async def get_papers_metadata(
 ) -> dict[str, Any]:
     """Batch metadata fetch — same payload as get_paper_metadata, in bulk.
 
-    For reference-graph traversal: uncached OpenAlex DOIs are chunked into
-    ``/works?filter=doi:...|...`` calls and uncached arXiv IDs into ``id_list``
+    For reference-graph traversal: uncached OpenAlex DOIs, PMIDs, and work IDs are
+    chunked into ``/works?filter=...`` calls and uncached arXiv IDs into ``id_list``
     calls, bioRxiv and the ACL Anthology fetch concurrently,
     cached entries cost no HTTP call, and every fetched paper warms the singleton
     cache so a later get_paper_metadata / _authors is free.

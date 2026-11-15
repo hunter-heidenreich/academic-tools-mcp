@@ -102,8 +102,9 @@ async def _download_pdf_by_provider(
                 "bioRxiv/medRxiv DOIs (10.1101/...), and ACL Anthology papers."
             ),
             "suggestion": (
-                "For a generic publisher DOI, retry with allow_oa_url=True to "
-                f"fetch the open-access PDF URL OpenAlex reports (if any). {manual.IMPORT_SUGGESTION}"
+                "For a generic publisher DOI or OpenAlex work ID, retry with "
+                "allow_oa_url=True to fetch the open-access PDF URL OpenAlex reports "
+                f"(if any). {manual.IMPORT_SUGGESTION}"
             ),
         }
 
