@@ -619,6 +619,14 @@ grouped by milestone rather than per commit.
 
 ### Changed
 
+- **Startup maintenance runs off the event loop, prunes expired negative-cache entries,
+  and stamps completed legacy stem migrations (`app._lifespan`,
+  `cache.gc_expired_negatives`).** `app._lifespan` now executes startup sweeps in a
+  worker thread via `asyncio.to_thread`, sweeps expired or corrupt `_neg/*.json`
+  files via `cache.gc_expired_negatives()`, and writes a `.migrations_v1` marker in
+  `CACHE_ROOT` once `migrate_legacy_stems`, `migrate_misrouted_arxiv`, and
+  `migrate_acl_stems` complete so subsequent server startups skip re-walking the cache
+  tree for one-time legacy migrations. ([#182])
 - **A bare 7–8 digit identifier is now read as a PMID.** Shorter runs are
   unchanged, so a freeform `import_paper(file, "1234")` label still routes to
   `manual`. An **existing** 7–8 digit label is not stranded: the first call that
@@ -2395,3 +2403,4 @@ say which.
 [#179]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/179
 [#180]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/180
 [#181]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/181
+[#182]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/182

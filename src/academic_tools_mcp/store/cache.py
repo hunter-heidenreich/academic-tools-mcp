@@ -332,3 +332,32 @@ def gc_orphan_tmp_files(*, max_age_seconds: float = _ORPHAN_TMP_AGE_SECONDS) -> 
             # Concurrent unlink, permissions, a racing writer — all benign; the next sweep retries.
             continue
     return removed
+
+
+def gc_expired_negatives() -> int:
+    """Sweep ``.cache/*/*/_neg/*.json`` and unlink expired or corrupt negative entries.
+
+    A negative entry expires by its stamped ``_expires_at`` instant; without a
+    startup sweep, a mistyped or once-404'd identifier that is never queried a
+    second time leaves its ``_neg/*.json`` file on disk indefinitely.
+
+    Returns the number unlinked; idempotent.
+    """
+    now = time.time()
+    removed = 0
+    for path in CACHE_ROOT.glob(f"*/*/{_NEG_SUBDIR}/*.json"):
+        entry = _read_entry(path)
+        if entry is None:
+            if not path.exists():
+                removed += 1
+            continue
+        expires_at = entry.get("_expires_at", 0)
+        if (
+            not isinstance(expires_at, (int, float))
+            or isinstance(expires_at, bool)
+            or expires_at < now
+        ):
+            _unlink_quietly(path)
+            if not path.exists():
+                removed += 1
+    return removed
