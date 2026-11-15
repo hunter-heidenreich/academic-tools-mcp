@@ -91,25 +91,21 @@ def _crossref_refs(work: dict[str, Any]) -> list[dict[str, Any]]:
     return dict_list(work.get("reference"))
 
 
+_CROSSREF_REF_FIELDS = (
+    ("doi", "DOI"),
+    ("author", "author"),
+    ("title", "article-title"),
+    ("year", "year"),
+    ("journal", "journal-title"),
+    ("volume", "volume"),
+    ("first_page", "first-page"),
+    ("unstructured", "unstructured"),
+)
+
+
 def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
     """Extract lean fields from a raw Crossref reference object."""
-    entry: dict[str, Any] = {}
-    if ref.get("DOI"):
-        entry["doi"] = ref["DOI"]
-    if ref.get("author"):
-        entry["author"] = ref["author"]
-    if ref.get("article-title"):
-        entry["title"] = ref["article-title"]
-    if ref.get("year"):
-        entry["year"] = ref["year"]
-    if ref.get("journal-title"):
-        entry["journal"] = ref["journal-title"]
-    if ref.get("volume"):
-        entry["volume"] = ref["volume"]
-    if ref.get("first-page"):
-        entry["first_page"] = ref["first-page"]
-    if ref.get("unstructured"):
-        entry["unstructured"] = ref["unstructured"]
+    entry: dict[str, Any] = {dst: val for dst, src in _CROSSREF_REF_FIELDS if (val := ref.get(src))}
     if not entry and ref.get("key"):
         # A bookkeeping-only row is a real deposit with no usable metadata;
         # a bare {} would read as a formatter that lost the entry.
@@ -159,11 +155,6 @@ async def get_paper_references_count(
     )
 
     return {"doi": doi, "sources": sources}
-
-
-def _openalex_cited_by(work: dict[str, Any]) -> int | None:
-    """An OpenAlex work's citation tally, int-guarded — the value is untyped JSON."""
-    return as_int(work.get("cited_by_count"))
 
 
 def _page(
@@ -397,7 +388,7 @@ async def get_paper_citations_count(
     if "error" in oa_work:
         sources["openalex"] = _source_error(oa_work)
     else:
-        sources["openalex"] = {"count": _openalex_cited_by(oa_work)}
+        sources["openalex"] = {"count": as_int(oa_work.get("cited_by_count"))}
 
     return {"doi": doi, "count": count, "pageable": pageable, "sources": sources}
 

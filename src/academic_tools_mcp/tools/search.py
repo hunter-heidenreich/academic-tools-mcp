@@ -100,6 +100,16 @@ def _wikipedia_search_suggestion(result: dict[str, Any]) -> str:
     return "Wikipedia is temporarily unavailable; retry in a few seconds."
 
 
+def _search_envelope(response: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Uniform ``{total_results, result_count, results}`` search triage envelope."""
+    return {
+        # An int on every search tool that reports it, so agents can branch on it.
+        "total_results": response.get("total_results") or 0,
+        "result_count": len(results),
+        "results": results,
+    }
+
+
 @mcp.tool
 async def search_arxiv(
     query: Annotated[
@@ -160,11 +170,7 @@ async def search_arxiv(
         }
         for p in dict_list(result.get("entries"))
     ]
-    return {
-        "total_results": result.get("total_results") or 0,
-        "result_count": len(results),
-        "results": results,
-    }
+    return _search_envelope(result, results)
 
 
 @mcp.tool
@@ -226,12 +232,7 @@ async def search_crossref_by_title(
             }
         )
 
-    return {
-        # Crossref sometimes omits `total-results`; the key must mean what it does in search_arxiv.
-        "total_results": response.get("total_results") or 0,
-        "result_count": len(results),
-        "results": results,
-    }
+    return _search_envelope(response, results)
 
 
 def _openalex_first_author(work: dict[str, Any]) -> str | None:
@@ -316,12 +317,7 @@ async def search_openalex(
             }
         )
 
-    return {
-        # An int on every search tool that reports it, so agents can branch on it.
-        "total_results": response.get("total_results") or 0,
-        "result_count": len(results),
-        "results": results,
-    }
+    return _search_envelope(response, results)
 
 
 def _last_known_institution(author: dict[str, Any]) -> str | None:
@@ -398,12 +394,7 @@ async def search_authors(
         for author in response.get("items", [])
     ]
 
-    return {
-        # An int on every search tool that reports it, so agents can branch on it.
-        "total_results": response.get("total_results") or 0,
-        "result_count": len(results),
-        "results": results,
-    }
+    return _search_envelope(response, results)
 
 
 AUTOCOMPLETE_ENTITY = Annotated[
@@ -467,12 +458,7 @@ async def autocomplete_openalex(
         for item in response.get("items", [])
     ]
 
-    return {
-        # An int on every search tool that reports it, so agents can branch on it.
-        "total_results": response.get("total_results") or 0,
-        "result_count": len(results),
-        "results": results,
-    }
+    return _search_envelope(response, results)
 
 
 @mcp.tool

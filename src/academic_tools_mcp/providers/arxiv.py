@@ -2,6 +2,7 @@
 
 import copy
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any, Literal
@@ -180,6 +181,29 @@ def _error_entry_root(response: httpx.Response) -> ET.Element | None:
     return root if entry is not None and _is_error_entry(entry) else None
 
 
+async def _fetch_atom_root(
+    params: dict[str, str],
+    *,
+    on_404: Callable[[], dict[str, Any]] | None = None,
+) -> ET.Element | dict[str, Any]:
+    """GET the Atom endpoint and parse its XML root, or return a structured error dict."""
+    try:
+        response = await _throttled_get(ARXIV_BASE_URL, params=params)
+        if on_404 is not None and response.status_code == 404:
+            return on_404()
+        if _is_edge_rejection(response):
+            return _edge_rejection_dict()
+        root = _rejection_root(response)
+        if root is None:
+            response.raise_for_status()
+            root = _safe_fromstring(response.text)
+        return root
+    except _PARSE_ERRORS:
+        return _parse_error_dict()
+    except http.HTTPX_ERRORS as e:
+        return http.error_dict(LABEL, e)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -200,30 +224,12 @@ async def get_paper(arxiv_id: str, *, force_refresh: bool = False) -> dict[str, 
             cache.put_negative(NAMESPACE, "papers", canonical, err, ttl_seconds=_NEG_TTL_SECONDS)
             return err
 
-        try:
-            response = await _throttled_get(
-                ARXIV_BASE_URL,
-                params={"id_list": normalize_arxiv_id(arxiv_id)},
-            )
-
-            # Before raise_for_status, as every sibling does: through error_dict a 404
-            # is an uncached body snippet carrying no ``not_found``.
-            if response.status_code == 404:
-                return _not_found()
-
-            if _is_edge_rejection(response):
-                return _edge_rejection_dict()
-
-            # A rejected id is a 400 whose entry the not-found branch below classifies.
-            root = _rejection_root(response)
-            if root is None:
-                response.raise_for_status()
-                root = _safe_fromstring(response.text)
-        # Neither caches: a garbled body and a 5xx/timeout/429 say nothing about existence.
-        except _PARSE_ERRORS:
-            return _parse_error_dict()
-        except http.HTTPX_ERRORS as e:
-            return http.error_dict(LABEL, e)
+        root = await _fetch_atom_root(
+            {"id_list": normalize_arxiv_id(arxiv_id)},
+            on_404=_not_found,
+        )
+        if isinstance(root, dict):
+            return root
 
         entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
@@ -274,31 +280,17 @@ async def search_papers(
             "beyond_window": True,
         }
 
-    try:
-        response = await _throttled_get(
-            ARXIV_BASE_URL,
-            params={
-                "search_query": query,
-                "start": str(start),
-                "max_results": str(capped),
-                "sortBy": _SORT_BY[sort_by],
-                "sortOrder": sort_order,
-            },
-        )
-
-        if _is_edge_rejection(response):
-            return _edge_rejection_dict()
-
-        # A rejected query is a 400 whose entry the rejection branch below classifies.
-        root = _rejection_root(response)
-        if root is None:
-            response.raise_for_status()
-            # Inside the guard: a garbled or hostile body must return, not raise.
-            root = _safe_fromstring(response.text)
-    except _PARSE_ERRORS:
-        return _parse_error_dict()
-    except http.HTTPX_ERRORS as e:
-        return http.error_dict(LABEL, e)
+    root = await _fetch_atom_root(
+        {
+            "search_query": query,
+            "start": str(start),
+            "max_results": str(capped),
+            "sortBy": _SORT_BY[sort_by],
+            "sortOrder": sort_order,
+        }
+    )
+    if isinstance(root, dict):
+        return root
 
     entries = root.findall(f"{{{_ATOM_NS}}}entry")
 
