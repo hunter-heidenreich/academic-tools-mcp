@@ -135,8 +135,8 @@ can pass `page=0`, so constrain the test domain rather than clamping.
 - **Date extraction is single-homed** in `app.crossref_date` / `_CROSSREF_DATE_KEYS`.
   Don't add a second walker.
 - **Nothing below a Crossref item is typed, so every read of one is shape-guarded**
-  — `app.as_dict` / `app.dict_list` are the shared guards, in `app.py` because both
-  the OpenAlex tree and the Crossref hits need them. **`.get(k, default)` alone is
+  — `jsonshape.as_dict` / `jsonshape.dict_list` are the shared guards for both
+  the OpenAlex tree and the Crossref hits. **`.get(k, default)` alone is
   never trusted on an OpenAlex object.** **`author_count` counts the filtered list**,
   the one `_crossref_first_author` chose from.
 - **`total_results` is an `int` on every tool that reports it**, defaulted to `0`

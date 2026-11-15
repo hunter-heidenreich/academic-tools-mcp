@@ -9,16 +9,9 @@ from collections.abc import Callable
 from typing import Any
 
 from .. import manual
-from ..app import (
-    as_dict,
-    as_int,
-    crossref_date,
-    dict_list,
-    openalex_arxiv_id,
-    openalex_pmid,
-    unwrap_first,
-)
+from ..app import crossref_date, openalex_arxiv_id, openalex_pmid
 from ..providers import arxiv, crossref, openalex
+from ..util.jsonshape import as_dict, as_int, dict_list, unwrap_first
 
 
 def arxiv_pdf_url(paper: dict[str, Any]) -> str | None:

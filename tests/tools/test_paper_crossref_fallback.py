@@ -209,20 +209,20 @@ class TestFormatCrossrefMetadata:
 
 
 class TestFirstHelper:
-    """Unit coverage for the shared app.unwrap_first list-unwrap helper."""
+    """Unit coverage for the shared jsonshape.unwrap_first list-unwrap helper."""
 
     def test_unwraps_list(self):
-        from academic_tools_mcp.app import unwrap_first
+        from academic_tools_mcp.util.jsonshape import unwrap_first
 
         assert unwrap_first(["a", "b"]) == "a"
 
     def test_empty_list_is_none(self):
-        from academic_tools_mcp.app import unwrap_first
+        from academic_tools_mcp.util.jsonshape import unwrap_first
 
         assert unwrap_first([]) is None
 
     def test_passes_through_scalar(self):
-        from academic_tools_mcp.app import unwrap_first
+        from academic_tools_mcp.util.jsonshape import unwrap_first
 
         assert unwrap_first("plain") == "plain"
         assert unwrap_first(None) is None

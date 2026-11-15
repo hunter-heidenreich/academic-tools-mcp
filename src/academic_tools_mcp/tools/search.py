@@ -16,20 +16,17 @@ from ..app import (
     PAPER_ID,
     SEARCH_YEAR_MAX,
     SEARCH_YEAR_MIN,
-    as_dict,
     crossref_date,
-    dict_list,
     enrich_error,
     mcp,
-    non_empty_str,
     openalex_arxiv_id,
     openalex_pmid,
     page_bounds,
     read_markdown,
-    unwrap_first,
 )
 from ..providers import arxiv, crossref, openalex, wikipedia
 from ..util import doinorm
+from ..util.jsonshape import as_dict, dict_list, non_empty_str, unwrap_first
 
 ARXIV_SORT_BY = Annotated[
     arxiv.SearchSortBy,
