@@ -1,9 +1,15 @@
 ---
 paths:
   - "src/academic_tools_mcp/providers/openalex.py"
+  - "src/academic_tools_mcp/providers/openalex_parse.py"
 ---
 
-# openalex.py
+# openalex.py & openalex_parse.py
+
+Pure identifier normalization, URL safety (`best_pdf_url`, `_usable_http_url`), and
+response-parsing helpers (`reconstruct_abstract`, `_canonical_from_response_doi`,
+`_meta_count`) live in `providers/openalex_parse.py` and are re-exported by
+`providers/openalex.py`.
 
 **The budget is credits, not requests, and the classes are priced far apart** —
 the constants and their measurement are at `_SEARCH_CREDITS`, the operator-facing

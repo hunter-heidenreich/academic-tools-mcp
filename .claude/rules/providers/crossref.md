@@ -1,9 +1,13 @@
 ---
 paths:
   - "src/academic_tools_mcp/providers/crossref.py"
+  - "src/academic_tools_mcp/providers/crossref_parse.py"
 ---
 
-# crossref.py
+# crossref.py & crossref_parse.py
+
+Pure DOI/author/institution/JATS-abstract/notice/relation/envelope parsing helpers
+live in `providers/crossref_parse.py` and are re-exported by `providers/crossref.py`.
 
 **Gating runs one way: build public, widen on proof.** The rate constants and the
 `_observe_pool` mechanism carry their own comments; what they don't say is that
