@@ -164,6 +164,17 @@ _WORK_ID_RE = re.compile(r"^W\d{1,12}$", re.IGNORECASE)
 # Live work ids run 8-10 digits; nothing shorter resolves. Sampled, not documented.
 _BARE_WORK_ID_FLOOR = 9
 
+# NCBI PMC and Europe PMC article URLs.
+_PMCID_URL_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?"
+    r"(?:ncbi\.nlm\.nih\.gov/pmc/articles|pmc\.ncbi\.nlm\.nih\.gov/articles|europepmc\.org/article/pmc)"
+    r"/(PMC\d+)/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+# Canonical PMCID: PMC followed by digits (up to 10 digits covers all live/future IDs).
+_PMCID_RE = re.compile(r"^PMC\d{1,10}$", re.IGNORECASE)
+
 
 def _matches_tiered_id(
     identifier: str,
@@ -245,6 +256,41 @@ def canonical_work_id(work_id: str) -> str:
     return normalize_work_id(work_id).lower()
 
 
+def normalize_pmcid(pmcid: str) -> str:
+    """Normalize a PubMed Central identifier to canonical ``PMC<digits>`` form.
+
+    Accepts bare ``PMC1234567`` (any case), ``pmc:`` / ``pmcid:`` prefixes (with
+    or without the ``PMC`` letters), and NCBI / Europe PMC article URLs.
+    Idempotent.
+    """
+    value = pmcid.strip()
+    if m := _PMCID_URL_RE.match(value):
+        return f"PMC{m.group(1)[3:]}"
+    had_prefix = False
+    for prefix in ("pmcid:", "pmc:"):
+        stripped = _strip_repeated_prefix(value, prefix)
+        if stripped != value:
+            had_prefix = True
+            value = stripped
+    if m := _PMCID_URL_RE.match(value):
+        return f"PMC{m.group(1)[3:]}"
+    if had_prefix and value.isdecimal():
+        return f"PMC{value}"
+    if _PMCID_RE.match(value):
+        return f"PMC{value[3:]}"
+    return value
+
+
+def is_pmcid(identifier: str) -> bool:
+    """Return True when *identifier* is a PMCID (bare ``PMC...``, prefixed, or PMC URL)."""
+    return bool(_PMCID_RE.match(normalize_pmcid(identifier)))
+
+
+def canonical_pmcid(pmcid: str) -> str:
+    """Cache-key form for PMCIDs: lowercased ``pmc<digits>``."""
+    return normalize_pmcid(pmcid).lower()
+
+
 # The resolver prefixes a *response* DOI can carry: ``doinorm._DOI_URL_RE``'s host
 # set, deliberately without its DOI-shape requirement on the tail.
 _RESPONSE_DOI_URL_RE = re.compile(r"^https?://(?:dx\.|www\.)?doi\.org/", re.IGNORECASE)
@@ -285,6 +331,16 @@ def _extract_batch_work_id(work: dict[str, Any]) -> str | None:
         return None
     canonical = canonical_work_id(raw_id)
     return canonical if _WORK_ID_RE.match(canonical) else None
+
+
+def _extract_batch_pmcid(work: dict[str, Any]) -> str | None:
+    """The canonical bare PMCID from an OpenAlex work's ``ids.pmcid``, or None."""
+    ids = work.get("ids")
+    raw_pmcid = ids.get("pmcid") if isinstance(ids, dict) else None
+    if not isinstance(raw_pmcid, str) or not raw_pmcid:
+        return None
+    canonical = canonical_pmcid(raw_pmcid)
+    return canonical if _PMCID_RE.match(canonical) else None
 
 
 def reconstruct_abstract(inverted_index: Any) -> str:

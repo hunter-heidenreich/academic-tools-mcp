@@ -14,6 +14,7 @@ import pytest
 
 from academic_tools_mcp import manual, server
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, crossref, openalex
+from academic_tools_mcp.store import cache
 from academic_tools_mcp.tools import formatting, paper
 
 # ---------------------------------------------------------------------------
@@ -2713,3 +2714,75 @@ class TestBatchBackpressureAndSearchChaining:
         assert target["namespace"] == "manual"
         assert target["canonical"] == "w4312223440"
         assert target["pdf_path"].exists()
+
+
+class TestPmcidPaperTools:
+    @pytest.mark.asyncio
+    async def test_get_paper_metadata_resolves_pmcid_and_surfaces_pmcid_field(self, monkeypatch):
+        async def fake_resolve(pmcid, *, force_refresh=False):
+            assert openalex.normalize_pmcid(pmcid) == "PMC1762313"
+            return {
+                "doi": "10.1371/journal.pone.0000001",
+                "openalex_id": "https://openalex.org/W4312223440",
+            }
+
+        async def fake_work(doi, *, force_refresh=False):
+            assert doi == "10.1371/journal.pone.0000001"
+            return {
+                "id": "https://openalex.org/W4312223440",
+                "doi": "https://doi.org/10.1371/journal.pone.0000001",
+                "ids": {
+                    "pmid": "https://pubmed.ncbi.nlm.nih.gov/17183631",
+                    "pmcid": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1762313",
+                },
+                "title": "PLOS ONE Paper",
+                "publication_year": 2006,
+                "cited_by_count": 50,
+            }
+
+        monkeypatch.setattr(openalex, "resolve_pmcid", fake_resolve)
+        monkeypatch.setattr(openalex, "get_work", fake_work)
+
+        result = await server.get_paper_metadata("PMC1762313")
+
+        assert result["_source"] == "openalex"
+        assert result["_canonical_id"] == "10.1371/journal.pone.0000001"
+        assert result["pmid"] == "17183631"
+        assert result["pmcid"] == "PMC1762313"
+        assert result["title"] == "PLOS ONE Paper"
+
+    @pytest.mark.asyncio
+    async def test_get_papers_metadata_prebatches_pmcids(self, monkeypatch):
+        batched: list[list[str]] = []
+
+        async def fake_batch_pmcids(pmcids, *, force_refresh=False):
+            batched.append(list(pmcids))
+            for raw, doi in zip(pmcids, ["10.1234/a", "10.1234/b"], strict=True):
+                canonical = openalex.canonical_pmcid(raw)
+                cache.put(
+                    openalex.NAMESPACE,
+                    "pmcids",
+                    canonical,
+                    {"doi": doi, "openalex_id": "https://openalex.org/W1"},
+                )
+            return {}
+
+        async def fake_batch_works(dois, *, force_refresh=False):
+            return {
+                d: {
+                    "id": "https://openalex.org/W1",
+                    "doi": f"https://doi.org/{d}",
+                    "ids": {"pmcid": "PMC100" if d == "10.1234/a" else "PMC200"},
+                    "title": f"Title {d}",
+                }
+                for d in dois
+            }
+
+        monkeypatch.setattr(openalex, "resolve_pmcids_batch", fake_batch_pmcids)
+        monkeypatch.setattr(openalex, "get_works_batch", fake_batch_works)
+
+        result = await server.get_papers_metadata(["PMC100", "PMC200"])
+
+        assert batched == [["PMC100", "PMC200"]]
+        assert result["count"] == 2
+        assert [p["pmcid"] for p in result["papers"]] == ["PMC100", "PMC200"]

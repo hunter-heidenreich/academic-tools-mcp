@@ -1528,6 +1528,7 @@ class TestOpenAlexCitationsPaging:
                 "doi": "10.1234/citing1",
                 "openalex_id": "https://openalex.org/W1111111111",
                 "pmid": "12345678",
+                "pmcid": None,
                 "arxiv_id": None,
                 "title": "Big Followup",
                 "first_author": "Alice Smith",

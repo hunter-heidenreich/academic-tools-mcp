@@ -2454,3 +2454,75 @@ class TestSearchWorksFilters:
 
         assert result["not_found"] is True
         assert requests == []
+
+
+class TestPmcidResolution:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("PMC1234567", "PMC1234567"),
+            ("pmc1234567", "PMC1234567"),
+            ("pmc:1234567", "PMC1234567"),
+            ("pmcid:PMC1234567", "PMC1234567"),
+            ("https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1234567/", "PMC1234567"),
+            ("https://pmc.ncbi.nlm.nih.gov/articles/PMC1234567", "PMC1234567"),
+            ("https://europepmc.org/article/PMC/PMC1234567", "PMC1234567"),
+        ],
+    )
+    def test_is_and_normalize_pmcid(self, raw: str, expected: str):
+        assert openalex.is_pmcid(raw) is True
+        assert openalex.normalize_pmcid(raw) == expected
+        assert openalex.canonical_pmcid(raw) == expected.lower()
+
+    @pytest.mark.parametrize(
+        "raw", ["1234567", "pmid:1234567", "W4312223440", "10.1234/x", "my-pmc"]
+    )
+    def test_non_pmcids_not_claimed(self, raw: str):
+        assert openalex.is_pmcid(raw) is False
+
+    @pytest.mark.asyncio
+    async def test_resolve_pmcid_fetches_and_warms_works_cache(self, monkeypatch):
+        work = {
+            "id": "https://openalex.org/W4312223440",
+            "doi": "https://doi.org/10.1371/journal.pone.0000001",
+            "ids": {
+                "pmid": "https://pubmed.ncbi.nlm.nih.gov/17183631",
+                "pmcid": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1762313",
+            },
+            "title": "PLOS ONE Sample",
+        }
+        requests = _stub_json_responses(monkeypatch, work)
+
+        resolved = await openalex.resolve_pmcid("pmc:1762313")
+
+        assert resolved == {
+            "doi": "10.1371/journal.pone.0000001",
+            "openalex_id": "https://openalex.org/W4312223440",
+        }
+        assert _path_of(requests[0]) == "/works/pmcid:PMC1762313"
+        assert cache.get(
+            openalex.NAMESPACE, "works", "10.1371/journal.pone.0000001", max_age_seconds=3600
+        )
+        assert cache.get(openalex.NAMESPACE, "pmcids", "pmc1762313", max_age_seconds=3600)
+
+    @pytest.mark.asyncio
+    async def test_resolve_pmcids_batch_chunks_and_warms(self, monkeypatch):
+        work = {
+            "id": "https://openalex.org/W100",
+            "doi": "https://doi.org/10.1234/pmc-a",
+            "ids": {"pmcid": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC100"},
+        }
+        requests = _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 1}, "results": [work]},
+        )
+
+        out = await openalex.resolve_pmcids_batch(["PMC100", "PMC999"])
+
+        assert out["pmc100"] == {
+            "doi": "10.1234/pmc-a",
+            "openalex_id": "https://openalex.org/W100",
+        }
+        assert out["pmc999"]["not_found"] is True
+        params = parse_qs(requests[0].url.query.decode())
+        assert params["filter"] == ["pmcid:pmc100|pmc999"]

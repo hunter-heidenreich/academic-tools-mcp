@@ -13,10 +13,12 @@ from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
 from ..util import config, doinorm, orcidnorm, useragent
 from .openalex_parse import (
+    _PMCID_RE,
     _PMID_RE,
     _WORK_ID_RE,
     _author_path_id,
     _canonical_from_response_doi,
+    _extract_batch_pmcid,
     _extract_batch_pmid,
     _extract_batch_work_id,
     _institution_path_id,
@@ -27,9 +29,12 @@ from .openalex_parse import (
     canonical_author_id,
     canonical_doi,
     canonical_institution_id,
+    canonical_pmcid,
     canonical_work_id,
+    is_pmcid as is_pmcid,
     is_pmid as is_pmid,
     is_work_id,
+    normalize_pmcid as normalize_pmcid,
     normalize_pmid,
     normalize_work_id as normalize_work_id,
     reconstruct_abstract as reconstruct_abstract,
@@ -147,10 +152,19 @@ def _warm_work_mappings(work: dict[str, Any], *, doi: str | None = None) -> dict
         and _WORK_ID_RE.match(w_key)
     ):
         cache.warm(NAMESPACE, "work_ids", w_key, mapping, max_age_seconds=_POSITIVE_TTL_SECONDS)
-    if isinstance(ids := work.get("ids"), dict) and isinstance(raw_pmid := ids.get("pmid"), str):
-        pmid_key = normalize_pmid(raw_pmid)
-        if _PMID_RE.match(pmid_key):
-            cache.warm(NAMESPACE, "pmids", pmid_key, mapping, max_age_seconds=_POSITIVE_TTL_SECONDS)
+    if isinstance(ids := work.get("ids"), dict):
+        if isinstance(raw_pmid := ids.get("pmid"), str):
+            pmid_key = normalize_pmid(raw_pmid)
+            if _PMID_RE.match(pmid_key):
+                cache.warm(
+                    NAMESPACE, "pmids", pmid_key, mapping, max_age_seconds=_POSITIVE_TTL_SECONDS
+                )
+        if isinstance(raw_pmcid := ids.get("pmcid"), str):
+            pmcid_key = canonical_pmcid(raw_pmcid)
+            if _PMCID_RE.match(pmcid_key):
+                cache.warm(
+                    NAMESPACE, "pmcids", pmcid_key, mapping, max_age_seconds=_POSITIVE_TTL_SECONDS
+                )
     return mapping
 
 
@@ -206,6 +220,38 @@ async def resolve_pmid(pmid: str, *, force_refresh: bool = False) -> dict[str, A
         fetch=_fetch,
         force_refresh=force_refresh,
         sf_key=("pmid", canonical),
+    )
+
+
+async def resolve_pmcid(pmcid: str, *, force_refresh: bool = False) -> dict[str, Any]:
+    """Trade a PMCID for the paper's DOI (or OpenAlex work ID when DOI-less).
+
+    Same contract as :func:`resolve_pmid`: calls ``/works/pmcid:PMC...``, warms
+    ``works`` and sibling ID caches, and caches the mapping under ``pmcids``.
+    """
+    normalized = normalize_pmcid(pmcid)
+    canonical = canonical_pmcid(pmcid)
+
+    async def _fetch() -> dict[str, Any]:
+        api_pmcid = quote(normalized, safe="")
+        return await _fetch_singleton(
+            entity="pmcids",
+            url=f"{OPENALEX_BASE_URL}/works/pmcid:{api_pmcid}",
+            bare=normalized,
+            canonical=canonical,
+            not_found_error=f"No work found for PMCID: {pmcid}",
+            store=_traded_ids,
+        )
+
+    return await cache.cached_lookup(
+        single_flight=_single_flight,
+        namespace=NAMESPACE,
+        entity="pmcids",
+        canonical=canonical,
+        positive_ttl=_POSITIVE_TTL_SECONDS,
+        fetch=_fetch,
+        force_refresh=force_refresh,
+        sf_key=("pmcid", canonical),
     )
 
 
@@ -1026,5 +1072,27 @@ async def resolve_work_ids_batch(
         shape_re=_WORK_ID_RE,
         extract_key=_extract_batch_work_id,
         not_found_label="OpenAlex ID",
+        force_refresh=force_refresh,
+    )
+
+
+async def resolve_pmcids_batch(
+    pmcids: list[str],
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Resolve many PMCIDs in batched ``/works?filter=pmcid:PMC...|...`` calls.
+
+    Returns ``{canonical_pmcid: mapping_or_error_dict}`` in first-appearance
+    order, warming ``works``, ``work_ids``, ``pmids``, and ``pmcids``.
+    """
+    return await _resolve_ids_batch(
+        pmcids,
+        entity="pmcids",
+        filter_key="pmcid",
+        canonicalize=canonical_pmcid,
+        shape_re=_PMCID_RE,
+        extract_key=_extract_batch_pmcid,
+        not_found_label="PMCID",
         force_refresh=force_refresh,
     )

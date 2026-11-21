@@ -169,7 +169,7 @@ PREPRINT_ID = Annotated[
 DOI = Annotated[
     str,
     Field(
-        description="DOI (bare, doi:, or URL), PMID, OpenAlex work ID (W...), or ACL Anthology ID/URL."
+        description="DOI (bare, doi:, or URL), PMID, PMCID (PMC...), OpenAlex work ID (W...), or ACL Anthology ID/URL."
     ),
 ]
 
@@ -186,14 +186,14 @@ INSTITUTION_ID = Annotated[
 ARXIV_ID = Annotated[
     str,
     Field(
-        description="arXiv ID (bare, arXiv:, or URL), or a DOI/PMID/OpenAlex work ID resolved to arXiv via OpenAlex."
+        description="arXiv ID (bare, arXiv:, or URL), or a DOI/PMID/PMCID/OpenAlex work ID resolved to arXiv via OpenAlex."
     ),
 ]
 
 PAPER_ID = Annotated[
     str,
     Field(
-        description="Paper identifier: arXiv ID, bioRxiv/medRxiv DOI, ACL Anthology ID/URL, DOI, PMID, or OpenAlex work ID (W...). Pipeline tools also accept freeform import labels."
+        description="Paper identifier: arXiv ID, bioRxiv/medRxiv DOI, ACL Anthology ID/URL, DOI, PMID, PMCID (PMC...), or OpenAlex work ID (W...). Pipeline tools also accept freeform import labels."
     ),
 ]
 
@@ -277,13 +277,15 @@ async def resolve_paper_identifier(
 async def _trade_non_doi(
     identifier: str, *, force_refresh: bool
 ) -> tuple[str, dict[str, Any] | None]:
-    """The PMID and OpenAlex-work-ID trades, in one order every caller shares.
+    """The PMID, PMCID, and OpenAlex-work-ID trades, in one order every caller shares.
 
-    The shapes are disjoint: a PMID is traded once (to its DOI or OpenAlex work ID)
-    and never re-traded as a work ID.
+    The shapes are disjoint: a PMID or PMCID is traded once (to its DOI or
+    OpenAlex work ID) and never re-traded as a work ID.
     """
     if openalex.is_pmid(identifier):
         return await resolve_pmid_identifier(identifier, force_refresh=force_refresh)
+    if openalex.is_pmcid(identifier):
+        return await resolve_pmcid_identifier(identifier, force_refresh=force_refresh)
     return await resolve_work_id_identifier(identifier, force_refresh=force_refresh)
 
 
@@ -355,6 +357,28 @@ async def resolve_pmid_identifier(
             "directly. Only papers OpenAlex has indexed resolve by PMID."
         ),
         missing_label=lambda raw_id: f"PMID {openalex.normalize_pmid(identifier)} ({raw_id})",
+    )
+
+
+async def resolve_pmcid_identifier(
+    identifier: str, *, force_refresh: bool = False
+) -> tuple[str, dict[str, Any] | None]:
+    """Trade a PMCID for its DOI (or normalized OpenAlex work ID when DOI-less).
+
+    Returns ``(identifier, None)`` or ``(identifier, error)``.
+    """
+    if not openalex.is_pmcid(identifier):
+        return identifier, None
+
+    return await _resolve_openalex_trade(
+        identifier,
+        resolved=await openalex.resolve_pmcid(identifier, force_refresh=force_refresh),
+        refile=manual.refile_pmcid_stems,
+        error_suggestion=(
+            "Check the PMCID on pmc.ncbi.nlm.nih.gov, or pass the paper's DOI "
+            "or PMID directly. Only papers OpenAlex has indexed resolve by PMCID."
+        ),
+        missing_label=lambda raw_id: f"{openalex.normalize_pmcid(identifier)} ({raw_id})",
     )
 
 
@@ -553,6 +577,14 @@ def openalex_pmid(work: dict[str, Any]) -> str | None:
         return None
     normalized = openalex.normalize_pmid(raw)
     return normalized if normalized.isdecimal() else None
+
+
+def openalex_pmcid(work: dict[str, Any]) -> str | None:
+    """The work's canonical ``PMC<digits>`` ID, or ``None``."""
+    raw = as_dict(work.get("ids")).get("pmcid")
+    if not isinstance(raw, str) or not raw:
+        return None
+    return openalex.normalize_pmcid(raw) if openalex.is_pmcid(raw) else None
 
 
 def openalex_arxiv_id(work: dict[str, Any]) -> str | None:

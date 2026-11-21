@@ -78,7 +78,11 @@ async def _resolve_to_arxiv_id(
     """
     if arxiv.is_arxiv_id(identifier):
         return identifier, None
-    was_non_doi = openalex.is_pmid(identifier) or openalex.is_work_id(identifier)
+    was_non_doi = (
+        openalex.is_pmid(identifier)
+        or openalex.is_pmcid(identifier)
+        or openalex.is_work_id(identifier)
+    )
     routed, trade_err = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
     if trade_err is not None:
         return None, trade_err

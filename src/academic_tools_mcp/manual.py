@@ -302,6 +302,18 @@ def refile_work_id_stems(raw_identifier: str, doi: str) -> int:
     )
 
 
+def refile_pmcid_stems(raw_identifier: str, doi: str) -> int:
+    """Re-file an import filed under a PMCID spelling onto its DOI stem.
+
+    Lazy, like :func:`refile_pmid_stems`. Caller holds the destination's
+    ``papers.sections_lock``.
+    """
+    return _refile_onto(
+        _traded_sources(raw_identifier, normalize=openalex.normalize_pmcid, prefix="pmc:"),
+        resolve_target(doi),
+    )
+
+
 def refile_hosted_doi_stems(doi: str, anthology_id: str) -> int:
     """Move an import filed under a hosted DOI onto its Anthology ID's stem.
 

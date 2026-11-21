@@ -115,7 +115,11 @@ async def _fetch_source(
     top is uniform across them, as is the bioRxiv → OpenAlex fallback: a hit returns
     ``source == "openalex"``, its work marked ``biorxiv_unavailable``.
     """
-    was_non_doi = openalex.is_pmid(identifier) or openalex.is_work_id(identifier)
+    was_non_doi = (
+        openalex.is_pmid(identifier)
+        or openalex.is_pmcid(identifier)
+        or openalex.is_work_id(identifier)
+    )
     identifier, pmid_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
     if pmid_error is not None:
         return None, None, pmid_error
@@ -473,32 +477,56 @@ async def get_papers_metadata(
         results[slot] = formatted
 
     pmid_idents = [ident for ident in identifiers if openalex.is_pmid(ident)]
+    pmcid_idents = [
+        ident for ident in identifiers if not openalex.is_pmid(ident) and openalex.is_pmcid(ident)
+    ]
     work_id_idents = [
-        ident for ident in identifiers if not openalex.is_pmid(ident) and openalex.is_work_id(ident)
+        ident
+        for ident in identifiers
+        if not openalex.is_pmid(ident)
+        and not openalex.is_pmcid(ident)
+        and openalex.is_work_id(ident)
     ]
     prebatched_pmids = (
         len(pmid_idents) > 1
         and getattr(openalex.resolve_pmid, "__module__", "") == openalex.__name__
     )
+    prebatched_pmcids = (
+        len(pmcid_idents) > 1
+        and getattr(openalex.resolve_pmcid, "__module__", "") == openalex.__name__
+    )
     prebatched_work_ids = (
         len(work_id_idents) > 1
         and getattr(openalex.resolve_work_id, "__module__", "") == openalex.__name__
     )
-    if prebatched_pmids and prebatched_work_ids:
-        await asyncio.gather(
-            openalex.resolve_pmids_batch(pmid_idents, force_refresh=force_refresh),
-            openalex.resolve_work_ids_batch(work_id_idents, force_refresh=force_refresh),
+    prebatch_coros = []
+    if prebatched_pmids:
+        prebatch_coros.append(
+            openalex.resolve_pmids_batch(pmid_idents, force_refresh=force_refresh)
         )
-    elif prebatched_pmids:
-        await openalex.resolve_pmids_batch(pmid_idents, force_refresh=force_refresh)
-    elif prebatched_work_ids:
-        await openalex.resolve_work_ids_batch(work_id_idents, force_refresh=force_refresh)
+    if prebatched_pmcids:
+        prebatch_coros.append(
+            openalex.resolve_pmcids_batch(pmcid_idents, force_refresh=force_refresh)
+        )
+    if prebatched_work_ids:
+        prebatch_coros.append(
+            openalex.resolve_work_ids_batch(work_id_idents, force_refresh=force_refresh)
+        )
+    if prebatch_coros:
+        await asyncio.gather(*prebatch_coros)
 
     resolve_sem = asyncio.Semaphore(4)
 
     async def _resolve_one(ident: str) -> tuple[str, dict[str, Any] | None]:
-        is_prebatched = (prebatched_pmids and openalex.is_pmid(ident)) or (
-            prebatched_work_ids and not openalex.is_pmid(ident) and openalex.is_work_id(ident)
+        is_prebatched = (
+            (prebatched_pmids and openalex.is_pmid(ident))
+            or (prebatched_pmcids and not openalex.is_pmid(ident) and openalex.is_pmcid(ident))
+            or (
+                prebatched_work_ids
+                and not openalex.is_pmid(ident)
+                and not openalex.is_pmcid(ident)
+                and openalex.is_work_id(ident)
+            )
         )
         async with resolve_sem:
             return await resolve_paper_identifier(
