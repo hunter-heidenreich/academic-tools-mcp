@@ -94,8 +94,9 @@ mcp = FastMCP(
         "References/citations: get_paper_references defaults to source='auto', "
         "which surveys Crossref and OpenCitations in parallel and serves page 1 "
         "from the best source (or call get_paper_references_count first). "
-        "get_paper_citations pages OpenCitations only (no source parameter; call "
-        "get_paper_citations_count first to cross-check against OpenAlex). "
+        "get_paper_citations defaults to source='opencitations' and also "
+        "supports source='openalex' (sorted by cited_by_count or "
+        "publication_date, works on landmark papers where OpenCitations 504s). "
         "Search tools return slim triage hits — chain to get_paper_metadata. "
         "search_openalex is the broad topic search and its hits are free to "
         "chain (by doi or openalex_id), except ACL Anthology papers, whose "
@@ -758,6 +759,25 @@ REF_SOURCE = Annotated[
         "DOI), quality varying by publisher. 'opencitations' gives DOI-to-DOI "
         "links with cross-referenced IDs (OMID, OpenAlex, PMID) and "
         "self-citation flags, and may hold entries Crossref lacks."
+    ),
+]
+
+CITATION_SOURCE = Annotated[
+    Literal["opencitations", "openalex"],
+    Field(
+        description="'opencitations' (default) returns DOI-to-DOI links with "
+        "self-citation flags. 'openalex' pages citing works via OpenAlex with "
+        "full triage metadata (title, year, cited_by_count, DOI/arXiv/PMID), "
+        "supports sorting, and works for landmark papers where OpenCitations 504s."
+    ),
+]
+
+CITATION_SORT = Annotated[
+    openalex.CitationSort,
+    Field(
+        description="Sort order when source='openalex': 'cited_by_count' (default, "
+        "most-cited first) or 'publication_date' (newest first). Ignored for "
+        "source='opencitations'."
     ),
 ]
 

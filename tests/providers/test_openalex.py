@@ -2354,3 +2354,41 @@ class TestResolveIdsBatch:
         assert out3["w9999999992"]["retryable"] is True
         assert "not_found" not in out3["w9999999992"]
         assert cache.get_negative("openalex", "work_ids", "w9999999992") is None
+
+
+class TestGetCitingWorks:
+    @pytest.mark.asyncio
+    async def test_pages_sorts_and_warms_works_cache(self, monkeypatch):
+        citing = {
+            "id": "https://openalex.org/W9999999999",
+            "doi": "https://doi.org/10.1234/citing",
+            "title": "Follow-up Study",
+            "publication_year": 2025,
+            "cited_by_count": 42,
+        }
+        requests = _stub_json_responses(
+            monkeypatch,
+            {"meta": {"count": 120}, "results": [citing]},
+        )
+
+        result = await openalex.get_citing_works(
+            "https://openalex.org/W4312223440", page=2, per_page=25, sort="publication_date"
+        )
+
+        assert result["total_results"] == 120
+        assert len(result["items"]) == 1
+        params = parse_qs(requests[0].url.query.decode())
+        assert params["filter"] == ["cites:W4312223440"]
+        assert params["sort"] == ["publication_date:desc"]
+        assert params["page"] == ["2"]
+        assert params["per-page"] == ["25"]
+        assert cache.get(openalex.NAMESPACE, "works", "10.1234/citing", max_age_seconds=3600)
+
+    @pytest.mark.asyncio
+    async def test_invalid_work_id_rejected_locally(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        result = await openalex.get_citing_works("not-a-work-id")
+
+        assert result["not_found"] is True
+        assert requests == []

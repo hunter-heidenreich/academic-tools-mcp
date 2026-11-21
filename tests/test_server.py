@@ -115,7 +115,7 @@ class TestToolMetadataAndInstructions:
         assert "get_paper_references and get_paper_citations default to source='auto'" not in (
             instructions
         )
-        assert "get_paper_citations pages OpenCitations only" in instructions
+        assert "get_paper_citations defaults to source='opencitations'" in instructions
 
     @pytest.mark.asyncio
     async def test_get_paper_versions_schema_uses_preprint_identifier(self) -> None:

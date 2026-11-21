@@ -459,6 +459,63 @@ async def _get_results_page(
     }
 
 
+def _warm_work_item(item: dict[str, Any]) -> None:
+    """Warm the singleton ``works`` cache (and ID mappings) from one OpenAlex work dict."""
+    if canonical := _canonical_from_response_doi(item.get("doi")):
+        cache.warm(NAMESPACE, "works", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
+    elif (
+        isinstance(raw_id := item.get("id"), str)
+        and (w_key := canonical_work_id(raw_id))
+        and _WORK_ID_RE.match(w_key)
+    ):
+        cache.warm(NAMESPACE, "works", w_key, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
+    _warm_work_mappings(item, doi=canonical)
+
+
+# Allowed sort keys for ``get_citing_works`` — closed so nothing untrusted reaches ``sort=``.
+CitationSort = Literal["cited_by_count", "publication_date"]
+
+# OpenAlex's standard page-based pagination ceiling (page * per-page <= 10,000).
+MAX_CITATIONS_PER_PAGE = 50
+
+
+async def get_citing_works(
+    work_id: str,
+    *,
+    page: int = 1,
+    per_page: int = 20,
+    sort: CitationSort = "cited_by_count",
+) -> dict[str, Any]:
+    """Page through OpenAlex works that cite ``work_id``.
+
+    Calls ``/works?filter=cites:<W...>&sort=<sort>:desc&page=<page>&per-page=<per_page>``.
+    Costs 1 credit (a ``filter=`` list call, not ``search=``) and works for landmark
+    papers with tens of thousands of citations where OpenCitations times out. Each
+    returned work warms the singleton ``works`` cache so follow-up metadata lookups
+    are free.
+    """
+    canonical = canonical_work_id(work_id)
+    if not _WORK_ID_RE.match(canonical):
+        return http.not_found(f"Invalid OpenAlex work ID: {work_id!r}")
+
+    params = _build_params()
+    params["filter"] = f"cites:{canonical.upper()}"
+    params["sort"] = f"{sort}:desc"
+    params["page"] = str(max(page, 1))
+    params["per-page"] = str(min(max(per_page, 1), MAX_CITATIONS_PER_PAGE))
+
+    result = await _get_results_page(
+        lambda: _throttled_get(f"{OPENALEX_BASE_URL}/works", params=params)
+    )
+    if "error" in result:
+        return result
+
+    for item in result["items"]:
+        _warm_work_item(item)
+
+    return result
+
+
 async def search_works(query: str, *, year: int | None = None, rows: int = 10) -> dict[str, Any]:
     """Search OpenAlex works by free text over title, abstract and fulltext.
 
@@ -486,17 +543,7 @@ async def search_works(query: str, *, year: int | None = None, rows: int = 10) -
         return page
 
     for item in page["items"]:
-        # Strips the resolver prefix a response DOI carries, and shape-guards:
-        # this runs outside the ``try`` above.
-        if canonical := _canonical_from_response_doi(item.get("doi")):
-            cache.warm(NAMESPACE, "works", canonical, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        elif (
-            isinstance(raw_id := item.get("id"), str)
-            and (w_key := canonical_work_id(raw_id))
-            and _WORK_ID_RE.match(w_key)
-        ):
-            cache.warm(NAMESPACE, "works", w_key, item, max_age_seconds=_POSITIVE_TTL_SECONDS)
-        _warm_work_mappings(item, doi=canonical)
+        _warm_work_item(item)
 
     return page
 
