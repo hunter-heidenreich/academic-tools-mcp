@@ -23,6 +23,7 @@ import pytest
 from academic_tools_mcp import manual, papers, server
 from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
 from academic_tools_mcp.store import cache, stems
+from academic_tools_mcp.tools import pipeline
 from tests.helpers.conversion_fakes import (
     c_ctype_locale as _c_ctype_locale,
     seed_index as _seed_index,
@@ -1106,3 +1107,71 @@ class TestConvertPaperJatsFirst:
 
         dropped = await server.download_pdf(_BIORXIV_DOI, force_refresh=True)
         assert dropped["cascaded_invalidated"] == ["markdown", "sections"]
+
+
+class TestPipelineProgressNotifications:
+    @pytest.mark.asyncio
+    async def test_download_and_convert_emit_progress_heartbeats(self, tmp_path, monkeypatch):
+        events: list[tuple[float, float | None, str | None]] = []
+
+        class FakeCtx:
+            async def report_progress(
+                self, progress: float, total: float | None = None, message: str | None = None
+            ) -> None:
+                events.append((progress, total, message))
+
+        monkeypatch.setattr(pipeline, "_PROGRESS_HEARTBEAT_SECONDS", 0.01)
+
+        async def slow_download(identifier, *, force_refresh=False):
+            await asyncio.sleep(0.03)
+            return {"path": str(tmp_path / "p.pdf"), "size_bytes": 100, "cached": False}
+
+        monkeypatch.setattr(arxiv, "download_pdf", slow_download)
+
+        dl_res = await server.download_pdf("2301.00001", ctx=FakeCtx())
+        assert dl_res["size_bytes"] == 100
+        assert len(events) >= 3
+        assert events[0][0] == 0.0
+        assert events[-1][:2] == (1.0, 1.0)
+
+        events.clear()
+        pdf_path = tmp_path / "manual" / "pdfs" / "my-paper.pdf"
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(b"%PDF-1.4\ncontent")
+
+        async def slow_convert(pdf, ns, canonical, *, force_refresh=False, mode="full"):
+            await asyncio.sleep(0.03)
+            return {
+                "sections": [{"index": 0, "title": "Intro", "h3s": [], "approx_tokens": 10}],
+                "sections_detected": True,
+                "cached": False,
+                "conversion_mode": mode,
+            }
+
+        monkeypatch.setattr(papers, "convert_pdf", slow_convert)
+
+        conv_res = await server.convert_paper("my-paper", ctx=FakeCtx())
+        assert conv_res["total_approx_tokens"] == 10
+        assert len(events) >= 3
+        assert events[0][0] == 0.0
+        assert events[-1][:2] == (1.0, 1.0)
+
+    @pytest.mark.asyncio
+    async def test_progress_transport_error_does_not_abort_tool(self, monkeypatch):
+        class BrokenCtx:
+            async def report_progress(self, *args, **kwargs) -> None:
+                raise RuntimeError("client disconnected progress channel")
+
+        async def fake_download(identifier, *, force_refresh=False):
+            return {"path": "/tmp/x.pdf", "size_bytes": 42, "cached": True}
+
+        monkeypatch.setattr(arxiv, "download_pdf", fake_download)
+
+        res = await server.download_pdf("2301.00001", ctx=BrokenCtx())
+        assert res["size_bytes"] == 42
+
+    @pytest.mark.asyncio
+    async def test_ctx_parameter_is_hidden_from_mcp_schema(self):
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        assert "ctx" not in tools["download_pdf"].parameters["properties"]
+        assert "ctx" not in tools["convert_paper"].parameters["properties"]

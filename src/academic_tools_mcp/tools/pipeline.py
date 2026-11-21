@@ -1,10 +1,14 @@
 """PDF pipeline tools: download / convert / sections / section / import."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import contextlib
+import time
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
+from fastmcp import Context
 from pydantic import Field
 
 from .. import manual, papers
@@ -36,6 +40,46 @@ _INTERNAL_PATH_KEYS = ("path", "markdown_path")
 
 # Conversion modes whose markdown a new PDF did not produce, so a download keeps it.
 _NOT_FROM_PDF = frozenset({"imported", "html", "jats"})
+
+# Heartbeat interval for MCP progress notifications during long-running downloads
+# and PDF conversions so clients do not hit idle tool-call timeouts.
+_PROGRESS_HEARTBEAT_SECONDS = 15.0
+
+
+async def _safe_report_progress(
+    ctx: Context, progress: float, total: float | None = None, message: str | None = None
+) -> None:
+    """Emit a progress notification without letting a transport error abort the tool."""
+    with contextlib.suppress(Exception):
+        await ctx.report_progress(progress=progress, total=total, message=message)
+
+
+@asynccontextmanager
+async def _progress_heartbeat(ctx: Context | None, label: str) -> AsyncGenerator[None]:
+    """Send periodic MCP progress heartbeats while a long-running operation executes."""
+    if ctx is None:
+        yield
+        return
+
+    started = time.monotonic()
+    await _safe_report_progress(ctx, 0.0, None, f"Starting {label}...")
+
+    async def _beat() -> None:
+        while True:
+            await asyncio.sleep(_PROGRESS_HEARTBEAT_SECONDS)
+            elapsed = time.monotonic() - started
+            await _safe_report_progress(
+                ctx, round(elapsed, 1), None, f"{label} in progress ({elapsed:.0f}s elapsed)..."
+            )
+
+    task = asyncio.create_task(_beat())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await _safe_report_progress(ctx, 1.0, 1.0, f"Finished {label}.")
 
 
 def _markup_source(
@@ -135,6 +179,7 @@ async def download_pdf(
     identifier: PAPER_ID,
     force_refresh: PDF_FORCE_REFRESH = False,
     allow_oa_url: ALLOW_OA_URL = False,
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Download and cache a paper's PDF, auto-detecting the source.
 
@@ -156,11 +201,12 @@ async def download_pdf(
 
     Next step: convert_paper → get_paper_sections → get_paper_section.
     """
-    return _strip_internal_paths(
-        await _download_pdf_by_provider(
-            identifier, force_refresh=force_refresh, allow_oa_url=allow_oa_url
+    async with _progress_heartbeat(ctx, f"PDF download for {identifier}"):
+        return _strip_internal_paths(
+            await _download_pdf_by_provider(
+                identifier, force_refresh=force_refresh, allow_oa_url=allow_oa_url
+            )
         )
-    )
 
 
 def _convert_suggestion(result: dict[str, Any], mode: str) -> str:
@@ -210,6 +256,7 @@ async def convert_paper(
     identifier: PAPER_ID,
     force_refresh: CONVERT_FORCE_REFRESH = False,
     mode: CONVERT_MODE = "full",
+    ctx: Context | None = None,
 ) -> dict[str, Any]:
     """Convert a paper to markdown and parse it into sections.
 
@@ -284,13 +331,14 @@ async def convert_paper(
             )
         return pdf_not_cached_error(identifier)
 
-    result = await papers.convert_pdf(
-        pdf,
-        target["namespace"],
-        target["canonical"],
-        force_refresh=force_refresh,
-        mode=mode,
-    )
+    async with _progress_heartbeat(ctx, f"PDF conversion ({mode}) for {identifier}"):
+        result = await papers.convert_pdf(
+            pdf,
+            target["namespace"],
+            target["canonical"],
+            force_refresh=force_refresh,
+            mode=mode,
+        )
     if "error" in result:
         return _strip_internal_paths(enrich_error(result, _convert_suggestion(result, mode)))
     return _finish_convert(result)

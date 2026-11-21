@@ -17,7 +17,7 @@ from .download import artifact
 from .net import stats
 from .providers import acl, arxiv, biorxiv, openalex
 from .store import atomic, cache, stems
-from .util import doinorm
+from .util import config, doinorm
 
 NAMESPACE = "manual"
 
@@ -353,8 +353,36 @@ def _identifier_error(identifier: str) -> dict[str, Any] | None:
     return None
 
 
+def _allowed_import_dirs() -> list[Path] | None:
+    """Resolve ``IMPORT_ALLOWED_DIRS`` into canonical directories, or ``None`` if unset.
+
+    Accepts an ``os.pathsep``-separated list (``:`` on POSIX, ``;`` on Windows).
+    Re-read per call so tests and operators can change it without restarting.
+    """
+    raw = config.get("IMPORT_ALLOWED_DIRS")
+    if not raw:
+        return None
+    dirs = [
+        Path(part.strip()).expanduser().resolve() for part in raw.split(os.pathsep) if part.strip()
+    ]
+    return dirs or None
+
+
 def _source_error(source: Path, file_path: str) -> dict[str, Any] | None:
-    """Reject a missing or non-regular import source; unreadable is each caller's own error."""
+    """Reject a disallowed, missing, or non-regular import source.
+
+    The allowlist runs before ``exists()`` so a caller cannot probe whether a path
+    outside ``IMPORT_ALLOWED_DIRS`` exists. ``source`` is already ``.resolve()``d,
+    so symlinks pointing outside an allowed directory are rejected too.
+    """
+    allowed = _allowed_import_dirs()
+    if allowed is not None and not any(source.is_relative_to(root) for root in allowed):
+        return {
+            "error": (
+                f"Import path {file_path!r} is outside IMPORT_ALLOWED_DIRS. "
+                "Move the file into an allowed directory or update IMPORT_ALLOWED_DIRS."
+            )
+        }
     if not source.exists():
         return {"error": f"File not found: {file_path}"}
     if not source.is_file():

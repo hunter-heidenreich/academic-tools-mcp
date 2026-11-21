@@ -1,4 +1,5 @@
 import errno
+import os
 
 import pytest
 
@@ -1452,3 +1453,66 @@ class TestRefileWorkIdStems:
         self._seed(orphans, "openalex:w4312223440")
 
         assert manual.refile_work_id_stems("openalex:W4312223440", "10.1101/2024.01.01.573000") == 2
+
+
+class TestImportAllowedDirs:
+    def test_blocks_pdf_and_markdown_outside_allowlist(self, tmp_path, monkeypatch):
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        pdf = outside / "secret.pdf"
+        pdf.write_bytes(b"%PDF-1.4\nbody")
+        md = outside / "secret.md"
+        md.write_text("# Secret\n", encoding="utf-8")
+
+        monkeypatch.setenv("IMPORT_ALLOWED_DIRS", str(allowed))
+
+        pdf_res = manual.import_local_pdf(str(pdf), "secret-pdf")
+        md_res = manual.import_markdown(str(md), "secret-md")
+
+        assert "outside IMPORT_ALLOWED_DIRS" in pdf_res["error"]
+        assert "outside IMPORT_ALLOWED_DIRS" in md_res["error"]
+
+    def test_refuses_nonexistent_outside_path_without_leaking_existence(
+        self, tmp_path, monkeypatch
+    ):
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        monkeypatch.setenv("IMPORT_ALLOWED_DIRS", str(allowed))
+
+        res = manual.import_local_pdf(str(tmp_path / "nope.pdf"), "nope")
+        assert "outside IMPORT_ALLOWED_DIRS" in res["error"]
+
+    def test_blocks_symlink_escaping_allowed_dir(self, tmp_path, monkeypatch):
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        target = outside / "secret.md"
+        target.write_text("# Secret\n", encoding="utf-8")
+        link = allowed / "escape.md"
+        link.symlink_to(target)
+
+        monkeypatch.setenv("IMPORT_ALLOWED_DIRS", str(allowed))
+
+        res = manual.import_markdown(str(link), "escape")
+        assert "outside IMPORT_ALLOWED_DIRS" in res["error"]
+
+    def test_allows_files_inside_multiple_pathsep_dirs(self, tmp_path, monkeypatch):
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        pdf = dir_a / "ok.pdf"
+        pdf.write_bytes(b"%PDF-1.4\nbody")
+        md = dir_b / "ok.md"
+        md.write_text("# Title\n\nBody\n", encoding="utf-8")
+
+        monkeypatch.setenv("IMPORT_ALLOWED_DIRS", f"{dir_a}{os.pathsep}{dir_b}")
+
+        pdf_res = manual.import_local_pdf(str(pdf), "ok-pdf")
+        md_res = manual.import_markdown(str(md), "ok-md")
+
+        assert "error" not in pdf_res
+        assert "error" not in md_res
