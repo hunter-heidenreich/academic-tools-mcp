@@ -11,7 +11,7 @@ import httpx
 from ..net import clients, http, stats
 from ..net.throttle import SubGap, Throttle
 from ..store import cache, singleflight
-from ..util import config, doinorm, useragent
+from ..util import config, doinorm, orcidnorm, useragent
 from .openalex_parse import (
     _PMID_RE,
     _WORK_ID_RE,
@@ -516,36 +516,91 @@ async def get_citing_works(
     return result
 
 
-async def search_works(query: str, *, year: int | None = None, rows: int = 10) -> dict[str, Any]:
-    """Search OpenAlex works by free text over title, abstract and fulltext.
+# Allowed sort keys for ``search_works`` — closed so nothing untrusted reaches ``sort=``.
+SearchSort = Literal["relevance", "cited_by_count", "publication_date"]
+
+
+def _author_filter_clause(author_id: str) -> str | None:
+    """Build an OpenAlex ``filter`` clause for an author ID or ORCID, or ``None`` if invalid."""
+    bare = _normalize_author_id(author_id)
+    if not bare:
+        return None
+    if orcidnorm.looks_like_orcid(bare):
+        return f"authorships.author.orcid:{bare}"
+    if bare[0] in ("A", "a") and bare[1:].isdecimal():
+        return f"authorships.author.id:{bare.upper()}"
+    return None
+
+
+async def search_works(
+    query: str = "",
+    *,
+    year: int | None = None,
+    from_year: int | None = None,
+    to_year: int | None = None,
+    author_id: str | None = None,
+    is_oa: bool | None = None,
+    sort: SearchSort = "relevance",
+    page: int = 1,
+    rows: int = 10,
+) -> dict[str, Any]:
+    """Search or filter OpenAlex works.
+
+    Supports free-text ``query`` (title, abstract, fulltext) and structured
+    filters (``year`` or ``from_year``/``to_year``, ``author_id`` / ORCID,
+    ``is_oa``), plus ``sort`` and ``page``. When ``query`` is blank and only
+    filters (such as ``author_id``) are supplied, ``search=`` is omitted and the
+    call uses the cheaper ``filter=`` list path (1 credit instead of 10).
 
     Returns ``{"items": [...], "total_results": N | None}`` — dict-shaped hits
     only — or ``{"error": ...}`` on transport/HTTP failure or a wrong-shape body.
-    The list is not cached (ad-hoc queries), but each hit with a DOI warms the
-    works cache, exactly as ``crossref.search_works`` does.
+    The list is not cached (ad-hoc queries), but each hit warms the works cache.
 
     **No ``select=``, deliberately**: a projected work would poison the ``works``
-    key it warms. The unread bytes never leave this process, and cost nothing:
-    ``select=`` does not reduce what a query is metered.
-
-    Paced by ``_search_gap``: this is the expensive call class.
+    key it warms.
     """
     params = _build_params()
-    params["search"] = query
+    has_query = bool(query.strip())
+    if has_query:
+        params["search"] = query
     params["per-page"] = str(min(max(rows, 1), MAX_SEARCH_RESULTS))
+    if page > 1:
+        params["page"] = str(page)
+
+    filters: list[str] = []
     if year is not None:
-        params["filter"] = f"publication_year:{year}"
+        filters.append(f"publication_year:{year}")
+    elif from_year is not None and to_year is not None:
+        filters.append(f"publication_year:{from_year}-{to_year}")
+    elif from_year is not None:
+        filters.append(f"publication_year:>={from_year}")
+    elif to_year is not None:
+        filters.append(f"publication_year:<={to_year}")
 
-    page = await _get_results_page(
-        lambda: _throttled_search_get(f"{OPENALEX_BASE_URL}/works", params=params)
-    )
-    if "error" in page:
-        return page
+    if author_id is not None:
+        clause = _author_filter_clause(author_id)
+        if clause is None:
+            return http.not_found(f"Invalid OpenAlex author ID or ORCID: {author_id!r}")
+        filters.append(clause)
 
-    for item in page["items"]:
+    if is_oa is not None:
+        filters.append(f"open_access.is_oa:{'true' if is_oa else 'false'}")
+
+    if filters:
+        params["filter"] = ",".join(filters)
+
+    if sort != "relevance":
+        params["sort"] = f"{sort}:desc"
+
+    getter = _throttled_search_get if has_query else _throttled_get
+    result = await _get_results_page(lambda: getter(f"{OPENALEX_BASE_URL}/works", params=params))
+    if "error" in result:
+        return result
+
+    for item in result["items"]:
         _warm_work_item(item)
 
-    return page
+    return result
 
 
 async def search_authors(query: str, *, rows: int = 10) -> dict[str, Any]:
