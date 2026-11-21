@@ -273,57 +273,14 @@ async def get_paper_metadata(
     force_refresh: FORCE_REFRESH = False,
     fallback_crossref: FALLBACK_CROSSREF = False,
 ) -> dict[str, Any]:
-    """Get core metadata for a paper, dispatched by identifier shape.
+    """Get core metadata for a paper, auto-routed by identifier shape.
 
-    Returns ``{_source, _canonical_id, ...source-native fields}``, where
-    ``_canonical_id`` is the provider's normalized identifier — reuse it on
-    later calls instead of re-normalizing whatever the user typed.
-
-      - arxiv: arxiv_id, title, published, updated, primary_category,
-        categories, pdf_url, doi (the journal version's, when the authors recorded
-        one), journal_ref, comment. License and revision history are
-        get_paper_versions'.
-      - biorxiv: doi, title, date, version, type, category, license, server,
-        published_doi, published_journal, published_date, funding, pdf_url. The
-        published_* fields are null while unpublished; funding is ``[{name, id,
-        id_type, award}]``, recorded only for papers posted since April 2025.
-      - For arxiv and biorxiv, a ``follow_published`` chain that didn't reach the
-        journal version adds ``followed_published=False``, plus
-        ``published_lookup_retryable=True`` if that lookup failed transiently
-        (5xx/429/timeout); both absent when no chain was attempted.
-      - acl_anthology: anthology_id, title, doi, year, month, booktitle,
-        volume_type ("journal" for TACL/CL, else "proceedings"), journal_volume,
-        journal_issue, venues, publisher, address, pages, bibkey, url, pdf_url. No
-        citation count; doi is often null, and the journal fields are null outside
-        a journal.
-      - openalex: title, doi, pmid, arxiv_id, publication_year, publication_date,
-        type, language, venue, cited_by_count, is_oa, oa_status, oa_url, pdf_url.
-        ``pmid`` (bare digits) and ``arxiv_id`` (bare, versionless) are null when
-        OpenAlex has none and are themselves accepted identifiers;
-        ``cited_by_count`` drifts with time.
-      - openalex_via_biorxiv / openalex_via_arxiv (``follow_published`` reached the
-        journal version): openalex's fields plus preprint_doi / preprint_arxiv_id
-        and ``followed_published=True``, ``_canonical_id`` being the journal DOI.
-      - crossref (``fallback_crossref`` after an OpenAlex 404): openalex's fields
-        with pmid / arxiv_id / is_oa / oa_status / oa_url / pdf_url null, and no
-        abstract path. ``cited_by_count`` is Crossref's own tally, which differs
-        from OpenAlex's.
-
-    A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
-    ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, with no
-    ``follow_published`` chain.
-
-    A PMID dispatches as its DOI, so ``_source`` is ``openalex`` and
-    ``_canonical_id`` the DOI whichever of the two you passed. An Anthology URL or
-    hosted DOI dispatches as the Anthology ID.
-
-    Errors: an unresolvable identifier returns ``{error}``; a provider failure
-    returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    if the fallback's own Crossref call failed transiently, or
-    ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did. Siblings
-    get_paper_authors / _abstract / _bibtex share this dispatch, the cached
-    object and ``fallback_crossref``. For many identifiers at once, use
-    get_papers_metadata.
+    Returns ``{_source, _canonical_id, ...provider-native fields}`` across arXiv,
+    bioRxiv/medRxiv, ACL Anthology, OpenAlex, and (with ``fallback_crossref`` on
+    OpenAlex 404) Crossref. ``follow_published=True`` chains arXiv/bioRxiv
+    preprints to OpenAlex's journal version (``_source: openalex_via_*``).
+    Transient bioRxiv outages automatically fall back to OpenAlex with
+    ``biorxiv_unavailable: true``. Use ``get_papers_metadata`` for batches.
     """
     source, canonical_id, obj = await _fetch_source(identifier, force_refresh=force_refresh)
     if source is None:
@@ -374,28 +331,11 @@ async def get_paper_versions(
     identifier: PREPRINT_ID,
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """A preprint's license and revision history, for an arXiv ID or bioRxiv/medRxiv DOI.
+    """Get a preprint's license and revision history (arXiv ID or bioRxiv/medRxiv DOI only).
 
-    Returns ``{_source, _canonical_id, submitter, license, versions, version_count}``,
-    versions oldest first; ``_canonical_id`` is unversioned.
-      - arxiv: plus ``arxiv_id``; versions ``{version, date, size}``, ``date`` ISO 8601
-        UTC, ``size`` arXiv's string (``"1102kb"``). Its own request, cached a day.
-      - biorxiv: plus ``doi`` and ``server``; versions ``{version, date, license}``;
-        ``submitter`` null. Read from the cached metadata record, so free.
-
-    ``license`` is the latest version's: a URL on arXiv (null on older papers), a code
-    on bioRxiv (``cc_by``). It decides reuse: arXiv's non-exclusive distribution
-    license (``…/licenses/nonexclusive-distrib/1.0/``) and bioRxiv's ``cc_no`` do not
-    permit redistribution; a Creative Commons license may.
-
-    **This tool takes the preprint identifier literally**: alone among the tools
-    typed for one, it runs no PMID or OpenAlex-work-ID trade, so either is refused
-    on shape. Call get_paper_metadata on it first and re-enter with the arXiv ID or
-    ``10.1101`` DOI it reports.
-
-    Errors: ``{error, suggestion}`` plus ``not_found: true`` (a paper the provider
-    lacks, or another identifier, refused without a request), ``retryable: true``
-    (transport or parse failure) or ``retryable: false`` (any other provider error).
+    Returns ``{_source, _canonical_id, submitter, license, versions, version_count}``
+    (oldest first). Non-preprint shapes (including PMIDs/OpenAlex work IDs) are
+    refused locally without a request — resolve via ``get_paper_metadata`` first.
     """
     if biorxiv.is_biorxiv_doi(identifier):
         return await _biorxiv_versions(identifier, force_refresh=force_refresh)
@@ -481,22 +421,11 @@ async def get_papers_metadata(
     ],
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """Batch metadata fetch — same payload as get_paper_metadata, in bulk.
+    """Batch metadata fetch (cap 100) — same payload as ``get_paper_metadata`` plus ``_input``.
 
-    For reference-graph traversal: uncached OpenAlex DOIs, PMIDs, and work IDs are
-    chunked into ``/works?filter=...`` calls and uncached arXiv IDs into ``id_list``
-    calls, bioRxiv and the ACL Anthology fetch concurrently,
-    cached entries cost no HTTP call, and every fetched paper warms the singleton
-    cache so a later get_paper_metadata / _authors is free.
-
-    Does NOT support follow_published — chain per-paper instead.
-
-    Returns ``{count, papers}``: each entry is get_paper_metadata's payload plus
-    ``_input``, the original string, so an agent can correlate input to output.
-    Order matches the input list; failures appear as ``{_input, error, suggestion?}``,
-    plus ``openalex_fallback_retryable: true`` when a bioRxiv entry's OpenAlex
-    stand-in also failed transiently, and don't affect others. OpenAlex fallback
-    answers carry ``biorxiv_unavailable: true``.
+    Batches uncached OpenAlex DOIs/PMIDs/work IDs and arXiv IDs, warms singleton
+    caches, and preserves input order with per-item errors. Does not support
+    ``follow_published``.
     """
     n = len(identifiers)
     results: list[dict[str, Any] | None] = [None] * n
@@ -638,39 +567,12 @@ async def get_paper_authors(
     force_refresh: FORCE_REFRESH = False,
     fallback_crossref: FALLBACK_CROSSREF = False,
 ) -> dict[str, Any]:
-    """Get a page of the author list, dispatched by identifier shape.
-
-    Slicing is in-memory against the cached paper, so paging costs no extra API hits.
+    """Get a page of the author list, auto-routed by identifier shape (in-memory paging).
 
     Returns ``{_source, _canonical_id, author_count, page, page_size, has_more,
-    authors, page_institutions, page_institution_count}``; ``author_count`` is the
-    whole list, not the page.
-      - arxiv: authors = [{name, affiliations}]; page_institutions [] and
-        page_institution_count 0 — arXiv has no per-author roll-up.
-      - acl_anthology: authors = [{name, first, last, orcid, affiliation}], orcid
-        and affiliation nullable; page_institutions [] and page_institution_count 0.
-      - biorxiv: authors = [{name}], plus author_corresponding /
-        author_corresponding_institution on every page; page_institutions [] and
-        page_institution_count 0 — bioRxiv exposes only the corresponding author's
-        institution.
-      - openalex: authors = [{name, openalex_id, position, is_corresponding,
-        institutions}]; page_institutions / page_institution_count cover the current
-        page only (dedupe across pages for a global view). openalex_id chains into
-        get_author.
-      - crossref (``fallback_crossref`` after an OpenAlex 404): the same keys,
-        with openalex_id and is_corresponding null and position carrying
-        Crossref's ``sequence`` ("first" / "additional"). institutions come from
-        its per-author affiliation, which most publishers omit — usually empty.
-
-    A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
-    ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, so the page carries
-    the openalex author shape and **not** author_corresponding /
-    author_corresponding_institution.
-
-    Errors: an unresolvable identifier returns ``{error}``; a provider failure
-    returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    if the fallback's own Crossref call failed transiently, or
-    ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
+    authors, page_institutions, page_institution_count}``. OpenAlex rows carry
+    ``openalex_id`` (chain into ``get_author``), ``position``, ``is_corresponding``,
+    and ``institutions``; bioRxiv carries ``author_corresponding`` fields.
     """
     start, end = page_bounds(page, page_size)
 
@@ -712,22 +614,10 @@ async def get_paper_abstract(
     force_refresh: FORCE_REFRESH = False,
     fallback_crossref: FALLBACK_CROSSREF = False,
 ) -> dict[str, Any]:
-    """Get a paper's abstract as plain text, dispatched by identifier shape.
+    """Get a paper's plain-text abstract, auto-routed by identifier shape.
 
-    Returns ``{_source, _canonical_id, title, abstract}``; ``abstract`` is null
-    when the source has none. OpenAlex abstracts are reconstructed from an
-    inverted index — not byte-identical to the publisher's. A crossref abstract
-    (``fallback_crossref`` after an OpenAlex 404) is JATS rendered to plain text,
-    section titles included; many Crossref records carry none at all.
-
-    A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
-    ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, so the abstract is
-    OpenAlex's inverted-index reconstruction rather than bioRxiv's own text.
-
-    Errors: an unresolvable identifier returns ``{error}``; a provider failure
-    returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    if the fallback's own Crossref call failed transiently, or
-    ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
+    Returns ``{_source, _canonical_id, title, abstract}`` (``abstract`` is null
+    when unavailable).
     """
 
     def _on_source(
@@ -766,30 +656,9 @@ async def get_paper_bibtex(
     force_refresh: FORCE_REFRESH = False,
     fallback_crossref: FALLBACK_CROSSREF = False,
 ) -> dict[str, Any]:
-    """Generate a BibTeX entry, dispatched by identifier shape.
+    """Generate a ready-to-paste BibTeX entry, auto-routed by identifier shape.
 
-    Returns ``{_source, _canonical_id, bibtex}``. Entry type per source:
-      - arxiv: @article if the paper has journal_ref, else @misc. Both carry
-        eprint / archiveprefix, plus primaryclass when the paper has a
-        primary_category.
-      - biorxiv: @article when published_doi is present, with journal and year
-        when known; else @misc with the preprint DOI and server.
-      - acl_anthology: @article for a journal (TACL, CL), else @inproceedings
-        with editor, booktitle and address.
-      - openalex: inferred from the work type (@article, @inproceedings,
-        @misc for preprints, @phdthesis, etc.).
-      - crossref (``fallback_crossref`` after an OpenAlex 404): inferred from
-        Crossref's own, different type vocabulary (@article for journal-article,
-        @inproceedings for proceedings-article, @misc for posted-content, etc.).
-
-    A bioRxiv DOI bioRxiv fails to serve transiently is answered by OpenAlex:
-    ``_source: "openalex"`` plus ``biorxiv_unavailable: true``, so the entry type is
-    inferred from the work type rather than from published_doi.
-
-    Errors: an unresolvable identifier returns ``{error}``; a provider failure
-    returns ``{error, suggestion}``, plus ``crossref_fallback_retryable: true``
-    if the fallback's own Crossref call failed transiently, or
-    ``openalex_fallback_retryable: true`` if OpenAlex, standing in for bioRxiv, did.
+    Returns ``{_source, _canonical_id, bibtex}``.
     """
     generators: dict[manual.MetadataSource, Callable[[dict[str, Any]], str]] = {
         "arxiv": generate_arxiv_bibtex,
@@ -879,33 +748,12 @@ _UPDATES_SUBJECT = "Crossref update notices"
 
 @mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_updates(doi: DOI, force_refresh: FORCE_REFRESH = False) -> dict[str, Any]:
-    """Check a DOI for retraction and correction notices, and for related preprint DOIs.
+    """Check a Crossref DOI for retraction/correction notices and preprint relations.
 
-    Returns ``{doi, retracted, updates, relations}``, the echoed ``doi`` canonical
-    rather than the spelling you passed. ``updates`` is
-    [{doi, type, label, source, year, date}] — ``type`` is Crossref's (``retraction``,
-    ``withdrawal``, ``correction``, ``erratum``, ``expression_of_concern``, …),
-    ``source`` is ``publisher`` or ``retraction-watch``, and ``doi`` is the notice,
-    which get_paper_metadata reads like any other paper. ``relations`` maps Crossref's
-    relation names to DOIs (``is-preprint-of``, ``has-preprint``, ``is-version-of``).
-
-    ``retracted`` covers the whole withdrawing class — ``retraction``,
-    ``partial_retraction``, ``withdrawal``, ``removal`` — since none of those leave a
-    paper citable; read ``type`` for which, and note that an amending notice (a
-    correction, an expression of concern) is reported in ``updates`` without setting
-    the flag, so scan the list rather than the boolean alone.
-
-    **``retracted: false`` means Crossref lists no such notice, not that the paper
-    stands** — it answers an undeposited DOI and a sound paper identically, so it
-    clears a citation rather than certifying one. ``relations`` is ``{}`` for most
-    papers, publisher deposit being thin, so an absent ``is-preprint-of`` is no claim
-    that no preprint exists; get_paper_metadata's ``follow_published`` answers that
-    more fully.
-
-    Crossref-only, and free on a paper already cached. Errors: a non-DOI identifier is
-    rejected locally without a request, and a DOI Crossref has no record for returns
-    ``{error, not_found, suggestion}``, naming the registering agency when it is not
-    Crossref.
+    Returns ``{doi, retracted, updates, relations}``. ``retracted`` covers
+    retraction/withdrawal/removal; scan ``updates`` for corrections/expressions
+    of concern. ``retracted: false`` means Crossref lists no notice, not a clean
+    bill of health.
     """
     doi, bad = await resolve_doi_identifier(
         doi, subject=_UPDATES_SUBJECT, force_refresh=force_refresh

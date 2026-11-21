@@ -186,25 +186,12 @@ async def download_pdf(
     allow_oa_url: ALLOW_OA_URL = False,
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Download and cache a paper's PDF, auto-detecting the source.
+    """Download and cache a paper's PDF (step 1 of the PDF pipeline).
 
-    Step 1 of the PDF pipeline. Direct download covers arXiv IDs, bioRxiv/medRxiv
-    DOIs (10.1101/...) and ACL Anthology papers (ID, URL or hosted DOI); anything
-    else is refused unless ``allow_oa_url``, since this tool never fetches a
-    caller-supplied URL.
-    import_paper is the fallback that always works.
-
-    Returns ``{size_bytes, cached}``, plus ``{anthology_id, pdf_url}`` for ACL
-    papers. A real download (``cached: False``) also drops the paper's cached
-    markdown and section index, reported as ``cascaded_invalidated: ["markdown",
-    "sections"]`` — so never pass ``force_refresh`` to convert_paper as well.
-    Markdown from import_paper survives that unless ``force_refresh=True``.
-
-    Errors: ``{error, suggestion, retryable?, retry_after_seconds?, backpressure?,
-    max_concurrency?, not_found?, max_bytes?}``.
-    ``retryable: True`` is the only value meaning a retry might work.
-
-    Next step: convert_paper → get_paper_sections → get_paper_section.
+    Auto-downloads arXiv, bioRxiv/medRxiv, and ACL Anthology; other DOIs require
+    ``allow_oa_url=True`` (fetches only OpenAlex's OA URL) or ``import_paper``.
+    A fresh download drops derived markdown/sections (except imported/HTML/JATS
+    unless ``force_refresh=True``).
     """
     async with _progress_heartbeat(ctx, f"PDF download for {identifier}"):
         return _strip_internal_paths(
@@ -263,41 +250,13 @@ async def convert_paper(
     mode: CONVERT_MODE = "full",
     ctx: Context | None = None,
 ) -> dict[str, Any]:
-    """Convert a paper to markdown and parse it into sections.
+    """Convert a paper to markdown and index its sections (step 2 of the PDF pipeline).
 
-    Step 2 of the PDF pipeline. Skips the converter when the markdown is already
-    cached, re-parsing from it if the section index is missing or stale. Both
-    modes write the same cache slot, so ``mode="full"`` with ``force_refresh``
-    upgrades a fast conversion.
-
-    **arXiv and bioRxiv/medRxiv papers try their provider's markup first** (arXiv's
-    HTML, bioRxiv's JATS), in either mode: real headings, LaTeX equations and captions
-    in seconds, with no PDF. Papers without it fall through to the PDF path, which
-    needs download_pdf.
-
-    Returns ``{sections, total_approx_tokens, sections_detected, cached,
-    conversion_mode}``, each section entry ``{index, title, h3s, approx_tokens}``.
-    Because ``sections`` and ``total_approx_tokens`` are returned here directly,
-    you can proceed straight to ``get_paper_section`` (for specific sections) or
-    ``get_paper_markdown`` (to read the full paper in one call when
-    ``total_approx_tokens`` fits your context) without calling
-    ``get_paper_sections`` first. ``cached`` is true whenever the expensive
-    conversion was skipped, re-parses included. ``conversion_mode`` is
-    provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's rendering),
-    ``"jats"`` (bioRxiv's JATS XML), ``"imported"`` (a file handed to
-    import_paper), or null (converted before the field existed).
-
-    Errors: ``{error, retryable, conversion_mode, pdf_size_mb?, suggestion}``,
-    where ``conversion_mode`` names the mode that *failed*.
-      - No usable PDF cached → ``{error, suggestion}`` only, pointing at
-        download_pdf / import_paper; nothing was tried, so no ``retryable``.
-      - The provider's markup failed transiently and no PDF is cached → that
-        error, ``retryable: True``, ``conversion_mode`` ``"html"`` / ``"jats"``.
-      - Another conversion in flight (full mode only) → ``{busy: True,
-        retryable: True, in_progress: {...}}``; retry, or use ``mode="fast"``.
-      - Timeout → ``{timed_out: True, timeout_seconds}``; the suggestion points
-        at the other mode, whose budget differs.
-      - Anything else → non-retryable; the ``error`` string names the cause.
+    Tries arXiv HTML / bioRxiv JATS first (seconds, no PDF needed), else converts
+    the cached PDF. Returns ``{sections, total_approx_tokens, sections_detected,
+    cached, conversion_mode}`` — proceed straight to ``get_paper_section`` or
+    ``get_paper_markdown``. Full mode is serialized server-wide (concurrent calls
+    return ``busy: True``); ``mode="fast"`` is degraded plain text without the lock.
     """
     # No force_refresh: it means "re-convert", and a PMID's DOI does not go stale
     # with the markdown. Unlike download_pdf and import_paper, which do thread it.
@@ -354,28 +313,11 @@ async def get_paper_sections(
     identifier: PAPER_ID,
     force_refresh: SECTIONS_FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """Get the section index for a converted paper.
-
-    Step 3 of the PDF pipeline (optional immediately after ``convert_paper``,
-    which already returns ``sections`` and ``total_approx_tokens``; use this to
-    inspect an already-converted or imported paper). Cheap — no network, no
-    conversion — and it re-parses automatically when the cached markdown's
-    checksum changed.
+    """Inspect the section index of an already-converted or imported paper (local, no network).
 
     Returns ``{total_sections, total_approx_tokens, sections_detected,
-    conversion_mode, sections}``, each section entry ``{index, title, h3s,
-    approx_tokens}`` with ``h3s`` its sub-headings. ``conversion_mode`` is
-    provenance: ``"full"`` / ``"fast"``, ``"html"`` (arXiv's rendering), ``"jats"``
-    (bioRxiv's JATS XML), ``"imported"`` (a file handed to import_paper), or null
-    (converted before the field existed).
-
-    ``sections_detected: false`` means the markdown had **no headings at all**,
-    so the single section returned is synthetic and its title meaningless — not
-    a one-section paper. A ``sections_note`` then says what to do instead.
-
-    Errors: not yet converted → guidance to run convert_paper.
-    Next step: ``get_paper_section(identifier, index_or_title)`` for targeted
-    sections, or ``get_paper_markdown(identifier)`` to read the full paper at once.
+    conversion_mode, sections}``. Optional right after ``convert_paper``, which
+    already returns ``sections`` and ``total_approx_tokens``.
     """
     # No force_refresh: threading it here would put a PMID trade on the network and
     # break this tool's "no network" promise, which is the whole point of the flag.
@@ -507,25 +449,11 @@ async def import_paper(
     identifier: PAPER_ID,
     force_refresh: IMPORT_FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """Import a local PDF or pre-converted markdown into the cache.
+    """Import a local ``.pdf`` or ``.md``/``.markdown`` file into the paper cache.
 
-    The escape hatch for papers outside arXiv/bioRxiv/ACL: fetch the file
-    yourself and pass it with the paper's DOI or arXiv ID, and the rest of the
-    pipeline finds it under that identifier without re-fetching. An unrecognised
-    identifier works too — the file lands in the ``manual`` namespace. A PDF is
-    validated by its ``%PDF-`` header; markdown is read as UTF-8 and indexed
-    immediately.
-
-    Returns ``{identifier, namespace, cached}`` plus ``size_bytes`` for a PDF or
-    ``section_count`` for markdown — call get_paper_sections for the full index.
-    Landing PDF bytes over an existing file — or any ``force_refresh`` PDF import —
-    also drops the paper's markdown and section index, reported as
-    ``cascaded_invalidated: ["markdown", "sections"]``. ``identifier`` is the
-    canonical cache key, which may differ from what you passed
-    (``arXiv:2301.00001v2`` → ``2301.00001v2``).
-
-    Errors: file not found, blank identifier, not a valid PDF, non-UTF-8
-    markdown, or unsupported extension → ``{error, suggestion?}``.
+    Routes into the provider namespace matching ``identifier`` (or ``manual``
+    for freeform labels). Markdown imports skip ``convert_paper`` and are
+    indexed immediately.
     """
     # Cheapest rejection first, before any routing work.
     ext = Path(file_path).suffix.lower()

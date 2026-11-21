@@ -168,53 +168,31 @@ PREPRINT_ID = Annotated[
 DOI = Annotated[
     str,
     Field(
-        description="Paper DOI (full URL, doi:-prefixed, or bare like 10.1234/example "
-        "or 10.48550/arXiv.*), PMID (pmid:20079334, a pubmed.ncbi.nlm.nih.gov URL, or "
-        "a bare 7-8 digit run), OpenAlex work ID (W4312223440, openalex:-prefixed, or "
-        "an openalex.org URL), or ACL Anthology ID or URL — so a `pmid` or `openalex` "
-        "from an OpenCitations row pastes back in."
+        description="DOI (bare, doi:, or URL), PMID, OpenAlex work ID (W...), or ACL Anthology ID/URL."
     ),
 ]
 
 AUTHOR_ID = Annotated[
     str,
-    Field(
-        description="OpenAlex author ID (A5023888391) or an ORCID in any "
-        "spelling — bare (0000-0002-1825-0097), orcid:-prefixed, or an orcid.org URL."
-    ),
+    Field(description="OpenAlex author ID (A...) or ORCID (bare, orcid:, or URL)."),
 ]
 
 INSTITUTION_ID = Annotated[
     str,
-    Field(
-        description="OpenAlex institution ID (I27837315) or a ROR in any "
-        "spelling — bare (00jmfr291), ror:-prefixed, or a ror.org URL."
-    ),
+    Field(description="OpenAlex institution ID (I...) or ROR (bare, ror:, or URL)."),
 ]
 
 ARXIV_ID = Annotated[
     str,
     Field(
-        description="Paper identifier for Papers with Code: an arXiv ID (bare like "
-        "1706.03762 or hep-th/9901001, arXiv:-prefixed, or an arxiv.org URL; any "
-        "version suffix is ignored), or a DOI, PMID, or OpenAlex work ID (automatically "
-        "resolved to its arXiv ID via OpenAlex when OpenAlex records one)."
+        description="arXiv ID (bare, arXiv:, or URL), or a DOI/PMID/OpenAlex work ID resolved to arXiv via OpenAlex."
     ),
 ]
 
 PAPER_ID = Annotated[
     str,
     Field(
-        description="Paper identifier — bare, doi:-prefixed, or a full URL. "
-        "Auto-routed by shape: arXiv ID (2301.00001, hep-th/9901001), "
-        "bioRxiv/medRxiv DOI (10.1101/...), ACL Anthology ID (P16-1160, "
-        "2023.acl-long.1) or URL, any other DOI, a PMID (pmid:20079334, a "
-        "pubmed.ncbi.nlm.nih.gov URL, or a bare 7-8 digit run), or an OpenAlex "
-        "work ID (W4312223440, openalex:-prefixed, or an openalex.org URL). Pipeline and "
-        "markdown tools (download_pdf, "
-        "convert_paper, import_paper, get_paper_sections, get_paper_section, "
-        "get_paper_markdown, find_in_paper) also take a freeform label for a manually "
-        "imported file; metadata tools require a shape above."
+        description="Paper identifier: arXiv ID, bioRxiv/medRxiv DOI, ACL Anthology ID/URL, DOI, PMID, or OpenAlex work ID (W...). Pipeline tools also accept freeform import labels."
     ),
 ]
 
@@ -224,20 +202,12 @@ SECTION_HARNESS_CAP = 200000
 
 SECTION_OFFSET = Annotated[
     int,
-    Field(
-        description="Character offset to start reading. Pass the next_offset "
-        "from a previous call to page through.",
-        ge=0,
-    ),
+    Field(description="Start character offset (pass next_offset to page).", ge=0),
 ]
 
 SECTION_MAX_CHARS = Annotated[
     int,
-    Field(
-        description="Slice size in characters (~4 chars per token).",
-        ge=1,
-        le=SECTION_HARNESS_CAP,
-    ),
+    Field(description="Max characters to return (~4 chars/token).", ge=1, le=SECTION_HARNESS_CAP),
 ]
 
 
@@ -612,126 +582,61 @@ def openalex_arxiv_id(work: dict[str, Any]) -> str | None:
 FOLLOW_PUBLISHED = Annotated[
     bool,
     Field(
-        description=(
-            "bioRxiv/medRxiv and arXiv: if the preprint names its journal version "
-            "(bioRxiv's published_doi, arXiv's doi), return OpenAlex's journal record "
-            "instead — _source='openalex_via_biorxiv' plus preprint_doi, or "
-            "'openalex_via_arxiv' plus preprint_arxiv_id, and followed_published=True. "
-            "Not-yet-indexed "
-            "falls back to the preprint with followed_published=False; a "
-            "retryable lookup failure also sets published_lookup_retryable=True. "
-            "No effect on other shapes, unpublished preprints, or a "
-            "biorxiv_unavailable answer."
-        ),
+        description="For arXiv/bioRxiv preprints, follow to OpenAlex's journal version when known."
     ),
 ]
 
 FORCE_REFRESH = Annotated[
     bool,
-    Field(
-        description=(
-            "Drop the cached record and re-fetch — for a preprint just "
-            "published, a citation count that should have grown, or an "
-            "identifier that previously 404'd. Otherwise the cache is used "
-            "(per-provider TTL)."
-        ),
-    ),
+    Field(description="Bypass the local cache and re-fetch from upstream."),
 ]
 
 FALLBACK_CROSSREF = Annotated[
     bool,
-    Field(
-        description=(
-            "When OpenAlex returns a definitive 404 for a DOI (not a transient "
-            "5xx/429/timeout), fall back to Crossref, which often indexes new "
-            "DOIs sooner. Accepted by all four paper tools. The response "
-            "carries _source='crossref' in the shape its OpenAlex counterpart "
-            "would have; per-tool nulls are in each docstring. Only affects "
-            "DOIs routed to OpenAlex. If Crossref itself fails transiently, "
-            "the OpenAlex error carries crossref_fallback_retryable: true."
-        ),
-    ),
+    Field(description="On a definitive OpenAlex 404 for a DOI, fall back to Crossref."),
 ]
 
 PDF_FORCE_REFRESH = Annotated[
     bool,
     Field(
-        description=(
-            "Drop the cached PDF and re-download — for a corrupt file, or a "
-            "provider that replaced it under the same key (a v2 arXiv upload). "
-            "For an arXiv/bioRxiv/ACL-shaped identifier you imported yourself "
-            "this replaces your PDF and drops its markdown: use "
-            "import_paper(..., force_refresh=True) to supply the file again."
-        ),
+        description="Re-download the PDF even if cached (invalidates derived markdown/sections)."
     ),
 ]
 
 IMPORT_FORCE_REFRESH = Annotated[
     bool,
     Field(
-        description=(
-            "Replace the cached copy for this identifier instead of returning "
-            "it. For a PDF this also drops cached markdown + section index, so "
-            "the next convert_paper re-runs on the new bytes."
-        ),
+        description="Overwrite any cached copy for this identifier (drops derived markdown for PDFs)."
     ),
 ]
 
 ALLOW_OA_URL = Annotated[
     bool,
     Field(
-        description=(
-            "Let a DOI, PMID, or OpenAlex work ID no native provider hosts download "
-            "from the open-access PDF URL OpenAlex reports for it. Only that URL is "
-            "fetched, never an arbitrary one. Errors if the paper is closed-access, "
-            "absent from OpenAlex, or the URL is a landing page. Otherwise such "
-            "identifiers are refused — fetch the PDF yourself and use import_paper. "
-            "Ignored for arXiv/bioRxiv/ACL."
-        ),
+        description="For non-native DOIs/PMIDs/work IDs, allow fetching the OA PDF URL OpenAlex reports."
     ),
 ]
 
 CONVERT_FORCE_REFRESH = Annotated[
     bool,
-    Field(
-        description=(
-            "Drop cached markdown and section index so the converter re-runs "
-            "(arXiv HTML and bioRxiv JATS are fetched again). "
-            "Use after replacing the source PDF or upgrading the converter. "
-            "Conversion takes minutes — only set this when you need fresh "
-            "markdown."
-        ),
-    ),
+    Field(description="Drop cached markdown/sections and re-run conversion."),
 ]
 
 CONVERT_MODE = Annotated[
     Literal["full", "fast"],
     Field(
-        description=(
-            "'full' (default) runs the heavy converter (MinerU/Marker) for "
-            "tables and equations: minutes, and serialised server-wide — a "
-            "concurrent call gets a retryable 'busy' error. 'fast' runs a light "
-            "text extractor outside that lock: seconds, never 'busy', but "
-            "DEGRADED — plain text, no tables, equations, figures or headings. "
-            "The response echoes conversion_mode."
-        ),
+        description="'full' (default, slow, serialized, keeps tables/equations) or 'fast' (plain text, no lock)."
     ),
 ]
 
 SECTIONS_FORCE_REFRESH = Annotated[
     bool,
-    Field(
-        description=(
-            "Drop the cached section index and re-parse the existing markdown. "
-            "Cheap — no subprocess, no network. Use if the checksum-based "
-            "auto-refresh missed a stale index."
-        ),
-    ),
+    Field(description="Re-parse cached markdown into sections (local, no network)."),
 ]
 
 AUTHORS_PAGE = Annotated[
     int,
-    Field(description="Page number, from 1.", ge=1),
+    Field(description="1-based page number.", ge=1),
 ]
 
 AUTHORS_PAGE_SIZE = Annotated[
@@ -746,19 +651,14 @@ PAGE_SIZE = Annotated[
 
 PAGE = Annotated[
     int,
-    Field(description="Page number, from 1.", ge=1),
+    Field(description="1-based page number.", ge=1),
 ]
 
 
 REF_SOURCE = Annotated[
     Literal["auto", "crossref", "opencitations"],
     Field(
-        description="'auto' (default) surveys both providers and pages from the "
-        "better-covered one, biased toward Crossref for its richer entries. "
-        "'crossref' gives structured metadata (author, title, year, journal, "
-        "DOI), quality varying by publisher. 'opencitations' gives DOI-to-DOI "
-        "links with cross-referenced IDs (OMID, OpenAlex, PMID) and "
-        "self-citation flags, and may hold entries Crossref lacks."
+        description="'auto' (default, surveys both on page 1), 'crossref' (structured metadata), or 'opencitations' (DOI links)."
     ),
 ]
 
@@ -783,32 +683,15 @@ CITATION_SORT = Annotated[
 
 FIND_MAX_RESULTS = Annotated[
     int,
-    Field(
-        description=(
-            "Maximum hits to return. Ordered by document position; matches beyond this are dropped."
-        ),
-        ge=1,
-        le=100,
-    ),
+    Field(description="Max matches to return in document order.", ge=1, le=100),
 ]
 
 CACHE_SEARCH_NAMESPACE = Annotated[
     str | None,
-    Field(
-        description=(
-            "Restrict the search to one cache namespace (arxiv, biorxiv, "
-            "acl_anthology, manual). Default searches all."
-        ),
-    ),
+    Field(description="Optional cache namespace filter (arxiv, biorxiv, acl_anthology, manual)."),
 ]
 
 CACHE_SEARCH_TOP_K = Annotated[
     int,
-    Field(
-        description=(
-            "Maximum hits to return. Ranked by BM25; ties break by namespace, then filename."
-        ),
-        ge=1,
-        le=corpus.MAX_TOP_K,
-    ),
+    Field(description="Max BM25 hits to return.", ge=1, le=corpus.MAX_TOP_K),
 ]

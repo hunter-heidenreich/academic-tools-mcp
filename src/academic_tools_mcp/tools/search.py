@@ -137,23 +137,11 @@ async def search_arxiv(
     sort_by: ARXIV_SORT_BY = "relevance",
     sort_order: ARXIV_SORT_ORDER = "descending",
 ) -> dict[str, Any]:
-    """Search arXiv papers. Returns a slim triage list.
+    """Search arXiv preprints with field prefixes and boolean operators (slim triage list).
 
-    Returns ``{total_results, result_count, results: [{arxiv_id, title,
-    first_author, author_count, published_year}, ...]}``. ``total_results`` is
-    the upstream match count, ``result_count`` what this call returned — a larger
-    ``total_results`` means more exist. The author list is omitted so consortium
-    papers can't balloon the response. Pages are ``max_results`` long; a page past
-    ``total_results`` has empty ``results``.
-
-    Errors: ``{error, suggestion}`` plus arXiv's verdict — ``retryable: false``
-    for a query arXiv rejected, ``retryable: true`` for a transport or parse
-    failure. arXiv serves only a query's leading results (the error names how
-    many), so a page past them is refused without a request as ``retryable:
-    false`` plus ``beyond_window: true``: narrow the query instead of paging on.
-
-    Call get_paper_metadata(arxiv_id) for the full record — every hit is
-    already cached, so it costs no request.
+    Returns ``{total_results, result_count, results}``. Hits warm the cache so
+    follow-up ``get_paper_metadata(arxiv_id)`` calls are free. arXiv serves only
+    the first 10,000 hits per query — narrow the query rather than paging past.
     """
     start, _ = page_bounds(page, max_results)
     result = await arxiv.search_papers(
@@ -198,21 +186,10 @@ async def search_crossref_by_title(
         ),
     ] = 5,
 ) -> dict[str, Any]:
-    """Search Crossref by title (bibliographic query). Returns a slim triage list.
+    """Search Crossref by title/bibliographic string to discover a DOI (also covers bioRxiv).
 
-    Finds the published DOI when you have only a title or an arXiv ID, and is
-    the de facto bioRxiv search since Crossref indexes every bioRxiv DOI.
-
-    Returns ``{total_results, result_count, results: [{doi, title, first_author,
-    author_count, year}, ...]}``. A bibliographic query matches broadly, so
-    ``total_results`` runs far ahead of ``result_count``: refine the title rather
-    than raising ``max_results``. Crossref dates may differ from arXiv preprint
-    dates.
-
-    Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
-    parse failure; an unclassified 4xx carries no verdict.
-
-    Call get_paper_metadata(doi) for the full record.
+    Returns ``{total_results, result_count, results}`` and warms the Crossref
+    cache (making follow-up ``get_paper_references(doi, source="crossref")`` free).
     """
     response = await crossref.search_works(title, year=year, rows=max_results)
     if "error" in response:
@@ -311,31 +288,11 @@ async def search_openalex(
         ),
     ] = 10,
 ) -> dict[str, Any]:
-    """Search or filter all of OpenAlex. Returns a slim triage list.
+    """Search or filter OpenAlex works (slim triage list; warms the works cache).
 
-    The broadest discovery tool here — every discipline, where search_arxiv is
-    preprints only and search_crossref_by_title matches bibliographically rather
-    than on content. Supports free-text search, year or year-range filtering
-    (``from_year``/``to_year``), ``author_id`` (OpenAlex ID or ORCID, including
-    with an empty ``query`` to list an author's papers at 1/10th the credit
-    cost), ``is_oa``, ``sort``, and ``page``.
-
-    Returns ``{total_results, result_count, results: [{doi, openalex_id, pmid,
-    arxiv_id, title, first_author, author_count, publication_year,
-    cited_by_count, is_oa}, ...]}``. ``total_results`` is OpenAlex's own match
-    count, ``result_count`` what this call returned. ``doi``, ``pmid`` (bare
-    digits) and ``arxiv_id`` (bare, versionless) are null when OpenAlex has
-    none; ``openalex_id`` is always present. The author list is omitted so
-    consortium papers can't balloon the response.
-
-    Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
-    parse failure.
-
-    Chain get_paper_metadata(doi) (or get_paper_metadata(openalex_id) when
-    ``doi`` is null) for the full record: unlike a search_crossref_by_title hit,
-    every hit is already in the cache it reads, so the follow-up costs no
-    request. When ``arxiv_id`` is present, chain it directly into convert_paper
-    or get_paper_code / get_paper_catalog.
+    Supports free-text ``query``, ``year`` or ``from_year``/``to_year``,
+    ``author_id`` (OpenAlex ID or ORCID — omit ``query`` to list an author's
+    papers at 1/10th the credit cost), ``is_oa``, ``sort``, and ``page``.
     """
     if not query.strip() and not author_id:
         return {
@@ -427,25 +384,11 @@ async def search_authors(
         ),
     ] = 10,
 ) -> dict[str, Any]:
-    """Find an author by name on OpenAlex. Returns a slim triage list.
+    """Find an author by name on OpenAlex (slim triage list; warms ``get_author`` cache).
 
-    The way into the author tools: get_author needs an ID only
-    get_paper_authors could otherwise give you.
-
-    Returns ``{total_results, result_count, results: [{openalex_id, name,
-    orcid, last_known_institution, works_count, cited_by_count, h_index},
-    ...]}``. ``total_results`` is OpenAlex's own match count, ``result_count``
-    what this call returned. Every field but ``openalex_id`` may be null.
-
-    **One name is often several records** — OpenAlex disambiguates imperfectly.
-    Pick on ``works_count`` / ``cited_by_count`` / ``last_known_institution``,
-    preferring the one with an ``orcid``.
-
-    Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
-    parse failure.
-
-    Chain get_author(``openalex_id``, not ``orcid``) for affiliation history and
-    top topics; every hit warms the cache it reads, so that call is free.
+    One name often matches multiple records — disambiguate via ``works_count``,
+    ``cited_by_count``, ``last_known_institution``, and ``orcid``, then chain
+    ``get_author(openalex_id)``.
     """
     response = await openalex.search_authors(query, rows=max_results)
     if "error" in response:
@@ -491,27 +434,10 @@ async def autocomplete_openalex(
     ],
     entity_type: AUTOCOMPLETE_ENTITY = "works",
 ) -> dict[str, Any]:
-    """Match a name to an OpenAlex ID. Costs no credit budget.
+    """Fast typeahead from a name/title prefix to an OpenAlex ID (0 credits; uncached, max 10 hits).
 
-    Use it when you know what a thing is *called*; search_openalex matches content
-    and is metered ten times as heavily. The only route to get_institution.
-
-    Returns ``{total_results, result_count, results: [{openalex_id, name, hint,
-    entity_type, external_id, works_count, cited_by_count}, ...]}``.
-    ``external_id`` is the entity's other identifier — a DOI for a work, a ROR for
-    an institution, an ORCID for an author, an ISSN for a source. ``hint``
-    disambiguates: authors for a work, a location for an institution. Every field
-    but ``openalex_id`` may be null.
-
-    OpenAlex serves a fixed page, so ``result_count`` caps at 10 whatever
-    ``total_results`` reports; narrow the query rather than paging.
-
-    Errors: ``{error, suggestion}``, plus ``retryable: true`` on a transient or
-    parse failure.
-
-    Chain get_paper_metadata(``external_id``) for a work, get_author /
-    get_institution(``openalex_id``) otherwise. **These hits are not cached**,
-    unlike search_openalex's, so that follow-up costs a request.
+    Use instead of ``search_openalex`` when you know what a work/author/institution
+    is called; chain into ``get_paper_metadata``, ``get_author``, or ``get_institution``.
     """
     response = await openalex.autocomplete(query, entity_type=entity_type)
     if "error" in response:
@@ -685,32 +611,11 @@ async def search_cached_papers(
         ),
     ] = False,
 ) -> dict[str, Any]:
-    """BM25 keyword search across every paper you've already converted.
+    """BM25 keyword search across all locally converted papers (SQLite FTS5).
 
-    Answers "which paper mentioned X?" — pair with find_in_paper for "where in
-    that paper?". Also the only search for manually-imported papers, whose
-    identifiers are freeform labels no provider search can find.
-
-    Returns ``{query, result_count, results: [{namespace, canonical_id, score,
-    title, snippet, section, section_index, char_offset, char_count}, ...]}``.
-    Chain with ``get_paper_section(canonical_id, str(section_index))`` — not
-    ``section``, which is heading text and repeats often enough to be rejected
-    as ambiguous. ``char_offset`` and ``section_index`` are null when the term
-    could not be located; the hit is real, just not centrable, so reach for
-    find_in_paper to place it.
-
-    When part of the corpus can never match, the response also carries
-    ``unindexable_count``, ``unindexable`` (a capped sample of ``{namespace, stem,
-    canonical_id, reason}`` records — chain ``canonical_id``, never ``stem``) and
-    ``unindexable_note``, absent otherwise.
-
-    Empty results mean no cached paper matched, never a failure: an unreadable
-    index returns ``{error, retryable: True, suggestion}`` instead.
-
-    Limits: pure keyword match, no synonyms ("self-attention" won't surface a
-    paper that only says "scaled dot-product attention"). Scripts without
-    whitespace word breaks (CJK) are indexed but findable only by whole runs,
-    not sub-phrases — use find_in_paper there.
+    Answers "which cached paper mentioned X?". Chain hits via
+    ``get_paper_section(canonical_id, str(section_index))`` or ``find_in_paper``.
+    Pure keyword match (no synonyms); reports any unindexable files separately.
     """
 
     # One hop off the loop, one walk: `search` refreshes the index `unindexable` reads.
@@ -808,24 +713,11 @@ async def get_wikipedia_summary(
     ],
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """Fetch the structured summary (extract) of a Wikipedia article.
+    """Fetch the lead extract and metadata of an English Wikipedia article.
 
-    Returns ``{title, canonical_title, description, extract, url, permalink,
-    revision, timestamp, type, pageid, wikibase_item}``.
-
-    ``wikibase_item`` is the Wikidata QID — the join from an article to the
-    identifiers the rest of this server takes, so a person resolves on to ORCID and
-    get_author, an institution to ROR and get_institution. ``permalink`` pins the
-    ``revision`` this call read and is what to cite: ``url`` tracks the live page,
-    which is whatever the article later becomes. ``canonical_title`` is what the
-    request resolved to, so it differs from the title you asked for when that title
-    is a redirect. ``extract`` is empty unless ``type`` is ``"standard"`` — a
-    disambiguation page's extract describes one candidate meaning and would be
-    miscited as the article's.
-
-    Errors: page not found → ``{error, not_found: true, suggestion}``; an outage →
-    ``{error, retryable: true, suggestion}``. Use search_wikipedia first if you
-    don't know the canonical title.
+    Returns ``title``, ``canonical_title``, ``extract`` (empty on disambiguation
+    pages), ``permalink`` (pinned to ``revision`` — cite this, not ``url``), and
+    ``wikibase_item`` (Wikidata QID).
     """
     result = await wikipedia.get_summary(title, force_refresh=force_refresh)
     if "error" in result:

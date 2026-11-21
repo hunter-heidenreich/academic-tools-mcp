@@ -124,24 +124,10 @@ def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
 async def get_paper_references_count(
     doi: DOI, force_refresh: FORCE_REFRESH = False
 ) -> dict[str, Any]:
-    """Survey outgoing-reference coverage across Crossref and OpenCitations.
+    """Survey outgoing-reference counts across Crossref and OpenCitations in parallel.
 
-    Both providers are fetched in parallel. Counts often differ — call this first
-    to pick the better-covered source before paginating with get_paper_references.
-
-    Returns ``{doi, sources: {crossref: {count} | error, opencitations: {count} | error}}``.
-    An error object carries ``error`` plus whichever of ``retryable``,
-    ``retry_after_seconds``, ``not_found``, ``backpressure``, ``max_concurrency``,
-    ``suggestion`` the provider set; one source erroring still reports the other's
-    count. The echoed ``doi`` is canonical, not the spelling you passed.
-
-    OpenCitations times out on the most-cited papers. Its row then gains
-    ``pageable: false``: the count is real, but get_paper_references cannot serve
-    those rows — page from Crossref instead.
-
-    A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
-    identifier is rejected locally, without a request, as
-    ``{error, not_found: true, suggestion}`` — the graph tools are DOI-only.
+    Returns ``{doi, sources: {crossref, opencitations}}``. A ``pageable: false``
+    flag on OpenCitations means the count is real but rows cannot be paged.
     """
     doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
@@ -231,44 +217,12 @@ async def get_paper_references(
     page_size: PAGE_SIZE = 20,
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """Page through outgoing references (bibliography) from the chosen source.
+    """Page through outgoing references (bibliography) from Crossref or OpenCitations.
 
-    ``auto`` surveys both providers on page 1 and pages from the winner — Crossref
-    unless OpenCitations has materially more rows — saving a turn over
-    get_paper_references_count; the winner is echoed in ``_source``. An errored
-    provider loses automatically and the response gains ``partial_failure``:
-    ``{source}`` plus that provider's ``error`` and whichever of ``retryable``,
-    ``retry_after_seconds``, ``not_found``, ``backpressure``, ``max_concurrency``,
-    ``suggestion`` it set — so an empty result isn't mistaken for a confident "no
-    references".
-
-    Paginating past page 1 must pin ``source`` to the ``_source`` from page 1
-    (``auto`` there is an error) — re-surveying could pick a different source
-    mid-walk and silently shift the offsets. Omit ``force_refresh`` on pages
-    2..N so they reuse the cache page 1 warmed.
-
-    Returns ``{_source, doi, total, page, page_size, has_more, references: [...]}``.
-    The echoed ``doi`` is canonical, not the spelling you passed. The per-entry
-    shape differs by source:
-      - crossref: keys present vary with publisher deposit quality — doi, author,
-        title, year, journal, volume, first_page, unstructured (raw citation text
-        when structured fields are absent), key (last resort: the row was
-        deposited with no usable metadata).
-      - opencitations: whichever cross-referenced IDs it listed — doi (cited
-        paper), omid, openalex, pmid — plus creation (date string, may be null),
-        journal_self_citation, author_self_citation. No bibliographic metadata,
-        and ``total: 0`` means "no edges in this index", not "no references":
-        OpenCitations answers an unindexed DOI and one with zero edges alike.
-
-    Errors: ``{error, suggestion}`` plus a verdict — ``retryable`` on a transient
-    failure, ``not_found: true`` on a definitive miss (including the local non-DOI
-    rejection, which costs no request: both providers are DOI-only), and neither
-    on an unclassified 4xx, so branch on ``retryable is true``, never on its
-    absence. ``source="auto"`` past page 1 is ``retryable: false``. When *both*
-    providers fail the response adds ``sources: {crossref, opencitations}``, each
-    carrying ``error`` plus any of ``retryable``, ``retry_after_seconds``,
-    ``not_found``, ``backpressure``, ``max_concurrency``, ``suggestion``, and the
-    top-level ``retryable`` is the disjunction of the two.
+    ``source='auto'`` surveys both on page 1 (biased toward Crossref for richer
+    metadata) and echoes the winner in ``_source``; pin ``source`` to ``_source``
+    when paging past page 1. Returns ``{_source, doi, total, page, page_size,
+    has_more, references}`` (plus ``partial_failure`` if one provider errored).
     """
     doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
@@ -349,30 +303,11 @@ async def get_paper_references(
 async def get_paper_citations_count(
     doi: DOI, force_refresh: FORCE_REFRESH = False
 ) -> dict[str, Any]:
-    """Survey incoming-citation coverage across OpenCitations and OpenAlex.
+    """Survey incoming-citation counts across OpenCitations and OpenAlex in parallel.
 
-    Both are read in parallel. An OpenCitations ``count: 0`` means "no edges in
-    this index", not "nothing cites this work" — it answers an unindexed DOI and
-    one with zero edges alike — so OpenAlex's tally is the cross-check that tells
-    the two apart. They routinely disagree by thousands; neither is a correction
-    of the other.
-
-    Returns ``{doi, count, pageable, sources: {opencitations: {count} | error,
-    openalex: {count} | error}}``, the echoed ``doi`` canonical rather than the
-    spelling you passed. **``count`` is OpenCitations'**, and null when it failed;
-    OpenAlex cannot serve it. An error object carries ``error`` plus whichever of
-    ``retryable``, ``retry_after_seconds``, ``not_found``, ``backpressure``,
-    ``max_concurrency``, ``suggestion`` the provider set; one source failing still
-    reports the other's count.
-
-    **get_paper_citations pages ``count`` only when ``pageable`` is true.**
-    OpenCitations times out on the most-cited papers; the count then comes from its
-    tally endpoint, and this key and the source row both read false. The number is
-    real, the edge list unavailable at any page.
-
-    A PMID or an OpenAlex work ID resolves to its DOI first; any other non-DOI
-    identifier is rejected locally, without a request, as
-    ``{error, not_found: true, suggestion}``.
+    Returns ``{doi, count, pageable, sources: {opencitations, openalex}}``.
+    ``count`` is OpenCitations' (null on error); ``get_paper_citations`` can page
+    only when ``pageable`` is true. Cross-check OpenCitations 0 against OpenAlex.
     """
     doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
@@ -489,32 +424,12 @@ async def get_paper_citations(
     sort: CITATION_SORT = "cited_by_count",
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """Page through incoming citations (papers that cite this work).
+    """Page through incoming citations from OpenCitations (default) or OpenAlex.
 
-    Supports two sources:
-      - ``opencitations`` (default): DOI-to-DOI links with cross-referenced IDs
-        (doi, omid, openalex, pmid), creation date, and self-citation flags. No
-        bibliographic metadata. ``total: 0`` means "no edges in this index", not
-        "nothing cites this work".
-      - ``openalex``: citing works paged directly from OpenAlex, sorted by
-        ``cited_by_count`` (default) or ``publication_date`` descending. Returns
-        rich triage rows (``doi``, ``openalex_id``, ``pmid``, ``arxiv_id``,
-        ``title``, ``first_author``, ``author_count``, ``publication_year``,
-        ``cited_by_count``, ``is_oa``), warms the singleton works cache, supports
-        DOI-less OpenAlex work IDs, and works on landmark papers where
-        OpenCitations times out.
-
-    Returns ``{_source, doi, total, page, page_size, has_more, citations: [...]}``,
-    the echoed ``doi`` canonical rather than the spelling you passed.
-
-    Call get_paper_citations_count first to compare coverage across both indices.
-    Omit ``force_refresh`` when paginating so pages 2..N reuse the cache page 1
-    warmed.
-
-    Errors: ``{error, suggestion}`` plus the provider's verdict — ``retryable``
-    (with ``retry_after_seconds`` when advertised) on a transient failure,
-    ``not_found: true`` on a definitive miss, including the local non-DOI
-    rejection for OpenCitations.
+    ``opencitations`` returns DOI-to-DOI links + self-citation flags (``total: 0``
+    means unindexed, not uncited). ``openalex`` returns sorted triage rows,
+    warms the works cache, supports DOI-less ``W...`` IDs, and works on landmark
+    papers where OpenCitations 504s. Call ``get_paper_citations_count`` first.
     """
     if source == "openalex":
         return await _openalex_citations_page(
