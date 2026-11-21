@@ -243,6 +243,17 @@ def _openalex_first_author(work: dict[str, Any]) -> str | None:
     return as_dict(authorships[0].get("author")).get("display_name") if authorships else None
 
 
+OPENALEX_SORT = Annotated[
+    openalex.SearchSort,
+    Field(
+        description=(
+            "'relevance' (default), 'cited_by_count' (most-cited first), or "
+            "'publication_date' (newest first)."
+        ),
+    ),
+]
+
+
 @mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def search_openalex(
     query: Annotated[
@@ -250,17 +261,47 @@ async def search_openalex(
         Field(
             description="Free-text query, matched against title, abstract and "
             "fulltext. Plain words, not a field syntax — for field-scoped "
-            "queries use search_arxiv."
+            "queries use search_arxiv. May be omitted when filtering by author_id."
         ),
-    ],
+    ] = "",
     year: Annotated[
         int | None,
         Field(
-            description="Publication year to filter results. Optional.",
+            description="Exact publication year to filter results. Optional.",
             ge=SEARCH_YEAR_MIN,
             le=SEARCH_YEAR_MAX,
         ),
     ] = None,
+    from_year: Annotated[
+        int | None,
+        Field(
+            description="Inclusive lower publication year bound. Ignored if year is set.",
+            ge=SEARCH_YEAR_MIN,
+            le=SEARCH_YEAR_MAX,
+        ),
+    ] = None,
+    to_year: Annotated[
+        int | None,
+        Field(
+            description="Inclusive upper publication year bound. Ignored if year is set.",
+            ge=SEARCH_YEAR_MIN,
+            le=SEARCH_YEAR_MAX,
+        ),
+    ] = None,
+    author_id: Annotated[
+        str | None,
+        Field(
+            description="Filter to works by an author — OpenAlex author ID (A5023888391) "
+            "or ORCID (bare, orcid:-prefixed, or URL). Combine with empty query and "
+            "sort='cited_by_count' or 'publication_date' to list an author's papers."
+        ),
+    ] = None,
+    is_oa: Annotated[
+        bool | None,
+        Field(description="Filter by open-access status: true for OA only, false for closed."),
+    ] = None,
+    sort: OPENALEX_SORT = "relevance",
+    page: PAGE = 1,
     max_results: Annotated[
         int,
         Field(
@@ -270,11 +311,14 @@ async def search_openalex(
         ),
     ] = 10,
 ) -> dict[str, Any]:
-    """Search all of OpenAlex by free text. Returns a slim triage list.
+    """Search or filter all of OpenAlex. Returns a slim triage list.
 
     The broadest discovery tool here — every discipline, where search_arxiv is
     preprints only and search_crossref_by_title matches bibliographically rather
-    than on content. Use it when you have a topic rather than a title.
+    than on content. Supports free-text search, year or year-range filtering
+    (``from_year``/``to_year``), ``author_id`` (OpenAlex ID or ORCID, including
+    with an empty ``query`` to list an author's papers at 1/10th the credit
+    cost), ``is_oa``, ``sort``, and ``page``.
 
     Returns ``{total_results, result_count, results: [{doi, openalex_id, pmid,
     arxiv_id, title, first_author, author_count, publication_year,
@@ -293,7 +337,37 @@ async def search_openalex(
     request. When ``arxiv_id`` is present, chain it directly into convert_paper
     or get_paper_code / get_paper_catalog.
     """
-    response = await openalex.search_works(query, year=year, rows=max_results)
+    if not query.strip() and not author_id:
+        return {
+            "error": "Provide a non-empty query or an author_id filter.",
+            "retryable": False,
+            "suggestion": (
+                "Pass a topic query, or pass author_id (from search_authors or "
+                "get_paper_authors) to list an author's works."
+            ),
+        }
+    if year is None and from_year is not None and to_year is not None and from_year > to_year:
+        return {
+            "error": f"Invalid year range: from_year ({from_year}) > to_year ({to_year}).",
+            "retryable": False,
+            "suggestion": "Swap from_year and to_year so from_year <= to_year.",
+        }
+
+    extra: dict[str, Any] = {}
+    if from_year is not None:
+        extra["from_year"] = from_year
+    if to_year is not None:
+        extra["to_year"] = to_year
+    if author_id is not None:
+        extra["author_id"] = author_id
+    if is_oa is not None:
+        extra["is_oa"] = is_oa
+    if sort != "relevance":
+        extra["sort"] = sort
+    if page != 1:
+        extra["page"] = page
+
+    response = await openalex.search_works(query, year=year, rows=max_results, **extra)
     if "error" in response:
         return enrich_error(
             response,

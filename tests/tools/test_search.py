@@ -1058,3 +1058,52 @@ class TestAutocompleteOpenalex:
 
         assert result["retryable"] is True
         assert "suggestion" in result
+
+
+class TestSearchOpenAlexFiltersTool:
+    @pytest.mark.asyncio
+    async def test_forwards_filters_sort_and_page(self, monkeypatch):
+        captured: dict = {}
+
+        async def fake_search(query="", **kwargs):
+            captured["query"] = query
+            captured.update(kwargs)
+            return {"total_results": 0, "items": []}
+
+        monkeypatch.setattr(openalex, "search_works", fake_search)
+
+        result = await server.search_openalex(
+            query="",
+            author_id="A5023888391",
+            from_year=2022,
+            to_year=2025,
+            is_oa=True,
+            sort="cited_by_count",
+            page=2,
+            max_results=5,
+        )
+
+        assert result["result_count"] == 0
+        assert captured == {
+            "query": "",
+            "year": None,
+            "from_year": 2022,
+            "to_year": 2025,
+            "author_id": "A5023888391",
+            "is_oa": True,
+            "sort": "cited_by_count",
+            "page": 2,
+            "rows": 5,
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejects_empty_query_without_author_id(self):
+        result = await server.search_openalex(query="   ")
+        assert result["retryable"] is False
+        assert "author_id" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_inverted_year_range(self):
+        result = await server.search_openalex(query="llm", from_year=2025, to_year=2020)
+        assert result["retryable"] is False
+        assert "from_year" in result["error"]

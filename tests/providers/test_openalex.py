@@ -2392,3 +2392,65 @@ class TestGetCitingWorks:
 
         assert result["not_found"] is True
         assert requests == []
+
+
+class TestSearchWorksFilters:
+    @pytest.mark.asyncio
+    async def test_year_range_author_id_oa_sort_and_page(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        await openalex.search_works(
+            "diffusion",
+            from_year=2022,
+            to_year=2025,
+            author_id="https://openalex.org/A5023888391",
+            is_oa=True,
+            sort="cited_by_count",
+            page=3,
+            rows=15,
+        )
+
+        params = parse_qs(requests[0].url.query.decode())
+        assert params["search"] == ["diffusion"]
+        assert params["filter"] == [
+            "publication_year:2022-2025,authorships.author.id:A5023888391,open_access.is_oa:true"
+        ]
+        assert params["sort"] == ["cited_by_count:desc"]
+        assert params["page"] == ["3"]
+        assert params["per-page"] == ["15"]
+
+    @pytest.mark.asyncio
+    async def test_author_works_with_orcid_and_blank_query_skips_search_gap(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+        used_search_gap = False
+
+        async def fail_if_search_gap(*args, **kwargs):
+            nonlocal used_search_gap
+            used_search_gap = True
+            raise AssertionError("blank query should use the 1-credit filter path")
+
+        monkeypatch.setattr(openalex, "_throttled_search_get", fail_if_search_gap)
+
+        await openalex.search_works(
+            "",
+            author_id="orcid:0000-0002-1825-0097",
+            from_year=2023,
+            sort="publication_date",
+        )
+
+        assert not used_search_gap
+        params = parse_qs(requests[0].url.query.decode())
+        assert "search" not in params
+        assert params["filter"] == [
+            "publication_year:>=2023,authorships.author.orcid:0000-0002-1825-0097"
+        ]
+        assert params["sort"] == ["publication_date:desc"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_author_id_rejected_locally(self, monkeypatch):
+        requests = _stub_json_responses(monkeypatch, {"meta": {"count": 0}, "results": []})
+
+        result = await openalex.search_works("ml", author_id="not-an-id")
+
+        assert result["not_found"] is True
+        assert requests == []
