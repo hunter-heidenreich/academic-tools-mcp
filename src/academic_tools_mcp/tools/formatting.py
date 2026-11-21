@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from .. import manual
-from ..app import crossref_date, openalex_arxiv_id, openalex_pmid
+from ..app import crossref_date, openalex_arxiv_id, openalex_pmcid, openalex_pmid
 from ..providers import arxiv, crossref, openalex
 from ..util.jsonshape import as_dict, as_int, dict_list, unwrap_first
 
@@ -114,6 +114,7 @@ def format_openalex_metadata(work: dict[str, Any], canonical_id: str | None) -> 
         "title": work.get("title"),
         "doi": work.get("doi"),
         "pmid": openalex_pmid(work),
+        "pmcid": openalex_pmcid(work),
         "arxiv_id": openalex_arxiv_id(work),
         "publication_year": work.get("publication_year"),
         "publication_date": work.get("publication_date"),
@@ -187,6 +188,7 @@ def format_crossref_metadata(work: dict[str, Any], canonical_id: str | None) -> 
         "title": unwrap_first(work.get("title")),
         "doi": work.get("DOI"),
         "pmid": None,
+        "pmcid": None,
         "arxiv_id": None,
         "publication_year": year,
         "publication_date": date,

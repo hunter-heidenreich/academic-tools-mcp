@@ -182,6 +182,7 @@ def test_any_openalex_payload_triages_without_raising(
             "doi",
             "openalex_id",
             "pmid",
+            "pmcid",
             "arxiv_id",
             "title",
             "first_author",
@@ -190,9 +191,10 @@ def test_any_openalex_payload_triages_without_raising(
             "cited_by_count",
             "is_oa",
         }
-        # The four an agent chains on: a DOI, PMID, or arXiv ID is bare or absent, never a URL.
+        # The five an agent chains on: bare or absent, never a URL.
         assert hit["doi"] is None or not hit["doi"].lower().startswith("http")
         assert hit["pmid"] is None or hit["pmid"].isdecimal()
+        assert hit["pmcid"] is None or hit["pmcid"].startswith("PMC")
         assert hit["arxiv_id"] is None or not hit["arxiv_id"].lower().startswith("http")
         assert isinstance(hit["author_count"], int)
 

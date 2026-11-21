@@ -623,6 +623,7 @@ class TestSearchOpenalex:
                 "doi": "10.1234/x",
                 "openalex_id": "https://openalex.org/W1",
                 "pmid": None,
+                "pmcid": None,
                 "arxiv_id": None,
                 "title": "A Great Work",
                 "first_author": "Ada Lovelace",
