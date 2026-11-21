@@ -57,6 +57,7 @@ def test_every_client_module_was_discovered():
         "openalex",
         "opencitations",
         "paperswithcode",
+        "pmc",
         "wikipedia",
     } <= set(names)
     assert len(names) == len(set(names))

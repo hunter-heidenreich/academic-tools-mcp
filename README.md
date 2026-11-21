@@ -230,6 +230,8 @@ The PDF-to-markdown pipeline converts downloaded PDFs into section-level markdow
 
 **bioRxiv/medRxiv papers do the same with bioRxiv's JATS XML** (the record's `jatsxml`), recorded as `conversion_mode: "jats"`. Most tables and many equations ship as images, which JATS carries only as captions — convert the PDF when you need them.
 
+**Open-access PubMed Central (PMC) papers also use JATS XML via Europe PMC.** When `convert_paper` is called for a DOI, PMID, or OpenAlex work ID with no cached PDF, it checks OpenAlex's `ids.pmcid` and fetches the open-access JATS XML from Europe PMC (`conversion_mode: "jats"`), falling back to the PDF path if the paper has no PMCID or is not in the PMC Open Access subset.
+
 The pipeline is **converter-agnostic**. Set `PDF_CONVERTER` in `.env` to choose your backend:
 
 ```bash

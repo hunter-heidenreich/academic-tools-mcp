@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from academic_tools_mcp import manual, papers, server
-from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex
+from academic_tools_mcp.providers import acl, arxiv, biorxiv, openalex, pmc
 from academic_tools_mcp.store import cache, stems
 from academic_tools_mcp.tools import pipeline
 from tests.helpers.conversion_fakes import (
@@ -989,7 +989,7 @@ class TestConvertPaperHtmlFirst:
     ):
         calls = _serve_html(monkeypatch, {"markup": _RENDERING})
 
-        await server.convert_paper("10.1234/generic.doi")
+        await server.convert_paper("my-local-paper")
 
         assert calls == []
 
@@ -1223,3 +1223,69 @@ class TestListCachedPapersAndResource:
         resources = await server.mcp.list_resources()
         uris = {str(r.uri) for r in resources}
         assert "papers://cached" in uris
+
+
+class TestPmcJatsPipeline:
+    @pytest.mark.asyncio
+    async def test_converts_doi_via_europe_pmc_jats_without_pdf(self, monkeypatch):
+        seen: list[str] = []
+
+        async def fake_jats(identifier, *, force_refresh=False):
+            seen.append(identifier)
+            return {"markup": _JATS}
+
+        monkeypatch.setattr(pmc, "get_jats", fake_jats)
+
+        result = await server.convert_paper("10.1371/journal.pone.0000001")
+
+        assert seen == ["10.1371/journal.pone.0000001"]
+        assert result["conversion_mode"] == "jats"
+        assert result["sections_detected"] is True
+        assert result["total_approx_tokens"] > 0
+
+    @pytest.mark.asyncio
+    async def test_skips_pmc_when_usable_pdf_is_already_cached(self, monkeypatch):
+        doi = "10.1371/journal.pone.0000002"
+        pdf_path = manual.resolve_target(doi)["pdf_path"]
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(b"%PDF-1.4\nbody")
+
+        async def fail_if_called(*args, **kwargs):
+            raise AssertionError("PMC should not be queried when a local PDF is cached")
+
+        async def fake_convert_pdf(pdf, ns, canonical, *, force_refresh=False, mode="full"):
+            return {
+                "sections": [{"index": 0, "title": "Intro", "h3s": [], "approx_tokens": 12}],
+                "sections_detected": True,
+                "cached": False,
+                "conversion_mode": mode,
+            }
+
+        monkeypatch.setattr(pmc, "get_jats", fail_if_called)
+        monkeypatch.setattr(papers, "convert_pdf", fake_convert_pdf)
+
+        result = await server.convert_paper(doi)
+        assert result["conversion_mode"] == "full"
+        assert result["total_approx_tokens"] == 12
+
+    @pytest.mark.asyncio
+    async def test_falls_through_to_pdf_not_cached_when_pmc_returns_not_found(self, monkeypatch):
+        async def fake_jats(identifier, *, force_refresh=False):
+            return {"error": "No PMCID", "not_found": True}
+
+        monkeypatch.setattr(pmc, "get_jats", fake_jats)
+
+        result = await server.convert_paper("10.1038/not-in-pmc")
+        assert "PDF not cached" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_transient_pmc_error_surfaces_with_suggestion(self, monkeypatch):
+        async def fake_jats(identifier, *, force_refresh=False):
+            return {"error": "Europe PMC 503", "retryable": True}
+
+        monkeypatch.setattr(pmc, "get_jats", fake_jats)
+
+        result = await server.convert_paper("10.1371/journal.pone.0000003")
+        assert result["retryable"] is True
+        assert result["conversion_mode"] == "jats"
+        assert "Europe PMC" in result["suggestion"]
