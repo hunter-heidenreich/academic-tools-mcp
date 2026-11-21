@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import json
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -11,14 +12,17 @@ from typing import Annotated, Any
 from fastmcp import Context
 from pydantic import Field
 
-from .. import manual, papers
+from .. import corpus, manual, papers
 from ..app import (
     ALLOW_OA_URL,
+    CACHE_SEARCH_NAMESPACE,
     CACHE_WRITE_LOCAL_ANNOTATIONS,
     CACHE_WRITE_NETWORK_ANNOTATIONS,
     CONVERT_FORCE_REFRESH,
     CONVERT_MODE,
     IMPORT_FORCE_REFRESH,
+    PAGE,
+    PAGE_SIZE,
     PAPER_ID,
     PDF_FORCE_REFRESH,
     READ_ONLY_LOCAL_ANNOTATIONS,
@@ -29,6 +33,7 @@ from ..app import (
     enrich_error,
     mcp,
     not_converted_error,
+    page_bounds,
     pdf_not_cached_error,
     read_markdown,
     resolve_paper_identifier,
@@ -561,3 +566,51 @@ async def import_paper(
     if "sections" in result:
         result["section_count"] = len(result.pop("sections"))
     return result
+
+
+@mcp.tool(annotations=READ_ONLY_LOCAL_ANNOTATIONS)
+async def list_cached_papers(
+    namespace: CACHE_SEARCH_NAMESPACE = None,
+    converted_only: Annotated[
+        bool,
+        Field(description="Only list papers that already have converted markdown."),
+    ] = False,
+    page: PAGE = 1,
+    page_size: PAGE_SIZE = 50,
+) -> dict[str, Any]:
+    """Inventory downloaded PDFs and converted markdown in the local cache.
+
+    Answers "what papers are already in my local cache?", whether each is
+    downloaded-only or converted (with ``conversion_mode`` and
+    ``total_approx_tokens``), and total local disk usage. Cheap — local
+    filesystem scan only, no network calls.
+
+    Returns ``{total_papers, converted_count, pdf_only_count, total_disk_bytes,
+    page, page_size, has_more, papers: [{namespace, canonical_id, has_pdf,
+    pdf_size_bytes, has_markdown, markdown_size_bytes, conversion_mode,
+    total_approx_tokens}, ...]}``. Chain ``canonical_id`` straight into
+    ``get_paper_sections``, ``get_paper_section``, ``get_paper_markdown``,
+    ``find_in_paper``, or ``convert_paper``.
+    """
+    inventory = await asyncio.to_thread(
+        corpus.list_cached, namespace, converted_only=converted_only
+    )
+    all_papers = inventory["papers"]
+    start, end = page_bounds(page, page_size)
+    return {
+        "total_papers": inventory["total_papers"],
+        "converted_count": inventory["converted_count"],
+        "pdf_only_count": inventory["pdf_only_count"],
+        "total_disk_bytes": inventory["total_disk_bytes"],
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < len(all_papers),
+        "papers": all_papers[start:end],
+    }
+
+
+@mcp.resource("papers://cached", mime_type="application/json")
+async def cached_papers_resource() -> str:
+    """MCP resource exposing the local downloaded/converted paper inventory as JSON."""
+    inventory = await asyncio.to_thread(corpus.list_cached)
+    return json.dumps(inventory, indent=2)

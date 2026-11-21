@@ -93,6 +93,7 @@ class TestToolMetadataAndInstructions:
             "find_in_paper",
             "search_cached_papers",
             "import_paper",
+            "list_cached_papers",
             "get_server_stats",
         }
 
@@ -123,3 +124,20 @@ class TestToolMetadataAndInstructions:
         desc = tools["get_paper_versions"].parameters["properties"]["identifier"]["description"]
         assert "Preprint identifier" in desc
         assert "refused locally" in desc
+
+
+class TestDisabledToolGroups:
+    @pytest.mark.asyncio
+    async def test_tool_groups_cover_every_registered_tool(self) -> None:
+        registered = {t.name for t in await server.mcp.list_tools()}
+        grouped = {name for names in server.TOOL_GROUPS.values() for name in names}
+        assert registered == grouped
+
+    def test_resolve_disabled_tools_parses_groups_case_insensitively(self) -> None:
+        disabled = server.resolve_disabled_tools(" Wikipedia , paperswithcode , unknown_group ")
+        assert disabled == {
+            *server.TOOL_GROUPS["wikipedia"],
+            *server.TOOL_GROUPS["paperswithcode"],
+        }
+        assert server.resolve_disabled_tools(None) == set()
+        assert server.resolve_disabled_tools("") == set()

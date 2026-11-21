@@ -682,3 +682,114 @@ def unindexable(namespace: str | None = None, *, refresh: bool = True) -> list[d
         }
         for r in rows
     ]
+
+
+def _scan_entity_sizes(ns_path: Path, subdir: str, suffix: str) -> dict[str, int]:
+    """Map ``stem -> size_bytes`` for files in ``ns_path / subdir`` ending with ``suffix``."""
+    out: dict[str, int] = {}
+    try:
+        with os.scandir(ns_path / subdir) as entries:
+            for entry in entries:
+                if not entry.name.endswith(suffix):
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                if not entry.is_file():
+                    continue
+                out[entry.name[: -len(suffix)]] = st.st_size
+    except OSError:
+        return {}
+    return out
+
+
+def list_cached(
+    namespace: str | None = None,
+    *,
+    converted_only: bool = False,
+) -> dict[str, Any]:
+    """Inventory downloaded PDFs and converted markdown in ``CACHE_ROOT``.
+
+    Returns ``{total_papers, converted_count, pdf_only_count, total_disk_bytes,
+    papers}``, where each paper entry carries ``namespace``, ``canonical_id``,
+    ``has_pdf``, ``pdf_size_bytes``, ``has_markdown``, ``markdown_size_bytes``,
+    ``conversion_mode``, and ``total_approx_tokens``. Ordered deterministically
+    by ``(namespace, canonical_id)``.
+    """
+    try:
+        with os.scandir(cache.CACHE_ROOT) as ns_iter:
+            ns_entries = [e for e in ns_iter if e.is_dir() and not e.name.startswith("__")]
+    except OSError:
+        return {
+            "total_papers": 0,
+            "converted_count": 0,
+            "pdf_only_count": 0,
+            "total_disk_bytes": 0,
+            "papers": [],
+        }
+
+    records: list[dict[str, Any]] = []
+    total_disk_bytes = 0
+    converted_count = 0
+    pdf_only_count = 0
+
+    for ns_entry in ns_entries:
+        ns = ns_entry.name
+        if namespace is not None and ns != namespace:
+            continue
+        ns_path = Path(ns_entry.path)
+        pdfs = _scan_entity_sizes(ns_path, "pdfs", ".pdf")
+        mds = _scan_entity_sizes(ns_path, "markdown", ".md")
+        for stem in sorted(pdfs.keys() | mds.keys()):
+            has_pdf = stem in pdfs
+            has_md = stem in mds
+            pdf_bytes = pdfs.get(stem)
+            md_bytes = mds.get(stem)
+            total_disk_bytes += (pdf_bytes or 0) + (md_bytes or 0)
+            if has_md:
+                converted_count += 1
+            elif has_pdf:
+                pdf_only_count += 1
+
+            if converted_only and not has_md:
+                continue
+
+            sections_entry = (
+                cache.get(ns, "sections", stems.sections_key_for_stem(stem), count=False)
+                if has_md
+                else None
+            )
+            canonical_id = _resolve_canonical_id(ns, stem)
+            conversion_mode = (
+                sections_entry.get("conversion_mode") if isinstance(sections_entry, dict) else None
+            )
+            raw_sections = (
+                sections_entry.get("sections") if isinstance(sections_entry, dict) else None
+            )
+            total_tokens = (
+                sum(int(s.get("approx_tokens", 0)) for s in raw_sections if isinstance(s, dict))
+                if isinstance(raw_sections, list)
+                else None
+            )
+            records.append(
+                {
+                    "namespace": ns,
+                    "canonical_id": canonical_id,
+                    "has_pdf": has_pdf,
+                    "pdf_size_bytes": pdf_bytes,
+                    "has_markdown": has_md,
+                    "markdown_size_bytes": md_bytes,
+                    "conversion_mode": conversion_mode,
+                    "total_approx_tokens": total_tokens,
+                }
+            )
+
+    records.sort(key=lambda r: (r["namespace"], r["canonical_id"]))
+    return {
+        "total_papers": len(records),
+        "converted_count": converted_count,
+        "pdf_only_count": pdf_only_count,
+        "total_disk_bytes": total_disk_bytes,
+        "papers": records,
+    }

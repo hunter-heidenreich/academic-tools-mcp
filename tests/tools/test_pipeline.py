@@ -1175,3 +1175,51 @@ class TestPipelineProgressNotifications:
         tools = {t.name: t for t in await server.mcp.list_tools()}
         assert "ctx" not in tools["download_pdf"].parameters["properties"]
         assert "ctx" not in tools["convert_paper"].parameters["properties"]
+
+
+class TestListCachedPapersAndResource:
+    @pytest.mark.asyncio
+    async def test_lists_pdfs_and_converted_markdown_with_filtering_and_paging(self, tmp_path):
+        pdf_path = stems.pdf_path("arxiv", "2301.00001")
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        pdf_path.write_bytes(b"%PDF-1.4\n" + b"x" * 100)
+
+        md_path = stems.markdown_path("manual", "10.1000/sub/part_1")
+        papers.store_markdown_and_index(
+            "manual",
+            "10.1000/sub/part_1",
+            md_path,
+            "# Intro\n\nSome content here.\n",
+            "imported",
+        )
+
+        full = await server.list_cached_papers()
+        assert full["total_papers"] == 2
+        assert full["converted_count"] == 1
+        assert full["pdf_only_count"] == 1
+        assert full["total_disk_bytes"] > 100
+        assert full["has_more"] is False
+        by_id = {p["canonical_id"]: p for p in full["papers"]}
+        assert by_id["2301.00001"]["has_pdf"] is True
+        assert by_id["2301.00001"]["has_markdown"] is False
+        assert by_id["10.1000/sub/part_1"]["has_markdown"] is True
+        assert by_id["10.1000/sub/part_1"]["conversion_mode"] == "imported"
+        assert by_id["10.1000/sub/part_1"]["total_approx_tokens"] > 0
+
+        converted_only = await server.list_cached_papers(converted_only=True)
+        assert converted_only["total_papers"] == 1
+        assert converted_only["papers"][0]["canonical_id"] == "10.1000/sub/part_1"
+
+        ns_filtered = await server.list_cached_papers(namespace="arxiv")
+        assert ns_filtered["total_papers"] == 1
+        assert ns_filtered["papers"][0]["canonical_id"] == "2301.00001"
+
+        paged = await server.list_cached_papers(page=1, page_size=1)
+        assert len(paged["papers"]) == 1
+        assert paged["has_more"] is True
+
+    @pytest.mark.asyncio
+    async def test_cached_papers_mcp_resource_is_registered(self):
+        resources = await server.mcp.list_resources()
+        uris = {str(r.uri) for r in resources}
+        assert "papers://cached" in uris

@@ -73,6 +73,7 @@ All configuration is via environment variables in `.env`. Nothing is required to
 | `PDF_FAST_CONVERT_TIMEOUT` | No | Hard timeout for a fast extraction in seconds (default `120`). Same disable rules as `PDF_CONVERT_TIMEOUT`. |
 | `DEBUG_REQUESTS` | No | `1` logs every throttled GET to **stderr** (never stdout — that's the JSON-RPC stream). Re-read per call, so it can be flipped without a restart. |
 | `ENABLE_DEBUG_TOOLS` | No | `1` registers a `get_server_stats` tool exposing per-provider counters and the `.env` that won at import. Off by default so agents don't see operational data. Read at import — needs a restart. |
+| `DISABLED_TOOL_GROUPS` | No | Comma-separated tool groups to disable at startup (`paper`, `pipeline`, `graph`, `search`, `wikipedia`, `paperswithcode`) to shrink the MCP tool catalog and prompt token footprint. Read at import — needs a restart. |
 
 Setting `ACADEMIC_TOOLS_ENV_FILE` makes that file the only candidate. Otherwise `.env` is looked for in order: the project root (source checkouts), `$PWD/.env`, then `$XDG_CONFIG_HOME/academic-tools-mcp/.env` (falling back to `~/.config`). Real environment variables always win over the file, and a file that is unreadable or isn't UTF-8 is skipped rather than fatal.
 
