@@ -77,3 +77,49 @@ class TestLifespanSweeps:
             calls.append("yielded")
 
         assert calls == ["gc_tmp", "gc_neg", "gc_pos", "yielded", "aclose_all"]
+
+
+class TestToolMetadataAndInstructions:
+    @pytest.mark.asyncio
+    async def test_every_tool_declares_complete_annotations(self) -> None:
+        tools = await server.mcp.list_tools()
+        assert len(tools) >= 34
+
+        write_tools = {"download_pdf", "convert_paper", "import_paper"}
+        local_tools = {
+            "get_paper_sections",
+            "get_paper_section",
+            "get_paper_markdown",
+            "find_in_paper",
+            "search_cached_papers",
+            "import_paper",
+            "get_server_stats",
+        }
+
+        for tool in tools:
+            ann = tool.annotations
+            assert ann is not None, f"{tool.name} is missing ToolAnnotations"
+            assert ann.destructiveHint is False, f"{tool.name} should not be destructive"
+            assert ann.idempotentHint is True, f"{tool.name} should be idempotent"
+            expected_read_only = tool.name not in write_tools
+            assert ann.readOnlyHint is expected_read_only, (
+                f"{tool.name}: expected readOnlyHint={expected_read_only}, got {ann.readOnlyHint}"
+            )
+            expected_open_world = tool.name not in local_tools
+            assert ann.openWorldHint is expected_open_world, (
+                f"{tool.name}: expected openWorldHint={expected_open_world}, got {ann.openWorldHint}"
+            )
+
+    def test_instructions_do_not_claim_citations_takes_source_auto(self) -> None:
+        instructions = server.mcp.instructions or ""
+        assert "get_paper_references and get_paper_citations default to source='auto'" not in (
+            instructions
+        )
+        assert "get_paper_citations pages OpenCitations only" in instructions
+
+    @pytest.mark.asyncio
+    async def test_get_paper_versions_schema_uses_preprint_identifier(self) -> None:
+        tools = {t.name: t for t in await server.mcp.list_tools()}
+        desc = tools["get_paper_versions"].parameters["properties"]["identifier"]["description"]
+        assert "Preprint identifier" in desc
+        assert "refused locally" in desc

@@ -14,6 +14,8 @@ from ..app import (
     FORCE_REFRESH,
     PAGE,
     PAPER_ID,
+    READ_ONLY_LOCAL_ANNOTATIONS,
+    READ_ONLY_NETWORK_ANNOTATIONS,
     SEARCH_YEAR_MAX,
     SEARCH_YEAR_MIN,
     crossref_date,
@@ -110,7 +112,7 @@ def _search_envelope(response: dict[str, Any], results: list[dict[str, Any]]) ->
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def search_arxiv(
     query: Annotated[
         str,
@@ -173,7 +175,7 @@ async def search_arxiv(
     return _search_envelope(result, results)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def search_crossref_by_title(
     title: Annotated[
         str,
@@ -241,7 +243,7 @@ def _openalex_first_author(work: dict[str, Any]) -> str | None:
     return as_dict(authorships[0].get("author")).get("display_name") if authorships else None
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def search_openalex(
     query: Annotated[
         str,
@@ -332,7 +334,7 @@ def _last_known_institution(author: dict[str, Any]) -> str | None:
     return None
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def search_authors(
     query: Annotated[
         str,
@@ -403,7 +405,7 @@ AUTOCOMPLETE_ENTITY = Annotated[
 ]
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def autocomplete_openalex(
     query: Annotated[
         str,
@@ -461,7 +463,7 @@ async def autocomplete_openalex(
     return _search_envelope(response, results)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_LOCAL_ANNOTATIONS)
 async def find_in_paper(
     identifier: PAPER_ID,
     query: Annotated[
@@ -572,7 +574,7 @@ def _unindexable_note(reasons: set[str]) -> str:
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_LOCAL_ANNOTATIONS)
 async def search_cached_papers(
     query: Annotated[
         str,
@@ -675,7 +677,7 @@ async def search_cached_papers(
     return response
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def search_wikipedia(
     query: Annotated[
         str,
@@ -721,7 +723,7 @@ async def search_wikipedia(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_wikipedia_summary(
     title: Annotated[
         str,

@@ -9,6 +9,7 @@ from ..app import (
     FORCE_REFRESH,
     PAGE,
     PAGE_SIZE,
+    READ_ONLY_NETWORK_ANNOTATIONS,
     REF_SOURCE,
     enrich_error,
     mcp,
@@ -113,7 +114,7 @@ def _format_crossref_reference(ref: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_references_count(
     doi: DOI, force_refresh: FORCE_REFRESH = False
 ) -> dict[str, Any]:
@@ -216,7 +217,7 @@ def _opencitations_page(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_references(
     doi: DOI,
     source: REF_SOURCE = "auto",
@@ -338,7 +339,7 @@ async def get_paper_references(
     return page_result
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_citations_count(
     doi: DOI, force_refresh: FORCE_REFRESH = False
 ) -> dict[str, Any]:
@@ -393,7 +394,7 @@ async def get_paper_citations_count(
     return {"doi": doi, "count": count, "pageable": pageable, "sources": sources}
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_citations(
     doi: DOI,
     page: PAGE = 1,

@@ -11,6 +11,7 @@ from pydantic import Field
 from ..app import (
     ARXIV_ID,
     FORCE_REFRESH,
+    READ_ONLY_NETWORK_ANNOTATIONS,
     enrich_error,
     mcp,
     openalex_arxiv_id,
@@ -123,7 +124,7 @@ def _rank_repositories(repositories: list[dict[str, Any]], limit: int) -> list[d
     return sorted(repositories, key=_repository_rank)[:limit]
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_code(
     identifier: ARXIV_ID,
     max_repositories: Annotated[
@@ -176,7 +177,7 @@ async def get_paper_code(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_catalog(
     identifier: ARXIV_ID,
     force_refresh: FORCE_REFRESH = False,
@@ -241,7 +242,7 @@ def _without(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     return {k: v for k, v in row.items() if k not in keys}
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_evaluations(
     identifier: ARXIV_ID,
     page: PWC_PAGE = 1,
@@ -278,7 +279,7 @@ async def get_paper_evaluations(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_pwc_task(
     task: Annotated[
         str,
@@ -310,7 +311,7 @@ async def get_pwc_task(
     return result
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_benchmark_leaderboard(
     benchmark: Annotated[
         str,
@@ -364,7 +365,7 @@ async def get_benchmark_leaderboard(
     }
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def search_paperswithcode(
     query: Annotated[
         str,

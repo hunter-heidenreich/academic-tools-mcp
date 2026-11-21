@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal, TypeVar
 
 from fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from . import corpus, manual, papers
@@ -90,10 +91,11 @@ mcp = FastMCP(
         "get_paper_updates checks a DOI for retraction and correction notices "
         "before you cite it; a false there means Crossref lists none, not that "
         "the paper stands.\n\n"
-        "References/citations: get_paper_references and get_paper_citations "
-        "default to source='auto', which surveys providers in parallel and serves "
-        "page 1 from the best source (or call the `_count` tool to inspect counts "
-        "without fetching a page). "
+        "References/citations: get_paper_references defaults to source='auto', "
+        "which surveys Crossref and OpenCitations in parallel and serves page 1 "
+        "from the best source (or call get_paper_references_count first). "
+        "get_paper_citations pages OpenCitations only (no source parameter; call "
+        "get_paper_citations_count first to cross-check against OpenAlex). "
         "Search tools return slim triage hits — chain to get_paper_metadata. "
         "search_openalex is the broad topic search and its hits are free to "
         "chain (by doi or openalex_id), except ACL Anthology papers, whose "
@@ -121,6 +123,46 @@ mcp = FastMCP(
         "timeout) carry retry hints."
     ),
 )
+
+# Shared MCP ToolAnnotations presets so MCP hosts can safely auto-approve
+# read-only lookups and distinguish local cache writes from network fetches.
+READ_ONLY_NETWORK_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+
+READ_ONLY_LOCAL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
+CACHE_WRITE_NETWORK_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=True,
+)
+
+CACHE_WRITE_LOCAL_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
+PREPRINT_ID = Annotated[
+    str,
+    Field(
+        description="Preprint identifier: an arXiv ID (bare like 2301.00001 or "
+        "hep-th/9901001, arXiv:-prefixed, or an arxiv.org URL) or a "
+        "bioRxiv/medRxiv DOI (10.1101/...). Other shapes (including PMIDs and "
+        "OpenAlex work IDs) are refused locally without a network request."
+    ),
+]
 
 DOI = Annotated[
     str,
