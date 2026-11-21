@@ -8,7 +8,7 @@ module's internals.
 
 from typing import Any
 
-from .app import mcp
+from .app import READ_ONLY_LOCAL_ANNOTATIONS, mcp
 from .net import stats
 from .providers import (
     arxiv,
@@ -120,7 +120,7 @@ _DEBUG_TOOLS_ENABLED = config.flag("ENABLE_DEBUG_TOOLS")
 
 if _DEBUG_TOOLS_ENABLED:
 
-    @mcp.tool
+    @mcp.tool(annotations=READ_ONLY_LOCAL_ANNOTATIONS)
     async def get_server_stats() -> dict[str, Any]:
         """Operator-only: snapshot cumulative cache and HTTP counters.
 

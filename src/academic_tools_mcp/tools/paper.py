@@ -17,6 +17,8 @@ from ..app import (
     FORCE_REFRESH,
     INSTITUTION_ID,
     PAPER_ID,
+    PREPRINT_ID,
+    READ_ONLY_NETWORK_ANNOTATIONS,
     crossref_date,
     enrich_error,
     mcp,
@@ -264,7 +266,7 @@ async def _dispatch_paper_tool(
     return _flag_fallback(on_source(source, canonical_id, obj), obj)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_metadata(
     identifier: PAPER_ID,
     follow_published: FOLLOW_PUBLISHED = False,
@@ -367,9 +369,9 @@ async def get_paper_metadata(
     return _flag_fallback(format_metadata_by_source(source, obj, canonical_id), obj)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_versions(
-    identifier: PAPER_ID,
+    identifier: PREPRINT_ID,
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
     """A preprint's license and revision history, for an arXiv ID or bioRxiv/medRxiv DOI.
@@ -461,7 +463,7 @@ class _BatchPlan(NamedTuple):
     pending: list[tuple[int, str, str]]  # (slot, routed id, caller's input)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_papers_metadata(
     identifiers: Annotated[
         list[str],
@@ -628,7 +630,7 @@ async def get_papers_metadata(
     return {"count": n, "papers": results}
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_authors(
     identifier: PAPER_ID,
     page: AUTHORS_PAGE = 1,
@@ -704,7 +706,7 @@ async def get_paper_authors(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_abstract(
     identifier: PAPER_ID,
     force_refresh: FORCE_REFRESH = False,
@@ -758,7 +760,7 @@ async def get_paper_abstract(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_bibtex(
     identifier: PAPER_ID,
     force_refresh: FORCE_REFRESH = False,
@@ -812,7 +814,7 @@ async def get_paper_bibtex(
     )
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_author(
     author_id: AUTHOR_ID,
     force_refresh: FORCE_REFRESH = False,
@@ -839,7 +841,7 @@ async def get_author(
     return format_author_profile(author)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_institution(
     institution_id: INSTITUTION_ID,
     force_refresh: FORCE_REFRESH = False,
@@ -875,7 +877,7 @@ async def get_institution(
 _UPDATES_SUBJECT = "Crossref update notices"
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_updates(doi: DOI, force_refresh: FORCE_REFRESH = False) -> dict[str, Any]:
     """Check a DOI for retraction and correction notices, and for related preprint DOIs.
 

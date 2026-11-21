@@ -10,11 +10,14 @@ from pydantic import Field
 from .. import manual, papers
 from ..app import (
     ALLOW_OA_URL,
+    CACHE_WRITE_LOCAL_ANNOTATIONS,
+    CACHE_WRITE_NETWORK_ANNOTATIONS,
     CONVERT_FORCE_REFRESH,
     CONVERT_MODE,
     IMPORT_FORCE_REFRESH,
     PAPER_ID,
     PDF_FORCE_REFRESH,
+    READ_ONLY_LOCAL_ANNOTATIONS,
     SECTION_HARNESS_CAP,
     SECTION_MAX_CHARS,
     SECTION_OFFSET,
@@ -127,7 +130,7 @@ async def _download_pdf_by_provider(
     return result
 
 
-@mcp.tool
+@mcp.tool(annotations=CACHE_WRITE_NETWORK_ANNOTATIONS)
 async def download_pdf(
     identifier: PAPER_ID,
     force_refresh: PDF_FORCE_REFRESH = False,
@@ -202,7 +205,7 @@ def _finish_convert(result: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-@mcp.tool
+@mcp.tool(annotations=CACHE_WRITE_NETWORK_ANNOTATIONS)
 async def convert_paper(
     identifier: PAPER_ID,
     force_refresh: CONVERT_FORCE_REFRESH = False,
@@ -293,7 +296,7 @@ async def convert_paper(
     return _finish_convert(result)
 
 
-@mcp.tool
+@mcp.tool(annotations=READ_ONLY_LOCAL_ANNOTATIONS)
 async def get_paper_sections(
     identifier: PAPER_ID,
     force_refresh: SECTIONS_FORCE_REFRESH = False,
@@ -357,7 +360,10 @@ async def get_paper_sections(
     return response
 
 
-@mcp.tool(meta={"anthropic/maxResultSizeChars": SECTION_HARNESS_CAP})
+@mcp.tool(
+    annotations=READ_ONLY_LOCAL_ANNOTATIONS,
+    meta={"anthropic/maxResultSizeChars": SECTION_HARNESS_CAP},
+)
 async def get_paper_section(
     identifier: PAPER_ID,
     section: Annotated[
@@ -400,7 +406,10 @@ async def get_paper_section(
     return content
 
 
-@mcp.tool(meta={"anthropic/maxResultSizeChars": SECTION_HARNESS_CAP})
+@mcp.tool(
+    annotations=READ_ONLY_LOCAL_ANNOTATIONS,
+    meta={"anthropic/maxResultSizeChars": SECTION_HARNESS_CAP},
+)
 async def get_paper_markdown(
     identifier: PAPER_ID,
     offset: SECTION_OFFSET = 0,
@@ -431,7 +440,7 @@ async def get_paper_markdown(
     return content
 
 
-@mcp.tool
+@mcp.tool(annotations=CACHE_WRITE_LOCAL_ANNOTATIONS)
 async def import_paper(
     file_path: Annotated[
         str,
