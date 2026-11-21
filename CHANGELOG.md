@@ -13,6 +13,70 @@ from git history** up to that first tag — the project carried no tags before
 then, so each earlier date marks the day that batch of work landed on `main`,
 grouped by milestone rather than per commit.
 
+## [2026.11.21] — 2026-11-21
+
+### Added
+
+- **First-class PMCID identifier support and `pmcid` surfacing across OpenAlex outputs.**
+  Added `is_pmcid`, `normalize_pmcid`, `canonical_pmcid`, `resolve_pmcid`
+  (`/works/pmcid:PMC...`), and `resolve_pmcids_batch` (`/works?filter=pmcid:...`)
+  in `providers/openalex_parse.py` and `providers/openalex.py`, wired into
+  `app._trade_non_doi`, `manual.refile_pmcid_stems`, and `get_papers_metadata`
+  pre-batching so `PMC...` IDs, `pmc:`/`pmcid:` prefixes, and NCBI/Europe PMC
+  URLs work across paper, pipeline, graph, and Papers with Code tools. Surfaced
+  canonical `pmcid` alongside `pmid` and `arxiv_id` in `get_paper_metadata`,
+  `search_openalex`, and `get_paper_citations(source="openalex")`. ([#210])
+
+- **Europe PMC JATS XML fast path for open-access PubMed Central papers.** Added
+  `providers/pmc.py` (`get_jats`) and wired it into `convert_paper` for generic
+  DOIs, PMIDs, PMCIDs, and OpenAlex work IDs with no cached PDF: resolves
+  `ids.pmcid` via OpenAlex, fetches `/{pmcid}/fullTextXML` from Europe PMC with
+  polite throttling, `SingleFlight` coalescing, `MAX_PDF_BYTES` validation, and
+  24h negative caching, and renders via `papers/jats.py` (`conversion_mode: "jats"`).
+  Existing cached PDFs continue to convert locally. ([#209])
+
+- **Local cache inventory (`list_cached_papers` tool + `papers://cached` MCP
+  resource) and startup tool-group gating (`DISABLED_TOOL_GROUPS`).** Added
+  `corpus.list_cached`, paginated `list_cached_papers`, and the `papers://cached`
+  JSON resource to inspect downloaded/converted papers and total disk usage.
+  Added `DISABLED_TOOL_GROUPS` (`paper`, `pipeline`, `graph`, `search`,
+  `wikipedia`, `paperswithcode`) in `server.py` so operators can disable unused
+  tool groups at startup. ([#207])
+
+- **Richer filtering, sorting, and pagination on `search_openalex`.** Added
+  `from_year`, `to_year`, `author_id` (OpenAlex ID or ORCID), `is_oa`, `sort`
+  (`relevance`, `cited_by_count`, `publication_date`), and `page`. Allowing an
+  empty `query` with `author_id` routes through the 1-credit `filter=` list path
+  to list an author's works directly. ([#206])
+
+- **OpenAlex-backed citation paging and sorting on `get_paper_citations`.** Added
+  `openalex.get_citing_works` (`/works?filter=cites:<W...>&sort=<sort>:desc`) and
+  `source="openalex"` + `sort` (`cited_by_count`, `publication_date`) on
+  `get_paper_citations`, enabling sorted, rich-metadata citation paging on
+  landmark papers where OpenCitations 504s and on DOI-less OpenAlex work IDs.
+  ([#205])
+
+- **MCP progress heartbeats and `IMPORT_ALLOWED_DIRS` guard.** Injected FastMCP
+  `Context` into `download_pdf` and `convert_paper` to emit periodic
+  `ctx.report_progress(...)` heartbeats during long-running downloads and PDF
+  conversions. Added optional `IMPORT_ALLOWED_DIRS` (`os.pathsep`-separated
+  allowlist) in `manual.py` checked after `.resolve()` (blocking symlink escapes)
+  and before `exists()`. ([#204])
+
+### Changed
+
+- **Trimmed MCP tool docstrings and shared `Field` descriptions.** Reduced the
+  serialized MCP wire tool-schema footprint by ~50% while keeping essential
+  agent-facing behavioral invariants intact. ([#208])
+
+### Fixed
+
+- **MCP `ToolAnnotations`, server `instructions` mismatch, and `get_paper_versions`
+  schema.** Added explicit `ToolAnnotations` (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`) to all registered tools, fixed the factual
+  mismatch in `app.py` `instructions` around `get_paper_citations`, and narrowed
+  `get_paper_versions`'s parameter type to `PREPRINT_ID`. ([#203])
+
 ## [2026.11.15] — 2026-11-15
 
 ### Added
@@ -2317,6 +2381,7 @@ say which.
 - Configurable external PDF converter, env-based API configuration
   (mailto / keys), MIT license, and a public-facing README.
 
+[2026.11.21]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.11.15...v2026.11.21
 [2026.11.15]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.19...v2026.11.15
 [2026.09.19]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.10...v2026.09.19
 [2026.09.10]: https://github.com/hunter-heidenreich/academic-tools-mcp/compare/v2026.09.08...v2026.09.10
@@ -2488,3 +2553,11 @@ say which.
 [#199]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/199
 [#200]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/200
 [#201]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/201
+[#203]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/203
+[#204]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/204
+[#205]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/205
+[#206]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/206
+[#207]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/207
+[#208]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/208
+[#209]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/209
+[#210]: https://github.com/hunter-heidenreich/academic-tools-mcp/pull/210

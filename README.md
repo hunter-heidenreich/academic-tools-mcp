@@ -16,6 +16,7 @@ Look up paper metadata, authors, abstracts, citations, and BibTeX entries. Downl
 | [OpenCitations](https://opencitations.net/) | Reference and citation links with cross-referenced IDs | Optional access token (free, usage statistics only) |
 | [Wikipedia](https://www.wikipedia.org/) | Full-text article search, summaries, Wikidata QIDs | Optional email (for User-Agent) |
 | [Papers with Code](https://paperswithcode.co/) | Code repositories, tasks, methods, benchmark results and leaderboards, Hugging Face links (arXiv papers) | None |
+| [Europe PMC](https://europepmc.org/) | Open-access PubMed Central JATS XML full text for biomedical papers | None |
 
 All API responses are cached locally. Multiple tool calls for the same paper = one API hit. Concurrent calls for the same paper are coalesced into a single fetch (request single-flight), transient failures (5xx, 429, timeouts) get one transparent retry honouring `Retry-After`, and definitive 404s are negative-cached (24h; 1h for arXiv/bioRxiv, whose identifiers go live mid-session) so retry-happy agents don't burn rate budget on guaranteed misses.
 
@@ -127,7 +128,7 @@ All four take `fallback_crossref=True`. When OpenAlex returns a definitive 404 f
 
 bioRxiv needs no flag: a *transient* bioRxiv failure on a `10.1101/...` DOI is answered from OpenAlex, with `_source: "openalex"` and `biorxiv_unavailable: true`. A definitive miss or local backpressure never falls back; if OpenAlex also fails transiently, the error carries `openalex_fallback_retryable: true`.
 
-A **PubMed ID** works anywhere a DOI does — the paper tools, the PDF pipeline, and the reference/citation graph, whose OpenCitations rows hand PMIDs back. Spell it `pmid:20079334`, as a `pubmed.ncbi.nlm.nih.gov` URL, or as a bare 7–8 digit run; shorter runs need the `pmid:` prefix, so a short freeform `import_paper` label keeps meaning what it did. A PMID is traded for the paper's DOI on first use and never becomes a cache key of its own, so `pmid:20079334` and `10.1016/j.cell.2009.11.006` are one paper with one `_canonical_id`. OpenAlex is the resolver: a paper it has not indexed does not resolve, and PMCIDs are unsupported.
+A **PubMed ID** or **PMCID** works anywhere a DOI does — the paper tools, the PDF pipeline, the reference/citation graph, and Papers with Code. Spell a PMID as `pmid:20079334`, as a `pubmed.ncbi.nlm.nih.gov` URL, or as a bare 7–8 digit run; shorter runs need the `pmid:` prefix so a short freeform `import_paper` label keeps meaning what it did. Spell a PMCID as `PMC1762313` (any case), `pmc:`/`pmcid:`-prefixed, or an NCBI PMC / Europe PMC article URL. Both are traded for the paper's DOI (or OpenAlex work ID when DOI-less) via OpenAlex on first use and never become duplicate cache keys.
 
 An **OpenAlex work ID** works the same way, and closes a dead end: `search_openalex` reports an `openalex_id` on every hit where a `doi` is often absent, and roughly 1.4% of OpenCitations graph rows carry one and no DOI. Spell it `W4312223440`, `openalex:`-prefixed, or as an `openalex.org` URL; a bare run under eight digits needs the prefix, so a short freeform `import_paper` label keeps meaning what it did. When the work has a DOI, the work ID trades for it on first use rather than becoming a second cache key; when OpenAlex indexes the work without a DOI, the paper, author, abstract, BibTeX and OA-download tools key on its canonical work ID (`w4312223440`), while the DOI-only reference/citation graph tools refuse it by name.
 
@@ -136,7 +137,7 @@ An arXiv ID is accepted in every spelling that names the same paper, so one pape
 | Tool | Description |
 |------|-------------|
 | `search_arxiv` | Search arXiv with field prefixes (`ti:`, `au:`, `abs:`, `cat:`), boolean operators and `submittedDate:[… TO …]` ranges; pages with `page`, sorts by relevance, submission or update date. arXiv serves only a query's first 10,000 results, so narrow the query rather than paging past them. |
-| `search_openalex` | Free-text search across all of OpenAlex, matched on title, abstract and fulltext. The broadest discovery tool here — use it when you have a topic rather than a title. Every hit warms the cache `get_paper_metadata` reads (under its DOI when present, or its `openalex_id` when `doi` is null), so the follow-up is free. The one OpenAlex call that spends real credit budget — use `autocomplete_openalex` when you have a name rather than a topic |
+| `search_openalex` | Free-text search and structured filtering across all of OpenAlex (title, abstract, fulltext, plus `year` or `from_year`/`to_year`, `author_id`/ORCID, `is_oa`, `sort`, and `page`). Omit `query` with `author_id` to list an author's works at 1/10th the credit cost. Every hit surfaces `doi`, `openalex_id`, `pmid`, `pmcid`, and `arxiv_id` and warms the `get_paper_metadata` cache so follow-ups are free. Use `autocomplete_openalex` when you know an exact name |
 | `autocomplete_openalex` | Match a name or title prefix to an OpenAlex ID, across works, authors, institutions or sources. Costs no credit budget, so reach for it when you know what something is called. Hits are *not* cached, so chaining one costs a request |
 
 ### Authors
@@ -166,6 +167,7 @@ bare, `ror:`-prefixed, or a `ror.org` URL. It resolves what an affiliation strin
 | `get_paper_markdown` | Full converted markdown document (or a paged slice by `offset` and `max_chars`, default 100000 chars) for reading a paper in one call when `total_approx_tokens` fits your context |
 | `find_in_paper` | Substring (or whole-word) search inside one converted paper. Returns each hit's section + char offset + ~120-char snippet, and echoes `paper_identifier` in canonical form. Char offsets align with `get_paper_section`'s stripped text so you can chain straight to the surrounding context. |
 | `search_cached_papers` | BM25 keyword search across **every** converted paper in the local cache. Answers "which paper mentioned X?"; pair it with `find_in_paper` for "where in that paper?". Papers the index could never use are reported separately as `unindexable`, each with a `canonical_id` you can hand straight to `find_in_paper`. |
+| `list_cached_papers` | Paginated inventory of all downloaded PDFs and converted markdown in `.cache/` (also exposed as the `papers://cached` MCP JSON resource), with `conversion_mode`, `total_approx_tokens`, and total local disk usage (`total_disk_bytes`). |
 
 `convert_paper(mode="fast")` runs a lightweight text-only extractor (`PDF_FAST_CONVERTER`, default `pdftotext`) outside the global conversion lock — seconds instead of minutes, but no tables, equations, figures, or real headings. Use it for triage; re-run in full mode when you need structure.
 
@@ -180,7 +182,7 @@ Every tool above except `search_cached_papers` (which takes a query, not a paper
 | `get_paper_references_count` | Survey outgoing-reference coverage across both Crossref and OpenCitations in one call — returns per-source counts so you can pick which to page through; a count marked `pageable: false` is real but has no rows behind it |
 | `get_paper_references` | Paginated outgoing references. Default `source="auto"` surveys both Crossref and OpenCitations in parallel and pages from the better-covered one, biased toward Crossref for its richer per-entry metadata (OpenCitations wins only on a materially larger reference list); pass `source="crossref"` for structured metadata or `source="opencitations"` for broader DOI coverage to skip the survey |
 | `get_paper_citations_count` | Survey incoming-citation coverage across OpenCitations and OpenAlex in one call — the cross-check that tells an OpenCitations zero from a genuinely uncited paper, and the only tool that answers when the citation list is too large to fetch |
-| `get_paper_citations` | Paginated incoming citations with DOIs, dates, self-citation flags, and cross-referenced IDs (OpenCitations) |
+| `get_paper_citations` | Paginated incoming citations: `source="opencitations"` (default) for DOI-to-DOI links, dates, and self-citation flags, or `source="openalex"` (sorted by `cited_by_count` or `publication_date`) for rich triage metadata, DOI-less OpenAlex work IDs, and landmark papers where OpenCitations 504s |
 | `get_paper_updates` | Retraction and correction notices for a DOI, from Crossref and the Retraction Watch database, plus any preprint/published DOIs the publisher deposited. Free on a paper already in the Crossref cache |
 | `search_crossref_by_title` | DOI discovery by bibliographic query (also works for bioRxiv papers); `max_results` widens the triage list up to Crossref's cap. Each hit warms the Crossref works cache, so a follow-up `get_paper_references(doi, source="crossref")` is free |
 
@@ -284,6 +286,7 @@ API responses and downloaded files are cached under `.cache/`:
   openalex/authors/        # OpenAlex author objects (JSON)
   openalex/institutions/   # OpenAlex institution objects (JSON)
   openalex/pmids/          # PMID -> DOI / OpenAlex ID mappings (JSON)
+  openalex/pmcids/         # PMCID -> DOI / OpenAlex ID mappings (JSON)
   openalex/work_ids/       # OpenAlex work ID -> DOI / OpenAlex ID mappings (JSON)
   arxiv/papers/            # arXiv paper entries (JSON)
   arxiv/pdfs/              # Downloaded PDFs
@@ -371,19 +374,20 @@ server.py            thin entry: re-exports mcp + tools, registers the
   ├── bibtex.py        BibTeX generation
   ├── fast_extract.py  bundled pymupdf text extractor (a `python -m` target)
   │
-  ├── tools/         34 @mcp.tool functions, split by job
+  ├── tools/         35 @mcp.tool functions (+ papers://cached resource), split by job
   │                    paper.py       metadata / authors / abstract / bibtex
   │                    formatting.py  provider metadata + author payload formatters
-  │                    pipeline.py    download → convert → sections → section / markdown
+  │                    pipeline.py    download → convert → sections → section / markdown / list
   │                    graph.py       references and citations
   │                    search.py      arXiv / OpenAlex / Crossref / Wikipedia /
   │                                   local corpus
   │                    catalog.py     Papers with Code: code, tasks, leaderboards
   │
-  ├── providers/     eight API clients + pure parsing companions
+  ├── providers/     nine API clients + pure parsing companions
   │                    openalex.py       arxiv.py        biorxiv.py    crossref.py
   │                    openalex_parse.py arxiv_parse.py                crossref_parse.py
   │                    opencitations.py  wikipedia.py    acl.py        paperswithcode.py
+  │                    pmc.py
   │
   ├── papers/        PDF / HTML / JATS → markdown → sections
   │                    sections.py  markdown structure + search
