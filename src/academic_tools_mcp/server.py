@@ -17,6 +17,7 @@ from .providers import (
     openalex,
     opencitations,
     paperswithcode,
+    pmc,
     wikipedia,
 )
 from .tools.catalog import (
@@ -103,6 +104,7 @@ __all__ = [
     "openalex",
     "opencitations",
     "paperswithcode",
+    "pmc",
     "search_arxiv",
     "search_authors",
     "search_cached_papers",

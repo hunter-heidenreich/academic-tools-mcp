@@ -43,6 +43,7 @@ class TestNamespaceVocabulary:
             "openalex",
             "opencitations",
             "paperswithcode",
+            "pmc",
             "wikipedia",
         }
     )

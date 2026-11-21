@@ -39,7 +39,8 @@ from ..app import (
     resolve_paper_identifier,
 )
 from ..download import artifact, openaccess
-from ..providers import acl, arxiv, biorxiv
+from ..providers import acl, arxiv, biorxiv, openalex, pmc
+from ..util import doinorm
 
 _INTERNAL_PATH_KEYS = ("path", "markdown_path")
 
@@ -88,11 +89,19 @@ async def _progress_heartbeat(ctx: Context | None, label: str) -> AsyncGenerator
 
 
 def _markup_source(
-    namespace: str, identifier: str, *, force_refresh: bool
+    namespace: str,
+    identifier: str,
+    *,
+    force_refresh: bool,
+    has_usable_pdf: bool = False,
 ) -> tuple[Callable[[], Awaitable[dict[str, Any]]], papers.MarkupMode, str] | None:
     """The provider markup to try before the PDF — fetch, provenance, name — or ``None``.
 
     Getters are looked up at call time, so a patched provider applies.
+    For generic DOIs / OpenAlex work IDs (``manual`` namespace), Europe PMC JATS
+    is tried when no usable PDF is cached locally — giving open-access PMC papers
+    a seconds-fast full-text path without overriding an already-downloaded or
+    manually imported PDF.
     """
     if namespace == arxiv.NAMESPACE:
         return (
@@ -105,6 +114,16 @@ def _markup_source(
             lambda: biorxiv.get_jats(identifier, force_refresh=force_refresh),
             "jats",
             f"{biorxiv.LABEL}'s JATS full text",
+        )
+    if (
+        namespace == manual.NAMESPACE
+        and not has_usable_pdf
+        and (doinorm.looks_like_doi(identifier) or openalex.is_work_id(identifier))
+    ):
+        return (
+            lambda: pmc.get_jats(identifier, force_refresh=force_refresh),
+            "jats",
+            f"{pmc.LABEL}'s JATS full text",
         )
     return None
 
@@ -252,11 +271,12 @@ async def convert_paper(
 ) -> dict[str, Any]:
     """Convert a paper to markdown and index its sections (step 2 of the PDF pipeline).
 
-    Tries arXiv HTML / bioRxiv JATS first (seconds, no PDF needed), else converts
-    the cached PDF. Returns ``{sections, total_approx_tokens, sections_detected,
-    cached, conversion_mode}`` — proceed straight to ``get_paper_section`` or
-    ``get_paper_markdown``. Full mode is serialized server-wide (concurrent calls
-    return ``busy: True``); ``mode="fast"`` is degraded plain text without the lock.
+    Tries arXiv HTML, bioRxiv JATS, or (when no PDF is cached) Europe PMC JATS
+    first (seconds, no PDF needed), else converts the cached PDF. Returns
+    ``{sections, total_approx_tokens, sections_detected, cached, conversion_mode}``
+    — proceed straight to ``get_paper_section`` or ``get_paper_markdown``. Full
+    mode is serialized server-wide (concurrent calls return ``busy: True``);
+    ``mode="fast"`` is degraded plain text without the lock.
     """
     # No force_refresh: it means "re-convert", and a PMID's DOI does not go stale
     # with the markdown. Unlike download_pdf and import_paper, which do thread it.
@@ -266,10 +286,16 @@ async def convert_paper(
 
     target = manual.resolve_target(identifier)
     pdf = target["pdf_path"]
+    has_pdf = artifact.is_usable_pdf(pdf)
 
     markup_error: dict[str, Any] | None = None
     markup_label = ""
-    source = _markup_source(target["namespace"], identifier, force_refresh=force_refresh)
+    source = _markup_source(
+        target["namespace"],
+        identifier,
+        force_refresh=force_refresh,
+        has_usable_pdf=has_pdf,
+    )
     if source is not None:
         fetch_markup, markup_mode, markup_label = source
         converted = await papers.convert_markup(
@@ -284,7 +310,7 @@ async def convert_paper(
         markup_error = converted
 
     # Not merely absent: a 0-byte or non-%PDF- leftover is a miss too.
-    if not artifact.is_usable_pdf(pdf):
+    if not has_pdf:
         if markup_error is not None:
             return _strip_internal_paths(
                 enrich_error(
