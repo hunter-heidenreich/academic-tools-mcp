@@ -51,6 +51,7 @@ from .tools.pipeline import (
     get_paper_section,
     get_paper_sections,
     import_paper,
+    list_cached_papers,
 )
 from .tools.search import (
     autocomplete_openalex,
@@ -97,6 +98,7 @@ __all__ = [
     "get_pwc_task",
     "get_wikipedia_summary",
     "import_paper",
+    "list_cached_papers",
     "mcp",
     "openalex",
     "opencitations",
@@ -110,6 +112,74 @@ __all__ = [
     "search_wikipedia",
     "wikipedia",
 ]
+
+
+# Tool groups that operators can disable at startup via DISABLED_TOOL_GROUPS
+# (comma-separated, e.g. "paperswithcode,wikipedia") to trim the MCP tool catalog
+# and prompt token footprint.
+TOOL_GROUPS: dict[str, tuple[str, ...]] = {
+    "paper": (
+        "get_paper_metadata",
+        "get_papers_metadata",
+        "get_paper_authors",
+        "get_paper_abstract",
+        "get_paper_bibtex",
+        "get_paper_versions",
+        "get_author",
+        "get_institution",
+        "get_paper_updates",
+    ),
+    "pipeline": (
+        "download_pdf",
+        "convert_paper",
+        "get_paper_sections",
+        "get_paper_section",
+        "get_paper_markdown",
+        "import_paper",
+        "list_cached_papers",
+    ),
+    "graph": (
+        "get_paper_references_count",
+        "get_paper_references",
+        "get_paper_citations_count",
+        "get_paper_citations",
+    ),
+    "search": (
+        "search_arxiv",
+        "search_crossref_by_title",
+        "search_openalex",
+        "search_authors",
+        "autocomplete_openalex",
+        "find_in_paper",
+        "search_cached_papers",
+    ),
+    "wikipedia": ("search_wikipedia", "get_wikipedia_summary"),
+    "paperswithcode": (
+        "get_paper_code",
+        "get_paper_catalog",
+        "get_paper_evaluations",
+        "get_pwc_task",
+        "get_benchmark_leaderboard",
+        "search_paperswithcode",
+    ),
+}
+
+
+def resolve_disabled_tools(raw_groups: str | None) -> set[str]:
+    """Resolve a comma-separated ``DISABLED_TOOL_GROUPS`` string to tool names."""
+    if not raw_groups:
+        return set()
+    disabled: set[str] = set()
+    for part in raw_groups.split(","):
+        group = part.strip().lower()
+        if group in TOOL_GROUPS:
+            disabled.update(TOOL_GROUPS[group])
+    return disabled
+
+
+_DISABLED_TOOLS = resolve_disabled_tools(config.get("DISABLED_TOOL_GROUPS"))
+if _DISABLED_TOOLS:
+    mcp.disable(names=_DISABLED_TOOLS, components={"tool"})
 
 
 # Gated on a truthy ENABLE_DEBUG_TOOLS, read once at import, so flipping it needs
