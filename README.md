@@ -64,6 +64,7 @@ All configuration is via environment variables in `.env`. Nothing is required to
 | `CACHE_DIR` | No | Where the on-disk cache lives (default: `.cache/` beside the project). Set it when running from an installed wheel. |
 | `ACADEMIC_TOOLS_ENV_FILE` | No | Explicit path to the `.env` to load. Authoritative: when set it is the *only* candidate, so a path that isn't there means no `.env` rather than a silent fallback to another file. |
 | `MAX_PDF_BYTES` | No | Cap on a single PDF download (default `200000000` ≈ 200 MB). `none` / `off` / `disabled` / `0` disables; any other unparseable value (including a negative one) falls back to the default. |
+| `IMPORT_ALLOWED_DIRS` | No | `os.pathsep`-separated allowlist of directories `import_paper` may read from (e.g. `~/Downloads:~/Zotero/storage`). Unset allows any local path; symlinks are resolved before checking. |
 | `WIKIPEDIA_MAILTO` | No | Your email, appended to the Wikipedia User-Agent. A descriptive agent is sent either way, which is what matters: [Wikimedia](https://www.mediawiki.org/wiki/Wikimedia_APIs/Rate_limits) caps an unidentified client at 10 req/min against 200 with a compliant one. |
 | `PDF_CONVERTER` | No | PDF-to-markdown backend: `mineru` (default), `marker`, or a custom command (see [PDF Pipeline](#pdf-pipeline)) |
 | `PDF_CONVERTER_VENV` | No | Path to a virtualenv to activate before running the converter (e.g. `~/.venvs/mineru`) |
