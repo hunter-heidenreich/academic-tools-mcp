@@ -961,12 +961,12 @@ class TestCitationsDispatch:
         assert result["total"] == 1
 
     @pytest.mark.asyncio
-    async def test_no_source_parameter(self):
-        # The reserved-but-inert `source` param was removed; it's gone from
-        # the signature (a future second source would reintroduce it).
+    async def test_source_parameter_defaults_to_opencitations(self):
         import inspect
 
-        assert "source" not in inspect.signature(server.get_paper_citations).parameters
+        params = inspect.signature(server.get_paper_citations).parameters
+        assert params["source"].default == "opencitations"
+        assert params["sort"].default == "cited_by_count"
 
     @pytest.mark.asyncio
     async def test_a_provider_error_reaches_the_agent_with_a_suggestion(self, monkeypatch):
@@ -1193,11 +1193,13 @@ class TestCitationsCountSurvey:
         assert result["sources"]["openalex"]["retryable"] is True
 
     @pytest.mark.asyncio
-    async def test_the_page_tool_gained_no_source_parameter(self):
-        """OpenAlex reports a count but cannot page the citing works."""
+    async def test_the_page_tool_exposes_source_and_sort_parameters(self):
+        """OpenAlex can now page citing works alongside OpenCitations."""
         import inspect
 
-        assert "source" not in inspect.signature(server.get_paper_citations).parameters
+        params = inspect.signature(server.get_paper_citations).parameters
+        assert "source" in params
+        assert "sort" in params
 
 
 class TestGraphToolsAcceptAnthologyIds:
@@ -1480,3 +1482,86 @@ class TestGraphToolsAcceptWorkIds:
 
         result = await server.get_paper_citations_count("10.1234/x")
         assert result["sources"]["openalex"] == {"count": None}
+
+
+class TestOpenAlexCitationsPaging:
+    @pytest.mark.asyncio
+    async def test_pages_citing_works_for_doi_with_sort(self, monkeypatch):
+        seen: list[tuple[str, int, int, str]] = []
+
+        _stub_openalex_work(
+            monkeypatch,
+            work={"id": "https://openalex.org/W4312223440", "cited_by_count": 50000},
+        )
+
+        async def fake_citing(work_id, *, page=1, per_page=20, sort="cited_by_count"):
+            seen.append((work_id, page, per_page, sort))
+            return {
+                "total_results": 50000,
+                "items": [
+                    {
+                        "id": "https://openalex.org/W1111111111",
+                        "doi": "https://doi.org/10.1234/citing1",
+                        "ids": {"pmid": "https://pubmed.ncbi.nlm.nih.gov/12345678"},
+                        "title": "Big Followup",
+                        "authorships": [{"author": {"display_name": "Alice Smith"}}],
+                        "publication_year": 2025,
+                        "cited_by_count": 300,
+                        "open_access": {"is_oa": True},
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(openalex, "get_citing_works", fake_citing)
+
+        result = await server.get_paper_citations(
+            "10.1234/x", source="openalex", page=2, page_size=10, sort="publication_date"
+        )
+
+        assert seen == [("W4312223440", 2, 10, "publication_date")]
+        assert result["_source"] == "openalex"
+        assert result["doi"] == "10.1234/x"
+        assert result["total"] == 50000
+        assert result["has_more"] is True
+        assert result["citations"] == [
+            {
+                "doi": "10.1234/citing1",
+                "openalex_id": "https://openalex.org/W1111111111",
+                "pmid": "12345678",
+                "arxiv_id": None,
+                "title": "Big Followup",
+                "first_author": "Alice Smith",
+                "author_count": 1,
+                "publication_year": 2025,
+                "cited_by_count": 300,
+                "is_oa": True,
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_supports_doi_less_openalex_work_id_directly(self, monkeypatch):
+        async def fake_resolve(work_id, **kwargs):
+            return {"doi": None, "openalex_id": "https://openalex.org/W4312223440"}
+
+        async def fake_citing(work_id, *, page=1, per_page=20, sort="cited_by_count"):
+            assert work_id == "W4312223440"
+            return {"total_results": 1, "items": [{"id": "https://openalex.org/W2", "title": "C"}]}
+
+        monkeypatch.setattr(openalex, "resolve_work_id", fake_resolve)
+        monkeypatch.setattr(openalex, "get_citing_works", fake_citing)
+
+        result = await server.get_paper_citations("W4312223440", source="openalex")
+        assert result["_source"] == "openalex"
+        assert result["doi"] == "w4312223440"
+        assert result["has_more"] is False
+        assert len(result["citations"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_transient_opencitations_error_suggests_openalex(self, monkeypatch):
+        async def fake_oc(doi, **kwargs):
+            return {"error": "OpenCitations 504", "retryable": True}
+
+        monkeypatch.setattr(opencitations, "get_citations", fake_oc)
+
+        result = await server.get_paper_citations("10.1234/x")
+        assert "source='openalex'" in result["suggestion"]

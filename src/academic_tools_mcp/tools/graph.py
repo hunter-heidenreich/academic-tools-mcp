@@ -5,6 +5,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ..app import (
+    CITATION_SORT,
+    CITATION_SOURCE,
     DOI,
     FORCE_REFRESH,
     PAGE,
@@ -13,11 +15,15 @@ from ..app import (
     REF_SOURCE,
     enrich_error,
     mcp,
+    openalex_arxiv_id,
+    openalex_pmid,
     page_bounds,
     resolve_doi_identifier,
+    resolve_paper_identifier,
 )
 from ..providers import crossref, openalex, opencitations
-from ..util.jsonshape import as_int, dict_list
+from ..util import doinorm
+from ..util.jsonshape import as_dict, as_int, dict_list
 
 # Every graph call goes through one DOI resolver; this names the tools in its refusal.
 _SUBJECT = "Reference and citation graphs"
@@ -394,41 +400,139 @@ async def get_paper_citations_count(
     return {"doi": doi, "count": count, "pageable": pageable, "sources": sources}
 
 
+def _format_openalex_citing_work(work: dict[str, Any]) -> dict[str, Any]:
+    """Extract lean triage fields from one OpenAlex citing work."""
+    authorships = dict_list(work.get("authorships"))
+    first_author = (
+        as_dict(authorships[0].get("author")).get("display_name") if authorships else None
+    )
+    raw_doi = work.get("doi")
+    return {
+        "doi": doinorm.normalize(raw_doi) if isinstance(raw_doi, str) else None,
+        "openalex_id": work.get("id"),
+        "pmid": openalex_pmid(work),
+        "arxiv_id": openalex_arxiv_id(work),
+        "title": work.get("title"),
+        "first_author": first_author,
+        "author_count": len(authorships),
+        "publication_year": work.get("publication_year"),
+        "cited_by_count": work.get("cited_by_count"),
+        "is_oa": as_dict(work.get("open_access")).get("is_oa"),
+    }
+
+
+async def _openalex_citations_page(
+    identifier: str,
+    *,
+    page: int,
+    page_size: int,
+    sort: openalex.CitationSort,
+    force_refresh: bool,
+) -> dict[str, Any]:
+    """Resolve *identifier* to an OpenAlex work ID and page its citing works."""
+    routed, trade_error = await resolve_paper_identifier(identifier, force_refresh=force_refresh)
+    if trade_error is not None:
+        return trade_error
+
+    if openalex.is_work_id(routed):
+        work_id = openalex.normalize_work_id(routed)
+        echoed_id = openalex.canonical_work_id(routed)
+    else:
+        canonical_doi, bad = await resolve_doi_identifier(
+            routed, subject=_SUBJECT, force_refresh=force_refresh
+        )
+        if bad is not None:
+            return bad
+        work = await openalex.get_work(canonical_doi, force_refresh=force_refresh)
+        if "error" in work:
+            return enrich_error(
+                work,
+                "Check the DOI format or try source='opencitations' if OpenAlex has not "
+                "indexed this work.",
+            )
+        raw_id = work.get("id")
+        if not isinstance(raw_id, str) or not openalex.is_work_id(raw_id):
+            return {
+                "error": f"OpenAlex work for {canonical_doi} has no usable work ID.",
+                "suggestion": "Try source='opencitations' instead.",
+            }
+        work_id = openalex.normalize_work_id(raw_id)
+        echoed_id = canonical_doi
+
+    response = await openalex.get_citing_works(work_id, page=page, per_page=page_size, sort=sort)
+    if "error" in response:
+        return enrich_error(
+            response,
+            "Retry if OpenAlex is temporarily unavailable, or try source='opencitations'.",
+        )
+
+    items = [_format_openalex_citing_work(w) for w in response.get("items", [])]
+    total = response.get("total_results") or 0
+    _, end = page_bounds(page, page_size)
+    return {
+        "_source": "openalex",
+        "doi": echoed_id,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < total and bool(items),
+        "citations": items,
+    }
+
+
 @mcp.tool(annotations=READ_ONLY_NETWORK_ANNOTATIONS)
 async def get_paper_citations(
     doi: DOI,
+    source: CITATION_SOURCE = "opencitations",
     page: PAGE = 1,
     page_size: PAGE_SIZE = 20,
+    sort: CITATION_SORT = "cited_by_count",
     force_refresh: FORCE_REFRESH = False,
 ) -> dict[str, Any]:
-    """Page through incoming citations (papers that cite this work) from OpenCitations.
+    """Page through incoming citations (papers that cite this work).
+
+    Supports two sources:
+      - ``opencitations`` (default): DOI-to-DOI links with cross-referenced IDs
+        (doi, omid, openalex, pmid), creation date, and self-citation flags. No
+        bibliographic metadata. ``total: 0`` means "no edges in this index", not
+        "nothing cites this work".
+      - ``openalex``: citing works paged directly from OpenAlex, sorted by
+        ``cited_by_count`` (default) or ``publication_date`` descending. Returns
+        rich triage rows (``doi``, ``openalex_id``, ``pmid``, ``arxiv_id``,
+        ``title``, ``first_author``, ``author_count``, ``publication_year``,
+        ``cited_by_count``, ``is_oa``), warms the singleton works cache, supports
+        DOI-less OpenAlex work IDs, and works on landmark papers where
+        OpenCitations times out.
 
     Returns ``{_source, doi, total, page, page_size, has_more, citations: [...]}``,
-    the echoed ``doi`` canonical rather than the spelling you passed. Each entry
-    carries whichever cross-referenced IDs OpenCitations listed — doi (citing
-    paper), omid, openalex, pmid — plus creation (date string, may be null),
-    journal_self_citation, author_self_citation. No bibliographic metadata: chain
-    a citing DOI into get_paper_metadata for that. ``total: 0`` means "no edges in
-    this index", not "nothing cites this work".
+    the echoed ``doi`` canonical rather than the spelling you passed.
 
-    Call get_paper_citations_count first for the total, and to cross-check it
-    against OpenAlex. **No ``source`` parameter**: OpenAlex reports a citation
-    count but cannot page the citing works — that needs its own paginated fetch
-    (see CHANGELOG) — so OpenCitations remains the only index this tool pages.
+    Call get_paper_citations_count first to compare coverage across both indices.
     Omit ``force_refresh`` when paginating so pages 2..N reuse the cache page 1
     warmed.
 
     Errors: ``{error, suggestion}`` plus the provider's verdict — ``retryable``
     (with ``retry_after_seconds`` when advertised) on a transient failure,
     ``not_found: true`` on a definitive miss, including the local non-DOI
-    rejection, which costs no request.
+    rejection for OpenCitations.
     """
+    if source == "openalex":
+        return await _openalex_citations_page(
+            doi, page=page, page_size=page_size, sort=sort, force_refresh=force_refresh
+        )
+
     doi, bad = await resolve_doi_identifier(doi, subject=_SUBJECT, force_refresh=force_refresh)
     if bad is not None:
         return bad
 
     data = await opencitations.get_citations(doi, force_refresh=force_refresh)
     if "error" in data:
-        return enrich_error(data, "Check the DOI format. OpenCitations requires a valid DOI.")
+        hint = (
+            "OpenCitations failed transiently (common on heavily cited papers). "
+            "Retry with source='openalex' for sorted, paginated citing works."
+            if data.get("retryable") is True
+            else "Check the DOI format. OpenCitations requires a valid DOI."
+        )
+        return enrich_error(data, hint)
 
     return _opencitations_page(data, doi, page, page_size, kind="citations")
